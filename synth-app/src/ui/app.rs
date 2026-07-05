@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::engine::SynthEngineBridge;
 use crate::midi;
-use crate::ui::analysis::{self, AnalysisState};
+use crate::ui::analysis::{self, config::AnalysisConfig, AnalysisState};
 use crate::ui::params_view::UiState;
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
@@ -53,11 +53,14 @@ impl App {
         let port_name = midi_port.or_else(|| config.settings.midi_port.clone());
         let midi_conn = midi::start_midi(port_name.as_deref(), engine.control.clone());
 
+        let mut analysis = AnalysisState::default();
+        config.analysis.apply_to(&mut analysis);
+
         Self {
             engine,
             active_tab: config.active_tab,
             theme_dark,
-            analysis: Arc::new(Mutex::new(AnalysisState::default())),
+            analysis: Arc::new(Mutex::new(analysis)),
             analysis_viewport: DeferredViewport::from_config(
                 "analysis",
                 "Analysis",
@@ -78,6 +81,7 @@ impl App {
         self.config.main_viewport = self.main_viewport.geometry();
         self.config.analysis_open = self.analysis_viewport.open;
         self.config.analysis_viewport = self.analysis_viewport.geometry();
+        self.config.analysis = AnalysisConfig::from_state(&self.analysis.lock());
         self.config.save();
     }
 }

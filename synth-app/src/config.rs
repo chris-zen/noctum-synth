@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::ui::analysis::config::AnalysisConfig;
+use crate::ui::analysis::AnalysisTab;
 use crate::ui::app::Tab;
 use crate::ui::settings_view::Settings;
 use crate::ui::viewport::WindowGeometry;
@@ -39,6 +41,10 @@ pub struct Config {
     pub main_viewport: Option<WindowGeometry>,
     pub analysis_open: bool,
     pub analysis_viewport: Option<WindowGeometry>,
+    #[serde(default)]
+    pub analysis: AnalysisConfig,
+    #[serde(default, skip_serializing, rename = "analysis_tab")]
+    analysis_tab_legacy: Option<AnalysisTab>,
 }
 
 impl Config {
@@ -52,6 +58,9 @@ impl Config {
             Err(err) => return Err(ConfigError::Io(err)),
         };
         config.path = path;
+        if let Some(tab) = config.analysis_tab_legacy.take() {
+            config.analysis.active_tab = tab;
+        }
         Ok(config)
     }
 

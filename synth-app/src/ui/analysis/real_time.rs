@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use super::spectrum::{self, SpectrumConfig};
 use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
+use serde::{Deserialize, Serialize};
 
 pub struct RealTimeState {
     pub osc: OscilloscopeState,
@@ -23,6 +24,153 @@ impl Default for RealTimeState {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OscilloscopeDisplayModeConfig {
+    Left,
+    Right,
+    Stereo,
+}
+
+impl Default for OscilloscopeDisplayModeConfig {
+    fn default() -> Self {
+        Self::Left
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpectrumChannel {
+    Left,
+    Right,
+    Sum,
+}
+
+impl Default for SpectrumChannel {
+    fn default() -> Self {
+        Self::Left
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OscilloscopeViewConfig {
+    pub timebase_ms: f32,
+    pub trigger_level: f32,
+    pub y_range: f32,
+    pub display_mode: OscilloscopeDisplayModeConfig,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FftViewConfig {
+    pub fft_size: usize,
+    pub window_type: usize,
+    pub db_floor: f32,
+    pub db_top: f32,
+    pub log_scale: bool,
+    #[serde(default)]
+    pub show_peak_hold: bool,
+    #[serde(default)]
+    pub channel: SpectrumChannel,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RealTimeViewConfig {
+    pub oscilloscope: OscilloscopeViewConfig,
+    pub fft: FftViewConfig,
+}
+
+impl Default for OscilloscopeViewConfig {
+    fn default() -> Self {
+        Self::from_state(&OscilloscopeState::default())
+    }
+}
+
+impl OscilloscopeViewConfig {
+    pub fn from_state(state: &OscilloscopeState) -> Self {
+        Self {
+            timebase_ms: state.timebase_ms,
+            trigger_level: state.trigger_level,
+            y_range: state.y_range,
+            display_mode: display_mode_to_config(state.display_mode),
+        }
+    }
+
+    pub fn apply_to(&self, state: &mut OscilloscopeState) {
+        state.timebase_ms = self.timebase_ms;
+        state.trigger_level = self.trigger_level;
+        state.y_range = self.y_range;
+        state.display_mode = display_mode_from_config(self.display_mode);
+    }
+}
+
+impl Default for FftViewConfig {
+    fn default() -> Self {
+        Self::from_state(&FftState::default())
+    }
+}
+
+impl FftViewConfig {
+    pub fn from_state(state: &FftState) -> Self {
+        Self {
+            fft_size: state.fft_size,
+            window_type: state.window_type,
+            db_floor: state.db_floor,
+            db_top: state.db_top,
+            log_scale: state.log_scale,
+            show_peak_hold: state.show_peak_hold,
+            channel: state.channel,
+        }
+    }
+
+    pub fn apply_to(&self, state: &mut FftState) {
+        state.fft_size = self.fft_size;
+        state.window_type = self.window_type;
+        state.db_floor = self.db_floor;
+        state.db_top = self.db_top;
+        state.log_scale = self.log_scale;
+        state.show_peak_hold = self.show_peak_hold;
+        state.channel = self.channel;
+        if state.complex_buf.len() != self.fft_size {
+            state.complex_buf = vec![Complex32::new(0.0, 0.0); self.fft_size];
+            state.fft = None;
+        }
+    }
+}
+
+impl Default for RealTimeViewConfig {
+    fn default() -> Self {
+        Self::from_state(&RealTimeState::default())
+    }
+}
+
+impl RealTimeViewConfig {
+    pub fn from_state(state: &RealTimeState) -> Self {
+        Self {
+            oscilloscope: OscilloscopeViewConfig::from_state(&state.osc),
+            fft: FftViewConfig::from_state(&state.fft),
+        }
+    }
+
+    pub fn apply_to(&self, state: &mut RealTimeState) {
+        self.oscilloscope.apply_to(&mut state.osc);
+        self.fft.apply_to(&mut state.fft);
+    }
+}
+
+fn display_mode_to_config(mode: OscilloscopeDisplayMode) -> OscilloscopeDisplayModeConfig {
+    match mode {
+        OscilloscopeDisplayMode::Left => OscilloscopeDisplayModeConfig::Left,
+        OscilloscopeDisplayMode::Right => OscilloscopeDisplayModeConfig::Right,
+        OscilloscopeDisplayMode::Stereo => OscilloscopeDisplayModeConfig::Stereo,
+    }
+}
+
+fn display_mode_from_config(mode: OscilloscopeDisplayModeConfig) -> OscilloscopeDisplayMode {
+    match mode {
+        OscilloscopeDisplayModeConfig::Left => OscilloscopeDisplayMode::Left,
+        OscilloscopeDisplayModeConfig::Right => OscilloscopeDisplayMode::Right,
+        OscilloscopeDisplayModeConfig::Stereo => OscilloscopeDisplayMode::Stereo,
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut RealTimeState) {
     for block in audio_blocks {
         let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
@@ -35,22 +183,37 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
         let copy_len = block_len.min(fft_size);
         let shift = fft_size - copy_len;
         state.fft.buffer.copy_within(copy_len..fft_size, 0);
-        state.fft.buffer[shift..fft_size].copy_from_slice(&block.left[..copy_len]);
+        match state.fft.channel {
+            SpectrumChannel::Left => {
+                state.fft.buffer[shift..fft_size].copy_from_slice(&block.left[..copy_len]);
+            }
+            SpectrumChannel::Right => {
+                state.fft.buffer[shift..fft_size].copy_from_slice(&block.right[..copy_len]);
+            }
+            SpectrumChannel::Sum => {
+                for index in 0..copy_len {
+                    state.fft.buffer[shift + index] =
+                        0.5 * (block.left[index] + block.right[index]);
+                }
+            }
+        }
         state.fft.frame_count += 1;
     }
 
     let available = ui.available_size();
-    let gap = 4.0;
+    let gap = 12.0;
     let osc_h = (available.y * 0.4).max(120.0);
     let fft_h = (available.y - osc_h - gap).max(120.0);
 
     ui.allocate_ui(egui::vec2(available.x, osc_h), |ui| {
         ui.strong("Oscilloscope");
+        ui.add_space(6.0);
         draw_oscilloscope(ui, &mut state.osc);
     });
     ui.add_space(gap);
     ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
         ui.strong("Spectrum Analyzer");
+        ui.add_space(6.0);
         draw_fft(ui, &mut state.fft);
     });
 }
@@ -105,18 +268,64 @@ fn find_trigger(buf: &[f32], len: usize, level: f32) -> f32 {
 }
 
 fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
+    ui.horizontal(|ui| {
+        ui.label("Timebase:");
+        ui.add(
+            egui::Slider::new(&mut state.timebase_ms, 1.0..=50.0)
+                .logarithmic(true)
+                .text("ms"),
+        );
+        ui.separator();
+        ui.label("Trigger:");
+        ui.add(egui::Slider::new(&mut state.trigger_level, -1.0..=1.0).text(""));
+        ui.separator();
+        ui.label("Y Range:");
+        ui.add(
+            egui::Slider::new(&mut state.y_range, 0.001..=1.0)
+                .logarithmic(true)
+                .text(""),
+        );
+        ui.separator();
+        ui.label("Trace:");
+        for (mode, label) in [
+            (OscilloscopeDisplayMode::Left, "L"),
+            (OscilloscopeDisplayMode::Right, "R"),
+            (OscilloscopeDisplayMode::Stereo, "L+R"),
+        ] {
+            if ui
+                .selectable_label(state.display_mode == mode, label)
+                .clicked()
+            {
+                state.display_mode = mode;
+            }
+        }
+        ui.separator();
+        if ui
+            .button(if state.frozen { "Unfreeze" } else { "Freeze" })
+            .clicked()
+        {
+            state.frozen = !state.frozen;
+            if state.frozen {
+                state.frozen_buffer_l = state.buffer_l;
+                state.frozen_buffer_r = state.buffer_r;
+                state.frozen_len = state.buf_len;
+            }
+        }
+    });
+    ui.add_space(6.0);
+
     let available = ui.available_size();
-    let controls_h = 20.0;
     let y_label_w = 28.0;
     let x_label_h = 14.0;
-    let plot_h = (available.y - controls_h).max(40.0);
+    let top_pad = 8.0;
+    let plot_h = available.y.max(40.0);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(available.x, plot_h),
         egui::Sense::click_and_drag(),
     );
     let plot_left = rect.left() + y_label_w;
     let plot_rect = egui::Rect::from_min_max(
-        egui::pos2(plot_left, rect.top()),
+        egui::pos2(plot_left, rect.top() + top_pad),
         egui::pos2(rect.right(), rect.bottom() - x_label_h),
     );
     let painter = ui.painter_at(rect);
@@ -298,51 +507,6 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
             tick_ms += tick_interval;
         }
     }
-
-    ui.horizontal(|ui| {
-        ui.label("Timebase:");
-        ui.add(
-            egui::Slider::new(&mut state.timebase_ms, 1.0..=50.0)
-                .logarithmic(true)
-                .text("ms"),
-        );
-        ui.separator();
-        ui.label("Trigger:");
-        ui.add(egui::Slider::new(&mut state.trigger_level, -1.0..=1.0).text(""));
-        ui.separator();
-        ui.label("Y Range:");
-        ui.add(
-            egui::Slider::new(&mut state.y_range, 0.001..=1.0)
-                .logarithmic(true)
-                .text(""),
-        );
-        ui.separator();
-        ui.label("Trace:");
-        for (mode, label) in [
-            (OscilloscopeDisplayMode::Left, "L"),
-            (OscilloscopeDisplayMode::Right, "R"),
-            (OscilloscopeDisplayMode::Stereo, "L+R"),
-        ] {
-            if ui
-                .selectable_label(state.display_mode == mode, label)
-                .clicked()
-            {
-                state.display_mode = mode;
-            }
-        }
-        ui.separator();
-        if ui
-            .button(if state.frozen { "Unfreeze" } else { "Freeze" })
-            .clicked()
-        {
-            state.frozen = !state.frozen;
-            if state.frozen {
-                state.frozen_buffer_l = state.buffer_l;
-                state.frozen_buffer_r = state.buffer_r;
-                state.frozen_len = state.buf_len;
-            }
-        }
-    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -390,6 +554,7 @@ fn nice_tick_interval(range: f32, target_ticks: f32) -> f32 {
 
 pub struct FftState {
     buffer: [f32; 4096],
+    latest_db: [f32; 2048],
     peak_hold: [f32; 2048],
     peak_decay: f32,
     frame_count: u32,
@@ -400,6 +565,8 @@ pub struct FftState {
     pub db_floor: f32,
     pub db_top: f32,
     pub log_scale: bool,
+    pub show_peak_hold: bool,
+    pub channel: SpectrumChannel,
 }
 
 impl Default for FftState {
@@ -409,6 +576,7 @@ impl Default for FftState {
         let fft = planner.plan_fft_forward(fft_size);
         Self {
             buffer: [0.0; 4096],
+            latest_db: [-120.0; 2048],
             peak_hold: [-120.0; 2048],
             peak_decay: 0.5,
             frame_count: 0,
@@ -419,6 +587,8 @@ impl Default for FftState {
             db_floor: -96.0,
             db_top: 0.0,
             log_scale: true,
+            show_peak_hold: false,
+            channel: SpectrumChannel::Left,
         }
     }
 }
@@ -465,6 +635,7 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
             let im = state.complex_buf[bin].im;
             let mag = (re * re + im * im).sqrt() * scale;
             let db = 20.0 * (mag.max(1e-10)).log10().max(-150.0);
+            state.latest_db[bin] = db;
             if db > state.peak_hold[bin] {
                 state.peak_hold[bin] = db;
             } else {
@@ -473,18 +644,38 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
         }
     }
 
-    let config = SpectrumConfig {
-        fft_size,
-        sample_rate: 44100.0,
-        db_floor: state.db_floor,
-        db_top: state.db_top,
-        log_scale: state.log_scale,
-        min_freq: 20.0,
-    };
-    let _plot_rect = spectrum::render_spectrum(ui, &state.peak_hold[..fft_size / 2], &config, 24.0);
-
     // Controls
     ui.horizontal(|ui| {
+        ui.label("Mode:");
+        if ui
+            .selectable_label(!state.show_peak_hold, "Instant")
+            .on_hover_text("Show the current FFT frame without peak hold.")
+            .clicked()
+        {
+            state.show_peak_hold = false;
+        }
+        if ui
+            .selectable_label(state.show_peak_hold, "Hold")
+            .on_hover_text("Show peak hold with slow decay.")
+            .clicked()
+        {
+            state.show_peak_hold = true;
+        }
+        if ui.button("Reset").on_hover_text("Clear held spectrum peaks.").clicked() {
+            state.peak_hold.fill(state.db_floor);
+        }
+        ui.separator();
+        ui.label("Chan:");
+        for (chan, label) in [
+            (SpectrumChannel::Left, "L"),
+            (SpectrumChannel::Right, "R"),
+            (SpectrumChannel::Sum, "L+R"),
+        ] {
+            if ui.selectable_label(state.channel == chan, label).clicked() {
+                state.channel = chan;
+            }
+        }
+        ui.separator();
         ui.label("Win:");
         for (index, name) in ["Hann", "Blackman", "FlatTop", "None"].iter().enumerate() {
             if ui
@@ -503,11 +694,13 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
             {
                 state.fft_size = size;
                 state.fft = None;
+                state.latest_db.fill(state.db_floor);
+                state.peak_hold.fill(state.db_floor);
             }
         }
         ui.separator();
         ui.label("dB top:");
-        for &db in &[12.0, 6.0, 0.0] {
+        for &db in &[48.0, 24.0, 12.0, 6.0, 0.0] {
             if ui
                 .selectable_label(state.db_top == db, &format!("+{:.0}", db))
                 .clicked()
@@ -527,4 +720,21 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
             state.log_scale = !state.log_scale;
         }
     });
+    ui.add_space(6.0);
+
+    let config = SpectrumConfig {
+        fft_size: state.fft_size,
+        sample_rate: 44100.0,
+        db_floor: state.db_floor,
+        db_top: state.db_top,
+        log_scale: state.log_scale,
+        min_freq: 20.0,
+    };
+    let num_bins = state.fft_size / 2;
+    let spectrum_db = if state.show_peak_hold {
+        &state.peak_hold[..num_bins]
+    } else {
+        &state.latest_db[..num_bins]
+    };
+    let _plot_rect = spectrum::render_spectrum(ui, spectrum_db, &config, 0.0);
 }

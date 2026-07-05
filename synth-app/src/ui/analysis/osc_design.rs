@@ -8,6 +8,7 @@ use synth_core::{AnalogOscillator, SawMethod, Waveform};
 use wide::f32x4;
 
 use super::spectrum::{self, SpectrumConfig};
+use serde::{Deserialize, Serialize};
 
 pub struct OscillatorViewState {
     pub waveform: usize,
@@ -78,9 +79,106 @@ impl Default for OscillatorViewState {
     }
 }
 
-pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
-    let old_hash = param_hash(state);
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SawMethodConfig {
+    PolyBlep,
+    Blep,
+}
 
+impl Default for SawMethodConfig {
+    fn default() -> Self {
+        Self::Blep
+    }
+}
+
+impl From<SawMethod> for SawMethodConfig {
+    fn from(method: SawMethod) -> Self {
+        match method {
+            SawMethod::PolyBlep => Self::PolyBlep,
+            SawMethod::Blep => Self::Blep,
+        }
+    }
+}
+
+impl From<SawMethodConfig> for SawMethod {
+    fn from(method: SawMethodConfig) -> Self {
+        match method {
+            SawMethodConfig::PolyBlep => Self::PolyBlep,
+            SawMethodConfig::Blep => Self::Blep,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OscDesignViewConfig {
+    pub waveform: usize,
+    pub saw_method: SawMethodConfig,
+    pub shape: f32,
+    pub note: f32,
+    pub sample_rate: f32,
+    pub cycles: usize,
+    pub live_mode: bool,
+    pub fft_size: usize,
+    pub window_type: usize,
+    pub show_harmonics: bool,
+    pub log_scale: bool,
+    pub db_top: f32,
+    pub db_floor: f32,
+    pub zoom_ms: f32,
+    pub offset_ms: f32,
+    pub show_dots: bool,
+}
+
+impl Default for OscDesignViewConfig {
+    fn default() -> Self {
+        Self::from_state(&OscillatorViewState::default())
+    }
+}
+
+impl OscDesignViewConfig {
+    pub fn from_state(state: &OscillatorViewState) -> Self {
+        Self {
+            waveform: state.waveform,
+            saw_method: state.saw_method.into(),
+            shape: state.shape,
+            note: state.note,
+            sample_rate: state.sample_rate,
+            cycles: state.cycles,
+            live_mode: state.live_mode,
+            fft_size: state.fft_size,
+            window_type: state.window_type,
+            show_harmonics: state.show_harmonics,
+            log_scale: state.log_scale,
+            db_top: state.db_top,
+            db_floor: state.db_floor,
+            zoom_ms: state.zoom_ms,
+            offset_ms: state.offset_ms,
+            show_dots: state.show_dots,
+        }
+    }
+
+    pub fn apply_to(&self, state: &mut OscillatorViewState) {
+        state.waveform = self.waveform;
+        state.saw_method = self.saw_method.into();
+        state.shape = self.shape;
+        state.note = self.note;
+        state.sample_rate = self.sample_rate;
+        state.cycles = self.cycles;
+        state.live_mode = self.live_mode;
+        state.fft_size = self.fft_size;
+        state.window_type = self.window_type;
+        state.show_harmonics = self.show_harmonics;
+        state.log_scale = self.log_scale;
+        state.db_top = self.db_top;
+        state.db_floor = self.db_floor;
+        state.zoom_ms = self.zoom_ms;
+        state.offset_ms = self.offset_ms;
+        state.show_dots = self.show_dots;
+        state.needs_render = true;
+    }
+}
+
+pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     // --- Synth params ---
     ui.horizontal(|ui| {
         ui.label("Wave:");
@@ -109,13 +207,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         ui.add(egui::Slider::new(&mut state.shape, 0.0..=1.0).text(""));
     });
 
+    ui.add_space(4.0);
+    
     // --- Analysis params ---
     ui.horizontal(|ui| {
         ui.label("Note:");
-        ui.add_sized(
-            [120.0, 0.0],
-            egui::Slider::new(&mut state.note, 0.0..=127.0).text(""),
-        );
+        ui.add(egui::Slider::new(&mut state.note, 0.0..=127.0).text(""));
         ui.label(format!(
             "{:.0} ({})",
             state.note,
@@ -144,63 +241,53 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         }
     });
 
-    // Live mode
-    let new_hash = param_hash(state);
-    if new_hash != old_hash {
-        state.last_params_hash = new_hash;
-        if state.live_mode {
-            state.needs_render = true;
-        }
-    }
+    // --- Render scheduling ---
+    let current_hash = param_hash(state);
+    let params_changed = current_hash != state.last_params_hash;
+    let waveform_changed = state.waveform != state.rendered_waveform
+        || state.saw_method != state.rendered_method;
 
-    // Waveform or method change: always render immediately
-    if state.waveform != state.rendered_waveform || state.saw_method != state.rendered_method {
-        render_oscillator(state);
-        state.rendered_waveform = state.waveform;
-        state.rendered_method = state.saw_method;
-        state.needs_render = false;
-    }
+    let should_render = if state.samples.is_empty() || waveform_changed || state.needs_render {
+        // First render, waveform/method switch, or an explicit request: render now.
+        true
+    } else if state.live_mode && params_changed {
+        // Throttle live re-renders while parameters are being changed.
+        state.live_frame = state.live_frame.wrapping_add(1);
+        state.live_frame % 6 == 0
+    } else {
+        false
+    };
 
-    // Render immediately if never rendered (empty buffer) — avoids zoom slider showing 0.1ms
-    if state.samples.is_empty() && state.needs_render {
-        render_oscillator(state);
-        state.needs_render = false;
-    }
-
-    // Throttled live re-renders
-    if state.live_mode && state.needs_render {
-        state.live_frame += 1;
-        if state.live_frame % 6 == 0 {
-            render_oscillator(state);
-            state.needs_render = false;
-        }
-    }
-    if state.needs_render && !state.live_mode {
+    if should_render {
         render_oscillator(state);
         state.needs_render = false;
-    }
-    if state.live_mode {
-        state.needs_render = new_hash != old_hash || state.samples.is_empty();
+        state.last_params_hash = current_hash;
     }
 
-    ui.add_space(4.0);
+    ui.add_space(8.0);
 
     let available = ui.available_size();
-    let gap = 4.0;
+    let gap = 12.0;
     let section_h = ((available.y - gap) / 2.0).max(80.0);
 
     // --- Waveform ---
     ui.allocate_ui(egui::vec2(available.x, section_h), |ui| {
-        ui.label("Waveform");
-        draw_waveform(ui, state);
+        ui.strong("Waveform");
+        ui.add_space(6.0);
         let total_ms = state.samples.len() as f32 / state.sample_rate * 1000.0;
+        let min_zoom = 0.001_f32;
+        let max_zoom = total_ms.max(min_zoom * 2.0);
         ui.horizontal(|ui| {
             ui.label("Zoom:");
-            ui.add(egui::Slider::new(&mut state.zoom_ms, 0.1..=total_ms.max(0.1)).text("ms"));
-            ui.separator();
-            ui.label("Offset:");
+            ui.add(
+                egui::Slider::new(&mut state.zoom_ms, min_zoom..=max_zoom)
+                    .logarithmic(true)
+                    .text("ms"),
+            );
             let max_off = (total_ms - state.zoom_ms).max(0.0);
             if max_off > 0.0 {
+                ui.separator();
+                ui.label("Offset:");
                 ui.add(egui::Slider::new(&mut state.offset_ms, 0.0..=max_off).text("ms"));
             }
             ui.separator();
@@ -213,14 +300,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
             ui.separator();
             ui.label("Right-click to reset, drag to zoom");
         });
+        ui.add_space(6.0);
+        draw_waveform(ui, state);
     });
 
     ui.add_space(gap);
 
     // --- Harmonic Analysis ---
     ui.allocate_ui(egui::vec2(available.x, section_h), |ui| {
-        ui.label("Harmonic Analysis");
-        draw_harmonics(ui, state);
+        ui.strong("Harmonic Analysis");
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Window:");
             for (index, name) in ["Hann", "Blackman", "FlatTop", "None"].iter().enumerate() {
@@ -272,6 +361,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
                 state.log_scale = !state.log_scale;
             }
         });
+        ui.add_space(6.0);
+        draw_harmonics(ui, state);
     });
 }
 
@@ -296,6 +387,7 @@ fn render_oscillator(state: &mut OscillatorViewState) {
     let sr = state.sample_rate;
     let samples_per_cycle = (sr / freq).round() as usize;
     let total_samples = samples_per_cycle * state.cycles;
+    let length_changed = total_samples != state.samples.len();
 
     let mut osc = AnalogOscillator::new(sr);
     osc.set_waveform(int_to_waveform(state.waveform));
@@ -319,7 +411,7 @@ fn render_oscillator(state: &mut OscillatorViewState) {
     }
 
     let total_ms = state.samples.len() as f32 / sr * 1000.0;
-    if state.zoom_ms > total_ms {
+    if length_changed || state.zoom_ms > total_ms || state.zoom_ms <= 0.0 {
         state.zoom_ms = total_ms;
         state.offset_ms = 0.0;
     }
@@ -409,15 +501,16 @@ const WF_BOTTOM_H: f32 = 14.0;
 
 fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     let available = ui.available_size();
-    let controls_h = 20.0;
-    let plot_h = (available.y - controls_h - WF_BOTTOM_H).max(40.0);
+    let y_label_w = 28.0;
+    let top_pad = 8.0;
+    let plot_h = (available.y - WF_BOTTOM_H).max(40.0);
 
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(available.x, plot_h + WF_BOTTOM_H),
         egui::Sense::click_and_drag(),
     );
     let plot_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left(), rect.top()),
+        egui::pos2(rect.left() + y_label_w, rect.top() + top_pad),
         egui::pos2(rect.right(), rect.bottom() - WF_BOTTOM_H),
     );
     let painter = ui.painter_at(rect);
@@ -425,7 +518,10 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     painter.rect_filled(plot_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
 
     let grid_color = egui::Color32::from_rgb(50, 50, 58);
+    let label_color = egui::Color32::from_rgb(120, 120, 130);
+    let font_id = egui::FontId::monospace(8.0);
     let center_y = plot_rect.center().y;
+    let y_scale = plot_rect.height() * 0.5;
     for row in 0..=8 {
         let grid_y = plot_rect.top() + plot_rect.height() * (row as f32 / 8.0);
         painter.line_segment(
@@ -434,6 +530,14 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
                 egui::pos2(plot_rect.right(), grid_y),
             ],
             egui::Stroke::new(1.0, grid_color),
+        );
+        let val = (center_y - grid_y) / y_scale;
+        painter.text(
+            egui::pos2(plot_rect.left() - 4.0, grid_y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{val:.2}"),
+            font_id.clone(),
+            label_color,
         );
     }
     painter.line_segment(
@@ -503,7 +607,6 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         let n_vis = (visible_ms / 1000.0 * sr) as usize;
         let send = (s0 + n_vis).min(state.samples.len());
 
-        let y_scale = plot_rect.height() * 0.4;
         let num_pts = send.saturating_sub(s0);
         let points: Vec<egui::Pos2> = (s0..send)
             .map(|sample_index| {
@@ -631,13 +734,17 @@ fn draw_harmonics(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         log_scale: state.log_scale,
         min_freq: 20.0,
     };
-    let plot_rect = spectrum::render_spectrum(ui, &state.fft_db, &config, 20.0);
+    let plot_rect = spectrum::render_spectrum(ui, &state.fft_db, &config, 0.0);
 
     // Harmonics overlay
     if state.show_harmonics {
         let freq = midi_to_hz(state.note);
         let max_freq = state.sample_rate / 2.0;
         let max_h = (max_freq / freq) as usize;
+        // Derive the bin layout from the data we actually have, not from
+        // state.fft_size, which may have changed before the FFT was recomputed.
+        let num_bins = state.fft_db.len();
+        let bin_hz = max_freq / num_bins.max(1) as f32;
         let painter = ui.painter_at(plot_rect);
         for harmonic in 1..=max_h {
             let hz = freq * harmonic as f32;
@@ -652,9 +759,7 @@ fn draw_harmonics(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
             if marker_x > plot_rect.right() {
                 continue;
             }
-            let bin_hz = state.sample_rate / state.fft_size as f32;
             let bin = (hz / bin_hz).round() as usize;
-            let num_bins = state.fft_size / 2;
             if bin < num_bins {
                 let db_val = state.fft_db[bin].min(state.db_top).max(state.db_floor);
                 let db_range = state.db_top - state.db_floor;

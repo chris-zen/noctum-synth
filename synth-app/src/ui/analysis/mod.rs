@@ -1,3 +1,4 @@
+pub mod config;
 pub mod filter_design;
 pub mod osc_design;
 pub mod real_time;
@@ -15,8 +16,9 @@ use crate::engine::AudioBlock;
 // State
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum AnalysisTab {
+    #[default]
     RealTime,
     OscDesign,
     FilterDesign,

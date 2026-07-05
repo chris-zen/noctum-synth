@@ -2,6 +2,7 @@ use eframe::egui;
 
 pub const FFT_LABEL_W: f32 = 38.0;
 pub const FFT_BOTTOM_H: f32 = 18.0;
+pub const FFT_TOP_H: f32 = 8.0;
 
 pub struct SpectrumConfig {
     pub fft_size: usize,
@@ -52,7 +53,7 @@ pub fn render_spectrum(
         ui.allocate_exact_size(egui::vec2(available.x, total_h), egui::Sense::hover());
     let plot_left = rect.left() + FFT_LABEL_W;
     let plot_rect = egui::Rect::from_min_max(
-        egui::pos2(plot_left, rect.top()),
+        egui::pos2(plot_left, rect.top() + FFT_TOP_H),
         egui::pos2(rect.right(), rect.bottom() - FFT_BOTTOM_H),
     );
     let painter = ui.painter_at(rect);
