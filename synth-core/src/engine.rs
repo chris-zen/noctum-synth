@@ -28,6 +28,9 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
             ControlMessage::SetParam(ParamId::MasterVolume, value) => {
                 self.master_volume = value.clamp(0.0, 1.0);
             }
+            ControlMessage::SetFilterOversampling(oversampling) => {
+                self.set_filter_oversampling(oversampling);
+            }
             message => self.voices.handle_control(message),
         }
     }
@@ -36,6 +39,7 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
         self.handle_control(ControlMessage::SetParam(param, value));
     }
 
+    /// Applies the nonlinear filter oversampling policy to all voices.
     pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
         self.voices.set_filter_oversampling(oversampling);
     }

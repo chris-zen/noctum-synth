@@ -182,6 +182,9 @@ pub enum ParamId {
 /// Host-to-engine control and performance input.
 pub enum ControlMessage {
     SetParam(ParamId, f32),
+    /// Changes nonlinear filter self-oscillation oversampling without rebuilding
+    /// the audio stream.
+    SetFilterOversampling(FilterOversampling),
     NoteOn { note: u8, velocity: f32 },
     NoteOff { note: u8 },
     AllNotesOff,

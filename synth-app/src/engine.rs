@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use synth_core::{ControlMessage, ParamId, Patch};
+use synth_core::{ControlMessage, FilterOversampling, ParamId, Patch};
 
 pub const MAX_AUDIO_BUF: usize = 1024;
 
@@ -107,6 +107,10 @@ pub struct SynthEngineControl {
 impl SynthEngineControl {
     pub fn set_param(&self, param: ParamId, value: f32) {
         self.send(ControlMessage::SetParam(param, value));
+    }
+
+    pub fn set_filter_oversampling(&self, oversampling: FilterOversampling) {
+        self.send(ControlMessage::SetFilterOversampling(oversampling));
     }
 
     pub fn note_on(&self, note: u8, velocity: f32) {

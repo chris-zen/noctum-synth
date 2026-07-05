@@ -118,6 +118,43 @@ fn measure_projected_gain(
     output_amp / amplitude
 }
 
+fn measure_projected_gain_for_configured_note(
+    filter: &mut LadderFilter,
+    freq: f32,
+    note: f32,
+    sample_rate: f32,
+    amplitude: f32,
+) -> f32 {
+    let dt = 1.0 / sample_rate;
+    let omega = 2.0 * std::f32::consts::PI * freq;
+    let settle = (sample_rate * 0.1) as usize;
+    let measure = (sample_rate * 0.05) as usize;
+
+    filter.reset();
+
+    let mut phase = 0.0f32;
+    for _ in 0..settle {
+        let input = f32x4::splat(phase.sin() * amplitude);
+        let _ = process(filter, input, f32x4::splat(note), sample_rate);
+        phase += omega * dt;
+    }
+
+    let mut sin_sum = 0.0f32;
+    let mut cos_sum = 0.0f32;
+    for _ in 0..measure {
+        let sin = phase.sin();
+        let cos = phase.cos();
+        let input = f32x4::splat(sin * amplitude);
+        let out = process(filter, input, f32x4::splat(note), sample_rate).to_array()[0];
+        sin_sum += out * sin;
+        cos_sum += out * cos;
+        phase += omega * dt;
+    }
+
+    let output_amp = 2.0 * (sin_sum * sin_sum + cos_sum * cos_sum).sqrt() / measure as f32;
+    output_amp / amplitude
+}
+
 fn measure_modulated_response(
     filter: &mut LadderFilter,
     freq: f32,
@@ -755,6 +792,46 @@ fn test_resonance_peak_survives_self_oscillation_threshold() {
 }
 
 #[test]
+fn test_self_oscillation_threshold_response_transition_is_smooth() {
+    let sr = 44100.0;
+    let cutoff = 6214.0;
+    let note = 48.0;
+    let probe_freq = 11_380.0;
+    let amplitude = 0.02;
+    let mut at_threshold = LadderFilter::default();
+    let mut just_above = LadderFilter::default();
+
+    for filter in [&mut at_threshold, &mut just_above] {
+        filter.set_cutoff(cutoff);
+        filter.set_poles(4);
+        filter.set_key_track(1.0);
+    }
+    at_threshold.set_resonance(SELF_OSC_RESONANCE_START);
+    just_above.set_resonance(SELF_OSC_RESONANCE_START + 0.01);
+
+    let threshold_gain = measure_projected_gain_for_configured_note(
+        &mut at_threshold,
+        probe_freq,
+        note,
+        sr,
+        amplitude,
+    );
+    let above_gain = measure_projected_gain_for_configured_note(
+        &mut just_above,
+        probe_freq,
+        note,
+        sr,
+        amplitude,
+    );
+    let db_delta = 20.0 * (above_gain / threshold_gain.max(1.0e-9)).log10();
+
+    assert!(
+        db_delta.abs() < 0.75,
+        "self-oscillation threshold should not abruptly move the resonant response: threshold={threshold_gain:.6} above={above_gain:.6} delta={db_delta:.2}dB"
+    );
+}
+
+#[test]
 fn test_max_resonance_keeps_cutoff_peak() {
     let sr = 44100.0;
     let cutoff = 1000.0;
@@ -832,6 +909,31 @@ fn test_key_tracking_opens_cutoff_for_higher_notes() {
     assert!(
         high_amp > low_amp * 2.0,
         "key tracking should open cutoff for high notes: low={low_amp:.4} high={high_amp:.4}"
+    );
+}
+
+#[test]
+fn test_two_pole_modulated_cutoff_ignores_self_oscillation_pitch_trim() {
+    let sr = 44100.0;
+    let mut normal_trim = LadderFilter::default();
+    let mut exaggerated_trim = LadderFilter::default();
+
+    for filter in [&mut normal_trim, &mut exaggerated_trim] {
+        filter.set_poles(2);
+        filter.set_cutoff(700.0);
+        filter.set_resonance(1.0);
+        filter.set_key_track(1.0);
+    }
+    exaggerated_trim.set_self_osc_pitch_tuning_cents(1200.0);
+
+    let normal_amp = measure_modulated_response(&mut normal_trim, 2500.0, 72.0, 0.0, 0.0, sr, 0.1);
+    let exaggerated_amp =
+        measure_modulated_response(&mut exaggerated_trim, 2500.0, 72.0, 0.0, 0.0, sr, 0.1);
+    let ratio = exaggerated_amp / normal_amp.max(1.0e-9);
+
+    assert!(
+        (0.995..=1.005).contains(&ratio),
+        "2-pole mode should ignore self-oscillation pitch trim even on the modulated cutoff path: normal={normal_amp:.6} exaggerated={exaggerated_amp:.6} ratio={ratio:.6}"
     );
 }
 

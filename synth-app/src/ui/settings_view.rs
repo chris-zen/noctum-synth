@@ -2,6 +2,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use synth_core::FilterOversampling;
 
+use crate::engine::SynthEngineControl;
 use crate::{audio, midi};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -58,7 +59,7 @@ pub fn show(
             ui.add_space(PANEL_SPACING);
             sample_rate_panel(ui, width, settings);
             ui.add_space(PANEL_SPACING);
-            oversampling_panel(ui, width, settings);
+            oversampling_panel(ui, width, settings, control);
             ui.add_space(PANEL_SPACING);
             general_panel(ui, width, settings);
         });
@@ -232,7 +233,12 @@ fn sample_rate_panel(ui: &mut egui::Ui, width: f32, settings: &mut Settings) {
     });
 }
 
-fn oversampling_panel(ui: &mut egui::Ui, width: f32, settings: &mut Settings) {
+fn oversampling_panel(
+    ui: &mut egui::Ui,
+    width: f32,
+    settings: &mut Settings,
+    control: &SynthEngineControl,
+) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(width);
         ui.set_height(PANEL_HEIGHT);
@@ -251,15 +257,17 @@ fn oversampling_panel(ui: &mut egui::Ui, width: f32, settings: &mut Settings) {
                     (FilterOversampling::X2, "2x"),
                     (FilterOversampling::X4, "4x"),
                 ] {
-                    ui.selectable_value(&mut settings.filter_oversampling, mode, label);
+                    if ui
+                        .selectable_value(&mut settings.filter_oversampling, mode, label)
+                        .changed()
+                    {
+                        control.set_filter_oversampling(settings.filter_oversampling);
+                    }
                 }
             });
 
         ui.add_space(4.0);
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 180, 60),
-            "Oversampling changes require restart to take effect.",
-        );
+        ui.label("Applies immediately and is saved for the next launch.");
     });
 }
 

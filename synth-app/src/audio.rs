@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use synth_core::{FilterOversampling, SynthEngine, VOICE_PACKS};
+use synth_core::{ControlMessage, FilterOversampling, SynthEngine, VOICE_PACKS};
 
 /// How long to wait for `cpal` to switch the device sample rate and build a
 /// stream. CoreAudio rate changes can take longer than the default, so give
@@ -433,9 +433,21 @@ impl Renderer {
         let frames = data.len() / self.channels;
         let deadline = Duration::from_secs_f64(frames as f64 / self.sample_rate as f64);
 
-        self.engine_audio
-            .control
-            .drain(|message| self.engine.handle_control(message));
+        // Oversampling can be changed from the settings UI in bursts. Apply
+        // only the last requested mode per callback so the audio thread does
+        // not repeatedly clear decimator state while rendering.
+        let mut pending_oversampling = None;
+
+        self.engine_audio.control.drain(|message| match message {
+            ControlMessage::SetFilterOversampling(oversampling) => {
+                pending_oversampling = Some(oversampling);
+            }
+            message => self.engine.handle_control(message),
+        });
+        
+        if let Some(oversampling) = pending_oversampling {
+            self.engine.set_filter_oversampling(oversampling);
+        }
 
         let render_start = Instant::now();
         self.engine.process_interleaved(data, self.channels);

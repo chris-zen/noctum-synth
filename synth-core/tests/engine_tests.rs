@@ -1,4 +1,6 @@
-use synth_core::{ControlMessage, DEFAULT_SAMPLE_RATE, LfoDestination, ParamId, SynthEngine};
+use synth_core::{
+    ControlMessage, DEFAULT_SAMPLE_RATE, FilterOversampling, LfoDestination, ParamId, SynthEngine,
+};
 
 fn left_rms(buffer: &[f32]) -> f32 {
     let mut sum = 0.0;
@@ -708,5 +710,37 @@ fn lfo_to_vca_changes_output_level_over_time() {
     assert!(
         (first_rms - second_rms).abs() > first_rms.min(second_rms) * 0.1,
         "LFO VCA modulation should change level over time, first {first_rms}, second {second_rms}"
+    );
+}
+
+#[test]
+fn filter_oversampling_control_message_can_change_while_rendering() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 2000.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 1.0));
+    engine.handle_control(ControlMessage::SetFilterOversampling(FilterOversampling::Off));
+    engine.handle_control(ControlMessage::NoteOn {
+        note: 60,
+        velocity: 1.0,
+    });
+
+    let mut before = vec![0.0; 1024 * 2];
+    engine.process(&mut before);
+
+    engine.handle_control(ControlMessage::SetFilterOversampling(FilterOversampling::X4));
+    let mut after = vec![0.0; 1024 * 2];
+    engine.process(&mut after);
+
+    let peak = after
+        .iter()
+        .copied()
+        .map(f32::abs)
+        .fold(0.0f32, f32::max);
+    assert!(
+        peak.is_finite() && peak <= 1.0,
+        "dynamic oversampling change should keep output finite and bounded, peak {peak}"
     );
 }
