@@ -1,0 +1,23 @@
+[package]
+name = "synth-app"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone synth application with egui UI, MIDI input, and real-time audio"
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+
+wide = "1"
+eframe = "0.34"
+egui = "0.34"
+midir = "0.11"
+cpal = "0.18"
+rtrb = "0.3"
+parking_lot = "0.12"
+rustfft = "6"
+egui_knob = "0.3"
+fastrand = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+directories = "6.0.0"
+wmidi = "4.0.11"
