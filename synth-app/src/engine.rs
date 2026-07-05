@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use synth_core::{ControlMessage, ParamId};
+use synth_core::{ControlMessage, ParamId, Patch};
 
 pub const MAX_AUDIO_BUF: usize = 1024;
 
@@ -140,6 +140,10 @@ impl SynthEngineControl {
     /// Enables or disables mixing of the audio input into the output at runtime.
     pub fn set_input_enabled(&self, enabled: bool) {
         self.input_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn load_patch(&self, patch: &Patch) {
+        patch.for_each_param(|id, value| self.set_param(id, value));
     }
 
     /// Whether audio input is currently mixed into the output.

@@ -8,9 +8,10 @@ use crate::config::Config;
 use crate::engine::SynthEngineBridge;
 use crate::midi;
 use crate::ui::analysis::{self, AnalysisState, config::AnalysisConfig};
-use crate::ui::params_view::UiState;
+use crate::ui::params_view::{PatchManager, UiState};
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
+use synth_core::Patch;
 
 pub(crate) const APP_TITLE: &str = "Analog Synth";
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
@@ -31,6 +32,7 @@ pub struct App {
     pub main_viewport: RootViewport,
     pub ui_state: UiState,
     pub midi_conn: Option<MidiInputConnection<()>>,
+    pub patch_mgr: PatchManager,
     config: Config,
     last_autosave: Instant,
 }
@@ -56,6 +58,13 @@ impl App {
         let mut analysis = AnalysisState::default();
         config.analysis.apply_to(&mut analysis);
 
+        let patch_mgr = PatchManager::new();
+        let mut ui_state = UiState::default();
+        if let Some(patch) = patch_mgr.load_autosave() {
+            engine.control.load_patch(&patch);
+            ui_state.apply_from_patch(&patch);
+        }
+
         Self {
             engine,
             active_tab: config.active_tab,
@@ -69,7 +78,8 @@ impl App {
                 config.analysis_viewport,
             ),
             main_viewport: RootViewport::from_config(config.main_viewport),
-            ui_state: UiState::default(),
+            ui_state,
+            patch_mgr,
             midi_conn,
             config,
             last_autosave: Instant::now(),
@@ -83,6 +93,8 @@ impl App {
         self.config.analysis_viewport = self.analysis_viewport.geometry();
         self.config.analysis = AnalysisConfig::from_state(&self.analysis.lock());
         self.config.save();
+        self.patch_mgr
+            .save_autosave(&Patch::from(&self.ui_state));
     }
 }
 
@@ -133,6 +145,7 @@ impl eframe::App for App {
                     total,
                     metrics,
                     &mut self.analysis_viewport.open,
+                    &mut self.patch_mgr,
                 );
             }
             Tab::Settings => {

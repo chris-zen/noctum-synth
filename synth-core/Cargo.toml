@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "Pure DSP algorithms: oscillators, filters, envelopes, LFOs — using wide for SIMD"
 
+[features]
+default = ["std"]
+std = ["dep:serde"]
+
 [dependencies]
 wide = { version = "1", default-features = false }
 libm = "0.2"
 rand_core = { version = "0.10", default-features = false }
 rand_pcg = { version = "0.10", default-features = false }
+serde = { version = "1", features = ["derive"], optional = true, default-features = false }

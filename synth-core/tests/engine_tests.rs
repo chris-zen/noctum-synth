@@ -174,7 +174,7 @@ fn filter_envelope_params_shape_filter_modulation() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.25));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 112.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0));
         engine.handle_control(ControlMessage::SetParam(
@@ -212,7 +212,7 @@ fn filter_delay_param_delays_filter_envelope_modulation() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.25));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 112.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0));
         engine.handle_control(ControlMessage::SetParam(
@@ -245,7 +245,7 @@ fn filter_velocity_param_controls_filter_envelope_depth() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.2));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 80.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0));
         engine.handle_control(ControlMessage::SetParam(
@@ -281,7 +281,7 @@ fn filter_velocity_scales_inverted_filter_envelope_depth() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.65));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 1780.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, -1.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterVelocity, 1.0));
@@ -311,7 +311,7 @@ fn filter_control_params_remain_wired_and_stable() {
     engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
 
     for (param, value) in [
-        (ParamId::FilterCutoff, 0.35),
+        (ParamId::FilterCutoff, 225.0),
         (ParamId::FilterResonance, 0.8),
         (ParamId::FilterPoles, 0.0),
         (ParamId::FilterKeyTrack, 0.5),
@@ -568,7 +568,7 @@ fn lfo_to_filter_cutoff_opens_filter() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.12));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         if enabled {
@@ -598,7 +598,7 @@ fn aux_envelope_to_filter_cutoff_opens_filter() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.12));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         if enabled {
@@ -630,7 +630,7 @@ fn aux_envelope_amount_can_invert_filter_modulation() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.35));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 225.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         engine.handle_control(ControlMessage::SetParam(
@@ -660,7 +660,7 @@ fn aux_velocity_param_controls_modulation_depth() {
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 0.12));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         engine.handle_control(ControlMessage::SetParam(

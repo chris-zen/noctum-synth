@@ -2,10 +2,14 @@
 
 use crate::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoWaveform, MIN_LFO_RATE_HZ,
+    LfoWaveform, MIN_LFO_RATE_HZ, ParamId,
 };
 
+#[cfg(feature = "std")]
+use serde::{Deserialize, Serialize};
+
 /// Target for an LFO or auxiliary envelope modulation route.
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoDestination {
     Off,
@@ -109,6 +113,7 @@ impl LfoDestination {
     }
 }
 
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct LfoParams {
     pub rate_hz: f32,
@@ -132,6 +137,7 @@ impl Default for LfoParams {
     }
 }
 
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct AuxEnvelopeParams {
     pub destination: LfoDestination,
@@ -161,6 +167,7 @@ impl Default for AuxEnvelopeParams {
     }
 }
 
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct FilterParams {
     pub cutoff: f32,
@@ -196,6 +203,7 @@ impl Default for FilterParams {
     }
 }
 
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct AmplifierParams {
     pub pan_spread: f32,
@@ -220,5 +228,212 @@ impl Default for AmplifierParams {
             eg_sustain: DEFAULT_SUSTAIN_LEVEL,
             eg_release: DEFAULT_RELEASE_SECONDS,
         }
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
+pub struct OscillatorPatch {
+    pub waveform: u8,
+    pub enabled: bool,
+    pub frequency: f32,
+    pub fine_tune: f32,
+    pub shape: f32,
+    pub level: f32,
+    pub note_reset: bool,
+    pub keyboard_on: bool,
+    pub glide: bool,
+}
+
+impl Default for OscillatorPatch {
+    fn default() -> Self {
+        Self {
+            waveform: 0,
+            enabled: false,
+            frequency: 60.0,
+            fine_tune: 0.0,
+            shape: 0.0,
+            level: 1.0,
+            note_reset: true,
+            keyboard_on: true,
+            glide: false,
+        }
+    }
+}
+
+/// Complete synthesizer patch capturing every parameter in one serializable snapshot.
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
+pub struct Patch {
+    pub osc1: OscillatorPatch,
+    pub osc2: OscillatorPatch,
+    pub osc_mix: f32,
+    pub sub_osc_level: f32,
+    pub noise_level: f32,
+    pub hard_sync: bool,
+    pub osc_slop: f32,
+    pub glide_time: f32,
+    pub filter: FilterParams,
+    pub amplifier: AmplifierParams,
+    pub aux_envelope: AuxEnvelopeParams,
+    pub lfos: [LfoParams; 4],
+    pub master_volume: f32,
+}
+
+impl Default for Patch {
+    fn default() -> Self {
+        Self {
+            osc1: OscillatorPatch {
+                enabled: true,
+                ..OscillatorPatch::default()
+            },
+            osc2: OscillatorPatch::default(),
+            osc_mix: 0.0,
+            sub_osc_level: 0.0,
+            noise_level: 0.0,
+            hard_sync: false,
+            osc_slop: 0.0,
+            glide_time: 0.0,
+            filter: FilterParams {
+                cutoff: 20_000.0,
+                ..FilterParams::default()
+            },
+            amplifier: AmplifierParams::default(),
+            aux_envelope: AuxEnvelopeParams::default(),
+            lfos: [LfoParams::default(); 4],
+            master_volume: 1.0,
+        }
+    }
+}
+
+impl Patch {
+    fn bool_f32(b: bool) -> f32 {
+        if b { 1.0 } else { 0.0 }
+    }
+
+    fn lfo_waveform_index(w: LfoWaveform) -> f32 {
+        match w {
+            LfoWaveform::Triangle => 0.0,
+            LfoWaveform::Saw => 1.0,
+            LfoWaveform::ReverseSaw => 2.0,
+            LfoWaveform::Square => 3.0,
+            LfoWaveform::SampleAndHold => 4.0,
+        }
+    }
+
+    /// Calls `f` once per parameter with the corresponding [`ParamId`] and value
+    /// formatted for [`ControlMessage::SetParam`].
+    pub fn for_each_param(&self, mut f: impl FnMut(ParamId, f32)) {
+        let s = Self::bool_f32;
+        let wi = Self::lfo_waveform_index;
+
+        f(ParamId::Osc1Waveform, self.osc1.waveform as f32);
+        f(ParamId::Osc1Enabled, s(self.osc1.enabled));
+        f(ParamId::Osc1Frequency, self.osc1.frequency);
+        f(ParamId::Osc1FineTune, self.osc1.fine_tune);
+        f(ParamId::Osc1Shape, self.osc1.shape);
+        f(ParamId::Osc1Level, self.osc1.level);
+        f(ParamId::Osc1NoteReset, s(self.osc1.note_reset));
+        f(ParamId::Osc1KeyboardOn, s(self.osc1.keyboard_on));
+        f(ParamId::Osc1Glide, s(self.osc1.glide));
+
+        f(ParamId::Osc2Waveform, self.osc2.waveform as f32);
+        f(ParamId::Osc2Enabled, s(self.osc2.enabled));
+        f(ParamId::Osc2Frequency, self.osc2.frequency);
+        f(ParamId::Osc2FineTune, self.osc2.fine_tune);
+        f(ParamId::Osc2Shape, self.osc2.shape);
+        f(ParamId::Osc2Level, self.osc2.level);
+        f(ParamId::Osc2NoteReset, s(self.osc2.note_reset));
+        f(ParamId::Osc2KeyboardOn, s(self.osc2.keyboard_on));
+        f(ParamId::Osc2Glide, s(self.osc2.glide));
+
+        f(ParamId::OscMix, self.osc_mix);
+        f(ParamId::SubOscLevel, self.sub_osc_level);
+        f(ParamId::NoiseLevel, self.noise_level);
+        f(ParamId::HardSync, s(self.hard_sync));
+        f(ParamId::OscSlop, self.osc_slop);
+        f(ParamId::GlideTime, self.glide_time);
+
+        f(ParamId::FilterCutoff, self.filter.cutoff);
+        f(ParamId::FilterResonance, self.filter.resonance);
+        f(ParamId::FilterPoles, if self.filter.poles <= 2 { 0.0 } else { 1.0 });
+        f(ParamId::FilterKeyTrack, self.filter.key_track);
+        f(ParamId::FilterEnvAmount, self.filter.env_amount);
+        f(ParamId::FilterVelocity, self.filter.velocity);
+        f(ParamId::FilterAudioMod, self.filter.audio_mod);
+        f(ParamId::FilterEgDelay, self.filter.eg_delay);
+        f(ParamId::FilterEgAttack, self.filter.eg_attack);
+        f(ParamId::FilterEgDecay, self.filter.eg_decay);
+        f(ParamId::FilterEgSustain, self.filter.eg_sustain);
+        f(ParamId::FilterEgRelease, self.filter.eg_release);
+
+        f(ParamId::PanSpread, self.amplifier.pan_spread);
+        f(ParamId::AmpEnvAmount, self.amplifier.env_amount);
+        f(ParamId::AmpVelocity, self.amplifier.velocity);
+        f(ParamId::AmpEgDelay, self.amplifier.eg_delay);
+        f(ParamId::AmpEgAttack, self.amplifier.eg_attack);
+        f(ParamId::AmpEgDecay, self.amplifier.eg_decay);
+        f(ParamId::AmpEgSustain, self.amplifier.eg_sustain);
+        f(ParamId::AmpEgRelease, self.amplifier.eg_release);
+
+        f(ParamId::AuxEgDestination, self.aux_envelope.destination.index() as f32);
+        f(ParamId::AuxEgAmount, self.aux_envelope.amount);
+        f(ParamId::AuxEgVelocity, self.aux_envelope.velocity);
+        f(ParamId::AuxEgDelay, self.aux_envelope.delay);
+        f(ParamId::AuxEgAttack, self.aux_envelope.attack);
+        f(ParamId::AuxEgDecay, self.aux_envelope.decay);
+        f(ParamId::AuxEgSustain, self.aux_envelope.sustain);
+        f(ParamId::AuxEgRelease, self.aux_envelope.release);
+        f(ParamId::AuxEgLoop, s(self.aux_envelope.repeat));
+
+        let rate = [
+            ParamId::Lfo1Rate,
+            ParamId::Lfo2Rate,
+            ParamId::Lfo3Rate,
+            ParamId::Lfo4Rate,
+        ];
+        let depth = [
+            ParamId::Lfo1Depth,
+            ParamId::Lfo2Depth,
+            ParamId::Lfo3Depth,
+            ParamId::Lfo4Depth,
+        ];
+        let waveform = [
+            ParamId::Lfo1Waveform,
+            ParamId::Lfo2Waveform,
+            ParamId::Lfo3Waveform,
+            ParamId::Lfo4Waveform,
+        ];
+        let destination = [
+            ParamId::Lfo1Destination,
+            ParamId::Lfo2Destination,
+            ParamId::Lfo3Destination,
+            ParamId::Lfo4Destination,
+        ];
+        let clock = [
+            ParamId::Lfo1ClockSync,
+            ParamId::Lfo2ClockSync,
+            ParamId::Lfo3ClockSync,
+            ParamId::Lfo4ClockSync,
+        ];
+        let key = [
+            ParamId::Lfo1KeySync,
+            ParamId::Lfo2KeySync,
+            ParamId::Lfo3KeySync,
+            ParamId::Lfo4KeySync,
+        ];
+
+        for i in 0..4 {
+            let lfo = &self.lfos[i];
+            f(rate[i], lfo.rate_hz);
+            f(depth[i], lfo.depth);
+            f(waveform[i], wi(lfo.waveform));
+            f(destination[i], lfo.destination.index() as f32);
+            f(clock[i], s(lfo.clock_sync));
+            f(key[i], s(lfo.key_sync));
+        }
+
+        f(ParamId::MasterVolume, self.master_volume);
+        f(ParamId::AnalogDrift, self.osc_slop);
     }
 }

@@ -5,6 +5,8 @@ use synth_core::ParamId;
 use crate::engine::SynthEngineControl;
 
 pub const KNOB_SIZE: f32 = 32.0;
+pub const MASTER_KNOB_SIZE: f32 = 22.0;
+pub const MASTER_FONT_SIZE: f32 = 12.0;
 const KNOB_FONT_SIZE: f32 = 11.0;
 const KNOB_SWEEP_START: f32 = 1.0 / 12.0;
 const KNOB_SWEEP_RANGE: f32 = 10.0 / 12.0;
@@ -12,6 +14,58 @@ const KNOB_LABEL_OVERLAP: f32 = -6.0;
 
 fn knob_edit_id(param: ParamId) -> egui::Id {
     egui::Id::new(format!("knob_txt_{param:?}"))
+}
+
+fn knob_value_edit(
+    ui: &mut egui::Ui,
+    edit_id: egui::Id,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    refresh_text: bool,
+    format: impl Fn(f32) -> String,
+    font_id: egui::FontId,
+    text_color: egui::Color32,
+) -> bool {
+    let mut edit_text = ui
+        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+        .unwrap_or_default();
+
+    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+
+    if !edit_has_focus && refresh_text {
+        edit_text = format(*value);
+    }
+
+    if edit_text.is_empty() {
+        edit_text = format(*value);
+    }
+
+    let edit_response = ui.add(
+        egui::TextEdit::singleline(&mut edit_text)
+            .id(edit_id)
+            .font(font_id)
+            .horizontal_align(egui::Align::Center)
+            .frame(egui::Frame::NONE)
+            .text_color(text_color),
+    );
+
+    let mut changed = false;
+    if edit_response.lost_focus() && !edit_text.trim().is_empty() {
+        if let Ok(new_val) = edit_text.trim().parse::<f32>() {
+            let clamped = new_val.clamp(min, max);
+            if (*value - clamped).abs() > f32::EPSILON {
+                *value = clamped;
+                changed = true;
+            }
+            edit_text = format(*value);
+        } else {
+            edit_text = format(*value);
+        }
+    }
+
+    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+    changed
 }
 
 pub fn param_knob_f32(
@@ -55,46 +109,19 @@ pub fn param_knob_f32(
     let edit_id = knob_edit_id(param);
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
-    let mut edit_text = ui
-        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
-        .unwrap_or_default();
-
-    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
-
-    if !edit_has_focus && (response.changed() || *value != previous) {
-        edit_text = format_fn(*value);
-    }
-
-    if edit_text.is_empty() {
-        edit_text = format_fn(*value);
-    }
-
-    let edit_response = ui.add(
-        egui::TextEdit::singleline(&mut edit_text)
-            .id(edit_id)
-            .font(font_id)
-            .horizontal_align(egui::Align::Center)
-            .frame(egui::Frame::NONE)
-            .text_color(text_color),
+    let edited = knob_value_edit(
+        ui,
+        edit_id,
+        value,
+        min,
+        max,
+        response.changed() || *value != previous,
+        &format_fn,
+        font_id,
+        text_color,
     );
 
-    let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
-    if apply {
-        if let Ok(new_val) = edit_text.trim().parse::<f32>() {
-            let clamped = new_val.clamp(min, max);
-            if (*value - clamped).abs() > f32::EPSILON {
-                *value = clamped;
-                control.set_param(param, *value);
-            }
-            edit_text = format_fn(*value);
-        } else {
-            edit_text = format_fn(*value);
-        }
-    }
-
-    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
-
-    if response.changed() || *value != previous {
+    if edited || response.changed() || *value != previous {
         control.set_param(param, *value);
     }
 }
@@ -156,46 +183,19 @@ pub fn param_knob_log_hz(
     let edit_id = knob_edit_id(param);
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
-    let mut edit_text = ui
-        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
-        .unwrap_or_default();
-
-    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
-
-    if !edit_has_focus && (response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON) {
-        edit_text = format_hz(*value_hz);
-    }
-
-    if edit_text.is_empty() {
-        edit_text = format_hz(*value_hz);
-    }
-
-    let edit_response = ui.add(
-        egui::TextEdit::singleline(&mut edit_text)
-            .id(edit_id)
-            .font(font_id)
-            .horizontal_align(egui::Align::Center)
-            .frame(egui::Frame::NONE)
-            .text_color(text_color),
+    let edited = knob_value_edit(
+        ui,
+        edit_id,
+        value_hz,
+        min_hz,
+        max_hz,
+        response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON,
+        format_hz,
+        font_id,
+        text_color,
     );
 
-    let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
-    if apply {
-        if let Ok(new_hz) = edit_text.trim().parse::<f32>() {
-            let clamped_hz = new_hz.clamp(min_hz, max_hz);
-            if (*value_hz - clamped_hz).abs() > f32::EPSILON {
-                *value_hz = clamped_hz;
-                control.set_param(param, *value_hz);
-            }
-            edit_text = format_hz(*value_hz);
-        } else {
-            edit_text = format_hz(*value_hz);
-        }
-    }
-
-    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
-
-    if response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON {
+    if edited || response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON {
         control.set_param(param, *value_hz);
     }
 }
@@ -210,6 +210,89 @@ pub fn param_toggle(
     if ui.toggle_value(value, label).changed() {
         control.set_param(param, if *value { 1.0 } else { 0.0 });
     }
+}
+
+pub fn master_volume(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    control: &SynthEngineControl,
+) {
+    let previous = *value;
+    let text_color = ui.visuals().text_color();
+    let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let accent = ui.visuals().selection.bg_fill;
+    let font_id = egui::FontId::proportional(MASTER_FONT_SIZE);
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        ui.label(
+            egui::RichText::new("Master")
+                .font(font_id.clone())
+                .color(text_color),
+        );
+
+        ui.add_sized(
+            [MASTER_KNOB_SIZE, MASTER_KNOB_SIZE],
+            Knob::new(value, 0.0, 1.0, KnobStyle::Wiper)
+                .with_size(MASTER_KNOB_SIZE)
+                .with_stroke_width(1.5)
+                .with_colors(knob_color, accent, text_color)
+                .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+                .with_double_click_reset(1.0)
+                .with_background_arc(false)
+                .with_show_filled_segments(false),
+        );
+
+        let edit_id = egui::Id::new("knob_txt_master_volume");
+
+        let mut edit_text = ui
+            .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+            .unwrap_or_default();
+
+        let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+        let changed = *value != previous;
+
+        if !edit_has_focus && changed {
+            edit_text = format!("{:.2}", *value);
+        }
+
+        if edit_text.is_empty() {
+            edit_text = format!("{:.2}", *value);
+        }
+
+        let edit_response = ui.add_sized(
+            [38.0, MASTER_KNOB_SIZE],
+            egui::TextEdit::singleline(&mut edit_text)
+                .id(edit_id)
+                .font(font_id)
+                .horizontal_align(egui::Align::Center)
+                .frame(egui::Frame::NONE)
+                .text_color(text_color),
+        );
+
+        let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
+        if apply {
+            if let Ok(new_val) = edit_text.trim().parse::<f32>() {
+                let clamped = new_val.clamp(0.0, 1.0);
+                if (*value - clamped).abs() > f32::EPSILON {
+                    *value = clamped;
+                    control.set_param(ParamId::MasterVolume, *value);
+                }
+                edit_text = format!("{:.2}", *value);
+            } else {
+                edit_text = format!("{:.2}", *value);
+            }
+        }
+
+        ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+
+        if changed {
+            control.set_param(ParamId::MasterVolume, *value);
+        }
+    });
 }
 
 fn format_hz(value: f32) -> String {

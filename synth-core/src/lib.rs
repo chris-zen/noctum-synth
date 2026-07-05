@@ -83,7 +83,10 @@ pub use envelope::{
 pub use filter::LadderFilter;
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
-pub use patch::{AmplifierParams, AuxEnvelopeParams, FilterParams, LfoDestination, LfoParams};
+pub use patch::{
+    AmplifierParams, AuxEnvelopeParams, FilterParams, LfoDestination, LfoParams, OscillatorPatch,
+    Patch,
+};
 pub use tuning::midi_to_hz;
 pub use voice::VoiceBlock;
 pub use voices::{ActiveNotes, Voices};

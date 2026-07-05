@@ -1,12 +1,15 @@
+use std::path::PathBuf;
+
 use eframe::egui;
 
 use crate::engine::{AudioMetrics, SynthEngineControl};
 use crate::ui::widgets::{
-    KNOB_SIZE, param_knob_bipolar, param_knob_f32, param_knob_log_hz, param_toggle,
+    KNOB_SIZE, master_volume, param_knob_bipolar, param_knob_f32, param_knob_log_hz,
+    param_toggle,
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoDestination, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ParamId,
+    LfoDestination, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, OscillatorPatch, ParamId, Patch,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 900.0;
@@ -77,6 +80,7 @@ pub struct UiState {
     pub lfo_destinations: [usize; 4],
     pub lfo_clock_sync: [bool; 4],
     pub lfo_key_sync: [bool; 4],
+    pub master_volume: f32,
 }
 
 impl Default for UiState {
@@ -135,6 +139,192 @@ impl Default for UiState {
             lfo_destinations: [0; 4],
             lfo_clock_sync: [false; 4],
             lfo_key_sync: [true; 4],
+            master_volume: 1.0,
+        }
+    }
+}
+
+impl UiState {
+    pub fn apply_from_patch(&mut self, patch: &Patch) {
+        self.osc1_enabled = patch.osc1.enabled;
+        self.osc2_enabled = patch.osc2.enabled;
+        self.osc1_waveform = patch.osc1.waveform as usize;
+        self.osc2_waveform = patch.osc2.waveform as usize;
+        self.osc1_freq = patch.osc1.frequency;
+        self.osc2_freq = patch.osc2.frequency;
+        self.osc1_fine = patch.osc1.fine_tune;
+        self.osc2_fine = patch.osc2.fine_tune;
+        self.osc1_shape = patch.osc1.shape;
+        self.osc2_shape = patch.osc2.shape;
+        self.osc_mix = patch.osc_mix;
+        self.sync = patch.hard_sync;
+        self.osc_slop = patch.osc_slop;
+        self.osc1_note_reset = patch.osc1.note_reset;
+        self.osc2_note_reset = patch.osc2.note_reset;
+        self.sub_level = patch.sub_osc_level;
+        self.noise_level = patch.noise_level;
+        self.filter_cutoff = patch.filter.cutoff;
+        self.filter_resonance = patch.filter.resonance;
+        self.filter_poles = if patch.filter.poles <= 2 { 0 } else { 1 };
+        self.filter_key_track = patch.filter.key_track;
+        self.filter_env_amount = patch.filter.env_amount;
+        self.filter_velocity = patch.filter.velocity;
+        self.filter_audio_mod = patch.filter.audio_mod;
+        self.filter_delay = patch.filter.eg_delay;
+        self.filter_attack = patch.filter.eg_attack;
+        self.filter_decay = patch.filter.eg_decay;
+        self.filter_sustain = patch.filter.eg_sustain;
+        self.filter_release = patch.filter.eg_release;
+        self.amp_pan_spread = patch.amplifier.pan_spread;
+        self.amp_env_amount = patch.amplifier.env_amount;
+        self.amp_velocity = patch.amplifier.velocity;
+        self.amp_delay = patch.amplifier.eg_delay;
+        self.amp_attack = patch.amplifier.eg_attack;
+        self.amp_decay = patch.amplifier.eg_decay;
+        self.amp_sustain = patch.amplifier.eg_sustain;
+        self.amp_release = patch.amplifier.eg_release;
+        self.aux_destination = patch.aux_envelope.destination.index();
+        self.aux_env_amount = patch.aux_envelope.amount;
+        self.aux_velocity = patch.aux_envelope.velocity;
+        self.aux_delay = patch.aux_envelope.delay;
+        self.aux_attack = patch.aux_envelope.attack;
+        self.aux_decay = patch.aux_envelope.decay;
+        self.aux_sustain = patch.aux_envelope.sustain;
+        self.aux_release = patch.aux_envelope.release;
+        self.aux_repeat = patch.aux_envelope.repeat;
+        for i in 0..4 {
+            let lfo = &patch.lfos[i];
+            self.lfo_rates[i] = lfo.rate_hz;
+            self.lfo_depths[i] = lfo.depth;
+            self.lfo_waveforms[i] = lfo_waveform_usize(lfo.waveform);
+            self.lfo_destinations[i] = lfo.destination.index();
+            self.lfo_clock_sync[i] = lfo.clock_sync;
+            self.lfo_key_sync[i] = lfo.key_sync;
+        }
+    }
+}
+
+fn lfo_waveform_usize(w: synth_core::LfoWaveform) -> usize {
+    match w {
+        synth_core::LfoWaveform::Triangle => 0,
+        synth_core::LfoWaveform::Saw => 1,
+        synth_core::LfoWaveform::ReverseSaw => 2,
+        synth_core::LfoWaveform::Square => 3,
+        synth_core::LfoWaveform::SampleAndHold => 4,
+    }
+}
+
+impl From<&UiState> for Patch {
+    fn from(state: &UiState) -> Self {
+        use synth_core::LfoWaveform;
+        let lfo_wf = |idx: usize| -> LfoWaveform {
+            match state.lfo_waveforms[idx] {
+                0 => LfoWaveform::Triangle,
+                1 => LfoWaveform::Saw,
+                2 => LfoWaveform::ReverseSaw,
+                3 => LfoWaveform::Square,
+                _ => LfoWaveform::SampleAndHold,
+            }
+        };
+        Patch {
+            osc1: OscillatorPatch {
+                waveform: state.osc1_waveform as u8,
+                enabled: state.osc1_enabled,
+                frequency: state.osc1_freq,
+                fine_tune: state.osc1_fine,
+                shape: state.osc1_shape,
+                level: 1.0,
+                note_reset: state.osc1_note_reset,
+                keyboard_on: true,
+                glide: false,
+            },
+            osc2: OscillatorPatch {
+                waveform: state.osc2_waveform as u8,
+                enabled: state.osc2_enabled,
+                frequency: state.osc2_freq,
+                fine_tune: state.osc2_fine,
+                shape: state.osc2_shape,
+                level: 1.0,
+                note_reset: state.osc2_note_reset,
+                keyboard_on: true,
+                glide: false,
+            },
+            osc_mix: state.osc_mix,
+            sub_osc_level: state.sub_level,
+            noise_level: state.noise_level,
+            hard_sync: state.sync,
+            osc_slop: state.osc_slop,
+            glide_time: 0.0,
+            filter: synth_core::FilterParams {
+                cutoff: state.filter_cutoff,
+                resonance: state.filter_resonance,
+                poles: if state.filter_poles == 0 { 2 } else { 4 },
+                key_track: state.filter_key_track,
+                env_amount: state.filter_env_amount,
+                velocity: state.filter_velocity,
+                audio_mod: state.filter_audio_mod,
+                eg_delay: state.filter_delay,
+                eg_attack: state.filter_attack,
+                eg_decay: state.filter_decay,
+                eg_sustain: state.filter_sustain,
+                eg_release: state.filter_release,
+            },
+            amplifier: synth_core::AmplifierParams {
+                pan_spread: state.amp_pan_spread,
+                env_amount: state.amp_env_amount,
+                velocity: state.amp_velocity,
+                eg_delay: state.amp_delay,
+                eg_attack: state.amp_attack,
+                eg_decay: state.amp_decay,
+                eg_sustain: state.amp_sustain,
+                eg_release: state.amp_release,
+            },
+            aux_envelope: synth_core::AuxEnvelopeParams {
+                destination: LfoDestination::from_index(state.aux_destination),
+                amount: state.aux_env_amount,
+                velocity: state.aux_velocity,
+                delay: state.aux_delay,
+                attack: state.aux_attack,
+                decay: state.aux_decay,
+                sustain: state.aux_sustain,
+                release: state.aux_release,
+                repeat: state.aux_repeat,
+            },
+            lfos: [
+                synth_core::LfoParams {
+                    rate_hz: state.lfo_rates[0],
+                    depth: state.lfo_depths[0],
+                    waveform: lfo_wf(0),
+                    destination: LfoDestination::from_index(state.lfo_destinations[0]),
+                    clock_sync: state.lfo_clock_sync[0],
+                    key_sync: state.lfo_key_sync[0],
+                },
+                synth_core::LfoParams {
+                    rate_hz: state.lfo_rates[1],
+                    depth: state.lfo_depths[1],
+                    waveform: lfo_wf(1),
+                    destination: LfoDestination::from_index(state.lfo_destinations[1]),
+                    clock_sync: state.lfo_clock_sync[1],
+                    key_sync: state.lfo_key_sync[1],
+                },
+                synth_core::LfoParams {
+                    rate_hz: state.lfo_rates[2],
+                    depth: state.lfo_depths[2],
+                    waveform: lfo_wf(2),
+                    destination: LfoDestination::from_index(state.lfo_destinations[2]),
+                    clock_sync: state.lfo_clock_sync[2],
+                    key_sync: state.lfo_key_sync[2],
+                },
+                synth_core::LfoParams {
+                    rate_hz: state.lfo_rates[3],
+                    depth: state.lfo_depths[3],
+                    waveform: lfo_wf(3),
+                    destination: LfoDestination::from_index(state.lfo_destinations[3]),
+                    clock_sync: state.lfo_clock_sync[3],
+                    key_sync: state.lfo_key_sync[3],
+                },
+            ],
+            master_volume: 1.0,
         }
     }
 }
@@ -147,8 +337,18 @@ pub fn show(
     voice_total: usize,
     metrics: Option<AudioMetrics>,
     analysis_open: &mut bool,
+    patch_mgr: &mut PatchManager,
 ) {
-    command_row(ui, control, voice_active, voice_total, metrics, analysis_open);
+    command_row(
+        ui,
+        control,
+        voice_active,
+        voice_total,
+        metrics,
+        analysis_open,
+        state,
+        patch_mgr,
+    );
 
     ui.add_space(6.0);
 
@@ -192,15 +392,27 @@ pub fn show(
             });
         }
     });
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(format!("Voices: {voice_active}/{voice_total}"));
+        if let Some(metrics) = metrics {
+            ui.separator();
+            ui.label(metrics_text(&metrics));
+        }
+    });
 }
 
 fn command_row(
     ui: &mut egui::Ui,
     control: &SynthEngineControl,
-    voice_active: usize,
-    voice_total: usize,
-    metrics: Option<AudioMetrics>,
+    _voice_active: usize,
+    _voice_total: usize,
+    _metrics: Option<AudioMetrics>,
     analysis_open: &mut bool,
+    state: &mut UiState,
+    patch_mgr: &mut PatchManager,
 ) {
     ui.horizontal(|ui| {
         if ui.button("Play C4").clicked() {
@@ -225,13 +437,44 @@ fn command_row(
             control.set_input_enabled(!input_enabled);
         }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if let Some(metrics) = metrics {
-                ui.label(metrics_text(&metrics));
-                ui.separator();
+        ui.separator();
+
+        ui.label("Patch:");
+        ui.add_sized(
+            [160.0, 20.0],
+            egui::TextEdit::singleline(&mut patch_mgr.save_name),
+        );
+        let load_clicked = egui::ComboBox::from_id_salt("patch_load")
+            .selected_text("Load")
+            .width(56.0)
+            .show_ui(ui, |ui| {
+                patch_mgr.refresh();
+                if patch_mgr.patch_names.is_empty() {
+                    ui.label("No saved patches yet.");
+                } else {
+                    for name in &patch_mgr.patch_names {
+                        if ui.button(name.as_str()).clicked() {
+                            ui.close();
+                            if let Some(patch) = patch_mgr.load_patch(name) {
+                                control.load_patch(&patch);
+                                state.apply_from_patch(&patch);
+                                patch_mgr.save_name.clone_from(name);
+                            }
+                        }
+                    }
+                }
+            });
+        if ui.button("Save").clicked() {
+            let name = patch_mgr.save_name.trim().to_string();
+            if !name.is_empty() {
+                patch_mgr.save_patch(&name, &Patch::from(&*state));
+                patch_mgr.refresh();
             }
-            ui.label(format!("Voices: {voice_active}/{voice_total}"));
-        });
+        }
+        let _ = load_clicked;
+
+        ui.separator();
+        master_volume(ui, &mut state.master_volume, control);
     });
 }
 
@@ -1087,4 +1330,78 @@ fn lfo_key_sync_param(index: usize) -> ParamId {
         2 => ParamId::Lfo3KeySync,
         _ => ParamId::Lfo4KeySync,
     }
+}
+
+pub struct PatchManager {
+    pub save_name: String,
+    pub patch_names: Vec<String>,
+    config_dir: PathBuf,
+    patches_dir: PathBuf,
+}
+
+impl PatchManager {
+    pub fn new() -> Self {
+        let config_dir = directories::ProjectDirs::from("", "", "AnalogSynth")
+            .map(|d| d.config_dir().to_path_buf())
+            .unwrap_or_default();
+        let patches_dir = config_dir.join("patches");
+        let _ = std::fs::create_dir_all(&patches_dir);
+        let patch_names = list_patch_files(&patches_dir);
+        Self {
+            save_name: String::new(),
+            patch_names,
+            config_dir,
+            patches_dir,
+        }
+    }
+
+    pub fn save_patch(&self, name: &str, patch: &Patch) {
+        let path = self.patches_dir.join(format!("{name}.json"));
+        if let Ok(json) = serde_json::to_string_pretty(patch) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    pub fn save_autosave(&self, patch: &Patch) {
+        let path = self.config_dir.join("patch.json");
+        if let Ok(json) = serde_json::to_string_pretty(patch) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    pub fn load_autosave(&self) -> Option<Patch> {
+        let path = self.config_dir.join("patch.json");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    pub fn load_patch(&self, name: &str) -> Option<Patch> {
+        let path = self.patches_dir.join(format!("{name}.json"));
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    pub fn refresh(&mut self) {
+        self.patch_names = list_patch_files(&self.patches_dir);
+    }
+}
+
+fn list_patch_files(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension()?.to_str()? == "json" {
+                path.file_stem()?.to_str().map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    names
 }

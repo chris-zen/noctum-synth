@@ -3310,6 +3310,7 @@ dependencies = [
  "libm",
  "rand_core",
  "rand_pcg",
+ "serde",
  "wide",
 ]
 
