@@ -2,7 +2,7 @@ use eframe::egui;
 use rustfft::{FftPlanner, num_complex::Complex32};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use synth_core::{LANES, LadderFilter, filter::SELF_OSC_RESONANCE_START};
+use synth_core::{FilterOversampling, LANES, LadderFilter, filter::SELF_OSC_RESONANCE_START};
 use wide::f32x4;
 
 use super::spectrum::{self, SpectrumConfig};
@@ -40,6 +40,7 @@ pub struct FilterDesignState {
     pub db_floor: f32,
     pub log_scale: bool,
     pub sample_rate: f32,
+    pub oversampling: FilterOversampling,
     pub smooth_response: bool,
 
     pub live_mode: bool,
@@ -55,6 +56,7 @@ struct AnalysisParams {
     poles: u8,
     fft_size: usize,
     sample_rate: f32,
+    oversampling: FilterOversampling,
     db_floor: f32,
 }
 
@@ -81,6 +83,7 @@ impl Default for FilterDesignState {
             db_floor: -96.0,
             log_scale: true,
             sample_rate: 44100.0,
+            oversampling: FilterOversampling::Auto,
             smooth_response: true,
             live_mode: true,
             needs_render: true,
@@ -100,6 +103,8 @@ pub struct FilterDesignViewConfig {
     pub db_floor: f32,
     pub log_scale: bool,
     pub sample_rate: f32,
+    #[serde(default)]
+    pub oversampling: FilterOversampling,
     pub smooth_response: bool,
     pub live_mode: bool,
 }
@@ -121,6 +126,7 @@ impl FilterDesignViewConfig {
             db_floor: state.db_floor,
             log_scale: state.log_scale,
             sample_rate: state.sample_rate,
+            oversampling: state.oversampling,
             smooth_response: state.smooth_response,
             live_mode: state.live_mode,
         }
@@ -135,6 +141,7 @@ impl FilterDesignViewConfig {
         state.db_floor = self.db_floor;
         state.log_scale = self.log_scale;
         state.sample_rate = self.sample_rate;
+        state.oversampling = self.oversampling;
         state.smooth_response = self.smooth_response;
         state.live_mode = self.live_mode;
         state.needs_render = true;
@@ -194,6 +201,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
                 .clicked()
             {
                 state.sample_rate = sr;
+            }
+        }
+        ui.separator();
+        ui.label("OS:");
+        for (mode, label) in [
+            (FilterOversampling::Auto, "Auto"),
+            (FilterOversampling::Off, "Off"),
+            (FilterOversampling::X2, "2x"),
+            (FilterOversampling::X4, "4x"),
+        ] {
+            if ui
+                .selectable_label(state.oversampling == mode, label)
+                .clicked()
+            {
+                state.oversampling = mode;
             }
         }
     });
@@ -341,6 +363,7 @@ fn param_hash(state: &FilterDesignState) -> u64 {
     state.resonance.to_bits().hash(&mut hasher);
     state.poles.hash(&mut hasher);
     state.sample_rate.to_bits().hash(&mut hasher);
+    state.oversampling.hash(&mut hasher);
     state.fft_size.hash(&mut hasher);
     hasher.finish()
 }
@@ -352,6 +375,7 @@ fn analysis_params(state: &FilterDesignState) -> AnalysisParams {
         poles: state.poles,
         fft_size: state.fft_size,
         sample_rate: state.sample_rate,
+        oversampling: state.oversampling,
         db_floor: state.db_floor,
     }
 }
@@ -561,6 +585,7 @@ fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -
     let phase_step = freq_hz.map(|freq| std::f32::consts::TAU * freq / sr);
     let mut phase = [0.0f32; LANES];
     let mut filter = LadderFilter::default();
+    filter.set_oversampling(params.oversampling);
     filter.set_cutoff(params.cutoff);
     filter.set_resonance(analysis_resonance(params));
     filter.set_poles(params.poles);
@@ -608,6 +633,7 @@ fn render_analysis_response(params: AnalysisParams, impulse_gain: f32) -> Vec<f3
     let fft_size = params.fft_size;
     let sr = params.sample_rate;
     let mut filter = LadderFilter::default();
+    filter.set_oversampling(params.oversampling);
     filter.set_cutoff(params.cutoff);
     filter.set_resonance(analysis_resonance(params));
     filter.set_poles(params.poles);

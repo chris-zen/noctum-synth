@@ -4,7 +4,10 @@ use wide::f32x4;
 
 use crate::analog_oscillators::{OscillatorModulation, Oscillators};
 use crate::patch::LfoDestination;
-use crate::{DadsrEnvelope, LANES, LadderFilter, Lfo, LfoWaveform, MIN_LFO_RATE_HZ, midi_to_hz};
+use crate::{
+    DadsrEnvelope, FilterOversampling, LANES, LadderFilter, Lfo, LfoWaveform, MIN_LFO_RATE_HZ,
+    midi_to_hz,
+};
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
 const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 48.0;
@@ -118,6 +121,10 @@ impl VoiceBlock {
         self.amp_env.release_all();
         self.filter_env.release_all();
         self.aux_env.release_all();
+    }
+
+    pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
+        self.filter.set_oversampling(oversampling);
     }
 
     pub fn next(&mut self) -> (f32, f32) {

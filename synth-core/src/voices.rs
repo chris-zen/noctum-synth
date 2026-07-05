@@ -2,7 +2,8 @@
 
 use crate::fixed_index_list::FixedIndexList;
 use crate::{
-    ControlMessage, LANES, LfoDestination, LfoWaveform, ParamId, VOICE_PACKS, VoiceBlock, Waveform,
+    ControlMessage, FilterOversampling, LANES, LfoDestination, LfoWaveform, ParamId, VOICE_PACKS,
+    VoiceBlock, Waveform,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -409,6 +410,12 @@ impl<const PACKS: usize> Voices<PACKS> {
             .iter()
             .map(|block| block.active_lane_count())
             .sum()
+    }
+
+    pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
+        for block in &mut self.blocks {
+            block.set_filter_oversampling(oversampling);
+        }
     }
 }
 

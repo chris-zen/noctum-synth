@@ -1,9 +1,7 @@
 //! Top-level synthesis engine and audio render entry point.
 
 use crate::voices::Voices;
-use crate::{ActiveNotes, ControlMessage, ParamId, VOICE_PACKS};
-
-const OUTPUT_HEADROOM_GAIN: f32 = 0.35;
+use crate::{ActiveNotes, ControlMessage, FilterOversampling, ParamId, VOICE_PACKS};
 
 /// Owns all voices and renders stereo audio from [`ControlMessage`] input.
 ///
@@ -36,6 +34,10 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
 
     pub fn set_param(&mut self, param: ParamId, value: f32) {
         self.handle_control(ControlMessage::SetParam(param, value));
+    }
+
+    pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
+        self.voices.set_filter_oversampling(oversampling);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -92,7 +94,7 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
     fn next(&mut self) -> (f32, f32) {
         let (left, right) = self.voices.next();
 
-        let gain = OUTPUT_HEADROOM_GAIN * self.master_volume;
+        let gain = self.master_volume;
         (
             (left * gain).clamp(-1.0, 1.0),
             (right * gain).clamp(-1.0, 1.0),

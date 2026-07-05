@@ -28,8 +28,15 @@ fn main() -> eframe::Result {
     let audio_device = audio_device_arg.or_else(|| config.settings.audio_device.clone());
     let audio_input = audio_input_arg.or_else(|| config.settings.audio_input.clone());
     let sample_rate = config.settings.sample_rate;
+    let filter_oversampling = config.settings.filter_oversampling;
 
-    audio::start_audio(engine_audio, audio_device, audio_input, sample_rate);
+    audio::start_audio(
+        engine_audio,
+        audio_device,
+        audio_input,
+        sample_rate,
+        filter_oversampling,
+    );
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("app icon png is valid");

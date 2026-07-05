@@ -80,7 +80,7 @@ pub use envelope::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     DadsrEnvelope,
 };
-pub use filter::LadderFilter;
+pub use filter::{FilterOversampling, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
 pub use patch::{

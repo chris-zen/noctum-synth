@@ -1,5 +1,6 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use synth_core::FilterOversampling;
 
 use crate::{audio, midi};
 
@@ -11,6 +12,8 @@ pub struct Settings {
     pub audio_input: Option<String>,
     #[serde(default)]
     pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub filter_oversampling: FilterOversampling,
     pub dark_theme: bool,
 }
 
@@ -21,6 +24,7 @@ impl Default for Settings {
             audio_device: None,
             audio_input: None,
             sample_rate: None,
+            filter_oversampling: FilterOversampling::Auto,
             dark_theme: true,
         }
     }
@@ -53,6 +57,8 @@ pub fn show(
             audio_input_panel(ui, width, settings, &audio_inputs);
             ui.add_space(PANEL_SPACING);
             sample_rate_panel(ui, width, settings);
+            ui.add_space(PANEL_SPACING);
+            oversampling_panel(ui, width, settings);
             ui.add_space(PANEL_SPACING);
             general_panel(ui, width, settings);
         });
@@ -222,6 +228,37 @@ fn sample_rate_panel(ui: &mut egui::Ui, width: f32, settings: &mut Settings) {
         ui.colored_label(
             egui::Color32::from_rgb(200, 180, 60),
             "Sample rate changes require restart to take effect.",
+        );
+    });
+}
+
+fn oversampling_panel(ui: &mut egui::Ui, width: f32, settings: &mut Settings) {
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(width);
+        ui.set_height(PANEL_HEIGHT);
+        ui.strong("Filter Oversampling");
+        ui.separator();
+
+        let list_h = PANEL_HEIGHT - 56.0;
+        egui::ScrollArea::vertical()
+            .id_salt("filter_oversampling_scroll")
+            .max_height(list_h)
+            .show(ui, |ui| {
+                ui.set_width(width - 16.0);
+                for (mode, label) in [
+                    (FilterOversampling::Auto, "Auto"),
+                    (FilterOversampling::Off, "Off"),
+                    (FilterOversampling::X2, "2x"),
+                    (FilterOversampling::X4, "4x"),
+                ] {
+                    ui.selectable_value(&mut settings.filter_oversampling, mode, label);
+                }
+            });
+
+        ui.add_space(4.0);
+        ui.colored_label(
+            egui::Color32::from_rgb(200, 180, 60),
+            "Oversampling changes require restart to take effect.",
         );
     });
 }

@@ -16,7 +16,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use synth_core::{SynthEngine, VOICE_PACKS};
+use synth_core::{FilterOversampling, SynthEngine, VOICE_PACKS};
+
+/// How long to wait for `cpal` to switch the device sample rate and build a
+/// stream. CoreAudio rate changes can take longer than the default, so give
+/// them generous headroom before treating the build as failed.
+const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::engine::{self, AudioBlock, AudioMetrics, SynthEngineAudio};
 
@@ -31,6 +36,7 @@ pub fn start_audio(
     output_filter: Option<String>,
     input_filter: Option<String>,
     desired_rate: Option<u32>,
+    filter_oversampling: FilterOversampling,
 ) {
     std::thread::spawn(move || {
         let host = cpal::default_host();
@@ -51,7 +57,13 @@ pub fn start_audio(
         };
 
         // Build the output stream (but don't start it yet).
-        let renderer = Renderer::new(engine_audio, output.sample_rate, output.channels, input_consumer);
+        let renderer = Renderer::new(
+            engine_audio,
+            output.sample_rate,
+            output.channels,
+            input_consumer,
+            filter_oversampling,
+        );
         let Some(output_stream) = build_output_stream(&output.device, output.config, renderer) else {
             eprintln!("Failed to build audio output stream; audio disabled.");
             return;
@@ -101,10 +113,15 @@ fn open_output(
     }
 
     let device = match filter {
-        Some(filter) => find_device(&devices, filter),
+        Some(filter) => find_device(&devices, filter).or_else(|| {
+            eprintln!(
+                "No audio output matching \"{filter}\"; it may be busy, unplugged, or \
+                 claimed by an aggregate device. Falling back to the system default."
+            );
+            host.default_output_device()
+        }),
         None => host.default_output_device(),
-    }
-    .or_else(|| host.default_output_device())?;
+    }?;
     eprintln!("Using output: {}", device_name(&device));
 
     let config = choose_output_config(&device, desired_rate)?;
@@ -138,23 +155,48 @@ fn choose_output_config(
         let at_rate = device.supported_output_configs().ok().and_then(|configs| {
             configs
                 .filter(|config| {
-                    config.channels() == 2
-                        && config.sample_format() == SampleFormat::F32
-                        && config.contains_rate(rate)
+                    config.sample_format() == SampleFormat::F32 && config.contains_rate(rate)
+                })
+                .min_by_key(|config| {
+                    // Prefer stereo, then the smallest channel count that supports the rate.
+                    if config.channels() == 2 {
+                        0
+                    } else {
+                        config.channels()
+                    }
                 })
                 .map(|config| config.with_sample_rate(rate))
-                .next()
         });
+        // A device may *advertise* a rate (via `supported_output_configs`) yet
+        // still refuse to actually switch to it — e.g. when it is clock-locked
+        // by an active aggregate device or an external clock source. CoreAudio
+        // reports this only when the stream is built, so verify buildability
+        // here and fall back to the device default when the switch is rejected.
         if let Some(config) = at_rate {
-            return Some(config);
+            if stream_builds(device, &config) {
+                return Some(config);
+            }
+            eprintln!(
+                "Device advertises {rate}Hz but refused to switch to it \
+                 (likely clock-locked by an aggregate device or external clock); \
+                 using device default."
+            );
+        } else {
+            eprintln!("Requested sample rate {rate}Hz unsupported; using device default.");
         }
-        eprintln!("Requested sample rate {rate}Hz unsupported; using device default.");
     }
 
     let default_rate = default.sample_rate();
     let stereo_f32 = device.supported_output_configs().ok().and_then(|configs| {
         configs
-            .filter(|config| config.channels() == 2 && config.sample_format() == SampleFormat::F32)
+            .filter(|config| config.sample_format() == SampleFormat::F32)
+            .min_by_key(|config| {
+                if config.channels() == 2 {
+                    0
+                } else {
+                    config.channels()
+                }
+            })
             .map(|config| {
                 if config.contains_rate(default_rate) {
                     config.with_sample_rate(default_rate)
@@ -164,10 +206,23 @@ fn choose_output_config(
                     config.with_sample_rate(clamped)
                 }
             })
-            .next()
     });
 
     stereo_f32.or(Some(default))
+}
+
+/// Attempts to build (and immediately drop) a no-op output stream to confirm
+/// the device will actually accept `config`. This surfaces CoreAudio rate/format
+/// rejections that only appear at build time rather than during enumeration.
+fn stream_builds(device: &cpal::Device, config: &SupportedStreamConfig) -> bool {
+    device
+        .build_output_stream(
+            config.clone().into(),
+            |_data: &mut [f32], _info: &cpal::OutputCallbackInfo| {},
+            |_err| {},
+            Some(STREAM_BUILD_TIMEOUT),
+        )
+        .is_ok()
 }
 
 /// Builds the output stream, wiring the audio callback to the [`Renderer`].
@@ -181,8 +236,9 @@ fn build_output_stream(
             config.into(),
             move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| renderer.render(data),
             |err| eprintln!("audio output error: {err}"),
-            None,
+            Some(STREAM_BUILD_TIMEOUT),
         )
+        .map_err(|err| eprintln!("build_output_stream error: {err}"))
         .ok()
 }
 
@@ -265,8 +321,9 @@ fn build_input_stream(
             config.into(),
             move |data: &[f32], _info: &cpal::InputCallbackInfo| capture.capture(data),
             |err| eprintln!("audio input error: {err}"),
-            None,
+            Some(STREAM_BUILD_TIMEOUT),
         )
+        .map_err(|err| eprintln!("build_input_stream error: {err}"))
         .ok()
 }
 
@@ -348,11 +405,19 @@ impl Renderer {
         sample_rate: f32,
         channels: usize,
         input: Option<rtrb::Consumer<f32>>,
+        filter_oversampling: FilterOversampling,
     ) -> Self {
         let input_enabled = engine_audio.input_enabled.clone();
+        let mut engine = SynthEngine::<VOICE_PACKS>::new(sample_rate);
+        engine.set_filter_oversampling(filter_oversampling);
+        eprintln!(
+            "Filter oversampling: {:?} ({}x)",
+            filter_oversampling,
+            filter_oversampling.factor(sample_rate)
+        );
         Self {
             engine_audio,
-            engine: SynthEngine::<VOICE_PACKS>::new(sample_rate),
+            engine,
             timing: AudioTiming::default(),
             input,
             input_enabled,
