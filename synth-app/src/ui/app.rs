@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::engine::SynthEngineBridge;
+use crate::engine::{AudioMetrics, SynthEngineBridge};
 use crate::midi;
 use crate::ui::analysis::{self, AnalysisState, config::AnalysisConfig};
 use crate::ui::params_view::{PatchManager, UiState};
+use crate::ui::settings_view::AudioBaseline;
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
 use synth_core::Patch;
@@ -34,6 +35,7 @@ pub struct App {
     pub midi_conn: Option<MidiInputConnection<()>>,
     pub patch_mgr: PatchManager,
     config: Config,
+    audio_baseline: AudioBaseline,
     last_autosave: Instant,
 }
 
@@ -51,6 +53,8 @@ impl App {
         } else {
             egui::Visuals::light()
         });
+
+        let audio_baseline = AudioBaseline::from_settings(&config.settings);
 
         let port_name = midi_port.or_else(|| config.settings.midi_port.clone());
         let midi_conn = midi::start_midi(port_name.as_deref(), engine.control.clone());
@@ -82,6 +86,7 @@ impl App {
             patch_mgr,
             midi_conn,
             config,
+            audio_baseline,
             last_autosave: Instant::now(),
         }
     }
@@ -135,15 +140,22 @@ impl eframe::App for App {
         let total = self.engine.view.total_voices();
         let metrics = self.engine.view.metrics();
 
+        egui::Panel::bottom("status_bar").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Voices: {active}/{total}"));
+                if let Some(metrics) = metrics {
+                    ui.separator();
+                    ui.label(metrics_text(&metrics));
+                }
+            });
+        });
+
         egui::CentralPanel::default().show_inside(ui, |ui| match self.active_tab {
             Tab::Parameters => {
                 params_view::show(
                     ui,
                     &mut self.ui_state,
                     &self.engine.control,
-                    active,
-                    total,
-                    metrics,
                     &mut self.analysis_viewport.open,
                     &mut self.patch_mgr,
                 );
@@ -152,6 +164,7 @@ impl eframe::App for App {
                 settings_view::show(
                     ui,
                     &mut self.config.settings,
+                    &self.audio_baseline,
                     &self.engine.control,
                     &mut self.midi_conn,
                 );
@@ -166,4 +179,18 @@ impl eframe::App for App {
             }
         });
     }
+}
+
+fn metrics_text(metrics: &AudioMetrics) -> String {
+    format!(
+        "cb {:.2}/{:.2}ms  render {:.2}/{:.2}ms  deadline {:.2}ms  over {}/{} of {}",
+        metrics.callback_avg_ms,
+        metrics.callback_max_ms,
+        metrics.render_avg_ms,
+        metrics.render_max_ms,
+        metrics.deadline_ms,
+        metrics.overruns,
+        metrics.render_overruns,
+        metrics.callbacks,
+    )
 }

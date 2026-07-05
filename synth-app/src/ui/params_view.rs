@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::engine::{AudioMetrics, SynthEngineControl};
+use crate::engine::SynthEngineControl;
 use crate::ui::widgets::{
     KNOB_SIZE, master_volume, param_knob_bipolar, param_knob_f32, param_knob_log_hz,
     param_toggle,
@@ -333,22 +333,10 @@ pub fn show(
     ui: &mut egui::Ui,
     state: &mut UiState,
     control: &SynthEngineControl,
-    voice_active: usize,
-    voice_total: usize,
-    metrics: Option<AudioMetrics>,
     analysis_open: &mut bool,
     patch_mgr: &mut PatchManager,
 ) {
-    command_row(
-        ui,
-        control,
-        voice_active,
-        voice_total,
-        metrics,
-        analysis_open,
-        state,
-        patch_mgr,
-    );
+    command_row(ui, control, analysis_open, state, patch_mgr);
 
     ui.add_space(6.0);
 
@@ -392,24 +380,11 @@ pub fn show(
             });
         }
     });
-
-    ui.add_space(4.0);
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.label(format!("Voices: {voice_active}/{voice_total}"));
-        if let Some(metrics) = metrics {
-            ui.separator();
-            ui.label(metrics_text(&metrics));
-        }
-    });
 }
 
 fn command_row(
     ui: &mut egui::Ui,
     control: &SynthEngineControl,
-    _voice_active: usize,
-    _voice_total: usize,
-    _metrics: Option<AudioMetrics>,
     analysis_open: &mut bool,
     state: &mut UiState,
     patch_mgr: &mut PatchManager,
@@ -476,20 +451,6 @@ fn command_row(
         ui.separator();
         master_volume(ui, &mut state.master_volume, control);
     });
-}
-
-fn metrics_text(metrics: &AudioMetrics) -> String {
-    format!(
-        "cb {:.2}/{:.2}ms  render {:.2}/{:.2}ms  deadline {:.2}ms  over {}/{} of {}",
-        metrics.callback_avg_ms,
-        metrics.callback_max_ms,
-        metrics.render_avg_ms,
-        metrics.render_max_ms,
-        metrics.deadline_ms,
-        metrics.overruns,
-        metrics.render_overruns,
-        metrics.callbacks,
-    )
 }
 
 fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
