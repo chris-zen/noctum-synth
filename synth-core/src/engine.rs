@@ -15,17 +15,15 @@ pub struct SynthEngine<const PACKS: usize = VOICE_PACKS> {
     master_volume: f32,
 }
 
-impl SynthEngine {
+impl<const PACKS: usize> SynthEngine<PACKS> {
     /// Creates an engine at `sample_rate` with default patch settings.
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            voices: Voices::new(sample_rate),
+            voices: Voices::<PACKS>::new(sample_rate),
             master_volume: 1.0,
         }
     }
-}
 
-impl<const PACKS: usize> SynthEngine<PACKS> {
     /// Applies a single control or performance message.
     pub fn handle_control(&mut self, msg: ControlMessage) {
         match msg {
@@ -101,7 +99,7 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
         )
     }
 
-    pub fn active_notes(&self) -> ActiveNotes {
+    pub fn active_notes(&self) -> ActiveNotes<PACKS> {
         self.voices.active_notes()
     }
 

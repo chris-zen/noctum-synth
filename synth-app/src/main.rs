@@ -14,9 +14,8 @@ fn main() -> eframe::Result {
 
     let mut args = std::env::args().skip(1);
     let midi_port = args.next().filter(|arg| !arg.is_empty());
-    let audio_device = args.next().filter(|arg| !arg.is_empty());
-
-    audio::start_audio(engine_audio, audio_device);
+    let audio_device_arg = args.next().filter(|arg| !arg.is_empty());
+    let audio_input_arg = args.next().filter(|arg| !arg.is_empty());
 
     let config = match config::Config::try_new() {
         Ok(config) => config,
@@ -25,6 +24,12 @@ fn main() -> eframe::Result {
             std::process::exit(1);
         }
     };
+
+    let audio_device = audio_device_arg.or_else(|| config.settings.audio_device.clone());
+    let audio_input = audio_input_arg.or_else(|| config.settings.audio_input.clone());
+    let sample_rate = config.settings.sample_rate;
+
+    audio::start_audio(engine_audio, audio_device, audio_input, sample_rate);
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("app icon png is valid");

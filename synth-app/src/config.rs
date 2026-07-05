@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-use crate::ui::analysis::config::AnalysisConfig;
 use crate::ui::analysis::AnalysisTab;
+use crate::ui::analysis::config::AnalysisConfig;
 use crate::ui::app::Tab;
 use crate::ui::settings_view::Settings;
 use crate::ui::viewport::WindowGeometry;

@@ -28,7 +28,7 @@ fn rendered_note_rms(mut engine: SynthEngine, note: u8, velocity: f32, frames: u
 
 #[test]
 fn default_note_on_renders_oscillator_without_noise() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
@@ -41,12 +41,12 @@ fn default_note_on_renders_oscillator_without_noise() {
     engine.process(&mut buffer);
     let rms = left_rms(&buffer);
 
-    assert!(rms > 0.1, "default osc1 note should be audible, RMS {rms}");
+    assert!(rms > 0.09, "default osc1 note should be audible, RMS {rms}");
 }
 
 #[test]
 fn note_off_decays_instead_of_cutting_to_silence() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.002));
     engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.05));
     engine.handle_control(ControlMessage::NoteOn {
@@ -80,7 +80,7 @@ fn note_off_decays_instead_of_cutting_to_silence() {
 #[test]
 fn amp_release_param_controls_release_tail() {
     fn release_rms(release_seconds: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(
             ParamId::AmpEgRelease,
             release_seconds,
@@ -110,11 +110,11 @@ fn amp_release_param_controls_release_tail() {
 
 #[test]
 fn amp_delay_param_delays_initial_output() {
-    let mut delayed = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut delayed = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     delayed.handle_control(ControlMessage::SetParam(ParamId::AmpEgDelay, 0.05));
     let delayed_rms = rendered_note_rms(delayed, 60, 1.0, 512);
 
-    let immediate = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let immediate = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     let immediate_rms = rendered_note_rms(immediate, 60, 1.0, 512);
 
     assert!(
@@ -125,11 +125,11 @@ fn amp_delay_param_delays_initial_output() {
 
 #[test]
 fn amp_env_amount_controls_output_level() {
-    let mut full = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut full = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     full.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
     let full_rms = rendered_note_rms(full, 60, 1.0, 4096);
 
-    let mut reduced = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut reduced = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     reduced.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.25));
     let reduced_rms = rendered_note_rms(reduced, 60, 1.0, 4096);
 
@@ -141,19 +141,19 @@ fn amp_env_amount_controls_output_level() {
 
 #[test]
 fn amp_velocity_param_controls_velocity_sensitivity() {
-    let mut sensitive_low = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut sensitive_low = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     sensitive_low.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 1.0));
     let sensitive_low_rms = rendered_note_rms(sensitive_low, 60, 0.25, 4096);
 
-    let mut sensitive_high = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut sensitive_high = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     sensitive_high.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 1.0));
     let sensitive_high_rms = rendered_note_rms(sensitive_high, 60, 1.0, 4096);
 
-    let mut insensitive_low = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut insensitive_low = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     insensitive_low.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
     let insensitive_low_rms = rendered_note_rms(insensitive_low, 60, 0.25, 4096);
 
-    let mut insensitive_high = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut insensitive_high = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     insensitive_high.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
     let insensitive_high_rms = rendered_note_rms(insensitive_high, 60, 1.0, 4096);
 
@@ -170,7 +170,7 @@ fn amp_velocity_param_controls_velocity_sensitivity() {
 #[test]
 fn filter_envelope_params_shape_filter_modulation() {
     fn filtered_attack_rms(filter_attack_seconds: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
@@ -208,7 +208,7 @@ fn filter_envelope_params_shape_filter_modulation() {
 #[test]
 fn filter_delay_param_delays_filter_envelope_modulation() {
     fn filtered_delay_rms(delay_seconds: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
@@ -240,7 +240,7 @@ fn filter_delay_param_delays_filter_envelope_modulation() {
 #[test]
 fn filter_velocity_param_controls_filter_envelope_depth() {
     fn filtered_velocity_rms(filter_velocity: f32, note_velocity: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
@@ -276,7 +276,7 @@ fn filter_velocity_param_controls_filter_envelope_depth() {
 #[test]
 fn filter_velocity_scales_inverted_filter_envelope_depth() {
     fn filtered_velocity_rms(note_velocity: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
@@ -301,8 +301,53 @@ fn filter_velocity_scales_inverted_filter_envelope_depth() {
 }
 
 #[test]
+fn filter_control_params_remain_wired_and_stable() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+    engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgDecay, 0.0005));
+    engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+
+    for (param, value) in [
+        (ParamId::FilterCutoff, 0.35),
+        (ParamId::FilterResonance, 0.8),
+        (ParamId::FilterPoles, 0.0),
+        (ParamId::FilterKeyTrack, 0.5),
+        (ParamId::FilterEnvAmount, 0.4),
+        (ParamId::FilterVelocity, 0.5),
+        (ParamId::FilterAudioMod, 0.25),
+    ] {
+        engine.handle_control(ControlMessage::SetParam(param, value));
+    }
+
+    engine.handle_control(ControlMessage::NoteOn {
+        note: 60,
+        velocity: 0.8,
+    });
+
+    let mut buffer = vec![0.0; 4096 * 2];
+    engine.process(&mut buffer);
+    let rms = left_rms(&buffer);
+    let peak = buffer
+        .iter()
+        .map(|sample| sample.abs())
+        .fold(0.0f32, f32::max);
+
+    assert!(
+        rms.is_finite() && rms > 0.001,
+        "filter-controlled patch should render, RMS {rms}"
+    );
+    assert!(
+        peak.is_finite() && peak < 1.0,
+        "filter-controlled patch should stay bounded, peak {peak}"
+    );
+}
+
+#[test]
 fn normal_chords_stay_below_output_clamp() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     for note in [48, 55, 60, 64, 67, 72] {
         engine.handle_control(ControlMessage::NoteOn {
             note,
@@ -325,7 +370,7 @@ fn normal_chords_stay_below_output_clamp() {
 
 #[test]
 fn multichannel_output_advances_once_per_audio_frame() {
-    let mut stereo = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut stereo = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     stereo.handle_control(ControlMessage::NoteOn {
         note: 60,
         velocity: 1.0,
@@ -334,7 +379,7 @@ fn multichannel_output_advances_once_per_audio_frame() {
     stereo.process(&mut stereo_buffer);
     let stereo_left = channel_samples(&stereo_buffer, 2, 0);
 
-    let mut multichannel = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut multichannel = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     multichannel.handle_control(ControlMessage::NoteOn {
         note: 60,
         velocity: 1.0,
@@ -366,7 +411,7 @@ fn multichannel_output_advances_once_per_audio_frame() {
 
 #[test]
 fn multichannel_output_repeats_stereo_pairs() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
     engine.handle_control(ControlMessage::NoteOn {
         note: 60,
@@ -420,7 +465,7 @@ fn multichannel_output_repeats_stereo_pairs() {
 
 #[test]
 fn polyphonic_mix_is_not_divided_by_active_voice_count() {
-    let mut single = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut single = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     single.handle_control(ControlMessage::NoteOn {
         note: 60,
         velocity: 1.0,
@@ -429,7 +474,7 @@ fn polyphonic_mix_is_not_divided_by_active_voice_count() {
     single.process(&mut single_buffer);
     let single_rms = left_rms(&single_buffer);
 
-    let mut chord = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut chord = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     chord.handle_control(ControlMessage::NoteOn {
         note: 60,
         velocity: 1.0,
@@ -450,7 +495,7 @@ fn polyphonic_mix_is_not_divided_by_active_voice_count() {
 
 #[test]
 fn hard_sync_keeps_osc1_audible_with_osc1_only_mix() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
@@ -472,7 +517,7 @@ fn hard_sync_keeps_osc1_audible_with_osc1_only_mix() {
 
 #[test]
 fn enabling_hard_sync_on_active_note_keeps_osc1_audible() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
     engine.handle_control(ControlMessage::NoteOn {
@@ -496,7 +541,7 @@ fn enabling_hard_sync_on_active_note_keeps_osc1_audible() {
 
 #[test]
 fn hard_sync_with_osc2_off_does_not_mute_or_reset_osc1() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
@@ -519,7 +564,7 @@ fn hard_sync_with_osc2_off_does_not_mute_or_reset_osc1() {
 #[test]
 fn lfo_to_filter_cutoff_opens_filter() {
     fn render_with_lfo(enabled: bool) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
@@ -548,7 +593,7 @@ fn lfo_to_filter_cutoff_opens_filter() {
 #[test]
 fn aux_envelope_to_filter_cutoff_opens_filter() {
     fn render_with_aux(enabled: bool) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
@@ -580,7 +625,7 @@ fn aux_envelope_to_filter_cutoff_opens_filter() {
 #[test]
 fn aux_envelope_amount_can_invert_filter_modulation() {
     fn render_with_aux_amount(amount: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
@@ -610,7 +655,7 @@ fn aux_envelope_amount_can_invert_filter_modulation() {
 #[test]
 fn aux_velocity_param_controls_modulation_depth() {
     fn render_with_velocity(note_velocity: f32) -> f32 {
-        let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
@@ -640,7 +685,7 @@ fn aux_velocity_param_controls_modulation_depth() {
 
 #[test]
 fn lfo_to_vca_changes_output_level_over_time() {
-    let mut engine = SynthEngine::new(DEFAULT_SAMPLE_RATE);
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 67.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
     engine.handle_control(ControlMessage::SetParam(

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::engine::SynthEngineBridge;
 use crate::midi;
-use crate::ui::analysis::{self, config::AnalysisConfig, AnalysisState};
+use crate::ui::analysis::{self, AnalysisState, config::AnalysisConfig};
 use crate::ui::params_view::UiState;
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
@@ -121,6 +121,7 @@ impl eframe::App for App {
 
         let active = self.engine.view.active_voices();
         let total = self.engine.view.total_voices();
+        let metrics = self.engine.view.metrics();
 
         egui::CentralPanel::default().show_inside(ui, |ui| match self.active_tab {
             Tab::Parameters => {
@@ -130,6 +131,7 @@ impl eframe::App for App {
                     &self.engine.control,
                     active,
                     total,
+                    metrics,
                     &mut self.analysis_viewport.open,
                 );
             }

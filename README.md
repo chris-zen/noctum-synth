@@ -68,14 +68,17 @@ cargo build --release
 cargo run --release -p synth-app
 ```
 
-To pick a specific MIDI port and audio device by name:
+To pick a specific MIDI port, audio output device, and audio input device by name:
 
 ```bash
-cargo run --release -p synth-app -- "MIDI Port Name" "Audio Device Name"
+cargo run --release -p synth-app -- "MIDI Port Name" "Output Device Name" "Input Device Name"
 ```
 
 Available audio devices are listed on startup. MIDI port selection is also
-available in the Settings tab and saved between sessions.
+available in the Settings tab and saved between sessions. The Settings tab also
+lets you pick an **audio input device** (its signal is summed into the synth
+output) and a **sample rate**; the input must match the output sample rate, and
+both settings take effect on the next launch.
 
 ## Development
 

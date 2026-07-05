@@ -136,25 +136,18 @@ impl VoiceBlock {
         let amp = self.amp_env.next();
         let mix = osc.audio;
 
-        let filtered = if self.filter.is_neutral()
-            && all_lanes_near_zero(lfo_modulation.filter_cutoff_semitones)
-            && all_lanes_near_zero(lfo_modulation.filter_resonance)
-        {
-            mix
-        } else {
-            let notes = f32x4::new(self.notes.map(|note| note as f32));
-            self.filter.process(
-                mix,
-                notes,
-                filter_env,
-                velocities,
-                osc.osc1,
-                lfo_modulation.filter_cutoff_semitones,
-                lfo_modulation.filter_resonance,
-                lfo_modulation.filter_audio_mod,
-                self.sample_rate,
-            )
-        };
+        let notes = f32x4::new(self.notes.map(|note| note as f32));
+        let filtered = self.filter.process(
+            mix,
+            notes,
+            filter_env,
+            velocities,
+            osc.osc1,
+            lfo_modulation.filter_cutoff_semitones,
+            lfo_modulation.filter_resonance,
+            lfo_modulation.filter_audio_mod,
+            self.sample_rate,
+        );
 
         let velocity_gain =
             f32x4::splat(1.0 - self.amp_velocity_amount) + velocities * self.amp_velocity_amount;
@@ -470,10 +463,6 @@ fn apply_destination_modulation(
     }
 }
 
-fn all_lanes_near_zero(value: f32x4) -> bool {
-    value.abs().simd_lt(f32x4::splat(f32::EPSILON)).all()
-}
-
 fn average_lanes(value: f32x4) -> f32 {
     value.reduce_add() / LANES as f32
 }
@@ -507,7 +496,7 @@ mod tests {
 
     #[test]
     fn pan_spread_creates_stereo_separation() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -541,7 +530,7 @@ mod tests {
 
     #[test]
     fn pan_spread_keeps_single_voice_centered() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -567,7 +556,7 @@ mod tests {
 
     #[test]
     fn pan_lfo_modulates_spread_width_instead_of_offset() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Waveform, 3.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
@@ -604,7 +593,7 @@ mod tests {
 
     #[test]
     fn pan_spread_keeps_repeated_single_notes_centered_after_release() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
 
@@ -634,7 +623,7 @@ mod tests {
 
     #[test]
     fn oscillator_tuning_param_does_not_replace_midi_note() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 72.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 64,
@@ -658,7 +647,7 @@ mod tests {
 
     #[test]
     fn oscillator_frequency_and_fine_tune_use_natural_units_and_clamp() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 240.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1FineTune, 99.0));
         voices.handle_control(ControlMessage::NoteOn {
@@ -682,7 +671,7 @@ mod tests {
 
     #[test]
     fn osc_mix_is_canonical_balance_control() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Enabled, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.25));
@@ -693,7 +682,7 @@ mod tests {
 
     #[test]
     fn osc_slop_zero_is_stable_and_full_slop_offsets_lanes() {
-        let mut stable = Voices::new(44_100.0);
+        let mut stable = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67, 72] {
             stable.handle_control(ControlMessage::NoteOn {
                 note,
@@ -710,7 +699,7 @@ mod tests {
             );
         }
 
-        let mut sloppy = Voices::new(44_100.0);
+        let mut sloppy = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         sloppy.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 1.0));
         for note in [60, 64, 67, 72] {
             sloppy.handle_control(ControlMessage::NoteOn {
@@ -734,7 +723,7 @@ mod tests {
 
     #[test]
     fn clearing_osc_slop_restores_intended_frequency() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 1.0));
         for note in [60, 64, 67, 72] {
             voices.handle_control(ControlMessage::NoteOn {
@@ -757,7 +746,7 @@ mod tests {
 
     #[test]
     fn note_reset_flags_are_routed_to_oscillators() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1NoteReset, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc2NoteReset, 1.0));
 
@@ -768,7 +757,7 @@ mod tests {
 
     #[test]
     fn hard_sync_param_is_routed_to_oscillators() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
 
         assert!(voices[0].oscillators.params().sync);
@@ -776,7 +765,7 @@ mod tests {
 
     #[test]
     fn aux_envelope_to_oscillator_frequency_modulates_pitch() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
             LfoDestination::Osc1Frequency.index() as f32,
@@ -803,7 +792,7 @@ mod tests {
 
     #[test]
     fn aux_repeat_keeps_envelope_cycling_while_held() {
-        let mut repeating = Voices::new(1_000.0);
+        let mut repeating = Voices::<{ crate::VOICE_PACKS }>::new(1_000.0);
         repeating.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
             LfoDestination::FilterCutoff.index() as f32,

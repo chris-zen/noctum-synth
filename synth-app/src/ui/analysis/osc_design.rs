@@ -208,7 +208,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     });
 
     ui.add_space(4.0);
-    
+
     // --- Analysis params ---
     ui.horizontal(|ui| {
         ui.label("Note:");
@@ -244,8 +244,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     // --- Render scheduling ---
     let current_hash = param_hash(state);
     let params_changed = current_hash != state.last_params_hash;
-    let waveform_changed = state.waveform != state.rendered_waveform
-        || state.saw_method != state.rendered_method;
+    let waveform_changed =
+        state.waveform != state.rendered_waveform || state.saw_method != state.rendered_method;
 
     let should_render = if state.samples.is_empty() || waveform_changed || state.needs_render {
         // First render, waveform/method switch, or an explicit request: render now.

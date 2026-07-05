@@ -5,27 +5,27 @@ struct Link {
     listed: bool,
 }
 
-pub struct FixedIndexList<const N: usize> {
-    links: [Link; N],
+pub struct FixedIndexList<const BLOCKS: usize, const LANES: usize> {
+    links: [[Link; LANES]; BLOCKS],
     head: Option<usize>,
     tail: Option<usize>,
     len: usize,
 }
 
-impl<const N: usize> Default for FixedIndexList<N> {
+impl<const BLOCKS: usize, const LANES: usize> Default for FixedIndexList<BLOCKS, LANES> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<const N: usize> FixedIndexList<N> {
+impl<const BLOCKS: usize, const LANES: usize> FixedIndexList<BLOCKS, LANES> {
     pub const fn new() -> Self {
         Self {
-            links: [Link {
+            links: [[Link {
                 prev: None,
                 next: None,
                 listed: false,
-            }; N],
+            }; LANES]; BLOCKS],
             head: None,
             tail: None,
             len: 0,
@@ -33,8 +33,10 @@ impl<const N: usize> FixedIndexList<N> {
     }
 
     pub fn clear(&mut self) {
-        for link in &mut self.links {
-            *link = Link::default();
+        for block in &mut self.links {
+            for link in block {
+                *link = Link::default();
+            }
         }
         self.head = None;
         self.tail = None;
@@ -50,7 +52,7 @@ impl<const N: usize> FixedIndexList<N> {
     }
 
     pub fn contains(&self, index: usize) -> bool {
-        self.links.get(index).is_some_and(|link| link.listed)
+        self.link(index).is_some_and(|link| link.listed)
     }
 
     pub fn front(&self) -> Option<usize> {
@@ -62,18 +64,18 @@ impl<const N: usize> FixedIndexList<N> {
     }
 
     pub fn push_back(&mut self, index: usize) -> bool {
-        if index >= N || self.contains(index) {
+        if !self.index_in_range(index) || self.contains(index) {
             return false;
         }
 
-        self.links[index] = Link {
+        *self.link_mut(index).expect("index checked above") = Link {
             prev: self.tail,
             next: None,
             listed: true,
         };
 
         match self.tail {
-            Some(tail) => self.links[tail].next = Some(index),
+            Some(tail) => self.link_mut(tail).expect("tail should be listed").next = Some(index),
             None => self.head = Some(index),
         }
 
@@ -83,18 +85,18 @@ impl<const N: usize> FixedIndexList<N> {
     }
 
     pub fn push_front(&mut self, index: usize) -> bool {
-        if index >= N || self.contains(index) {
+        if !self.index_in_range(index) || self.contains(index) {
             return false;
         }
 
-        self.links[index] = Link {
+        *self.link_mut(index).expect("index checked above") = Link {
             prev: None,
             next: self.head,
             listed: true,
         };
 
         match self.head {
-            Some(head) => self.links[head].prev = Some(index),
+            Some(head) => self.link_mut(head).expect("head should be listed").prev = Some(index),
             None => self.tail = Some(index),
         }
 
@@ -104,21 +106,21 @@ impl<const N: usize> FixedIndexList<N> {
     }
 
     pub fn remove(&mut self, index: usize) -> bool {
-        if index >= N || !self.links[index].listed {
+        if !self.index_in_range(index) || !self.contains(index) {
             return false;
         }
 
-        let link = self.links[index];
+        let link = *self.link(index).expect("index checked above");
         match link.prev {
-            Some(prev) => self.links[prev].next = link.next,
+            Some(prev) => self.link_mut(prev).expect("prev should be listed").next = link.next,
             None => self.head = link.next,
         }
         match link.next {
-            Some(next) => self.links[next].prev = link.prev,
+            Some(next) => self.link_mut(next).expect("next should be listed").prev = link.prev,
             None => self.tail = link.prev,
         }
 
-        self.links[index] = Link::default();
+        *self.link_mut(index).expect("index checked above") = Link::default();
         self.len -= 1;
         true
     }
@@ -147,25 +149,53 @@ impl<const N: usize> FixedIndexList<N> {
         Some(index)
     }
 
-    pub fn iter(&self) -> FixedIndexListIter<'_, N> {
+    pub fn iter(&self) -> FixedIndexListIter<'_, BLOCKS, LANES> {
         FixedIndexListIter {
             list: self,
             next: self.head,
         }
     }
+
+    fn index_in_range(&self, index: usize) -> bool {
+        index < BLOCKS * LANES
+    }
+
+    fn link(&self, index: usize) -> Option<&Link> {
+        if !self.index_in_range(index) {
+            return None;
+        }
+
+        self.links
+            .get(index / LANES)
+            .and_then(|block| block.get(index % LANES))
+    }
+
+    fn link_mut(&mut self, index: usize) -> Option<&mut Link> {
+        if !self.index_in_range(index) {
+            return None;
+        }
+
+        self.links
+            .get_mut(index / LANES)
+            .and_then(|block| block.get_mut(index % LANES))
+    }
 }
 
-pub struct FixedIndexListIter<'a, const N: usize> {
-    list: &'a FixedIndexList<N>,
+pub struct FixedIndexListIter<'a, const BLOCKS: usize, const LANES: usize> {
+    list: &'a FixedIndexList<BLOCKS, LANES>,
     next: Option<usize>,
 }
 
-impl<const N: usize> Iterator for FixedIndexListIter<'_, N> {
+impl<const BLOCKS: usize, const LANES: usize> Iterator for FixedIndexListIter<'_, BLOCKS, LANES> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
         let index = self.next?;
-        self.next = self.list.links[index].next;
+        self.next = self
+            .list
+            .link(index)
+            .expect("listed index should exist")
+            .next;
         Some(index)
     }
 }
@@ -178,7 +208,7 @@ mod tests {
 
     #[test]
     fn preserves_insertion_order() {
-        let mut list = FixedIndexList::<4>::new();
+        let mut list = FixedIndexList::<1, 4>::new();
         assert!(list.push_back(2));
         assert!(list.push_back(0));
         assert!(list.push_back(3));
@@ -190,7 +220,7 @@ mod tests {
 
     #[test]
     fn removes_from_middle() {
-        let mut list = FixedIndexList::<4>::new();
+        let mut list = FixedIndexList::<1, 4>::new();
         list.push_back(0);
         list.push_back(1);
         list.push_back(2);
@@ -203,7 +233,7 @@ mod tests {
 
     #[test]
     fn moves_existing_item_to_back() {
-        let mut list = FixedIndexList::<4>::new();
+        let mut list = FixedIndexList::<1, 4>::new();
         list.push_back(0);
         list.push_back(1);
         list.push_back(2);

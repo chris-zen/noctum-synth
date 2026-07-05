@@ -1,13 +1,18 @@
 use eframe::egui;
-use egui_knob::{Knob, KnobStyle, LabelPosition};
+use egui_knob::{Knob, KnobStyle};
 use synth_core::ParamId;
 
 use crate::engine::SynthEngineControl;
 
-const KNOB_SIZE: f32 = 48.0;
-const KNOB_FONT_SIZE: f32 = 12.0;
+pub const KNOB_SIZE: f32 = 32.0;
+const KNOB_FONT_SIZE: f32 = 11.0;
 const KNOB_SWEEP_START: f32 = 1.0 / 12.0;
 const KNOB_SWEEP_RANGE: f32 = 10.0 / 12.0;
+const KNOB_LABEL_OVERLAP: f32 = -6.0;
+
+fn knob_edit_id(param: ParamId) -> egui::Id {
+    egui::Id::new(format!("knob_txt_{param:?}"))
+}
 
 pub fn param_knob_f32(
     ui: &mut egui::Ui,
@@ -24,21 +29,70 @@ pub fn param_knob_f32(
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
     let previous = *value;
+    let format_fn = format_knob_value(min, max);
+
+    ui.spacing_mut().item_spacing.y = 0.0;
 
     let response = ui.add(
         Knob::new(value, min, max, KnobStyle::Wiper)
             .with_size(KNOB_SIZE)
-            .with_font_size(KNOB_FONT_SIZE)
             .with_stroke_width(2.0)
             .with_colors(knob_color, accent, text_color)
-            .with_label(label, LabelPosition::Bottom)
-            .with_label_offset(3.0)
-            .with_label_format(format_knob_value(min, max))
             .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
             .with_double_click_reset(reset_value)
             .with_background_arc(true)
             .with_show_filled_segments(true),
     );
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+
+    ui.label(
+        egui::RichText::new(label)
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    let edit_id = knob_edit_id(param);
+    let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
+
+    let mut edit_text = ui
+        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+        .unwrap_or_default();
+
+    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+
+    if !edit_has_focus && (response.changed() || *value != previous) {
+        edit_text = format_fn(*value);
+    }
+
+    if edit_text.is_empty() {
+        edit_text = format_fn(*value);
+    }
+
+    let edit_response = ui.add(
+        egui::TextEdit::singleline(&mut edit_text)
+            .id(edit_id)
+            .font(font_id)
+            .horizontal_align(egui::Align::Center)
+            .frame(egui::Frame::NONE)
+            .text_color(text_color),
+    );
+
+    let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
+    if apply {
+        if let Ok(new_val) = edit_text.trim().parse::<f32>() {
+            let clamped = new_val.clamp(min, max);
+            if (*value - clamped).abs() > f32::EPSILON {
+                *value = clamped;
+                control.set_param(param, *value);
+            }
+            edit_text = format_fn(*value);
+        } else {
+            edit_text = format_fn(*value);
+        }
+    }
+
+    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
 
     if response.changed() || *value != previous {
         control.set_param(param, *value);
@@ -76,15 +130,13 @@ pub fn param_knob_log_hz(
     let accent = ui.visuals().selection.bg_fill;
     let reset_normalized = (reset_hz.clamp(min_hz, max_hz).ln() - min_log) / log_range;
 
+    ui.spacing_mut().item_spacing.y = 0.0;
+
     let response = ui.add(
         Knob::new(&mut normalized, 0.0, 1.0, KnobStyle::Wiper)
             .with_size(KNOB_SIZE)
-            .with_font_size(KNOB_FONT_SIZE)
             .with_stroke_width(2.0)
             .with_colors(knob_color, accent, text_color)
-            .with_label(label, LabelPosition::Bottom)
-            .with_label_offset(3.0)
-            .with_label_format(move |value| format_hz((min_log + value * log_range).exp()))
             .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
             .with_double_click_reset(reset_normalized)
             .with_background_arc(true)
@@ -92,6 +144,56 @@ pub fn param_knob_log_hz(
     );
 
     *value_hz = (min_log + normalized.clamp(0.0, 1.0) * log_range).exp();
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+
+    ui.label(
+        egui::RichText::new(label)
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    let edit_id = knob_edit_id(param);
+    let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
+
+    let mut edit_text = ui
+        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+        .unwrap_or_default();
+
+    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+
+    if !edit_has_focus && (response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON) {
+        edit_text = format_hz(*value_hz);
+    }
+
+    if edit_text.is_empty() {
+        edit_text = format_hz(*value_hz);
+    }
+
+    let edit_response = ui.add(
+        egui::TextEdit::singleline(&mut edit_text)
+            .id(edit_id)
+            .font(font_id)
+            .horizontal_align(egui::Align::Center)
+            .frame(egui::Frame::NONE)
+            .text_color(text_color),
+    );
+
+    let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
+    if apply {
+        if let Ok(new_hz) = edit_text.trim().parse::<f32>() {
+            let clamped_hz = new_hz.clamp(min_hz, max_hz);
+            if (*value_hz - clamped_hz).abs() > f32::EPSILON {
+                *value_hz = clamped_hz;
+                control.set_param(param, *value_hz);
+            }
+            edit_text = format_hz(*value_hz);
+        } else {
+            edit_text = format_hz(*value_hz);
+        }
+    }
+
+    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
 
     if response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON {
         control.set_param(param, *value_hz);

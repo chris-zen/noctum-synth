@@ -1,44 +1,44 @@
 //! Polyphonic voice allocation and mixing.
 
+use crate::fixed_index_list::FixedIndexList;
 use crate::{
     ControlMessage, LANES, LfoDestination, LfoWaveform, ParamId, VOICE_PACKS, VoiceBlock, Waveform,
 };
-use crate::{VOICE_COUNT, fixed_index_list::FixedIndexList};
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
 /// Snapshot of MIDI notes currently sounding across all voices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ActiveNotes {
-    notes: [u8; VOICE_COUNT],
+pub struct ActiveNotes<const PACKS: usize = VOICE_PACKS> {
+    notes: [[u8; LANES]; PACKS],
     len: usize,
 }
 
-impl Default for ActiveNotes {
+impl<const PACKS: usize> Default for ActiveNotes<PACKS> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ActiveNotes {
+impl<const PACKS: usize> ActiveNotes<PACKS> {
     pub const fn new() -> Self {
         Self {
-            notes: [0; VOICE_COUNT],
+            notes: [[0; LANES]; PACKS],
             len: 0,
         }
     }
 
     pub fn push(&mut self, note: u8) -> bool {
-        if self.len >= self.notes.len() {
+        if self.len >= self.capacity() {
             return false;
         }
 
-        self.notes[self.len] = note;
+        self.notes[self.len / LANES][self.len % LANES] = note;
         self.len += 1;
         true
     }
 
-    pub fn as_slice(&self) -> &[u8] {
-        &self.notes[..self.len]
+    pub const fn capacity(&self) -> usize {
+        PACKS * LANES
     }
 
     pub fn len(&self) -> usize {
@@ -50,7 +50,33 @@ impl ActiveNotes {
     }
 
     pub fn contains(&self, note: &u8) -> bool {
-        self.as_slice().contains(note)
+        self.iter().any(|held| held == *note)
+    }
+
+    pub fn iter(&self) -> ActiveNotesIter<'_, PACKS> {
+        ActiveNotesIter {
+            notes: self,
+            index: 0,
+        }
+    }
+}
+
+pub struct ActiveNotesIter<'a, const PACKS: usize> {
+    notes: &'a ActiveNotes<PACKS>,
+    index: usize,
+}
+
+impl<const PACKS: usize> Iterator for ActiveNotesIter<'_, PACKS> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.notes.len {
+            return None;
+        }
+
+        let note = self.notes.notes[self.index / LANES][self.index % LANES];
+        self.index += 1;
+        Some(note)
     }
 }
 
@@ -60,12 +86,12 @@ impl ActiveNotes {
 /// modulation sources, then sums active blocks into a stereo output each sample.
 pub struct Voices<const PACKS: usize = VOICE_PACKS> {
     blocks: [VoiceBlock; PACKS],
-    held_voices: FixedIndexList<VOICE_COUNT>,
+    held_voices: FixedIndexList<PACKS, LANES>,
     next_voice: usize,
     next_pan_side: f32,
 }
 
-impl Voices {
+impl<const PACKS: usize> Voices<PACKS> {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             blocks: core::array::from_fn(|_| VoiceBlock::new(sample_rate)),
@@ -74,9 +100,7 @@ impl Voices {
             next_pan_side: -1.0,
         }
     }
-}
 
-impl<const PACKS: usize> Voices<PACKS> {
     const VOICE_COUNT: usize = PACKS * LANES;
 
     pub fn handle_control(&mut self, msg: ControlMessage) {
@@ -240,10 +264,7 @@ impl<const PACKS: usize> Voices<PACKS> {
                     block.oscillators.set_osc2_keyboard_on(value >= 0.5);
                 }
                 ParamId::FilterCutoff => {
-                    // Map 0.0-1.0 to 20Hz-20000Hz (log)
-                    block
-                        .filter
-                        .set_cutoff(20.0 * crate::math::powf(1000.0, value.clamp(0.0, 1.0)));
+                    block.filter.set_cutoff(value);
                 }
                 ParamId::FilterResonance => block.filter.set_resonance(value),
                 ParamId::FilterPoles => block.filter.set_poles(if value < 0.5 { 2 } else { 4 }),
@@ -358,15 +379,15 @@ impl<const PACKS: usize> Voices<PACKS> {
         (left, right)
     }
 
-    pub fn active_notes(&self) -> ActiveNotes {
-        let mut notes = ActiveNotes::new();
+    pub fn active_notes(&self) -> ActiveNotes<PACKS> {
+        let mut notes = ActiveNotes::<PACKS>::new();
         self.for_each_active_note(|note| {
             notes.push(note);
         });
         notes
     }
 
-    pub fn active_notes_into(&self, out: &mut [u8; VOICE_COUNT]) -> usize {
+    pub fn active_notes_into(&self, out: &mut [u8]) -> usize {
         let mut len = 0;
         self.for_each_active_note(|note| {
             if len < out.len() {
@@ -423,6 +444,8 @@ impl<const PACKS: usize> IndexMut<usize> for Voices<PACKS> {
 mod tests {
     use super::*;
     use crate::{ParamId, VOICE_COUNT};
+    use std::vec;
+    use std::vec::Vec;
 
     fn process_frames(voices: &mut Voices, frames: usize) {
         for _ in 0..frames {
@@ -443,7 +466,7 @@ mod tests {
 
     #[test]
     fn repeated_note_on_retriggers_existing_voice() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -454,15 +477,15 @@ mod tests {
         });
 
         assert_eq!(
-            voices.active_notes().as_slice(),
-            &[60],
+            voices.active_notes().iter().collect::<Vec<_>>(),
+            vec![60],
             "repeated note-on should not allocate duplicate voices for the same key"
         );
     }
 
     #[test]
     fn note_on_reuses_silent_voice_before_stealing_held_voice() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -485,7 +508,7 @@ mod tests {
 
     #[test]
     fn four_notes_are_rendered_as_distinct_simd_lanes() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67, 72] {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -511,7 +534,7 @@ mod tests {
 
     #[test]
     fn pan_spread_assigns_new_voices_to_alternating_sides() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -528,7 +551,7 @@ mod tests {
 
     #[test]
     fn lfo_key_sync_resets_only_on_first_held_note() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 25.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1KeySync, 1.0));
@@ -570,7 +593,7 @@ mod tests {
 
     #[test]
     fn steals_oldest_voice_when_polyphony_exhausted() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -603,8 +626,26 @@ mod tests {
     }
 
     #[test]
+    fn one_voice_pack_limits_polyphony_to_four_voices() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        for note in [60, 61, 62, 63, 64] {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+
+        let held = voices.active_notes();
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices.active_voice_count(), LANES);
+        assert_eq!(held.len(), LANES);
+        assert!(!held.contains(&60), "oldest note should be stolen");
+        assert!(held.contains(&64), "new note should be allocated");
+    }
+
+    #[test]
     fn allocates_across_voice_blocks() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67, 72, 76] {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -619,7 +660,7 @@ mod tests {
 
     #[test]
     fn zero_velocity_note_on_is_note_off() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -635,7 +676,7 @@ mod tests {
 
     #[test]
     fn all_notes_off_clears_active_voices() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67] {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -651,7 +692,7 @@ mod tests {
 
     #[test]
     fn retrigger_preserves_pan_side() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -673,7 +714,7 @@ mod tests {
 
     #[test]
     fn reuses_fully_silent_lane_after_release() {
-        let mut voices = Voices::new(44_100.0);
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
         for note in 60..=75u8 {
             voices.handle_control(ControlMessage::NoteOn {

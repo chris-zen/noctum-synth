@@ -68,7 +68,7 @@ struct AnalysisResult {
 impl Default for FilterDesignState {
     fn default() -> Self {
         Self {
-            cutoff: 1.0,
+            cutoff: MAX_CUTOFF_HZ,
             resonance: 0.0,
             poles: 4,
             response_db: Vec::new(),
@@ -127,7 +127,7 @@ impl FilterDesignViewConfig {
     }
 
     pub fn apply_to(&self, state: &mut FilterDesignState) {
-        state.cutoff = self.cutoff;
+        state.cutoff = migrate_cutoff_to_hz(self.cutoff);
         state.resonance = self.resonance;
         state.poles = self.poles;
         state.fft_size = self.fft_size;
@@ -148,8 +148,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
     // ---- Filter parameters ----
     ui.horizontal(|ui| {
         ui.label("Cutoff:");
-        ui.add(egui::Slider::new(&mut state.cutoff, 0.0..=1.0).text(""));
-        ui.label(format_hz(cutoff_hz(state.cutoff)));
+        let mut cutoff_norm = cutoff_hz_to_normalized(state.cutoff);
+        if ui
+            .add(egui::Slider::new(&mut cutoff_norm, 0.0..=1.0).text(""))
+            .changed()
+        {
+            state.cutoff = normalized_to_cutoff_hz(cutoff_norm);
+        } else {
+            state.cutoff = state.cutoff.clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ);
+        }
+        ui.label(format_hz(state.cutoff));
         ui.separator();
         ui.label("Resonance:");
         ui.add(egui::Slider::new(&mut state.resonance, 0.0..=1.0).text(""));
@@ -296,8 +304,26 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
     }
 }
 
-fn cutoff_hz(value: f32) -> f32 {
+fn legacy_normalized_to_cutoff_hz(value: f32) -> f32 {
     (MIN_CUTOFF_HZ * (1000.0f32).powf(value)).clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ)
+}
+
+fn normalized_to_cutoff_hz(value: f32) -> f32 {
+    let range = MAX_CUTOFF_HZ / MIN_CUTOFF_HZ;
+    (MIN_CUTOFF_HZ * range.powf(value.clamp(0.0, 1.0))).clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ)
+}
+
+fn cutoff_hz_to_normalized(hz: f32) -> f32 {
+    let hz = hz.clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ);
+    (hz / MIN_CUTOFF_HZ).ln() / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).ln()
+}
+
+fn migrate_cutoff_to_hz(value: f32) -> f32 {
+    if value <= 1.0 {
+        legacy_normalized_to_cutoff_hz(value)
+    } else {
+        value.clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ)
+    }
 }
 
 fn format_hz(hz: f32) -> String {
@@ -447,9 +473,11 @@ fn compute_sine_probe_response(params: AnalysisParams, hash: u64) -> AnalysisRes
             let start_bin = 1 + worker * chunk_bins;
             let end_bin = (start_bin + chunk_bins).min(db.len());
             if start_bin < end_bin {
-                handles.push(scope.spawn(move || {
-                    compute_sine_probe_range(params, start_bin, end_bin, bin_hz)
-                }));
+                handles.push(
+                    scope.spawn(move || {
+                        compute_sine_probe_range(params, start_bin, end_bin, bin_hz)
+                    }),
+                );
             }
         }
 
@@ -533,7 +561,7 @@ fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -
     let phase_step = freq_hz.map(|freq| std::f32::consts::TAU * freq / sr);
     let mut phase = [0.0f32; LANES];
     let mut filter = LadderFilter::default();
-    filter.set_cutoff(cutoff_hz(params.cutoff));
+    filter.set_cutoff(params.cutoff);
     filter.set_resonance(analysis_resonance(params));
     filter.set_poles(params.poles);
     filter.reset();
@@ -568,8 +596,8 @@ fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -
 
     let mut db = [0.0f32; LANES];
     for lane in 0..LANES {
-        let output_amp = 2.0 * (sin_sum[lane] * sin_sum[lane] + cos_sum[lane] * cos_sum[lane])
-            .sqrt()
+        let output_amp = 2.0
+            * (sin_sum[lane] * sin_sum[lane] + cos_sum[lane] * cos_sum[lane]).sqrt()
             / SINE_PROBE_MEASURE_FRAMES as f32;
         db[lane] = 20.0 * (output_amp / ANALYSIS_SINE_GAIN).max(1e-10).log10();
     }
@@ -580,7 +608,7 @@ fn render_analysis_response(params: AnalysisParams, impulse_gain: f32) -> Vec<f3
     let fft_size = params.fft_size;
     let sr = params.sample_rate;
     let mut filter = LadderFilter::default();
-    filter.set_cutoff(cutoff_hz(params.cutoff));
+    filter.set_cutoff(params.cutoff);
     filter.set_resonance(analysis_resonance(params));
     filter.set_poles(params.poles);
     filter.reset();
@@ -728,8 +756,8 @@ fn draw_response_overlay(ui: &egui::Ui, state: &FilterDesignState, plot_rect: eg
             plot_rect.left(),
             plot_rect.right(),
         );
-        let normalized = ((db.clamp(state.db_floor, state.db_top) - state.db_floor) / db_range)
-            .clamp(0.0, 1.0);
+        let normalized =
+            ((db.clamp(state.db_floor, state.db_top) - state.db_floor) / db_range).clamp(0.0, 1.0);
         let y = plot_rect.bottom() - plot_rect.height() * normalized;
         points.push(egui::pos2(x, y));
     }
@@ -744,7 +772,7 @@ fn draw_response_overlay(ui: &egui::Ui, state: &FilterDesignState, plot_rect: eg
     draw_frequency_marker(
         &painter,
         plot_rect,
-        cutoff_hz(state.cutoff),
+        state.cutoff,
         state,
         egui::Color32::from_rgb(255, 120, 80),
     );
@@ -895,7 +923,10 @@ fn draw_frequency_marker(
     }
 
     painter.line_segment(
-        [egui::pos2(x, plot_rect.top()), egui::pos2(x, plot_rect.bottom())],
+        [
+            egui::pos2(x, plot_rect.top()),
+            egui::pos2(x, plot_rect.bottom()),
+        ],
         egui::Stroke::new(1.0, color),
     );
 }

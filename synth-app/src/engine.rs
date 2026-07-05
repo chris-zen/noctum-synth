@@ -4,7 +4,7 @@ use parking_lot::{Mutex, RwLock};
 use rtrb::RingBuffer;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use synth_core::{ControlMessage, ParamId};
@@ -30,8 +30,22 @@ impl Default for AudioBlock {
 
 const MAX_PENDING_BLOCKS: usize = 32;
 
+/// Snapshot of audio-thread timing metrics, reported roughly once per second.
+#[derive(Clone, Copy, Default)]
+pub struct AudioMetrics {
+    pub deadline_ms: f64,
+    pub callback_avg_ms: f64,
+    pub callback_max_ms: f64,
+    pub render_avg_ms: f64,
+    pub render_max_ms: f64,
+    pub overruns: u64,
+    pub render_overruns: u64,
+    pub callbacks: u64,
+}
+
 pub enum FeedbackMessage {
     Audio(AudioBlock),
+    Metrics(AudioMetrics),
 }
 
 pub struct SynthEngineFeedback {
@@ -47,6 +61,10 @@ impl SynthEngineFeedback {
     pub fn push_audio_block(&mut self, block: AudioBlock) {
         let _ = self.sender.push(FeedbackMessage::Audio(block));
     }
+
+    pub fn push_metrics(&mut self, metrics: AudioMetrics) {
+        let _ = self.sender.push(FeedbackMessage::Metrics(metrics));
+    }
 }
 
 /// Read-only view of engine state for the UI (active voices, captured audio).
@@ -54,6 +72,7 @@ impl SynthEngineFeedback {
 pub struct SynthEngineView {
     active_voices: Arc<AtomicUsize>,
     audio_blocks: Arc<RwLock<VecDeque<AudioBlock>>>,
+    metrics: Arc<RwLock<Option<AudioMetrics>>>,
     total_voices: usize,
 }
 
@@ -64,6 +83,10 @@ impl SynthEngineView {
 
     pub fn total_voices(&self) -> usize {
         self.total_voices
+    }
+
+    pub fn metrics(&self) -> Option<AudioMetrics> {
+        *self.metrics.read()
     }
 
     pub fn drain_audio_blocks(&self) -> VecDeque<AudioBlock> {
@@ -78,6 +101,7 @@ type ControlConsumer = rtrb::Consumer<ControlMessage>;
 #[derive(Clone)]
 pub struct SynthEngineControl {
     sender: Arc<Mutex<ControlProducer>>,
+    input_enabled: Arc<AtomicBool>,
 }
 
 impl SynthEngineControl {
@@ -113,6 +137,16 @@ impl SynthEngineControl {
         self.send(ControlMessage::ControlChange { controller, value });
     }
 
+    /// Enables or disables mixing of the audio input into the output at runtime.
+    pub fn set_input_enabled(&self, enabled: bool) {
+        self.input_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Whether audio input is currently mixed into the output.
+    pub fn input_enabled(&self) -> bool {
+        self.input_enabled.load(Ordering::Relaxed)
+    }
+
     fn send(&self, message: ControlMessage) {
         let _ = self.sender.lock().push(message);
     }
@@ -139,6 +173,8 @@ pub struct SynthEngineBridge {
 pub struct SynthEngineAudio {
     pub control: SynthEngineControlReceiver,
     pub feedback: SynthEngineFeedback,
+    /// Shared flag toggled from the UI to mute the audio input at runtime.
+    pub input_enabled: Arc<AtomicBool>,
 }
 
 /// Creates the control ring buffer and spawns the UI feedback thread.
@@ -147,15 +183,19 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
     let (control_sender, control_receiver) = RingBuffer::new(256);
     let active_voices = Arc::new(AtomicUsize::new(0));
     let audio_blocks = Arc::new(RwLock::new(VecDeque::new()));
-    spawn_view_thread(feedback_receiver, audio_blocks.clone());
+    let metrics = Arc::new(RwLock::new(None));
+    let input_enabled = Arc::new(AtomicBool::new(true));
+    spawn_view_thread(feedback_receiver, audio_blocks.clone(), metrics.clone());
 
     let bridge = SynthEngineBridge {
         control: SynthEngineControl {
             sender: Arc::new(Mutex::new(control_sender)),
+            input_enabled: input_enabled.clone(),
         },
         view: SynthEngineView {
             active_voices: active_voices.clone(),
             audio_blocks,
+            metrics,
             total_voices,
         },
     };
@@ -165,6 +205,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             active_voices,
             sender: feedback_sender,
         },
+        input_enabled,
     };
     (audio, bridge)
 }
@@ -172,15 +213,23 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
 fn spawn_view_thread(
     mut receiver: rtrb::Consumer<FeedbackMessage>,
     audio_blocks: Arc<RwLock<VecDeque<AudioBlock>>>,
+    metrics: Arc<RwLock<Option<AudioMetrics>>>,
 ) {
     std::thread::spawn(move || {
         loop {
-            while let Ok(FeedbackMessage::Audio(block)) = receiver.pop() {
-                let mut blocks = audio_blocks.write();
-                if blocks.len() >= MAX_PENDING_BLOCKS {
-                    blocks.pop_front();
+            while let Ok(message) = receiver.pop() {
+                match message {
+                    FeedbackMessage::Audio(block) => {
+                        let mut blocks = audio_blocks.write();
+                        if blocks.len() >= MAX_PENDING_BLOCKS {
+                            blocks.pop_front();
+                        }
+                        blocks.push_back(block);
+                    }
+                    FeedbackMessage::Metrics(m) => {
+                        *metrics.write() = Some(m);
+                    }
                 }
-                blocks.push_back(block);
             }
             if receiver.is_abandoned() {
                 break;

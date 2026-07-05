@@ -25,9 +25,9 @@
 //! # Quick start
 //!
 //! ```
-//! use synth_core::SynthEngine;
+//! use synth_core::{SynthEngine, VOICE_PACKS};
 //!
-//! let mut engine = SynthEngine::new(synth_core::DEFAULT_SAMPLE_RATE);
+//! let mut engine = SynthEngine::<VOICE_PACKS>::new(synth_core::DEFAULT_SAMPLE_RATE);
 //! engine.note_on(60, 1.0);
 //!
 //! let mut mono = [0.0f32; 256];

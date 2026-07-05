@@ -1,7 +1,9 @@
 use eframe::egui;
 
-use crate::engine::SynthEngineControl;
-use crate::ui::widgets::{param_knob_bipolar, param_knob_f32, param_knob_log_hz, param_toggle};
+use crate::engine::{AudioMetrics, SynthEngineControl};
+use crate::ui::widgets::{
+    KNOB_SIZE, param_knob_bipolar, param_knob_f32, param_knob_log_hz, param_toggle,
+};
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     LfoDestination, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ParamId,
@@ -13,11 +15,11 @@ const LFO_PANEL_WIDTH: f32 = 560.0;
 const FILTER_GRID_WIDTH: f32 = 540.0;
 const AMP_GRID_WIDTH: f32 = 320.0;
 const AUX_GRID_WIDTH: f32 = 380.0;
-const CONTROL_CELL_W: f32 = 68.0;
-const CONTROL_CELL_H: f32 = 96.0;
+const CONTROL_CELL_W: f32 = 46.0;
+const CONTROL_CELL_H: f32 = 64.0;
 const DEST_CELL_W: f32 = 112.0;
 const TOGGLE_CELL_W: f32 = 82.0;
-const TOGGLE_CELL_H: f32 = 96.0;
+const TOGGLE_CELL_H: f32 = 64.0;
 const WAVE_CELL_W: f32 = 112.0;
 
 #[derive(Clone)]
@@ -97,7 +99,7 @@ impl Default for UiState {
             osc2_note_reset: true,
             sub_level: 0.0,
             noise_level: 0.0,
-            filter_cutoff: 1.0,
+            filter_cutoff: 20_000.0,
             filter_resonance: 0.0,
             filter_poles: 1,
             filter_key_track: 0.0,
@@ -143,9 +145,10 @@ pub fn show(
     control: &SynthEngineControl,
     voice_active: usize,
     voice_total: usize,
+    metrics: Option<AudioMetrics>,
     analysis_open: &mut bool,
 ) {
-    command_row(ui, control, voice_active, voice_total, analysis_open);
+    command_row(ui, control, voice_active, voice_total, metrics, analysis_open);
 
     ui.add_space(6.0);
 
@@ -196,6 +199,7 @@ fn command_row(
     control: &SynthEngineControl,
     voice_active: usize,
     voice_total: usize,
+    metrics: Option<AudioMetrics>,
     analysis_open: &mut bool,
 ) {
     ui.horizontal(|ui| {
@@ -209,12 +213,40 @@ fn command_row(
             control.all_notes_off();
         }
         ui.separator();
-        ui.label(format!("Voices: {voice_active}/{voice_total}"));
-        ui.separator();
         if ui.button("Analysis").clicked() {
             *analysis_open = !*analysis_open;
         }
+        let input_enabled = control.input_enabled();
+        if ui
+            .selectable_label(input_enabled, "Audio In")
+            .on_hover_text("Toggle mixing the audio input into the output")
+            .clicked()
+        {
+            control.set_input_enabled(!input_enabled);
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(metrics) = metrics {
+                ui.label(metrics_text(&metrics));
+                ui.separator();
+            }
+            ui.label(format!("Voices: {voice_active}/{voice_total}"));
+        });
     });
+}
+
+fn metrics_text(metrics: &AudioMetrics) -> String {
+    format!(
+        "cb {:.2}/{:.2}ms  render {:.2}/{:.2}ms  deadline {:.2}ms  over {}/{} of {}",
+        metrics.callback_avg_ms,
+        metrics.callback_max_ms,
+        metrics.render_avg_ms,
+        metrics.render_max_ms,
+        metrics.deadline_ms,
+        metrics.overruns,
+        metrics.render_overruns,
+        metrics.callbacks,
+    )
 }
 
 fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
@@ -460,14 +492,14 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                 lfo_shape_selector(ui, state, control);
             });
 
-            ui.add_space(20.0);
+            ui.add_space(16.0);
 
             let index = state.selected_lfo;
             ui.vertical(|ui| {
                 control_cell(ui, |ui| {
                     param_knob_log_hz(
                         ui,
-                        "Frequency",
+                        "Freq",
                         &mut state.lfo_rates[index],
                         MIN_LFO_RATE_HZ,
                         MAX_LFO_RATE_HZ,
@@ -476,6 +508,7 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                         control,
                     );
                 });
+                ui.add_space(10.0);
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
@@ -489,28 +522,25 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                 });
             });
 
+            ui.add_space(16.0);
+
             ui.vertical(|ui| {
-                ui.vertical(|ui| {
-                    lfo_destination_selector(ui, state, control);
-                });
-                toggle_cell(ui, |ui| {
-                    param_toggle(
-                        ui,
-                        "Clk Sync",
-                        &mut state.lfo_clock_sync[index],
-                        lfo_clock_sync_param(index),
-                        control,
-                    );
-                });
-                toggle_cell(ui, |ui| {
-                    param_toggle(
-                        ui,
-                        "Key Sync",
-                        &mut state.lfo_key_sync[index],
-                        lfo_key_sync_param(index),
-                        control,
-                    );
-                });
+                lfo_destination_selector(ui, state, control);
+                ui.add_space(8.0);
+                param_toggle(
+                    ui,
+                    "Clk Sync",
+                    &mut state.lfo_clock_sync[index],
+                    lfo_clock_sync_param(index),
+                    control,
+                );
+                param_toggle(
+                    ui,
+                    "Key Sync",
+                    &mut state.lfo_key_sync[index],
+                    lfo_key_sync_param(index),
+                    control,
+                );
             });
         });
     });
@@ -568,12 +598,13 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
             .spacing(egui::vec2(12.0, 12.0))
             .show(ui, |ui| {
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    param_knob_log_hz(
                         ui,
                         "Cutoff",
                         &mut state.filter_cutoff,
-                        0.0..=1.0,
-                        1.0,
+                        20.0,
+                        20_000.0,
+                        20_000.0,
                         ParamId::FilterCutoff,
                         control,
                     );
@@ -581,7 +612,7 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Resonance",
+                        "Res",
                         &mut state.filter_resonance,
                         0.0..=1.0,
                         0.0,
@@ -592,7 +623,7 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                 control_cell(ui, |ui| {
                     param_knob_bipolar(
                         ui,
-                        "Env Amount",
+                        "Env Amt",
                         &mut state.filter_env_amount,
                         0.0,
                         ParamId::FilterEnvAmount,
@@ -613,7 +644,7 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Key Amount",
+                        "Key Amt",
                         &mut state.filter_key_track,
                         0.0..=1.0,
                         0.0,
@@ -624,7 +655,7 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Audio Mod",
+                        "Osc Mod",
                         &mut state.filter_audio_mod,
                         0.0..=1.0,
                         0.0,
@@ -634,7 +665,15 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                 });
                 ui.end_row();
 
-                toggle_cell(ui, |ui| pole_toggle(ui, &mut state.filter_poles, control));
+                ui.allocate_ui_with_layout(
+                    egui::vec2(CONTROL_CELL_W, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(18.0);
+                        pole_toggle(ui, &mut state.filter_poles, control);
+                    },
+                );
+
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
@@ -704,7 +743,7 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Pan Spread",
+                        "Pan Sprd",
                         &mut state.amp_pan_spread,
                         0.0..=1.0,
                         0.0,
@@ -715,7 +754,7 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Env Amount",
+                        "Env Amt",
                         &mut state.amp_env_amount,
                         0.0..=1.0,
                         1.0,
@@ -806,7 +845,7 @@ fn auxiliary_envelope_module(ui: &mut egui::Ui, state: &mut UiState, control: &S
                 control_cell(ui, |ui| {
                     param_knob_bipolar(
                         ui,
-                        "Env Amount",
+                        "Env Amt",
                         &mut state.aux_env_amount,
                         0.0,
                         ParamId::AuxEgAmount,
@@ -957,23 +996,17 @@ fn control_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
 }
 
 fn strong_label(ui: &mut egui::Ui, text: &str) {
-    const KNOB_SIZE: f32 = 48.0;
     ui.allocate_ui_with_layout(
-        egui::vec2(36.0, KNOB_SIZE),
+        egui::vec2(36.0, CONTROL_CELL_H),
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
-            ui.label(text);
-        },
-    );
-}
-
-fn toggle_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(TOGGLE_CELL_W, TOGGLE_CELL_H),
-        egui::Layout::top_down(egui::Align::Center),
-        |ui| {
-            ui.add_space(18.0);
-            add_contents(ui);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), KNOB_SIZE),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(egui::RichText::new(text).strong());
+                },
+            );
         },
     );
 }

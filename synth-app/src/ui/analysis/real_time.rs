@@ -172,6 +172,9 @@ fn display_mode_from_config(mode: OscilloscopeDisplayModeConfig) -> Oscilloscope
 }
 
 pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut RealTimeState) {
+    if state.osc.frozen {
+        // Skip data intake so both the oscilloscope and spectrum stay frozen.
+    } else {
     for block in audio_blocks {
         let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
         let osc_copy_len = block_len.min(MAX_AUDIO_BUF);
@@ -199,6 +202,7 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
         }
         state.fft.frame_count += 1;
     }
+    }
 
     let available = ui.available_size();
     let gap = 12.0;
@@ -214,7 +218,7 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
     ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
         ui.strong("Spectrum Analyzer");
         ui.add_space(6.0);
-        draw_fft(ui, &mut state.fft);
+        draw_fft(ui, &mut state.fft, state.osc.frozen);
     });
 }
 
@@ -593,9 +597,9 @@ impl Default for FftState {
     }
 }
 
-fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
+fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
     let fft_size = state.fft_size;
-    if state.frame_count % 4 == 0 {
+    if !frozen && state.frame_count % 4 == 0 {
         if state.complex_buf.len() != fft_size || state.fft.is_none() {
             state.complex_buf = vec![Complex32::new(0.0, 0.0); fft_size];
             let mut planner = FftPlanner::new();
@@ -661,7 +665,11 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
         {
             state.show_peak_hold = true;
         }
-        if ui.button("Reset").on_hover_text("Clear held spectrum peaks.").clicked() {
+        if ui
+            .button("Reset")
+            .on_hover_text("Clear held spectrum peaks.")
+            .clicked()
+        {
             state.peak_hold.fill(state.db_floor);
         }
         ui.separator();
@@ -736,5 +744,84 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState) {
     } else {
         &state.latest_db[..num_bins]
     };
-    let _plot_rect = spectrum::render_spectrum(ui, spectrum_db, &config, 0.0);
+    const HOVER_READOUT_H: f32 = 24.0;
+    let plot_rect = spectrum::render_spectrum(ui, spectrum_db, &config, HOVER_READOUT_H);
+
+    let hover_info = ui
+        .ctx()
+        .pointer_hover_pos()
+        .filter(|pos| plot_rect.contains(*pos))
+        .map(|pos| {
+            let max_freq = 22050.0;
+            let x_frac = ((pos.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
+            let freq = if state.log_scale {
+                20.0_f32 * (max_freq / 20.0_f32).powf(x_frac)
+            } else {
+                max_freq * x_frac
+            };
+            let bin_hz = 44100.0 / state.fft_size as f32;
+            let bin = ((freq / bin_hz).floor() as usize).clamp(0, num_bins.saturating_sub(1));
+            let db = spectrum_db[bin];
+            let x = plot_rect.left() + x_frac * plot_rect.width();
+            let db_range = (state.db_top - state.db_floor).max(1.0);
+            let y_frac = ((db - state.db_floor) / db_range).clamp(0.0, 1.0);
+            let y = plot_rect.bottom() - y_frac * plot_rect.height();
+            (freq, db, bin, x, y)
+        });
+
+    if let Some((_freq, _db, _bin, x, y)) = hover_info {
+        let painter = ui.painter_at(plot_rect);
+        painter.line_segment(
+            [egui::pos2(x, plot_rect.top()), egui::pos2(x, plot_rect.bottom())],
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(180, 235, 255, 80)),
+        );
+        painter.line_segment(
+            [egui::pos2(x, y), egui::pos2(x + 6.0, y)],
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 250, 255)),
+        );
+        painter.circle_filled(
+            egui::pos2(x, y),
+            3.0,
+            egui::Color32::from_rgb(230, 250, 255),
+        );
+    }
+
+    ui.horizontal(|ui| {
+        if let Some((freq, db, _bin, _, _)) = hover_info {
+            ui.label(format!(
+                "Freq: {}   Level: {:+.1} dB   Note: {}",
+                format_hz(freq),
+                db,
+                format_midi_note(freq)
+            ));
+        } else {
+            ui.label("Freq: -   Level: -   Note: -");
+        }
+    });
+}
+
+fn format_hz(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{:.2} kHz", hz / 1000.0)
+    } else {
+        format!("{:.0} Hz", hz)
+    }
+}
+
+/// Convert a frequency to the nearest MIDI note, returning both the numeric
+/// note number and its letter notation (e.g. "63 (D#4)").
+fn format_midi_note(hz: f32) -> String {
+    if hz <= 0.0 {
+        return "-".to_string();
+    }
+    const NOTE_NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let midi = (69.0 + 12.0 * (hz / 440.0).log2()).round() as i32;
+    if !(0..=127).contains(&midi) {
+        return "-".to_string();
+    }
+    let name = NOTE_NAMES[(midi % 12) as usize];
+    let octave = midi / 12 - 1;
+    format!("{} ({}{})", midi, name, octave)
 }
