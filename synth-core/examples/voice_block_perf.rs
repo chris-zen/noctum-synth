@@ -1,7 +1,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use synth_core::{LfoDestination, VoiceBlock};
+use synth_core::{ModDestination, PerformanceModulation, VoiceBlock};
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 200_000;
@@ -37,12 +37,12 @@ fn time_case(make_block: fn() -> VoiceBlock) -> Duration {
     let mut block = make_block();
 
     for _ in 0..4096 {
-        black_box(block.next());
+        black_box(block.next(PerformanceModulation::default()));
     }
 
     let start = Instant::now();
     for _ in 0..ITERATIONS {
-        black_box(block.next());
+        black_box(block.next(PerformanceModulation::default()));
     }
     start.elapsed()
 }
@@ -75,16 +75,16 @@ fn modulation_heavy_block() -> VoiceBlock {
     block.set_pan_spread(1.0);
     block.set_lfo_rate_hz(0, 0.9);
     block.set_lfo_depth(0, 0.7);
-    block.set_lfo_destination(0, LfoDestination::FilterCutoff);
+    block.set_lfo_destination(0, ModDestination::FilterCutoff);
     block.set_lfo_rate_hz(1, 1.3);
     block.set_lfo_depth(1, 0.4);
-    block.set_lfo_destination(1, LfoDestination::Pan);
+    block.set_lfo_destination(1, ModDestination::Pan);
     block.set_lfo_rate_hz(2, 2.1);
     block.set_lfo_depth(2, 0.3);
-    block.set_lfo_destination(2, LfoDestination::Vca);
+    block.set_lfo_destination(2, ModDestination::Vca);
     block.set_lfo_rate_hz(3, 0.5);
     block.set_lfo_depth(3, 0.25);
-    block.set_lfo_destination(3, LfoDestination::OscAllFrequency);
+    block.set_lfo_destination(3, ModDestination::OscAllFrequency);
     block
 }
 

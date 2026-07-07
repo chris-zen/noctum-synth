@@ -8,10 +8,10 @@ use crate::{
 #[cfg(feature = "std")]
 use serde::{Deserialize, Serialize};
 
-/// Target for an LFO or auxiliary envelope modulation route.
+/// Target for a modulation route.
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LfoDestination {
+pub enum ModDestination {
     Off,
     Osc1Frequency,
     Osc2Frequency,
@@ -38,10 +38,38 @@ pub enum LfoDestination {
     Lfo3Amount,
     Lfo4Amount,
     LfoAllAmount,
+    LpFilterEnvAmount,
+    AmpEnvAmount,
+    Env3Amount,
+    EnvAllAmount,
+    LpFilterAttack,
+    VcaAttack,
+    Env3Attack,
+    EnvAllAttack,
+    LpFilterDecay,
+    VcaDecay,
+    Env3Decay,
+    EnvAllDecay,
+    LpFilterRelease,
+    VcaRelease,
+    Env3Release,
+    EnvAllRelease,
+    Mod1Amount,
+    Mod2Amount,
+    Mod3Amount,
+    Mod4Amount,
+    Mod5Amount,
+    Mod6Amount,
+    Mod7Amount,
+    Mod8Amount,
+    OscSlop,
+    FxMix,
+    FxParam1,
+    FxParam2,
 }
 
-impl LfoDestination {
-    pub const ALL: [Self; 26] = [
+impl ModDestination {
+    pub const ALL: [Self; 54] = [
         Self::Off,
         Self::Osc1Frequency,
         Self::Osc2Frequency,
@@ -68,6 +96,34 @@ impl LfoDestination {
         Self::Lfo3Amount,
         Self::Lfo4Amount,
         Self::LfoAllAmount,
+        Self::LpFilterEnvAmount,
+        Self::AmpEnvAmount,
+        Self::Env3Amount,
+        Self::EnvAllAmount,
+        Self::LpFilterAttack,
+        Self::VcaAttack,
+        Self::Env3Attack,
+        Self::EnvAllAttack,
+        Self::LpFilterDecay,
+        Self::VcaDecay,
+        Self::Env3Decay,
+        Self::EnvAllDecay,
+        Self::LpFilterRelease,
+        Self::VcaRelease,
+        Self::Env3Release,
+        Self::EnvAllRelease,
+        Self::Mod1Amount,
+        Self::Mod2Amount,
+        Self::Mod3Amount,
+        Self::Mod4Amount,
+        Self::Mod5Amount,
+        Self::Mod6Amount,
+        Self::Mod7Amount,
+        Self::Mod8Amount,
+        Self::OscSlop,
+        Self::FxMix,
+        Self::FxParam1,
+        Self::FxParam2,
     ];
 
     pub fn from_index(index: usize) -> Self {
@@ -109,6 +165,230 @@ impl LfoDestination {
             Self::Lfo3Amount => "LFO 3 Amount",
             Self::Lfo4Amount => "LFO 4 Amount",
             Self::LfoAllAmount => "LFO All Amount",
+            Self::LpFilterEnvAmount => "LP Filter Env Amount",
+            Self::AmpEnvAmount => "Amp Env Amount",
+            Self::Env3Amount => "Env 3 Amount",
+            Self::EnvAllAmount => "Env All Amount",
+            Self::LpFilterAttack => "LPF Attack",
+            Self::VcaAttack => "VCA Attack",
+            Self::Env3Attack => "Env 3 Attack",
+            Self::EnvAllAttack => "Env All Attack",
+            Self::LpFilterDecay => "LPF Decay",
+            Self::VcaDecay => "VCA Decay",
+            Self::Env3Decay => "Env 3 Decay",
+            Self::EnvAllDecay => "Env All Decay",
+            Self::LpFilterRelease => "LPF Release",
+            Self::VcaRelease => "VCA Release",
+            Self::Env3Release => "Env 3 Release",
+            Self::EnvAllRelease => "Env All Release",
+            Self::Mod1Amount => "Mod 1 Amount",
+            Self::Mod2Amount => "Mod 2 Amount",
+            Self::Mod3Amount => "Mod 3 Amount",
+            Self::Mod4Amount => "Mod 4 Amount",
+            Self::Mod5Amount => "Mod 5 Amount",
+            Self::Mod6Amount => "Mod 6 Amount",
+            Self::Mod7Amount => "Mod 7 Amount",
+            Self::Mod8Amount => "Mod 8 Amount",
+            Self::OscSlop => "Osc Slop",
+            Self::FxMix => "FX Mix",
+            Self::FxParam1 => "FX Param 1",
+            Self::FxParam2 => "FX Param 2",
+        }
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModSource {
+    Off,
+    Seq1,
+    Seq2,
+    Seq3,
+    Seq4,
+    Lfo1,
+    Lfo2,
+    Lfo3,
+    Lfo4,
+    EnvLpf,
+    EnvVca,
+    Env3,
+    PitchBend,
+    ModWheel,
+    Pressure,
+    Breath,
+    FootPedal,
+    ExpressionPedal,
+    Velocity,
+    NoteNumber,
+    Noise,
+    Dc,
+    AudioOut,
+}
+
+impl ModSource {
+    pub const ALL: [Self; 23] = [
+        Self::Off,
+        Self::Seq1,
+        Self::Seq2,
+        Self::Seq3,
+        Self::Seq4,
+        Self::Lfo1,
+        Self::Lfo2,
+        Self::Lfo3,
+        Self::Lfo4,
+        Self::EnvLpf,
+        Self::EnvVca,
+        Self::Env3,
+        Self::PitchBend,
+        Self::ModWheel,
+        Self::Pressure,
+        Self::Breath,
+        Self::FootPedal,
+        Self::ExpressionPedal,
+        Self::Velocity,
+        Self::NoteNumber,
+        Self::Noise,
+        Self::Dc,
+        Self::AudioOut,
+    ];
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(Self::Off)
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|source| *source == self)
+            .unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Seq1 => "Seq 1",
+            Self::Seq2 => "Seq 2",
+            Self::Seq3 => "Seq 3",
+            Self::Seq4 => "Seq 4",
+            Self::Lfo1 => "LFO 1",
+            Self::Lfo2 => "LFO 2",
+            Self::Lfo3 => "LFO 3",
+            Self::Lfo4 => "LFO 4",
+            Self::EnvLpf => "Env LPF",
+            Self::EnvVca => "Env VCA",
+            Self::Env3 => "Env 3",
+            Self::PitchBend => "Pitch Bend",
+            Self::ModWheel => "Mod Wheel",
+            Self::Pressure => "Pressure",
+            Self::Breath => "Breath",
+            Self::FootPedal => "Foot Pedal",
+            Self::ExpressionPedal => "Expression Pedal",
+            Self::Velocity => "Velocity",
+            Self::NoteNumber => "Note Number",
+            Self::Noise => "Noise",
+            Self::Dc => "DC",
+            Self::AudioOut => "Audio Out",
+        }
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DedicatedModSource {
+    ModWheel,
+    Pressure,
+    Breath,
+    Velocity,
+    Footswitch,
+}
+
+impl DedicatedModSource {
+    pub const ALL: [Self; 5] = [
+        Self::ModWheel,
+        Self::Pressure,
+        Self::Breath,
+        Self::Velocity,
+        Self::Footswitch,
+    ];
+
+    pub fn source(self) -> ModSource {
+        match self {
+            Self::ModWheel => ModSource::ModWheel,
+            Self::Pressure => ModSource::Pressure,
+            Self::Breath => ModSource::Breath,
+            Self::Velocity => ModSource::Velocity,
+            Self::Footswitch => ModSource::FootPedal,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ModWheel => "Mod Wheel",
+            Self::Pressure => "Pressure",
+            Self::Breath => "Breath",
+            Self::Velocity => "Velocity",
+            Self::Footswitch => "MIDI Footswitch",
+        }
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy)]
+pub enum ModRoute {
+    Free(usize),
+    Dedicated(DedicatedModSource),
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy)]
+pub struct ModMatrixSlot {
+    pub enabled: bool,
+    pub source: ModSource,
+    pub destination: ModDestination,
+    pub amount: f32,
+}
+
+impl Default for ModMatrixSlot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source: ModSource::Off,
+            destination: ModDestination::Off,
+            amount: 0.0,
+        }
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy)]
+pub struct DedicatedModSlot {
+    pub enabled: bool,
+    pub destination: ModDestination,
+    pub amount: f32,
+}
+
+impl Default for DedicatedModSlot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            destination: ModDestination::Off,
+            amount: 0.0,
+        }
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
+pub struct ModMatrix {
+    pub free_slots: [ModMatrixSlot; 8],
+    pub dedicated: [DedicatedModSlot; 5],
+}
+
+impl Default for ModMatrix {
+    fn default() -> Self {
+        Self {
+            free_slots: [ModMatrixSlot::default(); 8],
+            dedicated: [DedicatedModSlot::default(); 5],
         }
     }
 }
@@ -119,7 +399,7 @@ pub struct LfoParams {
     pub rate_hz: f32,
     pub depth: f32,
     pub waveform: LfoWaveform,
-    pub destination: LfoDestination,
+    pub destination: ModDestination,
     pub clock_sync: bool,
     pub key_sync: bool,
 }
@@ -130,7 +410,7 @@ impl Default for LfoParams {
             rate_hz: MIN_LFO_RATE_HZ,
             depth: 0.0,
             waveform: LfoWaveform::Triangle,
-            destination: LfoDestination::Off,
+            destination: ModDestination::Off,
             clock_sync: false,
             key_sync: true,
         }
@@ -140,7 +420,7 @@ impl Default for LfoParams {
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct AuxEnvelopeParams {
-    pub destination: LfoDestination,
+    pub destination: ModDestination,
     pub amount: f32,
     pub velocity: f32,
     pub delay: f32,
@@ -154,7 +434,7 @@ pub struct AuxEnvelopeParams {
 impl Default for AuxEnvelopeParams {
     fn default() -> Self {
         Self {
-            destination: LfoDestination::Off,
+            destination: ModDestination::Off,
             amount: 0.0,
             velocity: 0.0,
             delay: 0.0,
@@ -277,6 +557,8 @@ pub struct Patch {
     pub amplifier: AmplifierParams,
     pub aux_envelope: AuxEnvelopeParams,
     pub lfos: [LfoParams; 4],
+    #[cfg_attr(feature = "std", serde(default))]
+    pub mod_matrix: ModMatrix,
     pub master_volume: f32,
 }
 
@@ -301,6 +583,7 @@ impl Default for Patch {
             amplifier: AmplifierParams::default(),
             aux_envelope: AuxEnvelopeParams::default(),
             lfos: [LfoParams::default(); 4],
+            mod_matrix: ModMatrix::default(),
             master_volume: 1.0,
         }
     }
@@ -356,7 +639,10 @@ impl Patch {
 
         f(ParamId::FilterCutoff, self.filter.cutoff);
         f(ParamId::FilterResonance, self.filter.resonance);
-        f(ParamId::FilterPoles, if self.filter.poles <= 2 { 0.0 } else { 1.0 });
+        f(
+            ParamId::FilterPoles,
+            if self.filter.poles <= 2 { 0.0 } else { 1.0 },
+        );
         f(ParamId::FilterKeyTrack, self.filter.key_track);
         f(ParamId::FilterEnvAmount, self.filter.env_amount);
         f(ParamId::FilterVelocity, self.filter.velocity);
@@ -376,7 +662,10 @@ impl Patch {
         f(ParamId::AmpEgSustain, self.amplifier.eg_sustain);
         f(ParamId::AmpEgRelease, self.amplifier.eg_release);
 
-        f(ParamId::AuxEgDestination, self.aux_envelope.destination.index() as f32);
+        f(
+            ParamId::AuxEgDestination,
+            self.aux_envelope.destination.index() as f32,
+        );
         f(ParamId::AuxEgAmount, self.aux_envelope.amount);
         f(ParamId::AuxEgVelocity, self.aux_envelope.velocity);
         f(ParamId::AuxEgDelay, self.aux_envelope.delay);
@@ -435,5 +724,24 @@ impl Patch {
 
         f(ParamId::MasterVolume, self.master_volume);
         f(ParamId::AnalogDrift, self.osc_slop);
+    }
+
+    pub fn for_each_modulation(&self, mut f: impl FnMut(ModRoute, ModMatrixSlot)) {
+        for (index, slot) in self.mod_matrix.free_slots.iter().copied().enumerate() {
+            f(ModRoute::Free(index), slot);
+        }
+
+        for (index, slot) in self.mod_matrix.dedicated.iter().copied().enumerate() {
+            let source = DedicatedModSource::ALL[index];
+            f(
+                ModRoute::Dedicated(source),
+                ModMatrixSlot {
+                    enabled: slot.enabled,
+                    source: source.source(),
+                    destination: slot.destination,
+                    amount: slot.amount,
+                },
+            );
+        }
     }
 }

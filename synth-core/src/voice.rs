@@ -3,10 +3,10 @@
 use wide::f32x4;
 
 use crate::analog_oscillators::{OscillatorModulation, Oscillators};
-use crate::patch::LfoDestination;
+use crate::patch::{DedicatedModSlot, DedicatedModSource, ModDestination, ModMatrixSlot, ModRoute};
 use crate::{
     DadsrEnvelope, FilterOversampling, LANES, LadderFilter, Lfo, LfoWaveform, MIN_LFO_RATE_HZ,
-    midi_to_hz,
+    ModSource, midi_to_hz,
 };
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
@@ -27,15 +27,17 @@ pub struct VoiceBlock {
     pub filter_env: DadsrEnvelope,
     pub filter: LadderFilter,
     pub aux_env: DadsrEnvelope,
-    pub aux_env_destination: LfoDestination,
+    pub aux_env_destination: ModDestination,
     pub aux_env_amount: f32,
     pub aux_env_velocity_amount: f32,
     pub lfos: [Lfo; 4],
-    pub lfo_destinations: [LfoDestination; 4],
+    pub lfo_destinations: [ModDestination; 4],
     pub lfo_clock_sync: [bool; 4],
     pub lfo_base_rates_hz: [f32; 4],
     pub lfo_base_depths: [f32; 4],
     pub last_lfo_outputs: [f32x4; 4],
+    pub mod_matrix_slots: [ModMatrixSlot; 8],
+    pub dedicated_mod_slots: [DedicatedModSlot; 5],
     pub amp_env_amount: f32,
     pub amp_velocity_amount: f32,
     pub pan_spread: f32,
@@ -56,15 +58,17 @@ impl VoiceBlock {
             filter_env: DadsrEnvelope::analog(sample_rate),
             filter: LadderFilter::default(),
             aux_env: DadsrEnvelope::analog(sample_rate),
-            aux_env_destination: LfoDestination::Off,
+            aux_env_destination: ModDestination::Off,
             aux_env_amount: 0.0,
             aux_env_velocity_amount: 0.0,
             lfos: core::array::from_fn(|_| Lfo::new(sample_rate)),
-            lfo_destinations: [LfoDestination::Off; 4],
+            lfo_destinations: [ModDestination::Off; 4],
             lfo_clock_sync: [false; 4],
             lfo_base_rates_hz: [MIN_LFO_RATE_HZ; 4],
             lfo_base_depths: [0.0; 4],
             last_lfo_outputs: [f32x4::splat(0.0); 4],
+            mod_matrix_slots: [ModMatrixSlot::default(); 8],
+            dedicated_mod_slots: [DedicatedModSlot::default(); 5],
             amp_env_amount: 1.0,
             amp_velocity_amount: 1.0,
             pan_spread: 0.0,
@@ -127,20 +131,29 @@ impl VoiceBlock {
         self.filter.set_oversampling(oversampling);
     }
 
-    pub fn next(&mut self) -> (f32, f32) {
-        self.advance_lfos();
+    pub fn next(&mut self, performance: PerformanceModulation) -> (f32, f32) {
         let velocities = f32x4::new(self.velocities);
-        let mut lfo_modulation = self.lfo_modulation();
         let aux_env = self.aux_env.next();
         let aux_velocity_scale = f32x4::splat(1.0 - self.aux_env_velocity_amount)
             + velocities * f32x4::splat(self.aux_env_velocity_amount);
         let aux_signal = aux_env * f32x4::splat(self.aux_env_amount) * aux_velocity_scale;
-        apply_destination_modulation(&mut lfo_modulation, self.aux_env_destination, aux_signal);
-
-        let osc = self.oscillators.next(lfo_modulation.oscillators);
-
         let filter_env = self.filter_env.next();
         let amp = self.amp_env.next();
+
+        let context = ModSignalContext {
+            performance,
+            velocities,
+            filter_env,
+            amp_env: amp,
+            aux_env,
+            aux_signal,
+        };
+        self.advance_lfos(context);
+
+        let mut lfo_modulation = LfoModulation::default();
+        self.apply_audio_modulation_routes(&mut lfo_modulation, context);
+
+        let osc = self.oscillators.next(lfo_modulation.oscillators);
         let mix = osc.audio;
 
         let notes = f32x4::new(self.notes.map(|note| note as f32));
@@ -166,38 +179,20 @@ impl VoiceBlock {
         self.pan_lanes(output, lfo_modulation.pan)
     }
 
-    fn advance_lfos(&mut self) {
-        let mut rate_mod = [0.0; 4];
-        let mut depth_mod = [0.0; 4];
-        for (output, destination) in self.last_lfo_outputs.iter().zip(self.lfo_destinations) {
-            let value = average_lanes(*output);
-            match destination {
-                LfoDestination::Lfo1Frequency => rate_mod[0] += value,
-                LfoDestination::Lfo2Frequency => rate_mod[1] += value,
-                LfoDestination::Lfo3Frequency => rate_mod[2] += value,
-                LfoDestination::Lfo4Frequency => rate_mod[3] += value,
-                LfoDestination::LfoAllFrequency => {
-                    for rate_mod in &mut rate_mod {
-                        *rate_mod += value;
-                    }
-                }
-                LfoDestination::Lfo1Amount => depth_mod[0] += value,
-                LfoDestination::Lfo2Amount => depth_mod[1] += value,
-                LfoDestination::Lfo3Amount => depth_mod[2] += value,
-                LfoDestination::Lfo4Amount => depth_mod[3] += value,
-                LfoDestination::LfoAllAmount => {
-                    for depth_mod in &mut depth_mod {
-                        *depth_mod += value;
-                    }
-                }
-                _ => {}
-            }
-        }
+    fn advance_lfos(&mut self, context: ModSignalContext) {
+        let mut lfo_control = LfoControlModulation::default();
+        self.for_each_modulation_route(context, |destination, signal| {
+            apply_lfo_control_modulation(
+                &mut lfo_control,
+                destination,
+                average_lanes(signal),
+            );
+        });
 
         let rates = (f32x4::new(self.lfo_base_rates_hz)
-            * (f32x4::new(rate_mod) * f32x4::splat(4.0)).exp2())
+            * (f32x4::new(lfo_control.rate_mod) * f32x4::splat(4.0)).exp2())
         .to_array();
-        let depths = (f32x4::new(self.lfo_base_depths) + f32x4::new(depth_mod))
+        let depths = (f32x4::new(self.lfo_base_depths) + f32x4::new(lfo_control.depth_mod))
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0))
             .to_array();
 
@@ -208,14 +203,6 @@ impl VoiceBlock {
             lfo.set_depth(depth);
             self.last_lfo_outputs[index] = lfo.next();
         }
-    }
-
-    fn lfo_modulation(&self) -> LfoModulation {
-        let mut modulation = LfoModulation::default();
-        for (output, destination) in self.last_lfo_outputs.iter().zip(self.lfo_destinations) {
-            apply_destination_modulation(&mut modulation, destination, *output);
-        }
-        modulation
     }
 
     fn note_frequencies_hz(&self) -> f32x4 {
@@ -344,7 +331,7 @@ impl VoiceBlock {
         }
     }
 
-    pub fn set_lfo_destination(&mut self, index: usize, destination: LfoDestination) {
+    pub fn set_lfo_destination(&mut self, index: usize, destination: ModDestination) {
         if let Some(slot) = self.lfo_destinations.get_mut(index) {
             *slot = destination;
         }
@@ -382,7 +369,7 @@ impl VoiceBlock {
         self.filter_env.set_release_seconds(seconds);
     }
 
-    pub fn set_aux_destination(&mut self, destination: LfoDestination) {
+    pub fn set_aux_destination(&mut self, destination: ModDestination) {
         self.aux_env_destination = destination;
     }
 
@@ -417,6 +404,150 @@ impl VoiceBlock {
     pub fn set_aux_repeat(&mut self, repeat: bool) {
         self.aux_env.set_loop_enabled(repeat);
     }
+
+    pub fn set_mod_route(
+        &mut self,
+        route: ModRoute,
+        enabled: bool,
+        source: ModSource,
+        destination: ModDestination,
+        amount: f32,
+    ) {
+        match route {
+            ModRoute::Free(index) => {
+                if let Some(slot) = self.mod_matrix_slots.get_mut(index) {
+                    *slot = ModMatrixSlot {
+                        enabled,
+                        source,
+                        destination,
+                        amount: amount.clamp(-1.0, 1.0),
+                    };
+                }
+            }
+            ModRoute::Dedicated(source) => {
+                let index = dedicated_index(source);
+                if let Some(slot) = self.dedicated_mod_slots.get_mut(index) {
+                    *slot = DedicatedModSlot {
+                        enabled,
+                        destination,
+                        amount: amount.clamp(-1.0, 1.0),
+                    };
+                }
+            }
+        }
+    }
+
+    fn apply_audio_modulation_routes(
+        &self,
+        modulation: &mut LfoModulation,
+        context: ModSignalContext,
+    ) {
+        self.for_each_modulation_route(context, |destination, signal| {
+            apply_destination_modulation(modulation, destination, signal);
+        });
+    }
+
+    fn for_each_modulation_route(
+        &self,
+        context: ModSignalContext,
+        mut apply: impl FnMut(ModDestination, f32x4),
+    ) {
+        for (output, destination) in self.last_lfo_outputs.iter().zip(self.lfo_destinations) {
+            apply(destination, *output);
+        }
+
+        apply(self.aux_env_destination, context.aux_signal);
+
+        for slot in self.mod_matrix_slots {
+            if !slot.enabled {
+                continue;
+            }
+
+            let signal = self.mod_source_signal(
+                slot.source,
+                context,
+            ) * f32x4::splat(slot.amount);
+            apply(slot.destination, signal);
+        }
+
+        for (index, slot) in self.dedicated_mod_slots.iter().copied().enumerate() {
+            if !slot.enabled {
+                continue;
+            }
+
+            let dedicated_source = DedicatedModSource::ALL[index].source();
+            let signal = self.mod_source_signal(
+                dedicated_source,
+                context,
+            ) * f32x4::splat(slot.amount);
+            apply(slot.destination, signal);
+        }
+    }
+
+    fn mod_source_signal(
+        &self,
+        source: ModSource,
+        context: ModSignalContext,
+    ) -> f32x4 {
+        match source {
+            ModSource::Off
+            | ModSource::Seq1
+            | ModSource::Seq2
+            | ModSource::Seq3
+            | ModSource::Seq4
+            | ModSource::Noise
+            | ModSource::AudioOut => f32x4::splat(0.0),
+            ModSource::Lfo1 => self.last_lfo_outputs[0],
+            ModSource::Lfo2 => self.last_lfo_outputs[1],
+            ModSource::Lfo3 => self.last_lfo_outputs[2],
+            ModSource::Lfo4 => self.last_lfo_outputs[3],
+            ModSource::EnvLpf => context.filter_env,
+            ModSource::EnvVca => context.amp_env,
+            ModSource::Env3 => context.aux_env,
+            ModSource::PitchBend => f32x4::splat(context.performance.pitch_bend),
+            ModSource::ModWheel => f32x4::splat(context.performance.mod_wheel),
+            ModSource::Pressure => f32x4::splat(context.performance.pressure),
+            ModSource::Breath => f32x4::splat(context.performance.breath),
+            ModSource::FootPedal => f32x4::splat(context.performance.foot),
+            ModSource::ExpressionPedal => f32x4::splat(context.performance.expression),
+            ModSource::Velocity => context.velocities,
+            ModSource::NoteNumber => f32x4::new(self.notes.map(|note| note as f32 / 127.0)),
+            ModSource::Dc => f32x4::splat(1.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ModSignalContext {
+    performance: PerformanceModulation,
+    velocities: f32x4,
+    filter_env: f32x4,
+    amp_env: f32x4,
+    aux_env: f32x4,
+    aux_signal: f32x4,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct PerformanceModulation {
+    pub pitch_bend: f32,
+    pub mod_wheel: f32,
+    pub pressure: f32,
+    pub breath: f32,
+    pub foot: f32,
+    pub expression: f32,
+}
+
+fn dedicated_index(source: DedicatedModSource) -> usize {
+    DedicatedModSource::ALL
+        .iter()
+        .position(|candidate| *candidate == source)
+        .unwrap_or(0)
+}
+
+#[derive(Default)]
+struct LfoControlModulation {
+    rate_mod: [f32; 4],
+    depth_mod: [f32; 4],
 }
 
 #[derive(Default)]
@@ -431,41 +562,69 @@ struct LfoModulation {
 
 fn apply_destination_modulation(
     modulation: &mut LfoModulation,
-    destination: LfoDestination,
+    destination: ModDestination,
     signal: f32x4,
 ) {
     match destination {
-        LfoDestination::Off => {}
-        LfoDestination::Osc1Frequency => {
+        ModDestination::Off => {}
+        ModDestination::Osc1Frequency => {
             modulation.oscillators.osc1_frequency_semitones +=
                 signal * f32x4::splat(LFO_PITCH_DEPTH_SEMITONES);
         }
-        LfoDestination::Osc2Frequency => {
+        ModDestination::Osc2Frequency => {
             modulation.oscillators.osc2_frequency_semitones +=
                 signal * f32x4::splat(LFO_PITCH_DEPTH_SEMITONES);
         }
-        LfoDestination::OscAllFrequency => {
+        ModDestination::OscAllFrequency => {
             let pitch = signal * f32x4::splat(LFO_PITCH_DEPTH_SEMITONES);
             modulation.oscillators.osc1_frequency_semitones += pitch;
             modulation.oscillators.osc2_frequency_semitones += pitch;
         }
-        LfoDestination::Osc1Level => modulation.oscillators.osc1_level += signal,
-        LfoDestination::OscMix => modulation.oscillators.mix += signal,
-        LfoDestination::NoiseLevel => modulation.oscillators.noise_level += signal,
-        LfoDestination::SubOscLevel => modulation.oscillators.sub_level += signal,
-        LfoDestination::Osc1Shape => modulation.oscillators.osc1_shape += signal,
-        LfoDestination::Osc2Shape => modulation.oscillators.osc2_shape += signal,
-        LfoDestination::OscAllShape => {
+        ModDestination::Osc1Level => modulation.oscillators.osc1_level += signal,
+        ModDestination::OscMix => modulation.oscillators.mix += signal,
+        ModDestination::NoiseLevel => modulation.oscillators.noise_level += signal,
+        ModDestination::SubOscLevel => modulation.oscillators.sub_level += signal,
+        ModDestination::Osc1Shape => modulation.oscillators.osc1_shape += signal,
+        ModDestination::Osc2Shape => modulation.oscillators.osc2_shape += signal,
+        ModDestination::OscAllShape => {
             modulation.oscillators.osc1_shape += signal;
             modulation.oscillators.osc2_shape += signal;
         }
-        LfoDestination::FilterCutoff => {
+        ModDestination::FilterCutoff => {
             modulation.filter_cutoff_semitones += signal * f32x4::splat(LFO_CUTOFF_DEPTH_SEMITONES);
         }
-        LfoDestination::FilterResonance => modulation.filter_resonance += signal,
-        LfoDestination::FilterAudioMod => modulation.filter_audio_mod += signal,
-        LfoDestination::Vca => modulation.amp_gain += signal,
-        LfoDestination::Pan => modulation.pan += signal,
+        ModDestination::FilterResonance => modulation.filter_resonance += signal,
+        ModDestination::FilterAudioMod => modulation.filter_audio_mod += signal,
+        ModDestination::Vca => modulation.amp_gain += signal,
+        ModDestination::Pan => modulation.pan += signal,
+        _ => {}
+    }
+}
+
+fn apply_lfo_control_modulation(
+    modulation: &mut LfoControlModulation,
+    destination: ModDestination,
+    value: f32,
+) {
+    match destination {
+        ModDestination::Lfo1Frequency => modulation.rate_mod[0] += value,
+        ModDestination::Lfo2Frequency => modulation.rate_mod[1] += value,
+        ModDestination::Lfo3Frequency => modulation.rate_mod[2] += value,
+        ModDestination::Lfo4Frequency => modulation.rate_mod[3] += value,
+        ModDestination::LfoAllFrequency => {
+            for rate_mod in &mut modulation.rate_mod {
+                *rate_mod += value;
+            }
+        }
+        ModDestination::Lfo1Amount => modulation.depth_mod[0] += value,
+        ModDestination::Lfo2Amount => modulation.depth_mod[1] += value,
+        ModDestination::Lfo3Amount => modulation.depth_mod[2] += value,
+        ModDestination::Lfo4Amount => modulation.depth_mod[3] += value,
+        ModDestination::LfoAllAmount => {
+            for depth_mod in &mut modulation.depth_mod {
+                *depth_mod += value;
+            }
+        }
         _ => {}
     }
 }
@@ -499,6 +658,80 @@ mod tests {
         for _ in 0..frames {
             voices.next();
         }
+    }
+
+    fn voice_block_next(block: &mut VoiceBlock) -> (f32, f32) {
+        block.next(PerformanceModulation::default())
+    }
+
+    #[test]
+    fn matrix_route_can_modulate_lfo_frequency_before_lfo_outputs_are_used() {
+        fn lfo2_peak(matrix_enabled: bool) -> f32 {
+            let mut block = VoiceBlock::new(100.0);
+            block.set_lfo_rate_hz(0, 1.0);
+            block.set_lfo_depth(0, 1.0);
+            block.set_lfo_waveform(0, LfoWaveform::Square);
+            block.set_lfo_rate_hz(1, 0.1);
+            block.set_lfo_depth(1, 1.0);
+            block.set_lfo_waveform(1, LfoWaveform::Saw);
+            block.set_mod_route(
+                ModRoute::Free(0),
+                matrix_enabled,
+                ModSource::Lfo1,
+                ModDestination::Lfo2Frequency,
+                1.0,
+            );
+
+            let mut peak = 0.0f32;
+            for _ in 0..64 {
+                voice_block_next(&mut block);
+                peak = peak.max(block.last_lfo_outputs[1].to_array()[0]);
+            }
+            peak
+        }
+
+        let static_peak = lfo2_peak(false);
+        let modulated_peak = lfo2_peak(true);
+
+        assert!(
+            modulated_peak > static_peak + 0.25,
+            "LFO1 -> LFO2 Frequency should accelerate LFO2 before it modulates downstream destinations, static {static_peak}, modulated {modulated_peak}"
+        );
+    }
+
+    #[test]
+    fn aux_envelope_route_can_modulate_lfo_frequency_as_internal_route() {
+        fn lfo2_peak(aux_enabled: bool) -> f32 {
+            let mut block = VoiceBlock::new(100.0);
+            block.set_lfo_rate_hz(1, 0.1);
+            block.set_lfo_depth(1, 1.0);
+            block.set_lfo_waveform(1, LfoWaveform::Saw);
+            block.set_aux_destination(if aux_enabled {
+                ModDestination::Lfo2Frequency
+            } else {
+                ModDestination::Off
+            });
+            block.set_aux_amount(1.0);
+            block.set_aux_attack(0.0005);
+            block.set_aux_decay(5.0);
+            block.set_aux_sustain(1.0);
+            block.note_on(0, 60, 1.0, 0.0, false);
+
+            let mut peak = 0.0f32;
+            for _ in 0..64 {
+                voice_block_next(&mut block);
+                peak = peak.max(block.last_lfo_outputs[1].to_array()[0]);
+            }
+            peak
+        }
+
+        let static_peak = lfo2_peak(false);
+        let modulated_peak = lfo2_peak(true);
+
+        assert!(
+            modulated_peak > static_peak * 1.5,
+            "Aux Envelope -> LFO2 Frequency should share the pre-LFO route phase, static {static_peak}, modulated {modulated_peak}"
+        );
     }
 
     #[test]
@@ -569,7 +802,7 @@ mod tests {
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
         voices.handle_control(ControlMessage::SetParam(
             ParamId::Lfo1Destination,
-            LfoDestination::Pan.index() as f32,
+            ModDestination::Pan.index() as f32,
         ));
 
         voices.handle_control(ControlMessage::NoteOn {
@@ -775,7 +1008,7 @@ mod tests {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
-            LfoDestination::Osc1Frequency.index() as f32,
+            ModDestination::Osc1Frequency.index() as f32,
         ));
         voices.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
@@ -802,7 +1035,7 @@ mod tests {
         let mut repeating = Voices::<{ crate::VOICE_PACKS }>::new(1_000.0);
         repeating.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
-            LfoDestination::FilterCutoff.index() as f32,
+            ModDestination::FilterCutoff.index() as f32,
         ));
         repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
         repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.001));

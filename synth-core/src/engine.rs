@@ -64,6 +64,10 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
         self.handle_control(ControlMessage::ModWheel { value });
     }
 
+    pub fn pressure(&mut self, value: f32) {
+        self.handle_control(ControlMessage::Pressure { value });
+    }
+
     pub fn sustain_pedal(&mut self, pressed: bool) {
         self.handle_control(ControlMessage::SustainPedal { pressed });
     }

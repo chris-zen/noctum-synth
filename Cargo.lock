@@ -3311,6 +3311,7 @@ dependencies = [
  "rand_core",
  "rand_pcg",
  "serde",
+ "serde_json",
  "wide",
 ]
 

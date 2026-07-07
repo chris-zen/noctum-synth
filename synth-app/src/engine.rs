@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use synth_core::{ControlMessage, FilterOversampling, ParamId, Patch};
+use synth_core::{
+    ControlMessage, FilterOversampling, ModDestination, ModRoute, ModSource, ParamId, Patch,
+};
 
 pub const MAX_AUDIO_BUF: usize = 1024;
 
@@ -105,6 +107,24 @@ pub struct SynthEngineControl {
 }
 
 impl SynthEngineControl {
+
+    pub fn set_modulation(
+        &self,
+        route: ModRoute,
+        enabled: bool,
+        source: ModSource,
+        destination: ModDestination,
+        amount: f32,
+    ) {
+        self.send(ControlMessage::SetModulation {
+            route,
+            enabled,
+            source,
+            destination,
+            amount,
+        });
+    }
+
     pub fn set_param(&self, param: ParamId, value: f32) {
         self.send(ControlMessage::SetParam(param, value));
     }
@@ -133,6 +153,10 @@ impl SynthEngineControl {
         self.send(ControlMessage::ModWheel { value });
     }
 
+    pub fn pressure(&self, value: f32) {
+        self.send(ControlMessage::Pressure { value });
+    }
+
     pub fn sustain_pedal(&self, pressed: bool) {
         self.send(ControlMessage::SustainPedal { pressed });
     }
@@ -148,6 +172,15 @@ impl SynthEngineControl {
 
     pub fn load_patch(&self, patch: &Patch) {
         patch.for_each_param(|id, value| self.set_param(id, value));
+        patch.for_each_modulation(|route, slot| {
+            self.set_modulation(
+                route,
+                slot.enabled,
+                slot.source,
+                slot.destination,
+                slot.amount,
+            );
+        });
     }
 
     /// Whether audio input is currently mixed into the output.

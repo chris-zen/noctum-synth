@@ -84,11 +84,12 @@ pub use filter::{FilterOversampling, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
 pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, FilterParams, LfoDestination, LfoParams, OscillatorPatch,
-    Patch,
+    AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, FilterParams,
+    LfoParams, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
+    OscillatorPatch, Patch,
 };
 pub use tuning::midi_to_hz;
-pub use voice::VoiceBlock;
+pub use voice::{PerformanceModulation, VoiceBlock};
 pub use voices::{ActiveNotes, Voices};
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
@@ -182,16 +183,40 @@ pub enum ParamId {
 /// Host-to-engine control and performance input.
 pub enum ControlMessage {
     SetParam(ParamId, f32),
+    SetModulation {
+        route: ModRoute,
+        enabled: bool,
+        source: ModSource,
+        destination: ModDestination,
+        amount: f32,
+    },
     /// Changes nonlinear filter self-oscillation oversampling without rebuilding
     /// the audio stream.
     SetFilterOversampling(FilterOversampling),
-    NoteOn { note: u8, velocity: f32 },
-    NoteOff { note: u8 },
+    NoteOn {
+        note: u8,
+        velocity: f32,
+    },
+    NoteOff {
+        note: u8,
+    },
     AllNotesOff,
-    PitchBend { value: f32 },
-    ModWheel { value: f32 },
-    SustainPedal { pressed: bool },
-    ControlChange { controller: u8, value: f32 },
+    PitchBend {
+        value: f32,
+    },
+    ModWheel {
+        value: f32,
+    },
+    Pressure {
+        value: f32,
+    },
+    SustainPedal {
+        pressed: bool,
+    },
+    ControlChange {
+        controller: u8,
+        value: f32,
+    },
 }
 
 /// Circle constant π.

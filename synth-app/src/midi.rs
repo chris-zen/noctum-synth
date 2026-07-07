@@ -72,6 +72,12 @@ fn handle_midi(message: &[u8], control: &SynthEngineControl) {
             let value = u16::from(bend) as f32 / 16383.0 * 2.0 - 1.0;
             control.pitch_bend(value);
         }
+        MidiMessage::PolyphonicKeyPressure(_, _, pressure) => {
+            control.pressure(u8::from(pressure) as f32 / 127.0);
+        }
+        MidiMessage::ChannelPressure(_, pressure) => {
+            control.pressure(u8::from(pressure) as f32 / 127.0);
+        }
         MidiMessage::ControlChange(_, controller, value) => {
             let controller = u8::from(controller);
             let value = u8::from(value);

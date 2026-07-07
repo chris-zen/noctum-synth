@@ -1,5 +1,6 @@
 use synth_core::{
-    ControlMessage, DEFAULT_SAMPLE_RATE, FilterOversampling, LfoDestination, ParamId, SynthEngine,
+    ControlMessage, DEFAULT_SAMPLE_RATE, DedicatedModSource, FilterOversampling, ModDestination,
+    ModRoute, ModSource, ParamId, Patch, SynthEngine,
 };
 
 fn left_rms(buffer: &[f32]) -> f32 {
@@ -578,7 +579,7 @@ fn lfo_to_filter_cutoff_opens_filter() {
             engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
             engine.handle_control(ControlMessage::SetParam(
                 ParamId::Lfo1Destination,
-                LfoDestination::FilterCutoff.index() as f32,
+                ModDestination::FilterCutoff.index() as f32,
             ));
         }
         rendered_note_rms(engine, 60, 1.0, 4096)
@@ -606,7 +607,7 @@ fn aux_envelope_to_filter_cutoff_opens_filter() {
         if enabled {
             engine.handle_control(ControlMessage::SetParam(
                 ParamId::AuxEgDestination,
-                LfoDestination::FilterCutoff.index() as f32,
+                ModDestination::FilterCutoff.index() as f32,
             ));
             engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
             engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
@@ -637,7 +638,7 @@ fn aux_envelope_amount_can_invert_filter_modulation() {
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         engine.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
-            LfoDestination::FilterCutoff.index() as f32,
+            ModDestination::FilterCutoff.index() as f32,
         ));
         engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, amount));
         engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
@@ -667,7 +668,7 @@ fn aux_velocity_param_controls_modulation_depth() {
         engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         engine.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
-            LfoDestination::FilterCutoff.index() as f32,
+            ModDestination::FilterCutoff.index() as f32,
         ));
         engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgVelocity, 1.0));
@@ -686,13 +687,107 @@ fn aux_velocity_param_controls_modulation_depth() {
 }
 
 #[test]
+fn mod_matrix_lfo_to_filter_cutoff_opens_filter() {
+    fn render_with_matrix(enabled: bool) -> f32 {
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Waveform, 3.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
+        engine.handle_control(ControlMessage::SetModulation {
+            route: ModRoute::Free(0),
+            enabled,
+            source: ModSource::Lfo1,
+            destination: ModDestination::FilterCutoff,
+            amount: 1.0,
+        });
+        rendered_note_rms(engine, 60, 1.0, 4096)
+    }
+
+    let static_filter = render_with_matrix(false);
+    let modulated_filter = render_with_matrix(true);
+    assert!(
+        modulated_filter > static_filter * 1.5,
+        "matrix LFO cutoff modulation should open the filter, static {static_filter}, modulated {modulated_filter}"
+    );
+}
+
+#[test]
+fn dedicated_mod_wheel_to_filter_cutoff_uses_controller_value() {
+    fn render_with_wheel(value: f32) -> f32 {
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::SetModulation {
+            route: ModRoute::Dedicated(DedicatedModSource::ModWheel),
+            enabled: true,
+            source: ModSource::ModWheel,
+            destination: ModDestination::FilterCutoff,
+            amount: 1.0,
+        });
+        engine.handle_control(ControlMessage::ModWheel { value });
+        rendered_note_rms(engine, 60, 1.0, 4096)
+    }
+
+    let wheel_down = render_with_wheel(0.0);
+    let wheel_up = render_with_wheel(1.0);
+    assert!(
+        wheel_up > wheel_down * 1.5,
+        "mod wheel route should follow controller value, down {wheel_down}, up {wheel_up}"
+    );
+}
+
+#[test]
+fn disabled_mod_matrix_route_has_no_effect() {
+    fn render_with_route(enabled: bool) -> f32 {
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
+        engine.handle_control(ControlMessage::SetModulation {
+            route: ModRoute::Free(0),
+            enabled,
+            source: ModSource::Dc,
+            destination: ModDestination::Vca,
+            amount: 1.0,
+        });
+        rendered_note_rms(engine, 60, 1.0, 4096)
+    }
+
+    let disabled = render_with_route(false);
+    let enabled = render_with_route(true);
+    assert!(
+        enabled > disabled * 1.5,
+        "disabled route should leave VCA unmodulated, disabled {disabled}, enabled {enabled}"
+    );
+}
+
+#[test]
+fn old_patch_json_defaults_to_empty_mod_matrix() {
+    let mut value = serde_json::to_value(Patch::default()).unwrap();
+    value.as_object_mut().unwrap().remove("mod_matrix");
+
+    let patch: Patch = serde_json::from_value(value).unwrap();
+
+    assert!(patch.mod_matrix.free_slots.iter().all(|slot| !slot.enabled));
+    assert!(patch.mod_matrix.dedicated.iter().all(|slot| !slot.enabled));
+}
+
+#[test]
 fn lfo_to_vca_changes_output_level_over_time() {
     let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 67.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
     engine.handle_control(ControlMessage::SetParam(
         ParamId::Lfo1Destination,
-        LfoDestination::Vca.index() as f32,
+        ModDestination::Vca.index() as f32,
     ));
     engine.handle_control(ControlMessage::NoteOn {
         note: 60,

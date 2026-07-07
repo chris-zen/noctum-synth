@@ -4,17 +4,18 @@ use eframe::egui;
 
 use crate::engine::SynthEngineControl;
 use crate::ui::widgets::{
-    KNOB_SIZE, master_volume, param_knob_bipolar, param_knob_f32, param_knob_log_hz,
-    param_toggle,
+    KNOB_SIZE, master_volume, param_knob_bipolar, param_knob_f32, param_knob_log_hz, param_toggle,
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoDestination, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, OscillatorPatch, ParamId, Patch,
+    DedicatedModSlot, DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
+    ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, ParamId, Patch,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 900.0;
 const OSC_GRID_WIDTH: f32 = 700.0;
 const LFO_PANEL_WIDTH: f32 = 560.0;
+const MOD_MATRIX_PANEL_WIDTH: f32 = 760.0;
 const FILTER_GRID_WIDTH: f32 = 540.0;
 const AMP_GRID_WIDTH: f32 = 320.0;
 const AUX_GRID_WIDTH: f32 = 380.0;
@@ -80,6 +81,14 @@ pub struct UiState {
     pub lfo_destinations: [usize; 4],
     pub lfo_clock_sync: [bool; 4],
     pub lfo_key_sync: [bool; 4],
+    pub selected_mod_route: usize,
+    pub mod_enabled: [bool; 8],
+    pub mod_sources: [usize; 8],
+    pub mod_destinations: [usize; 8],
+    pub mod_amounts: [f32; 8],
+    pub dedicated_mod_enabled: [bool; 5],
+    pub dedicated_mod_destinations: [usize; 5],
+    pub dedicated_mod_amounts: [f32; 5],
     pub master_volume: f32,
 }
 
@@ -139,6 +148,14 @@ impl Default for UiState {
             lfo_destinations: [0; 4],
             lfo_clock_sync: [false; 4],
             lfo_key_sync: [true; 4],
+            selected_mod_route: 0,
+            mod_enabled: [false; 8],
+            mod_sources: [0; 8],
+            mod_destinations: [0; 8],
+            mod_amounts: [0.0; 8],
+            dedicated_mod_enabled: [false; 5],
+            dedicated_mod_destinations: [0; 5],
+            dedicated_mod_amounts: [0.0; 5],
             master_volume: 1.0,
         }
     }
@@ -200,6 +217,19 @@ impl UiState {
             self.lfo_destinations[i] = lfo.destination.index();
             self.lfo_clock_sync[i] = lfo.clock_sync;
             self.lfo_key_sync[i] = lfo.key_sync;
+        }
+        for i in 0..8 {
+            let slot = patch.mod_matrix.free_slots[i];
+            self.mod_enabled[i] = slot.enabled;
+            self.mod_sources[i] = slot.source.index();
+            self.mod_destinations[i] = slot.destination.index();
+            self.mod_amounts[i] = slot.amount;
+        }
+        for i in 0..5 {
+            let slot = patch.mod_matrix.dedicated[i];
+            self.dedicated_mod_enabled[i] = slot.enabled;
+            self.dedicated_mod_destinations[i] = slot.destination.index();
+            self.dedicated_mod_amounts[i] = slot.amount;
         }
     }
 }
@@ -280,7 +310,7 @@ impl From<&UiState> for Patch {
                 eg_release: state.amp_release,
             },
             aux_envelope: synth_core::AuxEnvelopeParams {
-                destination: LfoDestination::from_index(state.aux_destination),
+                destination: ModDestination::from_index(state.aux_destination),
                 amount: state.aux_env_amount,
                 velocity: state.aux_velocity,
                 delay: state.aux_delay,
@@ -295,7 +325,7 @@ impl From<&UiState> for Patch {
                     rate_hz: state.lfo_rates[0],
                     depth: state.lfo_depths[0],
                     waveform: lfo_wf(0),
-                    destination: LfoDestination::from_index(state.lfo_destinations[0]),
+                    destination: ModDestination::from_index(state.lfo_destinations[0]),
                     clock_sync: state.lfo_clock_sync[0],
                     key_sync: state.lfo_key_sync[0],
                 },
@@ -303,7 +333,7 @@ impl From<&UiState> for Patch {
                     rate_hz: state.lfo_rates[1],
                     depth: state.lfo_depths[1],
                     waveform: lfo_wf(1),
-                    destination: LfoDestination::from_index(state.lfo_destinations[1]),
+                    destination: ModDestination::from_index(state.lfo_destinations[1]),
                     clock_sync: state.lfo_clock_sync[1],
                     key_sync: state.lfo_key_sync[1],
                 },
@@ -311,7 +341,7 @@ impl From<&UiState> for Patch {
                     rate_hz: state.lfo_rates[2],
                     depth: state.lfo_depths[2],
                     waveform: lfo_wf(2),
-                    destination: LfoDestination::from_index(state.lfo_destinations[2]),
+                    destination: ModDestination::from_index(state.lfo_destinations[2]),
                     clock_sync: state.lfo_clock_sync[2],
                     key_sync: state.lfo_key_sync[2],
                 },
@@ -319,11 +349,24 @@ impl From<&UiState> for Patch {
                     rate_hz: state.lfo_rates[3],
                     depth: state.lfo_depths[3],
                     waveform: lfo_wf(3),
-                    destination: LfoDestination::from_index(state.lfo_destinations[3]),
+                    destination: ModDestination::from_index(state.lfo_destinations[3]),
                     clock_sync: state.lfo_clock_sync[3],
                     key_sync: state.lfo_key_sync[3],
                 },
             ],
+            mod_matrix: ModMatrix {
+                free_slots: core::array::from_fn(|i| ModMatrixSlot {
+                    enabled: state.mod_enabled[i],
+                    source: ModSource::from_index(state.mod_sources[i]),
+                    destination: ModDestination::from_index(state.mod_destinations[i]),
+                    amount: state.mod_amounts[i],
+                }),
+                dedicated: core::array::from_fn(|i| DedicatedModSlot {
+                    enabled: state.dedicated_mod_enabled[i],
+                    destination: ModDestination::from_index(state.dedicated_mod_destinations[i]),
+                    amount: state.dedicated_mod_amounts[i],
+                }),
+            },
             master_volume: 1.0,
         }
     }
@@ -349,6 +392,12 @@ pub fn show(
 
         module_panel(ui, "Low Frequency Oscillators", |ui| {
             lfo_module(ui, state, control);
+        });
+
+        ui.add_space(8.0);
+
+        module_panel(ui, "Modulation Matrix", |ui| {
+            modulation_matrix_module(ui, state, control);
         });
 
         ui.add_space(8.0);
@@ -773,12 +822,12 @@ fn lfo_shape_selector(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
 fn lfo_destination_selector(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
     let index = state.selected_lfo;
     ui.label(egui::RichText::new("Destination").strong());
-    let current = LfoDestination::from_index(state.lfo_destinations[index]);
+    let current = ModDestination::from_index(state.lfo_destinations[index]);
     egui::ComboBox::from_id_salt(("lfo_destination", index))
         .width(150.0)
         .selected_text(current.name())
         .show_ui(ui, |ui| {
-            for destination in LfoDestination::ALL {
+            for destination in ModDestination::ALL {
                 let destination_index = destination.index();
                 if ui
                     .selectable_label(
@@ -793,6 +842,203 @@ fn lfo_destination_selector(ui: &mut egui::Ui, state: &mut UiState, control: &Sy
                 }
             }
         });
+}
+
+fn modulation_matrix_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    fixed_panel_scroll(ui, "mod_matrix_scroll", MOD_MATRIX_PANEL_WIDTH, |ui| {
+        ui.horizontal(|ui| {
+            for index in 0..8 {
+                mod_route_button(ui, state, index, &(index + 1).to_string());
+            }
+            ui.separator();
+            for (index, source) in DedicatedModSource::ALL.iter().enumerate() {
+                mod_route_button(ui, state, 8 + index, source.name());
+            }
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let selected = state.selected_mod_route.min(12);
+            state.selected_mod_route = selected;
+
+            if selected < 8 {
+                free_mod_route_row(ui, state, control, selected);
+            } else {
+                dedicated_mod_route_row(ui, state, control, selected - 8);
+            }
+        });
+        ui.add_space(6.0);
+    });
+}
+
+fn mod_route_button(ui: &mut egui::Ui, state: &mut UiState, route_index: usize, label: &str) {
+    if ui
+        .add_sized(
+            [48.0, 26.0],
+            egui::Button::selectable(state.selected_mod_route == route_index, label),
+        )
+        .clicked()
+    {
+        state.selected_mod_route = route_index;
+    }
+}
+
+fn free_mod_route_row(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    control: &SynthEngineControl,
+    index: usize,
+) {
+    let mut changed = false;
+    changed |= ui
+        .toggle_value(&mut state.mod_enabled[index], "Enabled")
+        .changed();
+
+    ui.add_space(8.0);
+    changed |= mod_source_combo(
+        ui,
+        ("mod_source", index),
+        &mut state.mod_sources[index],
+        true,
+    );
+    ui.add_space(8.0);
+    changed |= mod_destination_combo(
+        ui,
+        ("mod_destination", index),
+        &mut state.mod_destinations[index],
+    );
+    ui.add_space(8.0);
+    changed |= mod_amount_control(ui, &mut state.mod_amounts[index]);
+
+    if changed {
+        send_free_mod_route(control, state, index);
+    }
+}
+
+fn dedicated_mod_route_row(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    control: &SynthEngineControl,
+    index: usize,
+) {
+    let mut changed = false;
+    changed |= ui
+        .toggle_value(&mut state.dedicated_mod_enabled[index], "Enabled")
+        .changed();
+
+    ui.add_space(8.0);
+    fixed_mod_source_field(ui, DedicatedModSource::ALL[index].name());
+    ui.add_space(8.0);
+    changed |= mod_destination_combo(
+        ui,
+        ("dedicated_mod_destination", index),
+        &mut state.dedicated_mod_destinations[index],
+    );
+    ui.add_space(8.0);
+    changed |= mod_amount_control(ui, &mut state.dedicated_mod_amounts[index]);
+
+    if changed {
+        send_dedicated_mod_route(control, state, index);
+    }
+}
+
+fn mod_source_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    source_index: &mut usize,
+    enabled: bool,
+) -> bool {
+    let current = ModSource::from_index(*source_index);
+    let mut changed = false;
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::ComboBox::from_id_salt(id)
+            .width(150.0)
+            .selected_text(current.name())
+            .show_ui(ui, |ui| {
+                for source in ModSource::ALL {
+                    let index = source.index();
+                    if ui
+                        .selectable_label(*source_index == index, source.name())
+                        .clicked()
+                    {
+                        *source_index = index;
+                        changed = true;
+                        ui.close();
+                    }
+                }
+            });
+    });
+    changed
+}
+
+fn fixed_mod_source_field(ui: &mut egui::Ui, label: &str) {
+    ui.add_enabled_ui(false, |ui| {
+        egui::ComboBox::from_id_salt(("dedicated_mod_source", label))
+            .width(150.0)
+            .selected_text(label)
+            .show_ui(ui, |_| {});
+    });
+}
+
+fn mod_destination_combo(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    destination_index: &mut usize,
+) -> bool {
+    let current = ModDestination::from_index(*destination_index);
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .width(180.0)
+        .selected_text(current.name())
+        .show_ui(ui, |ui| {
+            for destination in ModDestination::ALL {
+                let index = destination.index();
+                if ui
+                    .selectable_label(*destination_index == index, destination.name())
+                    .clicked()
+                {
+                    *destination_index = index;
+                    changed = true;
+                    ui.close();
+                }
+            }
+        });
+    changed
+}
+
+fn mod_amount_control(ui: &mut egui::Ui, amount: &mut f32) -> bool {
+    ui.horizontal(|ui| {
+        ui.label("Amount");
+        ui.add(
+            egui::DragValue::new(amount)
+                .range(-1.0..=1.0)
+                .speed(0.01)
+                .fixed_decimals(2),
+        )
+        .changed()
+    })
+    .inner
+}
+
+fn send_free_mod_route(control: &SynthEngineControl, state: &UiState, index: usize) {
+    control.set_modulation(
+        ModRoute::Free(index),
+        state.mod_enabled[index],
+        ModSource::from_index(state.mod_sources[index]),
+        ModDestination::from_index(state.mod_destinations[index]),
+        state.mod_amounts[index],
+    );
+}
+
+fn send_dedicated_mod_route(control: &SynthEngineControl, state: &UiState, index: usize) {
+    let source = DedicatedModSource::ALL[index];
+    control.set_modulation(
+        ModRoute::Dedicated(source),
+        state.dedicated_mod_enabled[index],
+        source.source(),
+        ModDestination::from_index(state.dedicated_mod_destinations[index]),
+        state.dedicated_mod_amounts[index],
+    );
 }
 
 fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
@@ -1135,12 +1381,12 @@ fn aux_destination_cell(ui: &mut egui::Ui, state: &mut UiState, control: &SynthE
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
             ui.add_space(8.0);
-            let current = LfoDestination::from_index(state.aux_destination);
+            let current = ModDestination::from_index(state.aux_destination);
             egui::ComboBox::from_id_salt("aux_destination")
                 .width(104.0)
                 .selected_text(current.name())
                 .show_ui(ui, |ui| {
-                    for destination in LfoDestination::ALL {
+                    for destination in ModDestination::ALL {
                         let destination_index = destination.index();
                         if ui
                             .selectable_label(

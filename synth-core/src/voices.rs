@@ -1,8 +1,9 @@
 //! Polyphonic voice allocation and mixing.
 
 use crate::fixed_index_list::FixedIndexList;
+use crate::voice::PerformanceModulation;
 use crate::{
-    ControlMessage, FilterOversampling, LANES, LfoDestination, LfoWaveform, ParamId, VOICE_PACKS,
+    ControlMessage, FilterOversampling, LANES, LfoWaveform, ModDestination, ParamId, VOICE_PACKS,
     VoiceBlock, Waveform,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
@@ -90,6 +91,7 @@ pub struct Voices<const PACKS: usize = VOICE_PACKS> {
     held_voices: FixedIndexList<PACKS, LANES>,
     next_voice: usize,
     next_pan_side: f32,
+    performance: PerformanceModulation,
 }
 
 impl<const PACKS: usize> Voices<PACKS> {
@@ -99,6 +101,7 @@ impl<const PACKS: usize> Voices<PACKS> {
             held_voices: FixedIndexList::new(),
             next_voice: 0,
             next_pan_side: -1.0,
+            performance: PerformanceModulation::default(),
         }
     }
 
@@ -143,6 +146,35 @@ impl<const PACKS: usize> Voices<PACKS> {
                 self.held_voices.clear();
             }
             ControlMessage::SetParam(id, value) => self.set_param(id, value),
+            ControlMessage::SetModulation {
+                route,
+                enabled,
+                source,
+                destination,
+                amount,
+            } => {
+                for block in &mut self.blocks {
+                    block.set_mod_route(route, enabled, source, destination, amount);
+                }
+            }
+            ControlMessage::PitchBend { value } => {
+                self.performance.pitch_bend = value.clamp(-1.0, 1.0);
+            }
+            ControlMessage::ModWheel { value } => {
+                self.performance.mod_wheel = value.clamp(0.0, 1.0);
+            }
+            ControlMessage::Pressure { value } => {
+                self.performance.pressure = value.clamp(0.0, 1.0);
+            }
+            ControlMessage::ControlChange { controller, value } => {
+                let value = value.clamp(0.0, 1.0);
+                match controller {
+                    2 => self.performance.breath = value,
+                    4 => self.performance.foot = value,
+                    11 => self.performance.expression = value,
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -286,7 +318,7 @@ impl<const PACKS: usize> Voices<PACKS> {
                 ParamId::AmpEgSustain => block.set_amp_sustain(value),
                 ParamId::AmpEgRelease => block.set_amp_release(value),
                 ParamId::AuxEgDestination => {
-                    block.set_aux_destination(LfoDestination::from_index(value as usize));
+                    block.set_aux_destination(ModDestination::from_index(value as usize));
                 }
                 ParamId::AuxEgAmount => block.set_aux_amount(value),
                 ParamId::AuxEgVelocity => block.set_aux_velocity_amount(value),
@@ -318,16 +350,16 @@ impl<const PACKS: usize> Voices<PACKS> {
                     block.set_lfo_waveform(3, int_to_lfo_waveform(value as i32))
                 }
                 ParamId::Lfo1Destination => {
-                    block.set_lfo_destination(0, LfoDestination::from_index(value as usize));
+                    block.set_lfo_destination(0, ModDestination::from_index(value as usize));
                 }
                 ParamId::Lfo2Destination => {
-                    block.set_lfo_destination(1, LfoDestination::from_index(value as usize));
+                    block.set_lfo_destination(1, ModDestination::from_index(value as usize));
                 }
                 ParamId::Lfo3Destination => {
-                    block.set_lfo_destination(2, LfoDestination::from_index(value as usize));
+                    block.set_lfo_destination(2, ModDestination::from_index(value as usize));
                 }
                 ParamId::Lfo4Destination => {
-                    block.set_lfo_destination(3, LfoDestination::from_index(value as usize));
+                    block.set_lfo_destination(3, ModDestination::from_index(value as usize));
                 }
                 ParamId::Lfo1ClockSync => block.set_lfo_clock_sync(0, value >= 0.5),
                 ParamId::Lfo2ClockSync => block.set_lfo_clock_sync(1, value >= 0.5),
@@ -372,7 +404,7 @@ impl<const PACKS: usize> Voices<PACKS> {
         let mut right = 0.0f32;
         for block in &mut self.blocks {
             block.age_active_lanes();
-            let (block_left, block_right) = block.next();
+            let (block_left, block_right) = block.next(self.performance);
             left += block_left;
             right += block_right;
         }
