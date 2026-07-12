@@ -55,6 +55,31 @@ real time. It is not intended for distribution.
 
 See [synth-core/README.md](synth-core/README.md) for library documentation.
 
+## Documentation
+
+Project documentation lives in [`docs`](docs) and is built with
+[mdBook](https://rust-lang.github.io/mdBook/) plus Mermaid diagrams. It is
+organized into an overview, a player-facing synthesizer guide, the development
+application harness, the `synth-core` SDK, and a future hardware section.
+
+Install the documentation tools:
+
+```bash
+cargo install mdbook mdbook-mermaid
+```
+
+Serve the docs locally:
+
+```bash
+mdbook serve docs
+```
+
+Build the static documentation site:
+
+```bash
+mdbook build docs
+```
+
 ## Requirements
 
 - [Rust](https://rustup.rs/) 1.93 or newer

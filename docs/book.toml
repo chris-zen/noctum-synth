@@ -1,0 +1,18 @@
+[book]
+title = "Analog Synth Documentation"
+authors = ["Analog Synth contributors"]
+description = "Project documentation for the analog-synth Rust virtual-analog synthesizer."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output]
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
