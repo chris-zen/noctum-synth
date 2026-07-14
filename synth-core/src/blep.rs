@@ -1,4 +1,4 @@
-use wide::f32x4;
+use crate::f32x4;
 
 use crate::analog_oscillator::{MAX_PULSE_WIDTH, MIN_PULSE_WIDTH};
 use crate::{LANES, wrap01};

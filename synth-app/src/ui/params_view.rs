@@ -8,14 +8,16 @@ use crate::ui::widgets::{
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DedicatedModSlot, DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
-    ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, ParamId, Patch,
+    DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, MAX_LFO_RATE_HZ,
+    MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
+    OscillatorPatch, ParamId, Patch,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 900.0;
 const OSC_GRID_WIDTH: f32 = 700.0;
 const LFO_PANEL_WIDTH: f32 = 560.0;
 const MOD_MATRIX_PANEL_WIDTH: f32 = 760.0;
+const EFFECTS_PANEL_WIDTH: f32 = 560.0;
 const FILTER_GRID_WIDTH: f32 = 540.0;
 const AMP_GRID_WIDTH: f32 = 320.0;
 const AUX_GRID_WIDTH: f32 = 380.0;
@@ -25,6 +27,27 @@ const DEST_CELL_W: f32 = 112.0;
 const TOGGLE_CELL_W: f32 = 82.0;
 const TOGGLE_CELL_H: f32 = 64.0;
 const WAVE_CELL_W: f32 = 112.0;
+const EFFECT_TYPE_COUNT: usize = 13;
+
+#[derive(Clone, Copy)]
+struct EffectRuntimeParams {
+    mix: f32,
+    clock_sync: bool,
+    param1: f32,
+    param2: f32,
+}
+
+impl Default for EffectRuntimeParams {
+    fn default() -> Self {
+        let params = EffectParams::default();
+        Self {
+            mix: params.mix,
+            clock_sync: params.clock_sync,
+            param1: params.param1,
+            param2: params.param2,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct UiState {
@@ -89,6 +112,13 @@ pub struct UiState {
     pub dedicated_mod_enabled: [bool; 5],
     pub dedicated_mod_destinations: [usize; 5],
     pub dedicated_mod_amounts: [f32; 5],
+    pub effect_enabled: bool,
+    pub effect_type: usize,
+    pub effect_mix: f32,
+    pub effect_clock_sync: bool,
+    pub effect_param1: f32,
+    pub effect_param2: f32,
+    effect_runtime_params: [EffectRuntimeParams; EFFECT_TYPE_COUNT],
     pub master_volume: f32,
 }
 
@@ -156,7 +186,14 @@ impl Default for UiState {
             dedicated_mod_enabled: [false; 5],
             dedicated_mod_destinations: [0; 5],
             dedicated_mod_amounts: [0.0; 5],
-            master_volume: 1.0,
+            effect_enabled: false,
+            effect_type: 0,
+            effect_mix: 0.0,
+            effect_clock_sync: false,
+            effect_param1: 0.25,
+            effect_param2: 0.25,
+            effect_runtime_params: [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT],
+            master_volume: 0.8,
         }
     }
 }
@@ -231,6 +268,34 @@ impl UiState {
             self.dedicated_mod_destinations[i] = slot.destination.index();
             self.dedicated_mod_amounts[i] = slot.amount;
         }
+        self.effect_enabled = patch.effects.enabled;
+        self.effect_type = patch.effects.effect_type.index();
+        self.effect_mix = patch.effects.mix;
+        self.effect_clock_sync = patch.effects.clock_sync;
+        self.effect_param1 = patch.effects.param1;
+        self.effect_param2 = patch.effects.param2;
+        self.effect_runtime_params = [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT];
+        self.store_active_effect_params();
+        self.master_volume = patch.master_volume;
+    }
+
+    fn store_active_effect_params(&mut self) {
+        self.effect_runtime_params[self.effect_type] = EffectRuntimeParams {
+            mix: self.effect_mix,
+            clock_sync: self.effect_clock_sync,
+            param1: self.effect_param1,
+            param2: self.effect_param2,
+        };
+    }
+
+    fn select_effect(&mut self, effect_type: usize) {
+        self.store_active_effect_params();
+        self.effect_type = effect_type;
+        let params = self.effect_runtime_params[effect_type];
+        self.effect_mix = params.mix;
+        self.effect_clock_sync = params.clock_sync;
+        self.effect_param1 = params.param1;
+        self.effect_param2 = params.param2;
     }
 }
 
@@ -367,7 +432,15 @@ impl From<&UiState> for Patch {
                     amount: state.dedicated_mod_amounts[i],
                 }),
             },
-            master_volume: 1.0,
+            effects: EffectParams {
+                enabled: state.effect_enabled,
+                effect_type: EffectType::from_index(state.effect_type),
+                mix: state.effect_mix,
+                clock_sync: state.effect_clock_sync,
+                param1: state.effect_param1,
+                param2: state.effect_param2,
+            },
+            master_volume: state.master_volume,
         }
     }
 }
@@ -398,6 +471,12 @@ pub fn show(
 
         module_panel(ui, "Modulation Matrix", |ui| {
             modulation_matrix_module(ui, state, control);
+        });
+
+        ui.add_space(8.0);
+
+        module_panel(ui, "Effects", |ui| {
+            effects_module(ui, state, control);
         });
 
         ui.add_space(8.0);
@@ -1039,6 +1118,145 @@ fn send_dedicated_mod_route(control: &SynthEngineControl, state: &UiState, index
         ModDestination::from_index(state.dedicated_mod_destinations[index]),
         state.dedicated_mod_amounts[index],
     );
+}
+
+fn effects_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    fixed_panel_scroll(ui, "effects_scroll", EFFECTS_PANEL_WIDTH, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(70.0, CONTROL_CELL_H),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.add_space(18.0);
+                    param_toggle(
+                        ui,
+                        "On",
+                        &mut state.effect_enabled,
+                        ParamId::EffectEnabled,
+                        control,
+                    );
+                },
+            );
+
+            ui.add_space(8.0);
+            effect_type_selector(ui, state, control);
+            ui.add_space(8.0);
+
+            control_cell(ui, |ui| {
+                param_knob_f32(
+                    ui,
+                    "Mix",
+                    &mut state.effect_mix,
+                    0.0..=1.0,
+                    0.0,
+                    ParamId::EffectMix,
+                    control,
+                );
+            });
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(74.0, CONTROL_CELL_H),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.add_space(18.0);
+                    let active = EffectType::from_index(state.effect_type).is_delay();
+                    ui.add_enabled_ui(active, |ui| {
+                        param_toggle(
+                            ui,
+                            "Clk Sync",
+                            &mut state.effect_clock_sync,
+                            ParamId::EffectClockSync,
+                            control,
+                        );
+                    });
+                    if !active && state.effect_clock_sync {
+                        state.effect_clock_sync = false;
+                        control.set_param(ParamId::EffectClockSync, 0.0);
+                    }
+                },
+            );
+
+            let (param1_label, param2_label) =
+                effect_param_labels(EffectType::from_index(state.effect_type));
+            control_cell(ui, |ui| {
+                param_knob_f32(
+                    ui,
+                    param1_label,
+                    &mut state.effect_param1,
+                    0.0..=1.0,
+                    0.25,
+                    ParamId::EffectParam1,
+                    control,
+                );
+            });
+            control_cell(ui, |ui| {
+                param_knob_f32(
+                    ui,
+                    param2_label,
+                    &mut state.effect_param2,
+                    0.0..=1.0,
+                    0.25,
+                    ParamId::EffectParam2,
+                    control,
+                );
+            });
+        });
+    });
+    state.store_active_effect_params();
+}
+
+fn effect_type_selector(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(140.0, CONTROL_CELL_H),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.add_space(8.0);
+            let current = EffectType::from_index(state.effect_type);
+            egui::ComboBox::from_id_salt("effect_type")
+                .width(132.0)
+                .selected_text(current.name())
+                .show_ui(ui, |ui| {
+                    for effect in EffectType::ALL {
+                        let index = effect.index();
+                        if ui
+                            .selectable_label(state.effect_type == index, effect.name())
+                            .clicked()
+                        {
+                            state.select_effect(index);
+                            control.set_param(ParamId::EffectType, index as f32);
+                            control.set_param(ParamId::EffectMix, state.effect_mix);
+                            control.set_param(
+                                ParamId::EffectClockSync,
+                                f32::from(state.effect_clock_sync),
+                            );
+                            control.set_param(ParamId::EffectParam1, state.effect_param1);
+                            control.set_param(ParamId::EffectParam2, state.effect_param2);
+                            ui.close();
+                        }
+                    }
+                });
+            ui.add_space(4.0);
+            ui.label("Type");
+        },
+    );
+}
+
+fn effect_param_labels(effect: EffectType) -> (&'static str, &'static str) {
+    match effect {
+        EffectType::DelayMono | EffectType::DdlStereo | EffectType::BucketBrigadeDelay => {
+            ("Delay", "Feedback")
+        }
+        EffectType::Chorus
+        | EffectType::PhaserHigh
+        | EffectType::PhaserLow
+        | EffectType::PhaserMst
+        | EffectType::Flanger1
+        | EffectType::Flanger2 => ("Rate", "Depth"),
+        EffectType::Reverb => ("Time", "Color"),
+        EffectType::RingMod => ("Tuning", "Tracking"),
+        EffectType::Distortion => ("Gain", "Tone"),
+        EffectType::HighPassFilter => ("Cutoff", "Res"),
+    }
 }
 
 fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {

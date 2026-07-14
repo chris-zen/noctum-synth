@@ -1,6 +1,6 @@
 //! Low-frequency oscillators for periodic modulation.
 
-use wide::f32x4;
+use crate::f32x4;
 
 use crate::rng::DspRng;
 use crate::{LANES, wrap01};
@@ -11,7 +11,7 @@ pub const MIN_LFO_RATE_HZ: f32 = 0.022;
 pub const MAX_LFO_RATE_HZ: f32 = 500.0;
 
 /// LFO waveform shape.
-#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoWaveform {
     Triangle,

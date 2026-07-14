@@ -1,8 +1,8 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use synth_core::f32x4;
 use synth_core::{LANES, LadderFilter, VOICE_PACKS};
-use wide::f32x4;
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 1_000_000;

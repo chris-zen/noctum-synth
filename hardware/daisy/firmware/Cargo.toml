@@ -1,0 +1,42 @@
+[package]
+name = "analog-synth-daisy-firmware"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["embedded-math"]
+audio-profiling = ["synth-core/profiling"]
+embedded-math = ["synth-core/embedded-math"]
+
+[dependencies]
+synth-core = { path = "../../../synth-core", default-features = false }
+wmidi.workspace = true
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+defmt.workspace = true
+defmt-rtt.workspace = true
+embassy-daisy = { path = "../embassy-daisy", features = ["seed_1_1"] }
+embassy-executor.workspace = true
+embassy-futures.workspace = true
+embassy-sync.workspace = true
+embassy-usb.workspace = true
+panic-probe.workspace = true
+static_cell.workspace = true
+
+[[bin]]
+name = "analog-synth-daisy-firmware"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "dsp-benchmark"
+path = "src/bin/dsp-benchmark.rs"
+required-features = ["audio-profiling"]
+test = false
+bench = false

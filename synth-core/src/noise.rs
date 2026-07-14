@@ -1,4 +1,4 @@
-use wide::{f32x4, i32x4};
+use crate::{f32x4, i32x4};
 
 /// Scales a signed 32-bit lane to the bipolar `[-1, 1)` range.
 const NOISE_SCALE: f32 = 2.0 / 0xffff_ffffu32 as f32;

@@ -1,6 +1,6 @@
 //! Dual-oscillator mixer with sub oscillator, noise, sync, and glide.
 
-use wide::f32x4;
+use crate::f32x4;
 
 use crate::{AnalogOscillator, AnalogSubOscillator, Waveform, WhiteNoise, midi_to_hz};
 
@@ -14,6 +14,8 @@ pub struct Oscillators {
     noise: WhiteNoise,
     params: OscillatorsParams,
     note_frequency_hz: f32x4,
+    last_frequency_modulation: [f32x4; 2],
+    last_shape_modulation: [f32x4; 2],
     sample_rate: f32,
 }
 
@@ -26,6 +28,8 @@ impl Oscillators {
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
             note_frequency_hz: f32x4::splat(0.0),
+            last_frequency_modulation: [f32x4::splat(0.0); 2],
+            last_shape_modulation: [f32x4::splat(0.0); 2],
             sample_rate,
         };
         oscillators.apply_params_without_frequency();
@@ -54,12 +58,14 @@ impl Oscillators {
         self.params.osc1.waveform = waveform;
         self.osc1.set_waveform(waveform);
         apply_shape_mod(&mut self.osc1, &self.params.osc1);
+        self.last_shape_modulation[0] = f32x4::splat(0.0);
     }
 
     pub fn set_osc2_waveform(&mut self, waveform: Waveform) {
         self.params.osc2.waveform = waveform;
         self.osc2.set_waveform(waveform);
         apply_shape_mod(&mut self.osc2, &self.params.osc2);
+        self.last_shape_modulation[1] = f32x4::splat(0.0);
     }
 
     pub fn set_osc1_frequency_semitones(&mut self, semitones: f32) {
@@ -85,11 +91,13 @@ impl Oscillators {
     pub fn set_osc1_shape_mod(&mut self, shape_mod: f32) {
         self.params.osc1.shape_mod = shape_mod.clamp(0.0, 1.0);
         apply_shape_mod(&mut self.osc1, &self.params.osc1);
+        self.last_shape_modulation[0] = f32x4::splat(0.0);
     }
 
     pub fn set_osc2_shape_mod(&mut self, shape_mod: f32) {
         self.params.osc2.shape_mod = shape_mod.clamp(0.0, 1.0);
         apply_shape_mod(&mut self.osc2, &self.params.osc2);
+        self.last_shape_modulation[1] = f32x4::splat(0.0);
     }
 
     pub fn set_osc1_note_reset(&mut self, note_reset: bool) {
@@ -152,21 +160,38 @@ impl Oscillators {
     }
 
     pub fn next(&mut self, modulation: OscillatorModulation) -> OscillatorsOutput {
-        self.update_frequencies_modulated(
+        let frequency_modulation = [
             modulation.osc1_frequency_semitones,
             modulation.osc2_frequency_semitones,
-        );
+        ];
+        if frequency_modulation != self.last_frequency_modulation {
+            self.update_frequencies_modulated(frequency_modulation[0], frequency_modulation[1]);
+        }
 
-        self.osc1.set_shape(modulated_scalar_shape(
-            self.params.osc1.shape_mod,
-            modulation.osc1_shape,
-        ));
-        self.osc2.set_shape(modulated_scalar_shape(
-            self.params.osc2.shape_mod,
-            modulation.osc2_shape,
-        ));
+        let shape_modulation = [modulation.osc1_shape, modulation.osc2_shape];
+        if shape_modulation[0] != self.last_shape_modulation[0] {
+            self.osc1.set_shape(modulated_scalar_shape(
+                self.params.osc1.shape_mod,
+                shape_modulation[0],
+            ));
+        }
+        if shape_modulation[1] != self.last_shape_modulation[1] {
+            self.osc2.set_shape(modulated_scalar_shape(
+                self.params.osc2.shape_mod,
+                shape_modulation[1],
+            ));
+        }
+        self.last_shape_modulation = shape_modulation;
 
-        let osc2_step = self.osc2.next_step();
+        let osc2_step = if self.params.osc2.enabled {
+            self.osc2.next_step()
+        } else {
+            crate::analog_oscillator::OscillatorStep {
+                output: f32x4::splat(0.0),
+                wrapped: [false; crate::LANES],
+                wrap_phase_fraction: [0.0; crate::LANES],
+            }
+        };
         if self.params.sync && self.params.osc2.enabled {
             self.osc1
                 .sync_reset_lanes_at(osc2_step.wrapped, osc2_step.wrap_phase_fraction);
@@ -179,8 +204,16 @@ impl Oscillators {
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
         let noise_level = (f32x4::splat(self.params.noise) + modulation.noise_level)
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let sub = self.sub_osc.next() * sub_level;
-        let noise = self.noise.next() * noise_level;
+        let sub = if sub_level == f32x4::ZERO {
+            f32x4::splat(0.0)
+        } else {
+            self.sub_osc.next() * sub_level
+        };
+        let noise = if noise_level == f32x4::ZERO {
+            f32x4::splat(0.0)
+        } else {
+            self.noise.next() * noise_level
+        };
         let mix = (f32x4::splat(self.params.osc_mix) + modulation.mix)
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
         let osc1_gain = (f32x4::splat(1.0) - mix + modulation.osc1_level)
@@ -211,6 +244,8 @@ impl Oscillators {
         osc1_frequency_mod_semitones: f32x4,
         osc2_frequency_mod_semitones: f32x4,
     ) {
+        self.last_frequency_modulation =
+            [osc1_frequency_mod_semitones, osc2_frequency_mod_semitones];
         let osc1 = oscillator_frequency(
             self.note_frequency_hz,
             &self.params.osc1,
@@ -355,8 +390,8 @@ fn modulated_scalar_shape(base: f32, modulation: f32x4) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{OscillatorModulation, Oscillators, Waveform, osc_mix_to_gains};
+    use crate::f32x4;
     use crate::midi_to_hz;
-    use wide::f32x4;
 
     const SAMPLE_RATE: f32 = 44_100.0;
 

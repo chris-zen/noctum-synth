@@ -175,33 +175,33 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
     if state.osc.frozen {
         // Skip data intake so both the oscilloscope and spectrum stay frozen.
     } else {
-    for block in audio_blocks {
-        let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
-        let osc_copy_len = block_len.min(MAX_AUDIO_BUF);
-        state.osc.buffer_l[..osc_copy_len].copy_from_slice(&block.left[..osc_copy_len]);
-        state.osc.buffer_r[..osc_copy_len].copy_from_slice(&block.right[..osc_copy_len]);
-        state.osc.buf_len = osc_copy_len;
+        for block in audio_blocks {
+            let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
+            let osc_copy_len = block_len.min(MAX_AUDIO_BUF);
+            state.osc.buffer_l[..osc_copy_len].copy_from_slice(&block.left[..osc_copy_len]);
+            state.osc.buffer_r[..osc_copy_len].copy_from_slice(&block.right[..osc_copy_len]);
+            state.osc.buf_len = osc_copy_len;
 
-        let fft_size = state.fft.fft_size;
-        let copy_len = block_len.min(fft_size);
-        let shift = fft_size - copy_len;
-        state.fft.buffer.copy_within(copy_len..fft_size, 0);
-        match state.fft.channel {
-            SpectrumChannel::Left => {
-                state.fft.buffer[shift..fft_size].copy_from_slice(&block.left[..copy_len]);
-            }
-            SpectrumChannel::Right => {
-                state.fft.buffer[shift..fft_size].copy_from_slice(&block.right[..copy_len]);
-            }
-            SpectrumChannel::Sum => {
-                for index in 0..copy_len {
-                    state.fft.buffer[shift + index] =
-                        0.5 * (block.left[index] + block.right[index]);
+            let fft_size = state.fft.fft_size;
+            let copy_len = block_len.min(fft_size);
+            let shift = fft_size - copy_len;
+            state.fft.buffer.copy_within(copy_len..fft_size, 0);
+            match state.fft.channel {
+                SpectrumChannel::Left => {
+                    state.fft.buffer[shift..fft_size].copy_from_slice(&block.left[..copy_len]);
+                }
+                SpectrumChannel::Right => {
+                    state.fft.buffer[shift..fft_size].copy_from_slice(&block.right[..copy_len]);
+                }
+                SpectrumChannel::Sum => {
+                    for index in 0..copy_len {
+                        state.fft.buffer[shift + index] =
+                            0.5 * (block.left[index] + block.right[index]);
+                    }
                 }
             }
+            state.fft.frame_count += 1;
         }
-        state.fft.frame_count += 1;
-    }
     }
 
     let available = ui.available_size();
@@ -772,8 +772,14 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
     if let Some((_freq, _db, _bin, x, y)) = hover_info {
         let painter = ui.painter_at(plot_rect);
         painter.line_segment(
-            [egui::pos2(x, plot_rect.top()), egui::pos2(x, plot_rect.bottom())],
-            egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(180, 235, 255, 80)),
+            [
+                egui::pos2(x, plot_rect.top()),
+                egui::pos2(x, plot_rect.bottom()),
+            ],
+            egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_premultiplied(180, 235, 255, 80),
+            ),
         );
         painter.line_segment(
             [egui::pos2(x, y), egui::pos2(x + 6.0, y)],

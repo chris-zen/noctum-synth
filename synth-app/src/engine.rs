@@ -107,7 +107,6 @@ pub struct SynthEngineControl {
 }
 
 impl SynthEngineControl {
-
     pub fn set_modulation(
         &self,
         route: ModRoute,

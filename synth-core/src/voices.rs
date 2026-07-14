@@ -1,6 +1,9 @@
 //! Polyphonic voice allocation and mixing.
 
+use crate::effects::EffectModulation;
 use crate::fixed_index_list::FixedIndexList;
+#[cfg(feature = "profiling")]
+use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
     ControlMessage, FilterOversampling, LANES, LfoWaveform, ModDestination, ParamId, VOICE_PACKS,
@@ -89,9 +92,12 @@ impl<const PACKS: usize> Iterator for ActiveNotesIter<'_, PACKS> {
 pub struct Voices<const PACKS: usize = VOICE_PACKS> {
     blocks: [VoiceBlock; PACKS],
     held_voices: FixedIndexList<PACKS, LANES>,
+    sustained_voices: [[bool; LANES]; PACKS],
+    sustain_pressed: bool,
     next_voice: usize,
     next_pan_side: f32,
     performance: PerformanceModulation,
+    last_effect_modulation: EffectModulation,
 }
 
 impl<const PACKS: usize> Voices<PACKS> {
@@ -99,9 +105,12 @@ impl<const PACKS: usize> Voices<PACKS> {
         Self {
             blocks: core::array::from_fn(|_| VoiceBlock::new(sample_rate)),
             held_voices: FixedIndexList::new(),
+            sustained_voices: [[false; LANES]; PACKS],
+            sustain_pressed: false,
             next_voice: 0,
             next_pan_side: -1.0,
             performance: PerformanceModulation::default(),
+            last_effect_modulation: EffectModulation::default(),
         }
     }
 
@@ -119,6 +128,7 @@ impl<const PACKS: usize> Voices<PACKS> {
                 let active_voice_idx = self.find_active_voice(note);
                 let voice_idx = active_voice_idx.unwrap_or_else(|| self.allocate_voice());
                 let (block_idx, lane) = self.voice_location(voice_idx);
+                self.sustained_voices[block_idx][lane] = false;
                 let pan_side = if active_voice_idx.is_some() {
                     self.blocks[block_idx].pan_sides[lane]
                 } else {
@@ -144,6 +154,7 @@ impl<const PACKS: usize> Voices<PACKS> {
                     block.all_notes_off();
                 }
                 self.held_voices.clear();
+                self.sustained_voices = [[false; LANES]; PACKS];
             }
             ControlMessage::SetParam(id, value) => self.set_param(id, value),
             ControlMessage::SetModulation {
@@ -166,6 +177,9 @@ impl<const PACKS: usize> Voices<PACKS> {
             ControlMessage::Pressure { value } => {
                 self.performance.pressure = value.clamp(0.0, 1.0);
             }
+            ControlMessage::SustainPedal { pressed } => {
+                self.set_sustain_pedal(pressed);
+            }
             ControlMessage::ControlChange { controller, value } => {
                 let value = value.clamp(0.0, 1.0);
                 match controller {
@@ -182,12 +196,31 @@ impl<const PACKS: usize> Voices<PACKS> {
     fn note_off(&mut self, note: u8) {
         while let Some(voice_idx) = self.find_active_voice(note) {
             let (block_idx, lane) = self.voice_location(voice_idx);
-            let block = &mut self.blocks[block_idx];
-            if block.notes[lane] == note && block.gates[lane] {
-                block.note_off_lane(lane);
-            }
             self.held_voices.remove(voice_idx);
+            if self.sustain_pressed {
+                self.sustained_voices[block_idx][lane] = true;
+            } else {
+                self.sustained_voices[block_idx][lane] = false;
+                let block = &mut self.blocks[block_idx];
+                if block.notes[lane] == note && block.gates[lane] {
+                    block.note_off_lane(lane);
+                }
+            }
         }
+    }
+
+    fn set_sustain_pedal(&mut self, pressed: bool) {
+        if self.sustain_pressed && !pressed {
+            for (block_idx, sustained) in self.sustained_voices.iter_mut().enumerate() {
+                for (lane, is_sustained) in sustained.iter_mut().enumerate() {
+                    if *is_sustained {
+                        self.blocks[block_idx].note_off_lane(lane);
+                        *is_sustained = false;
+                    }
+                }
+            }
+        }
+        self.sustain_pressed = pressed;
     }
 
     fn find_active_voice(&self, note: u8) -> Option<usize> {
@@ -230,7 +263,16 @@ impl<const PACKS: usize> Voices<PACKS> {
             }
         }
 
-        // 3. Last resort: steal the oldest held voice.
+        // 3. Reuse a sustained voice before stealing a physically held key.
+        for offset in 0..Self::VOICE_COUNT {
+            let idx = (self.next_voice + offset) % Self::VOICE_COUNT;
+            let (block_idx, lane) = self.voice_location(idx);
+            if self.sustained_voices[block_idx][lane] {
+                return idx;
+            }
+        }
+
+        // 4. Last resort: steal the oldest held voice.
         self.held_voices.front().unwrap_or(0)
     }
 
@@ -399,17 +441,44 @@ fn int_to_lfo_waveform(value: i32) -> LfoWaveform {
 }
 
 impl<const PACKS: usize> Voices<PACKS> {
+    #[cfg(not(feature = "profiling"))]
     pub(crate) fn next(&mut self) -> (f32, f32) {
+        self.next_inner()
+    }
+
+    #[cfg(feature = "profiling")]
+    pub(crate) fn next_profiled(&mut self, profiler: &mut impl RenderProfiler) -> (f32, f32) {
+        self.next_inner(profiler)
+    }
+
+    fn next_inner(
+        &mut self,
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) -> (f32, f32) {
         let mut left = 0.0f32;
         let mut right = 0.0f32;
+        let mut effects = EffectModulation::default();
         for block in &mut self.blocks {
+            if block.active_lane_count() == 0 {
+                block.last_effect_modulation = EffectModulation::default();
+                continue;
+            }
             block.age_active_lanes();
+            #[cfg(feature = "profiling")]
+            let (block_left, block_right) = block.next_profiled(self.performance, profiler);
+            #[cfg(not(feature = "profiling"))]
             let (block_left, block_right) = block.next(self.performance);
             left += block_left;
             right += block_right;
+            effects.add(block.last_effect_modulation);
         }
 
+        self.last_effect_modulation = effects.scale(1.0 / PACKS as f32);
         (left, right)
+    }
+
+    pub fn effect_modulation(&self) -> EffectModulation {
+        self.last_effect_modulation
     }
 
     pub fn active_notes(&self) -> ActiveNotes<PACKS> {
@@ -442,6 +511,14 @@ impl<const PACKS: usize> Voices<PACKS> {
             .iter()
             .map(|block| block.active_lane_count())
             .sum()
+    }
+
+    pub fn lowest_active_note(&self) -> Option<u8> {
+        let mut lowest = None;
+        self.for_each_active_note(|note| {
+            lowest = Some(lowest.map_or(note, |current: u8| current.min(note)));
+        });
+        lowest
     }
 
     pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
@@ -483,8 +560,6 @@ impl<const PACKS: usize> IndexMut<usize> for Voices<PACKS> {
 mod tests {
     use super::*;
     use crate::{ParamId, VOICE_COUNT};
-    use std::vec;
-    use std::vec::Vec;
 
     fn process_frames(voices: &mut Voices, frames: usize) {
         for _ in 0..frames {
@@ -515,9 +590,12 @@ mod tests {
             velocity: 0.7,
         });
 
+        let active_notes = voices.active_notes();
+        let mut notes = active_notes.iter();
+        assert_eq!(notes.next(), Some(60));
         assert_eq!(
-            voices.active_notes().iter().collect::<Vec<_>>(),
-            vec![60],
+            notes.next(),
+            None,
             "repeated note-on should not allocate duplicate voices for the same key"
         );
     }
@@ -727,6 +805,70 @@ mod tests {
 
         assert!(voices.active_notes().is_empty());
         assert_eq!(voices.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn sustain_defers_note_off_until_pedal_release() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+
+        assert!(voices.active_notes().contains(&60));
+        assert!(voices.held_voices.is_empty());
+        assert!(voices.sustained_voices[0][0]);
+
+        voices.handle_control(ControlMessage::SustainPedal { pressed: false });
+
+        assert!(!voices[0].gates[0]);
+        assert!(!voices.sustained_voices[0][0]);
+    }
+
+    #[test]
+    fn pedal_release_keeps_physically_held_notes_gated() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+
+        voices.handle_control(ControlMessage::SustainPedal { pressed: false });
+
+        assert!(!voices.active_notes().contains(&60));
+        assert!(voices.active_notes().contains(&64));
+    }
+
+    #[test]
+    fn sustained_voice_is_stolen_before_held_voice() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        for note in 60..=63 {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+
+        let active = voices.active_notes();
+        assert_eq!(active.len(), LANES);
+        assert!(!active.contains(&60));
+        for note in 61..=64 {
+            assert!(active.contains(&note));
+        }
     }
 
     #[test]

@@ -1,24 +1,57 @@
 //! Top-level synthesis engine and audio render entry point.
 
+use crate::EffectType;
+use crate::effects::EffectsWithMemory;
+#[cfg(feature = "profiling")]
+use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::voices::Voices;
-use crate::{ActiveNotes, ControlMessage, FilterOversampling, ParamId, VOICE_PACKS};
+use crate::{
+    ActiveNotes, ControlMessage, DEFAULT_TEMPO_BPM, FilterOversampling, ParamId, VOICE_PACKS,
+};
+
+/// Synthesis engine with inline effects storage.
+pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize = 48_000> =
+    SynthEngineWithMemory<PACKS, [f32; FX_SAMPLES]>;
 
 /// Owns all voices and renders stereo audio from [`ControlMessage`] input.
 ///
 /// Construct with [`SynthEngine::new`], feed control messages from the host
 /// thread, then call [`SynthEngine::process`] or
 /// [`SynthEngine::process_interleaved`] on the audio thread.
-pub struct SynthEngine<const PACKS: usize = VOICE_PACKS> {
+pub struct SynthEngineWithMemory<const PACKS: usize, Memory> {
     voices: Voices<PACKS>,
+    effects: EffectsWithMemory<Memory>,
+    tempo_bpm: f32,
     master_volume: f32,
 }
 
-impl<const PACKS: usize> SynthEngine<PACKS> {
-    /// Creates an engine at `sample_rate` with default patch settings.
+impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [f32; FX_SAMPLES]> {
+    /// Creates an engine at `sample_rate` with inline effects storage.
     pub fn new(sample_rate: f32) -> Self {
+        let mut effects = crate::effects::Effects::new(sample_rate);
+        effects.set_tempo_bpm(DEFAULT_TEMPO_BPM);
         Self {
             voices: Voices::<PACKS>::new(sample_rate),
-            master_volume: 1.0,
+            effects,
+            tempo_bpm: DEFAULT_TEMPO_BPM,
+            master_volume: 0.8,
+        }
+    }
+}
+
+impl<const PACKS: usize, Memory> SynthEngineWithMemory<PACKS, Memory>
+where
+    Memory: AsRef<[f32]> + AsMut<[f32]>,
+{
+    /// Creates an engine using caller-provided effects memory.
+    pub fn new_with_effects_memory(sample_rate: f32, effects_memory: Memory) -> Self {
+        let mut effects = EffectsWithMemory::new_with_memory(sample_rate, effects_memory);
+        effects.set_tempo_bpm(DEFAULT_TEMPO_BPM);
+        Self {
+            voices: Voices::<PACKS>::new(sample_rate),
+            effects,
+            tempo_bpm: DEFAULT_TEMPO_BPM,
+            master_volume: 0.8,
         }
     }
 
@@ -28,6 +61,26 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
             ControlMessage::SetParam(ParamId::MasterVolume, value) => {
                 self.master_volume = value.clamp(0.0, 1.0);
             }
+            ControlMessage::SetParam(ParamId::EffectEnabled, value) => {
+                self.effects.set_enabled(value >= 0.5);
+            }
+            ControlMessage::SetParam(ParamId::EffectType, value) => {
+                self.effects
+                    .set_type(EffectType::from_index(value as usize));
+            }
+            ControlMessage::SetParam(ParamId::EffectMix, value) => {
+                self.effects.set_mix(value);
+            }
+            ControlMessage::SetParam(ParamId::EffectClockSync, value) => {
+                self.effects.set_clock_sync(value >= 0.5);
+            }
+            ControlMessage::SetParam(ParamId::EffectParam1, value) => {
+                self.effects.set_param1(value);
+            }
+            ControlMessage::SetParam(ParamId::EffectParam2, value) => {
+                self.effects.set_param2(value);
+            }
+            ControlMessage::SetTempoBpm { bpm } => self.set_tempo_bpm(bpm),
             ControlMessage::SetFilterOversampling(oversampling) => {
                 self.set_filter_oversampling(oversampling);
             }
@@ -37,6 +90,16 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
 
     pub fn set_param(&mut self, param: ParamId, value: f32) {
         self.handle_control(ControlMessage::SetParam(param, value));
+    }
+
+    /// Updates the global tempo and propagates it to clock-synchronized effects.
+    pub fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
+        self.tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
+        self.effects.set_tempo_bpm(self.tempo_bpm);
+    }
+
+    pub fn tempo_bpm(&self) -> f32 {
+        self.tempo_bpm
     }
 
     /// Applies the nonlinear filter oversampling policy to all voices.
@@ -83,11 +146,39 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
 
     /// Renders interleaved audio with `channels` samples per frame (1 = mono, 2 = stereo).
     pub fn process_interleaved(&mut self, buffer: &mut [f32], channels: usize) {
+        #[cfg(feature = "profiling")]
+        {
+            self.process_interleaved_inner(buffer, channels, &mut NoopProfiler);
+        }
+        #[cfg(not(feature = "profiling"))]
+        self.process_interleaved_inner(buffer, channels);
+    }
+
+    /// Renders audio while reporting DSP stage boundaries to `profiler`.
+    #[cfg(feature = "profiling")]
+    pub fn process_interleaved_profiled(
+        &mut self,
+        buffer: &mut [f32],
+        channels: usize,
+        profiler: &mut impl RenderProfiler,
+    ) {
+        self.process_interleaved_inner(buffer, channels, profiler);
+    }
+
+    fn process_interleaved_inner(
+        &mut self,
+        buffer: &mut [f32],
+        channels: usize,
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) {
         if channels == 0 {
             return;
         }
 
         for frame in buffer.chunks_exact_mut(channels) {
+            #[cfg(feature = "profiling")]
+            let (left, right) = self.next_profiled(profiler);
+            #[cfg(not(feature = "profiling"))]
             let (left, right) = self.next();
             if channels == 1 {
                 frame[0] = (0.5 * (left + right)).clamp(-1.0, 1.0);
@@ -99,14 +190,46 @@ impl<const PACKS: usize> SynthEngine<PACKS> {
         }
     }
 
+    #[cfg(not(feature = "profiling"))]
     fn next(&mut self) -> (f32, f32) {
+        self.next_inner()
+    }
+
+    #[cfg(feature = "profiling")]
+    fn next_profiled(&mut self, profiler: &mut impl RenderProfiler) -> (f32, f32) {
+        self.next_inner(profiler)
+    }
+
+    fn next_inner(
+        &mut self,
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) -> (f32, f32) {
+        #[cfg(feature = "profiling")]
+        let (left, right) = self.voices.next_profiled(profiler);
+        #[cfg(not(feature = "profiling"))]
         let (left, right) = self.voices.next();
 
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::Effects);
+        let (left, right) = self.effects.next(
+            left,
+            right,
+            self.voices.effect_modulation(),
+            self.voices.lowest_active_note(),
+        );
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::Effects);
+
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::MasterOutput);
         let gain = self.master_volume;
-        (
+        let output = (
             (left * gain).clamp(-1.0, 1.0),
             (right * gain).clamp(-1.0, 1.0),
-        )
+        );
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::MasterOutput);
+        output
     }
 
     pub fn active_notes(&self) -> ActiveNotes<PACKS> {

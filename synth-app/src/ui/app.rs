@@ -98,8 +98,7 @@ impl App {
         self.config.analysis_viewport = self.analysis_viewport.geometry();
         self.config.analysis = AnalysisConfig::from_state(&self.analysis.lock());
         self.config.save();
-        self.patch_mgr
-            .save_autosave(&Patch::from(&self.ui_state));
+        self.patch_mgr.save_autosave(&Patch::from(&self.ui_state));
     }
 }
 

@@ -1,6 +1,6 @@
 use synth_core::{
-    ControlMessage, DEFAULT_SAMPLE_RATE, DedicatedModSource, FilterOversampling, ModDestination,
-    ModRoute, ModSource, ParamId, Patch, SynthEngine,
+    ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource, EffectType,
+    FilterOversampling, ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine,
 };
 
 fn left_rms(buffer: &[f32]) -> f32 {
@@ -20,6 +20,61 @@ fn channel_samples(buffer: &[f32], channels: usize, channel: usize) -> Vec<f32> 
         .chunks_exact(channels)
         .map(|frame| frame[channel])
         .collect()
+}
+
+#[test]
+fn tempo_control_updates_and_clamps_the_engine_parameter() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    assert_eq!(engine.tempo_bpm(), DEFAULT_TEMPO_BPM);
+
+    engine.handle_control(ControlMessage::SetTempoBpm { bpm: 98.0 });
+    assert_eq!(engine.tempo_bpm(), 98.0);
+    engine.set_tempo_bpm(500.0);
+    assert_eq!(engine.tempo_bpm(), 250.0);
+}
+
+#[test]
+fn legacy_bucket_brigade_name_loads_but_new_saves_use_the_expanded_name() {
+    let effect_type: EffectType = serde_json::from_str("\"BbdDelay\"").unwrap();
+    assert_eq!(effect_type, EffectType::BucketBrigadeDelay);
+    assert_eq!(
+        serde_json::to_string(&effect_type).unwrap(),
+        "\"BucketBrigadeDelay\""
+    );
+}
+
+#[cfg(feature = "profiling")]
+#[test]
+fn profiled_render_balances_every_stage_boundary() {
+    use synth_core::{RenderProfiler, RenderStage};
+
+    struct BoundaryCounter {
+        begins: [u32; RenderStage::COUNT],
+        ends: [u32; RenderStage::COUNT],
+    }
+
+    impl RenderProfiler for BoundaryCounter {
+        fn begin(&mut self, stage: RenderStage) {
+            self.begins[stage.index()] += 1;
+        }
+
+        fn end(&mut self, stage: RenderStage) {
+            self.ends[stage.index()] += 1;
+        }
+    }
+
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }, 64>::new(DEFAULT_SAMPLE_RATE);
+    engine.note_on(60, 1.0);
+    let mut profiler = BoundaryCounter {
+        begins: [0; RenderStage::COUNT],
+        ends: [0; RenderStage::COUNT],
+    };
+    let mut output = [0.0; 64];
+
+    engine.process_interleaved_profiled(&mut output, 2, &mut profiler);
+
+    assert_eq!(profiler.begins, profiler.ends);
+    assert!(profiler.begins.iter().all(|count| *count > 0));
 }
 
 fn rendered_note_rms(mut engine: SynthEngine, note: u8, velocity: f32, frames: usize) -> f32 {
@@ -816,7 +871,9 @@ fn filter_oversampling_control_message_can_change_while_rendering() {
     engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 2000.0));
     engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 1.0));
-    engine.handle_control(ControlMessage::SetFilterOversampling(FilterOversampling::Off));
+    engine.handle_control(ControlMessage::SetFilterOversampling(
+        FilterOversampling::Off,
+    ));
     engine.handle_control(ControlMessage::NoteOn {
         note: 60,
         velocity: 1.0,
@@ -825,17 +882,181 @@ fn filter_oversampling_control_message_can_change_while_rendering() {
     let mut before = vec![0.0; 1024 * 2];
     engine.process(&mut before);
 
-    engine.handle_control(ControlMessage::SetFilterOversampling(FilterOversampling::X4));
+    engine.handle_control(ControlMessage::SetFilterOversampling(
+        FilterOversampling::X4,
+    ));
     let mut after = vec![0.0; 1024 * 2];
     engine.process(&mut after);
 
-    let peak = after
-        .iter()
-        .copied()
-        .map(f32::abs)
-        .fold(0.0f32, f32::max);
+    let peak = after.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
     assert!(
         peak.is_finite() && peak <= 1.0,
         "dynamic oversampling change should keep output finite and bounded, peak {peak}"
+    );
+}
+
+#[test]
+fn disabled_effects_preserve_dry_output() {
+    fn render(enabled: bool) -> Vec<f32> {
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(
+            ParamId::EffectEnabled,
+            if enabled { 1.0 } else { 0.0 },
+        ));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 11.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 1.0));
+        engine.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        let mut buffer = vec![0.0; 2048 * 2];
+        engine.process(&mut buffer);
+        buffer
+    }
+
+    let dry = render(false);
+    let wet = render(false);
+    let max_delta = dry
+        .iter()
+        .zip(wet.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+
+    assert!(
+        max_delta < 1.0e-6,
+        "disabled effects should leave dry render unchanged, max delta {max_delta}"
+    );
+}
+
+#[test]
+fn mono_delay_produces_tail_after_note_release() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 0.03));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 0.55));
+    engine.handle_control(ControlMessage::NoteOn {
+        note: 60,
+        velocity: 1.0,
+    });
+
+    let mut attack = vec![0.0; 4096 * 2];
+    engine.process(&mut attack);
+    engine.handle_control(ControlMessage::NoteOff { note: 60 });
+    let mut tail = vec![0.0; 4096 * 2];
+    engine.process(&mut tail);
+
+    assert!(
+        left_rms(&tail) > 0.001,
+        "delay should continue producing a tail after note release"
+    );
+}
+
+#[test]
+fn high_pass_effect_reduces_low_notes_more_than_high_notes() {
+    fn render_note(note: u8) -> f32 {
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 12.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 0.65));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 0.0));
+        rendered_note_rms(engine, note, 1.0, 4096)
+    }
+
+    let low = render_note(36);
+    let high = render_note(84);
+    assert!(
+        high > low * 1.5,
+        "HP filter should preserve high notes more than low notes, low {low}, high {high}"
+    );
+}
+
+#[test]
+fn distortion_effect_stays_finite_and_bounded() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 11.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 1.0));
+    engine.handle_control(ControlMessage::NoteOn {
+        note: 60,
+        velocity: 1.0,
+    });
+
+    let mut buffer = vec![0.0; 4096 * 2];
+    engine.process(&mut buffer);
+    let peak = buffer.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
+
+    assert!(
+        peak.is_finite() && peak <= 1.0,
+        "distortion should remain finite and output-clamped, peak {peak}"
+    );
+}
+
+#[test]
+fn reverb_effect_produces_decay_tail() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 9.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 0.8));
+    engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 0.5));
+    engine.handle_control(ControlMessage::NoteOn {
+        note: 60,
+        velocity: 1.0,
+    });
+
+    let mut attack = vec![0.0; 4096 * 2];
+    engine.process(&mut attack);
+    engine.handle_control(ControlMessage::NoteOff { note: 60 });
+    let mut tail = vec![0.0; 8192 * 2];
+    engine.process(&mut tail);
+
+    assert!(
+        left_rms(&tail) > 0.001,
+        "reverb should produce an audible tail after note release"
+    );
+}
+
+#[test]
+fn old_patch_json_defaults_to_disabled_effects() {
+    let mut value = serde_json::to_value(Patch::default()).unwrap();
+    value.as_object_mut().unwrap().remove("effects");
+
+    let patch: Patch = serde_json::from_value(value).unwrap();
+
+    assert!(!patch.effects.enabled);
+    assert_eq!(patch.effects.effect_type.index(), 0);
+}
+
+#[test]
+fn modulation_matrix_can_control_fx_mix() {
+    fn render_with_fx_mix_mod(enabled: bool) -> f32 {
+        let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 11.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 1.0));
+        engine.handle_control(ControlMessage::SetModulation {
+            route: ModRoute::Free(0),
+            enabled,
+            source: ModSource::Dc,
+            destination: ModDestination::FxMix,
+            amount: 1.0,
+        });
+        rendered_note_rms(engine, 60, 1.0, 4096)
+    }
+
+    let dry = render_with_fx_mix_mod(false);
+    let modulated = render_with_fx_mix_mod(true);
+    assert!(
+        (modulated - dry).abs() > dry * 0.05,
+        "DC -> FX Mix should change effect wet/dry balance, dry {dry}, modulated {modulated}"
     );
 }

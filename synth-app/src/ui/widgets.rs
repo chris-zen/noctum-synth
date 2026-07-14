@@ -212,11 +212,7 @@ pub fn param_toggle(
     }
 }
 
-pub fn master_volume(
-    ui: &mut egui::Ui,
-    value: &mut f32,
-    control: &SynthEngineControl,
-) {
+pub fn master_volume(ui: &mut egui::Ui, value: &mut f32, control: &SynthEngineControl) {
     let previous = *value;
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;

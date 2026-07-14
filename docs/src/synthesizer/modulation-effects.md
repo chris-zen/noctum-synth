@@ -49,7 +49,7 @@ effect-specific parameters.
 | --- | --- |
 | Delay Mono | A centered echo made from the summed stereo input. |
 | DDL Stereo | Clean stereo digital delay. |
-| BBD Delay | Darker, smoothed delay character. |
+| Bucket-Brigade Delay | Darker, smoothed delay character. |
 | Chorus | Stereo pitch and time movement. |
 | Phaser High / Low / Mst | Three phaser characters. |
 | Flanger 1 / 2 | Two flanger variants. |

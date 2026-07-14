@@ -47,9 +47,6 @@
 
 #![no_std]
 
-#[cfg(test)]
-extern crate std;
-
 pub mod analog_oscillator;
 pub mod analog_oscillators;
 pub mod analog_sub_oscillator;
@@ -61,21 +58,34 @@ pub mod filter;
 pub mod fixed_index_list;
 pub mod lfo;
 pub(crate) mod math;
+#[cfg(feature = "embedded-math")]
+mod micromath;
 pub mod noise;
 pub mod patch;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 pub(crate) mod rng;
 pub mod tuning;
 pub mod voice;
 pub mod voices;
 
-use wide::f32x4;
+#[cfg(feature = "embedded-math")]
+pub use self::micromath::f32x4;
+#[cfg(not(feature = "embedded-math"))]
+pub use wide::f32x4;
+
+#[cfg(feature = "embedded-math")]
+pub(crate) use self::micromath::i32x4;
+#[cfg(not(feature = "embedded-math"))]
+pub(crate) use wide::i32x4;
 
 pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
 pub use analog_oscillators::{
     OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput, OscillatorsParams,
 };
 pub use analog_sub_oscillator::AnalogSubOscillator;
-pub use engine::SynthEngine;
+pub use effects::{EffectModulation, Effects, EffectsWithMemory};
+pub use engine::{SynthEngine, SynthEngineWithMemory};
 pub use envelope::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     DadsrEnvelope,
@@ -84,10 +94,12 @@ pub use filter::{FilterOversampling, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
 pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, FilterParams,
-    LfoParams, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    OscillatorPatch, Patch,
+    AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, EffectParams,
+    EffectType, FilterParams, LfoParams, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
+    ModSource, OscillatorPatch, Patch,
 };
+#[cfg(feature = "profiling")]
+pub use profiling::{RenderProfiler, RenderStage};
 pub use tuning::midi_to_hz;
 pub use voice::{PerformanceModulation, VoiceBlock};
 pub use voices::{ActiveNotes, Voices};
@@ -174,6 +186,12 @@ pub enum ParamId {
     Lfo4Destination,
     Lfo4ClockSync,
     Lfo4KeySync,
+    EffectEnabled,
+    EffectType,
+    EffectMix,
+    EffectClockSync,
+    EffectParam1,
+    EffectParam2,
     AnalogDrift,
     VcaDrive,
     PanSpread,
@@ -183,6 +201,10 @@ pub enum ParamId {
 /// Host-to-engine control and performance input.
 pub enum ControlMessage {
     SetParam(ParamId, f32),
+    /// Updates the engine tempo used by clock-synchronized effects.
+    SetTempoBpm {
+        bpm: f32,
+    },
     SetModulation {
         route: ModRoute,
         enabled: bool,
@@ -233,6 +255,8 @@ const _: () = assert!(VOICE_COUNT % LANES == 0);
 
 /// Default sample rate used when constructing DSP objects (44.1 kHz).
 pub const DEFAULT_SAMPLE_RATE: f32 = 44100.0;
+/// Default transport tempo used by clock-synchronized effects.
+pub const DEFAULT_TEMPO_BPM: f32 = 120.0;
 
 /// Wrap a phase value into the `[0, 1)` range.
 #[inline]

@@ -1,6 +1,6 @@
 //! Rev2/Curtis-inspired low-pass filter.
 
-use wide::f32x4;
+use crate::f32x4;
 
 use crate::LANES;
 
@@ -56,8 +56,8 @@ const OVERSAMPLE_DECIMATOR_POLES: usize = 2;
 
 /// Runtime quality setting for nonlinear filter self-oscillation oversampling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "std", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "std", serde(rename_all = "snake_case"))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum FilterOversampling {
     /// Disable filter oversampling.
     Off,
@@ -84,6 +84,21 @@ impl FilterOversampling {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StaticCoefficientKey {
+    cutoff_bits: u32,
+    resonance_bits: u32,
+    sample_rate_bits: u32,
+    self_osc_pitch_tuning_bits: u32,
+    poles: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StaticCoefficientCache {
+    key: Option<StaticCoefficientKey>,
+    value: f32,
+}
+
 /// Four-lane Rev2-style low-pass with 2- or 4-pole slope, key tracking, and
 /// 4-pole self-oscillation.
 pub struct LadderFilter {
@@ -95,6 +110,8 @@ pub struct LadderFilter {
     env_velocity_amount: f32,
     audio_mod: f32,
     self_osc_pitch_tuning_cents: f32,
+    shaped_resonance: f32,
+    static_coefficient_cache: StaticCoefficientCache,
     oversampling: FilterOversampling,
     z: [f32x4; 4],
     oversample_decimator_z: [f32x4; OVERSAMPLE_DECIMATOR_POLES],
@@ -112,6 +129,8 @@ impl Default for LadderFilter {
             env_velocity_amount: 0.0,
             audio_mod: 0.0,
             self_osc_pitch_tuning_cents: SELF_OSC_PITCH_TUNING_CENTS,
+            shaped_resonance: 0.0,
+            static_coefficient_cache: StaticCoefficientCache::default(),
             oversampling: FilterOversampling::Auto,
             z: [f32x4::splat(0.0); 4],
             oversample_decimator_z: [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES],
@@ -134,6 +153,7 @@ impl LadderFilter {
     /// Sets the public resonance control value.
     pub fn set_resonance(&mut self, resonance: f32) {
         self.resonance = resonance.clamp(0.0, 1.0);
+        self.shaped_resonance = shape_resonance_scalar(self.resonance);
     }
 
     /// Returns the public resonance control value.
@@ -200,19 +220,6 @@ impl LadderFilter {
         self.self_osc_pitch_tuning_cents
     }
 
-    /// Returns true when the public controls describe a fully open,
-    /// unmodulated filter.
-    ///
-    /// This is only a control-state predicate. The voice path still processes
-    /// the filter so analyzer and audio paths share the same insertion gain.
-    pub fn is_neutral(&self) -> bool {
-        self.cutoff >= MAX_CUTOFF_HZ
-            && self.resonance < 0.01
-            && self.key_track == 0.0
-            && self.env_amount == 0.0
-            && self.audio_mod == 0.0
-    }
-
     pub fn reset(&mut self) {
         self.z = [f32x4::splat(0.0); 4];
         self.oversample_decimator_z = [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES];
@@ -251,9 +258,13 @@ impl LadderFilter {
     ) -> f32x4 {
         let resonance_control = (f32x4::splat(self.resonance) + resonance_mod)
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
+        let shaped_resonance = if resonance_mod == f32x4::ZERO {
+            f32x4::splat(self.shaped_resonance)
+        } else {
+            shape_resonance_control(resonance_control)
+        };
 
         if self.uses_nonlinear_self_oscillation(resonance_control) {
-            let shaped_resonance = shape_resonance_control(resonance_control);
             let factor = self.oversampling.factor(sample_rate);
             if factor > 1 {
                 return self.process_oversampled_self_oscillation(
@@ -291,7 +302,6 @@ impl LadderFilter {
             );
         }
 
-        let shaped_resonance = shape_resonance_control(resonance_control);
         let g = self.coefficients(
             note,
             filter_env,
@@ -488,12 +498,7 @@ impl LadderFilter {
         filtered
     }
 
-    fn blend_filter_state(
-        &mut self,
-        linear_z: [f32x4; 4],
-        nonlinear_z: [f32x4; 4],
-        blend: f32x4,
-    ) {
+    fn blend_filter_state(&mut self, linear_z: [f32x4; 4], nonlinear_z: [f32x4; 4], blend: f32x4) {
         let linear_blend = f32x4::splat(1.0) - blend;
         for stage in 0..self.z.len() {
             self.z[stage] = linear_z[stage] * linear_blend + nonlinear_z[stage] * blend;
@@ -600,12 +605,9 @@ impl LadderFilter {
 
             // Solve the 4x4 Newton step by eliminating the lower cascade and
             // leaving only the top-right resonance feedback term.
-            let p0 = f0 / a0;
-            let q0 = -b0 / a0;
-            let p1 = (f1 - c1 * p0) / a1;
-            let q1 = (-c1 * q0) / a1;
-            let p2 = (f2 - c2 * p1) / a2;
-            let q2 = (-c2 * q1) / a2;
+            let (p0, q0) = divide_solver_pair(f0, -b0, a0);
+            let (p1, q1) = divide_solver_pair(f1 - c1 * p0, -c1 * q0, a1);
+            let (p2, q2) = divide_solver_pair(f2 - c2 * p1, -c2 * q1, a2);
             let delta3 = (f3 - c3 * p2) / (a3 + c3 * q2 + f32x4::splat(1.0e-6));
             let delta2 = p2 + q2 * delta3;
             let delta1 = p1 + q1 * delta3;
@@ -639,7 +641,7 @@ impl LadderFilter {
     }
 
     fn coefficients(
-        &self,
+        &mut self,
         note: f32x4,
         filter_env: f32x4,
         velocity: f32x4,
@@ -682,7 +684,18 @@ impl LadderFilter {
             && all_lanes_near_zero(audio_mod)
     }
 
-    fn static_coefficient(&self, sample_rate: f32, resonance_control: f32x4) -> f32 {
+    fn static_coefficient(&mut self, sample_rate: f32, resonance_control: f32x4) -> f32 {
+        let key = StaticCoefficientKey {
+            cutoff_bits: self.cutoff.to_bits(),
+            resonance_bits: resonance_control.to_array()[0].to_bits(),
+            sample_rate_bits: sample_rate.to_bits(),
+            self_osc_pitch_tuning_bits: self.self_osc_pitch_tuning_cents.to_bits(),
+            poles: self.poles,
+        };
+        if self.static_coefficient_cache.key == Some(key) {
+            return self.static_coefficient_cache.value;
+        }
+
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
         let hz = if self.poles == 4
             && resonance_control
@@ -700,7 +713,12 @@ impl LadderFilter {
         }
         .clamp(MIN_CUTOFF_HZ, max_cutoff);
         let g = crate::math::tan(core::f32::consts::PI * hz / sample_rate);
-        g / (1.0 + g)
+        let value = g / (1.0 + g);
+        self.static_coefficient_cache = StaticCoefficientCache {
+            key: Some(key),
+            value,
+        };
+        value
     }
 
     fn modulated_cutoff(
@@ -740,10 +758,8 @@ impl LadderFilter {
             + cutoff_mod_semitones
             + self_osc_semitones;
         let scale = (total_semitones * f32x4::splat(1.0 / 12.0)).exp2();
-        (f32x4::splat(self.cutoff) * scale).clamp(
-            f32x4::splat(MIN_CUTOFF_HZ),
-            f32x4::splat(max_cutoff),
-        )
+        (f32x4::splat(self.cutoff) * scale)
+            .clamp(f32x4::splat(MIN_CUTOFF_HZ), f32x4::splat(max_cutoff))
     }
 }
 
@@ -758,9 +774,13 @@ fn raw_integrator_coefficient(g: f32x4) -> f32x4 {
 fn shape_resonance_control(value: f32x4) -> f32x4 {
     let mut values = value.to_array();
     for value in &mut values {
-        *value = crate::math::powf(value.clamp(0.0, 1.0), RESONANCE_CONTROL_EXPONENT);
+        *value = shape_resonance_scalar(*value);
     }
     f32x4::new(values)
+}
+
+fn shape_resonance_scalar(value: f32) -> f32 {
+    crate::math::powf(value.clamp(0.0, 1.0), RESONANCE_CONTROL_EXPONENT)
 }
 
 fn self_oscillation_blend(value: f32x4) -> f32x4 {
@@ -795,10 +815,44 @@ fn analog_soft_clip(value: f32x4) -> f32x4 {
 
 fn nonlinear_with_derivative(value: f32x4) -> (f32x4, f32x4) {
     let drive = f32x4::splat(SELF_OSC_LIMITER_DRIVE);
-    let y = (clamp_nonlinear_state(value) * drive).tanh();
+    let y = nonlinear_tanh(clamp_nonlinear_state(value) * drive);
     let derivative = f32x4::splat(1.0) - y * y;
     let y = y / drive;
     (y, derivative)
+}
+
+#[inline]
+fn divide_solver_pair(left: f32x4, right: f32x4, denominator: f32x4) -> (f32x4, f32x4) {
+    #[cfg(feature = "embedded-math")]
+    {
+        let reciprocal = f32x4::splat(1.0) / denominator;
+        (left * reciprocal, right * reciprocal)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        (left / denominator, right / denominator)
+    }
+}
+
+#[inline]
+fn nonlinear_tanh(value: f32x4) -> f32x4 {
+    #[cfg(feature = "embedded-math")]
+    {
+        let limit = f32x4::splat(NONLINEAR_STATE_LIMIT * SELF_OSC_LIMITER_DRIVE);
+        let x = value.clamp(-limit, limit);
+        let x2 = x * x;
+        let numerator = x
+            * (f32x4::splat(135_135.0)
+                + x2 * (f32x4::splat(17_325.0) + x2 * (f32x4::splat(378.0) + x2)));
+        let denominator = f32x4::splat(135_135.0)
+            + x2 * (f32x4::splat(62_370.0)
+                + x2 * (f32x4::splat(3_150.0) + x2 * f32x4::splat(28.0)));
+        numerator / denominator
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        value.tanh()
+    }
 }
 
 fn clamp_nonlinear_state(value: f32x4) -> f32x4 {
@@ -820,10 +874,10 @@ fn coefficients_from_cutoff(cutoff: f32x4, max_cutoff: f32, sample_rate: f32) ->
     let mut values = cutoff.to_array();
     for value in &mut values {
         let hz = value.clamp(MIN_CUTOFF_HZ, max_cutoff);
-        let g = crate::math::tan(core::f32::consts::PI * hz / sample_rate);
-        *value = g / (1.0 + g);
+        *value = core::f32::consts::PI * hz / sample_rate;
     }
-    f32x4::new(values)
+    let g = f32x4::new(values).tan();
+    g / (f32x4::splat(1.0) + g)
 }
 
 fn tpt_one_pole(input: f32x4, z: &mut f32x4, a: f32x4) -> f32x4 {
@@ -831,4 +885,93 @@ fn tpt_one_pole(input: f32x4, z: &mut f32x4, a: f32x4) -> f32x4 {
     let y = v + *z;
     *z = y + v;
     y
+}
+
+#[cfg(all(test, feature = "embedded-math"))]
+mod embedded_solver_tests {
+    use super::*;
+
+    #[test]
+    fn shared_solver_reciprocal_stays_close_to_independent_division() {
+        const SAMPLES: usize = 65_536;
+        let mut maximum_error = 0.0f32;
+
+        for start in (0..=SAMPLES).step_by(4) {
+            let fractions: [f32; 4] =
+                core::array::from_fn(|lane| (start + lane).min(SAMPLES) as f32 / SAMPLES as f32);
+            let left = f32x4::new(fractions.map(|fraction| -8.0 + 16.0 * fraction));
+            let right = f32x4::new(fractions.map(|fraction| 8.0 - 16.0 * fraction));
+            let denominator = f32x4::new(fractions.map(|fraction| 0.5 + 3.5 * fraction));
+            let (actual_left, actual_right) = divide_solver_pair(left, right, denominator);
+            let expected_left = left / denominator;
+            let expected_right = right / denominator;
+
+            for (actual, expected) in actual_left
+                .to_array()
+                .into_iter()
+                .chain(actual_right.to_array())
+                .zip(
+                    expected_left
+                        .to_array()
+                        .into_iter()
+                        .chain(expected_right.to_array()),
+                )
+            {
+                maximum_error = maximum_error.max((actual - expected).abs());
+            }
+        }
+
+        assert!(
+            maximum_error <= 4.0e-6,
+            "shared reciprocal error {maximum_error} exceeds tolerance"
+        );
+    }
+
+    #[test]
+    fn rational_tanh_matches_value_and_derivative_over_solver_range() {
+        const SAMPLES: usize = 65_536;
+        let limit = NONLINEAR_STATE_LIMIT * SELF_OSC_LIMITER_DRIVE;
+        let mut maximum_value_error = 0.0f32;
+        let mut maximum_derivative_error = 0.0f32;
+        let mut previous = -1.0f32;
+
+        for start in (0..=SAMPLES).step_by(4) {
+            let inputs: [f32; 4] = core::array::from_fn(|lane| {
+                let index = (start + lane).min(SAMPLES);
+                -limit + 2.0 * limit * index as f32 / SAMPLES as f32
+            });
+            let input = f32x4::new(inputs);
+            let actual = nonlinear_tanh(input).to_array();
+            let expected = inputs.map(libm::tanhf);
+
+            for lane in 0..4 {
+                maximum_value_error =
+                    maximum_value_error.max((actual[lane] - expected[lane]).abs());
+                let actual_derivative = 1.0 - actual[lane] * actual[lane];
+                let expected_derivative = 1.0 - expected[lane] * expected[lane];
+                maximum_derivative_error =
+                    maximum_derivative_error.max((actual_derivative - expected_derivative).abs());
+                assert!(actual[lane] >= previous, "approximation is not monotonic");
+                assert!(actual[lane].abs() <= 1.0, "approximation is not bounded");
+                previous = actual[lane];
+            }
+
+            let mirrored = nonlinear_tanh(-input).to_array();
+            for lane in 0..4 {
+                assert!(
+                    (actual[lane] + mirrored[lane]).abs() <= f32::EPSILON,
+                    "approximation is not odd"
+                );
+            }
+        }
+
+        assert!(
+            maximum_value_error <= 5.0e-5,
+            "tanh value error {maximum_value_error} exceeds tolerance"
+        );
+        assert!(
+            maximum_derivative_error <= 1.0e-4,
+            "tanh derivative error {maximum_derivative_error} exceeds tolerance"
+        );
+    }
 }

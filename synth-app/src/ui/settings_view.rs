@@ -83,8 +83,7 @@ pub fn show(
             // Audio output, audio input and sample rate share a row. The sample
             // rate panel is narrower since it only lists a handful of rates.
             let gap = ui.spacing().item_spacing.x;
-            let device_width =
-                ((full_width - SAMPLE_RATE_PANEL_WIDTH - 2.0 * gap) / 2.0).max(0.0);
+            let device_width = ((full_width - SAMPLE_RATE_PANEL_WIDTH - 2.0 * gap) / 2.0).max(0.0);
             ui.horizontal_top(|ui| {
                 audio_panel(ui, device_width, output_restart, settings, &audio_devices);
                 audio_input_panel(ui, device_width, input_restart, settings, &audio_inputs);
@@ -195,19 +194,25 @@ fn audio_panel(
     settings: &mut Settings,
     devices: &[String],
 ) {
-    settings_panel(ui, width, "Audio Output Device", restart_required, |ui, width| {
-        settings_list(ui, "audio_list_scroll", width, |ui| {
-            if devices.is_empty() {
-                ui.label("No audio output devices detected.");
-            }
-            for device in devices {
-                let selected = settings.audio_device.as_deref() == Some(device.as_str());
-                if ui.selectable_label(selected, device).clicked() && !selected {
-                    settings.audio_device = Some(device.clone());
+    settings_panel(
+        ui,
+        width,
+        "Audio Output Device",
+        restart_required,
+        |ui, width| {
+            settings_list(ui, "audio_list_scroll", width, |ui| {
+                if devices.is_empty() {
+                    ui.label("No audio output devices detected.");
                 }
-            }
-        });
-    });
+                for device in devices {
+                    let selected = settings.audio_device.as_deref() == Some(device.as_str());
+                    if ui.selectable_label(selected, device).clicked() && !selected {
+                        settings.audio_device = Some(device.clone());
+                    }
+                }
+            });
+        },
+    );
 }
 
 fn audio_input_panel(
@@ -217,27 +222,33 @@ fn audio_input_panel(
     settings: &mut Settings,
     devices: &[String],
 ) {
-    settings_panel(ui, width, "Audio Input Device", restart_required, |ui, width| {
-        settings_list(ui, "audio_input_list_scroll", width, |ui| {
-            if devices.is_empty() {
-                ui.label("No audio input devices detected.");
-            }
-            for device in devices {
-                let selected = settings.audio_input.as_deref() == Some(device.as_str());
-                if ui.selectable_label(selected, device).clicked() && !selected {
-                    settings.audio_input = Some(device.clone());
+    settings_panel(
+        ui,
+        width,
+        "Audio Input Device",
+        restart_required,
+        |ui, width| {
+            settings_list(ui, "audio_input_list_scroll", width, |ui| {
+                if devices.is_empty() {
+                    ui.label("No audio input devices detected.");
                 }
-            }
-            let none_selected = settings.audio_input.is_none();
-            if ui
-                .selectable_label(none_selected, "None (disabled)")
-                .clicked()
-                && !none_selected
-            {
-                settings.audio_input = None;
-            }
-        });
-    });
+                for device in devices {
+                    let selected = settings.audio_input.as_deref() == Some(device.as_str());
+                    if ui.selectable_label(selected, device).clicked() && !selected {
+                        settings.audio_input = Some(device.clone());
+                    }
+                }
+                let none_selected = settings.audio_input.is_none();
+                if ui
+                    .selectable_label(none_selected, "None (disabled)")
+                    .clicked()
+                    && !none_selected
+                {
+                    settings.audio_input = None;
+                }
+            });
+        },
+    );
 }
 
 fn sample_rate_panel(

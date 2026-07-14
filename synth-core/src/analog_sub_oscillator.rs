@@ -1,4 +1,4 @@
-use wide::f32x4;
+use crate::f32x4;
 
 use crate::analog_oscillator::{MAX_PHASE_INC, MIN_PHASE_INC};
 use crate::blep::{SawMethod, blep_pulse};

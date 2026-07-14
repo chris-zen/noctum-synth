@@ -203,8 +203,17 @@ impl<const BLOCKS: usize, const LANES: usize> Iterator for FixedIndexListIter<'_
 #[cfg(test)]
 mod tests {
     use super::FixedIndexList;
-    use std::vec;
-    use std::vec::Vec;
+
+    fn assert_order<const LINKS: usize, const ITEMS: usize>(
+        list: &FixedIndexList<LINKS, ITEMS>,
+        expected: &[usize],
+    ) {
+        let mut iter = list.iter();
+        for value in expected {
+            assert_eq!(iter.next(), Some(*value));
+        }
+        assert_eq!(iter.next(), None);
+    }
 
     #[test]
     fn preserves_insertion_order() {
@@ -213,7 +222,7 @@ mod tests {
         assert!(list.push_back(0));
         assert!(list.push_back(3));
 
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![2, 0, 3]);
+        assert_order(&list, &[2, 0, 3]);
         assert_eq!(list.front(), Some(2));
         assert_eq!(list.back(), Some(3));
     }
@@ -226,7 +235,7 @@ mod tests {
         list.push_back(2);
 
         assert!(list.remove(1));
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![0, 2]);
+        assert_order(&list, &[0, 2]);
         assert!(!list.contains(1));
         assert_eq!(list.len(), 2);
     }
@@ -239,6 +248,6 @@ mod tests {
         list.push_back(2);
 
         assert!(list.move_to_back(0));
-        assert_eq!(list.iter().collect::<Vec<_>>(), vec![1, 2, 0]);
+        assert_order(&list, &[1, 2, 0]);
     }
 }

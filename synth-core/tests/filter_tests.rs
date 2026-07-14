@@ -1,8 +1,9 @@
-use wide::f32x4;
+use synth_core::f32x4;
 
 use synth_core::{
+    LANES, LadderFilter,
     filter::{FilterOversampling, SELF_OSC_PITCH_TUNING_CENTS, SELF_OSC_RESONANCE_START},
-    midi_to_hz, LANES, LadderFilter,
+    midi_to_hz,
 };
 
 fn process(filter: &mut LadderFilter, input: f32x4, note: f32x4, sample_rate: f32) -> f32x4 {
@@ -37,6 +38,31 @@ fn process_modulated(
         f32x4::splat(0.0),
         sample_rate,
     )
+}
+
+#[test]
+fn static_filter_cache_tracks_control_and_sample_rate_changes_exactly() {
+    let mut reused = LadderFilter::default();
+    reused.set_cutoff(600.0);
+    reused.set_resonance(0.2);
+    for _ in 0..32 {
+        process(&mut reused, f32x4::splat(0.1), f32x4::splat(60.0), 44_100.0);
+    }
+
+    reused.reset();
+    reused.set_cutoff(2_400.0);
+    reused.set_resonance(0.6);
+
+    let mut fresh = LadderFilter::default();
+    fresh.set_cutoff(2_400.0);
+    fresh.set_resonance(0.6);
+
+    for index in 0..128 {
+        let input = f32x4::splat(if index % 2 == 0 { 0.2 } else { -0.15 });
+        let reused_output = process(&mut reused, input, f32x4::splat(60.0), 48_000.0);
+        let fresh_output = process(&mut fresh, input, f32x4::splat(60.0), 48_000.0);
+        assert_eq!(reused_output, fresh_output);
+    }
 }
 
 /// Measure steady-state RMS response at a given frequency using a small
@@ -584,38 +610,6 @@ fn test_dc_gain_is_unity() {
 }
 
 #[test]
-fn test_neutral_filter_predicate_matches_open_unmodulated_filter() {
-    let mut f = LadderFilter::default();
-    assert!(f.is_neutral(), "default filter should be neutral/open");
-
-    f.set_resonance(0.009);
-    assert!(
-        f.is_neutral(),
-        "very low resonance should keep open/unmodulated state"
-    );
-
-    f.set_resonance(0.02);
-    assert!(
-        !f.is_neutral(),
-        "audible resonance should change the filter state"
-    );
-
-    f.set_resonance(0.0);
-    f.set_cutoff(1000.0);
-    assert!(
-        !f.is_neutral(),
-        "closed cutoff should change the filter state"
-    );
-
-    f.set_cutoff(18_000.0);
-    f.set_env_amount(0.1);
-    assert!(
-        !f.is_neutral(),
-        "filter modulation should change the filter state"
-    );
-}
-
-#[test]
 fn test_cutoff_control_opens_filter() {
     let sr = 44100.0;
     let mut closed = LadderFilter::default();
@@ -839,8 +833,15 @@ fn test_max_resonance_keeps_cutoff_peak() {
     let amplitude = 0.02;
     let mut pre_self_osc = LadderFilter::default();
     let mut max_resonance = LadderFilter::default();
-    let pre_gain =
-        measure_projected_gain(&mut pre_self_osc, cutoff, cutoff, SELF_OSC_RESONANCE_START - 0.02, 4, sr, amplitude);
+    let pre_gain = measure_projected_gain(
+        &mut pre_self_osc,
+        cutoff,
+        cutoff,
+        SELF_OSC_RESONANCE_START - 0.02,
+        4,
+        sr,
+        amplitude,
+    );
     let max_gain = measure_projected_gain(
         &mut max_resonance,
         max_resonance_freq,
@@ -976,13 +977,7 @@ fn calibrate_self_oscillation_pitch_tuning_cents_for_key_tracked_c4() {
 
     for cents in 110..=150 {
         let cents = cents as f32;
-        let pitch_hz = estimate_self_oscillation_pitch_hz(
-            444.0,
-            60.0,
-            1.0,
-            cents,
-            sr,
-        );
+        let pitch_hz = estimate_self_oscillation_pitch_hz(444.0, 60.0, 1.0, cents, sr);
         let beat_hz = (pitch_hz - target_hz).abs();
 
         if beat_hz < best_beat_hz {
@@ -1393,9 +1388,7 @@ fn test_filter_oversampling_reduces_high_cutoff_foldback() {
         f.set_resonance(1.0);
         let mut samples = Vec::with_capacity(90_000);
         for _ in 0..90_000 {
-            samples.push(
-                process(&mut f, f32x4::splat(0.0), f32x4::splat(60.0), sr).to_array()[0],
-            );
+            samples.push(process(&mut f, f32x4::splat(0.0), f32x4::splat(60.0), sr).to_array()[0]);
         }
         samples
     };

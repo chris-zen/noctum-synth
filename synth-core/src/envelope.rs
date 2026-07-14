@@ -1,4 +1,4 @@
-use wide::f32x4;
+use crate::f32x4;
 
 use crate::LANES;
 

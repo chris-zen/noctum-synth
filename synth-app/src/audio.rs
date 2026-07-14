@@ -48,9 +48,9 @@ pub fn start_audio(
 
         // Configure the optional input at the output's sample rate so the two
         // streams match and the input can be summed in directly.
-        let input = input_filter
-            .as_deref()
-            .and_then(|filter| open_input(&host, filter, output.sample_rate as u32, output.channels));
+        let input = input_filter.as_deref().and_then(|filter| {
+            open_input(&host, filter, output.sample_rate as u32, output.channels)
+        });
         let (input_stream, input_consumer) = match input {
             Some(input) => (Some(input.stream), Some(input.consumer)),
             None => (None, None),
@@ -64,7 +64,8 @@ pub fn start_audio(
             input_consumer,
             filter_oversampling,
         );
-        let Some(output_stream) = build_output_stream(&output.device, output.config, renderer) else {
+        let Some(output_stream) = build_output_stream(&output.device, output.config, renderer)
+        else {
             eprintln!("Failed to build audio output stream; audio disabled.");
             return;
         };
@@ -359,7 +360,12 @@ fn device_names<I: Iterator<Item = cpal::Device>>(devices: Option<I>) -> Vec<Str
         return Vec::new();
     };
     devices
-        .filter_map(|device| device.description().ok().map(|desc| desc.name().to_string()))
+        .filter_map(|device| {
+            device
+                .description()
+                .ok()
+                .map(|desc| desc.name().to_string())
+        })
         .collect()
 }
 
@@ -444,7 +450,7 @@ impl Renderer {
             }
             message => self.engine.handle_control(message),
         });
-        
+
         if let Some(oversampling) = pending_oversampling {
             self.engine.set_filter_oversampling(oversampling);
         }

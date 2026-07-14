@@ -5,11 +5,11 @@ use crate::{
     LfoWaveform, MIN_LFO_RATE_HZ, ParamId,
 };
 
-#[cfg(feature = "std")]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Target for a modulation route.
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModDestination {
     Off,
@@ -197,7 +197,7 @@ impl ModDestination {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModSource {
     Off,
@@ -292,7 +292,7 @@ impl ModSource {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DedicatedModSource {
     ModWheel,
@@ -332,14 +332,14 @@ impl DedicatedModSource {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub enum ModRoute {
     Free(usize),
     Dedicated(DedicatedModSource),
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct ModMatrixSlot {
     pub enabled: bool,
@@ -359,7 +359,7 @@ impl Default for ModMatrixSlot {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct DedicatedModSlot {
     pub enabled: bool,
@@ -377,7 +377,7 @@ impl Default for DedicatedModSlot {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ModMatrix {
     pub free_slots: [ModMatrixSlot; 8],
@@ -393,7 +393,104 @@ impl Default for ModMatrix {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectType {
+    DelayMono,
+    DdlStereo,
+    #[cfg_attr(feature = "serde", serde(alias = "BbdDelay"))]
+    BucketBrigadeDelay,
+    Chorus,
+    PhaserHigh,
+    PhaserLow,
+    PhaserMst,
+    Flanger1,
+    Flanger2,
+    Reverb,
+    RingMod,
+    Distortion,
+    HighPassFilter,
+}
+
+impl EffectType {
+    pub const ALL: [Self; 13] = [
+        Self::DelayMono,
+        Self::DdlStereo,
+        Self::BucketBrigadeDelay,
+        Self::Chorus,
+        Self::PhaserHigh,
+        Self::PhaserLow,
+        Self::PhaserMst,
+        Self::Flanger1,
+        Self::Flanger2,
+        Self::Reverb,
+        Self::RingMod,
+        Self::Distortion,
+        Self::HighPassFilter,
+    ];
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(Self::DelayMono)
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|effect| *effect == self)
+            .unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DelayMono => "Delay Mono",
+            Self::DdlStereo => "DDL Stereo",
+            Self::BucketBrigadeDelay => "Bucket Brigade Delay",
+            Self::Chorus => "Chorus",
+            Self::PhaserHigh => "Phaser High",
+            Self::PhaserLow => "Phaser Low",
+            Self::PhaserMst => "Phaser Mst",
+            Self::Flanger1 => "Flanger 1",
+            Self::Flanger2 => "Flanger 2",
+            Self::Reverb => "Reverb",
+            Self::RingMod => "Ring Mod",
+            Self::Distortion => "Distortion",
+            Self::HighPassFilter => "HP Filter",
+        }
+    }
+
+    pub fn is_delay(self) -> bool {
+        matches!(
+            self,
+            Self::DelayMono | Self::DdlStereo | Self::BucketBrigadeDelay
+        )
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy)]
+pub struct EffectParams {
+    pub enabled: bool,
+    pub effect_type: EffectType,
+    pub mix: f32,
+    pub clock_sync: bool,
+    pub param1: f32,
+    pub param2: f32,
+}
+
+impl Default for EffectParams {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            effect_type: EffectType::DelayMono,
+            mix: 0.0,
+            clock_sync: false,
+            param1: 0.25,
+            param2: 0.25,
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct LfoParams {
     pub rate_hz: f32,
@@ -417,7 +514,7 @@ impl Default for LfoParams {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct AuxEnvelopeParams {
     pub destination: ModDestination,
@@ -447,7 +544,7 @@ impl Default for AuxEnvelopeParams {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct FilterParams {
     pub cutoff: f32,
@@ -483,7 +580,7 @@ impl Default for FilterParams {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct AmplifierParams {
     pub pan_spread: f32,
@@ -511,7 +608,7 @@ impl Default for AmplifierParams {
     }
 }
 
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct OscillatorPatch {
     pub waveform: u8,
@@ -542,7 +639,7 @@ impl Default for OscillatorPatch {
 }
 
 /// Complete synthesizer patch capturing every parameter in one serializable snapshot.
-#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Patch {
     pub osc1: OscillatorPatch,
@@ -557,8 +654,10 @@ pub struct Patch {
     pub amplifier: AmplifierParams,
     pub aux_envelope: AuxEnvelopeParams,
     pub lfos: [LfoParams; 4],
-    #[cfg_attr(feature = "std", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub mod_matrix: ModMatrix,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub effects: EffectParams,
     pub master_volume: f32,
 }
 
@@ -584,7 +683,8 @@ impl Default for Patch {
             aux_envelope: AuxEnvelopeParams::default(),
             lfos: [LfoParams::default(); 4],
             mod_matrix: ModMatrix::default(),
-            master_volume: 1.0,
+            effects: EffectParams::default(),
+            master_volume: 0.8,
         }
     }
 }
@@ -721,6 +821,13 @@ impl Patch {
             f(clock[i], s(lfo.clock_sync));
             f(key[i], s(lfo.key_sync));
         }
+
+        f(ParamId::EffectEnabled, s(self.effects.enabled));
+        f(ParamId::EffectType, self.effects.effect_type.index() as f32);
+        f(ParamId::EffectMix, self.effects.mix);
+        f(ParamId::EffectClockSync, s(self.effects.clock_sync));
+        f(ParamId::EffectParam1, self.effects.param1);
+        f(ParamId::EffectParam2, self.effects.param2);
 
         f(ParamId::MasterVolume, self.master_volume);
         f(ParamId::AnalogDrift, self.osc_slop);

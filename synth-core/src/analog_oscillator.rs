@@ -1,4 +1,4 @@
-use wide::f32x4;
+use crate::f32x4;
 
 pub use crate::blep::SawMethod;
 use crate::blep::{blep_pulse, blep_saw};
@@ -243,8 +243,10 @@ impl AnalogOscillator {
 
     /// Advances one sample, returning the output plus phase-wrap metadata.
     pub(crate) fn next_step(&mut self) -> OscillatorStep {
-        self.slop.advance(self.sample_rate);
-        self.refresh_effective_frequency();
+        if self.slop.is_enabled() {
+            self.slop.advance(self.sample_rate);
+            self.refresh_effective_frequency();
+        }
 
         let phi = self.phase;
         let next_phase = self.phase + self.phase_inc;
@@ -391,6 +393,10 @@ impl OscSlopState {
         if self.amount == 0.0 {
             self.clear();
         }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.amount > 0.0
     }
 
     /// Zeroes all accumulated detune and drift state.

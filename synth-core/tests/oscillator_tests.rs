@@ -1,6 +1,6 @@
 use synth_core::analog_oscillator::pulse_width_from_shape;
+use synth_core::f32x4;
 use synth_core::{AnalogOscillator, AnalogSubOscillator, SawMethod, Waveform, midi_to_hz};
-use wide::f32x4;
 
 #[test]
 fn test_midi_to_hz() {
