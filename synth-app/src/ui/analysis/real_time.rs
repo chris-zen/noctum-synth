@@ -2,13 +2,18 @@ use eframe::egui;
 use eframe::egui::PointerButton;
 use eframe::egui::epaint::PathShape;
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
-use super::spectrum::{self, SpectrumConfig};
 use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
-use serde::{Deserialize, Serialize};
+use crate::ui::analysis::spectrum::{self, SpectrumConfig};
+
+const INPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 150, 45);
+const INPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
+const OUTPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 205, 255);
+const OUTPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 125, 255);
 
 pub struct RealTimeState {
     pub osc: OscilloscopeState,
@@ -50,12 +55,27 @@ impl Default for SpectrumChannel {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SignalSource {
+    Input,
+    Output,
+    InputAndOutput,
+}
+
+impl Default for SignalSource {
+    fn default() -> Self {
+        Self::Output
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct OscilloscopeViewConfig {
     pub timebase_ms: f32,
     pub trigger_level: f32,
     pub y_range: f32,
     pub display_mode: OscilloscopeDisplayModeConfig,
+    #[serde(default)]
+    pub source: SignalSource,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,6 +89,8 @@ pub struct FftViewConfig {
     pub show_peak_hold: bool,
     #[serde(default)]
     pub channel: SpectrumChannel,
+    #[serde(default)]
+    pub source: SignalSource,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,6 +112,7 @@ impl OscilloscopeViewConfig {
             trigger_level: state.trigger_level,
             y_range: state.y_range,
             display_mode: display_mode_to_config(state.display_mode),
+            source: state.source,
         }
     }
 
@@ -98,6 +121,7 @@ impl OscilloscopeViewConfig {
         state.trigger_level = self.trigger_level;
         state.y_range = self.y_range;
         state.display_mode = display_mode_from_config(self.display_mode);
+        state.source = self.source;
     }
 }
 
@@ -117,6 +141,7 @@ impl FftViewConfig {
             log_scale: state.log_scale,
             show_peak_hold: state.show_peak_hold,
             channel: state.channel,
+            source: state.source,
         }
     }
 
@@ -128,6 +153,7 @@ impl FftViewConfig {
         state.log_scale = self.log_scale;
         state.show_peak_hold = self.show_peak_hold;
         state.channel = self.channel;
+        state.source = self.source;
         if state.complex_buf.len() != self.fft_size {
             state.complex_buf = vec![Complex32::new(0.0, 0.0); self.fft_size];
             state.fft = None;
@@ -171,6 +197,18 @@ fn display_mode_from_config(mode: OscilloscopeDisplayModeConfig) -> Oscilloscope
     }
 }
 
+fn copy_channel(dest: &mut [f32], left: &[f32], right: &[f32], channel: SpectrumChannel) {
+    match channel {
+        SpectrumChannel::Left => dest.copy_from_slice(left),
+        SpectrumChannel::Right => dest.copy_from_slice(right),
+        SpectrumChannel::Sum => {
+            for ((dest, left), right) in dest.iter_mut().zip(left).zip(right) {
+                *dest = 0.5 * (*left + *right);
+            }
+        }
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut RealTimeState) {
     if state.osc.frozen {
         // Skip data intake so both the oscilloscope and spectrum stay frozen.
@@ -178,28 +216,33 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
         for block in audio_blocks {
             let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
             let osc_copy_len = block_len.min(MAX_AUDIO_BUF);
-            state.osc.buffer_l[..osc_copy_len].copy_from_slice(&block.left[..osc_copy_len]);
-            state.osc.buffer_r[..osc_copy_len].copy_from_slice(&block.right[..osc_copy_len]);
+            state.osc.input_buffer_l[..osc_copy_len]
+                .copy_from_slice(&block.input_left[..osc_copy_len]);
+            state.osc.input_buffer_r[..osc_copy_len]
+                .copy_from_slice(&block.input_right[..osc_copy_len]);
+            state.osc.output_buffer_l[..osc_copy_len]
+                .copy_from_slice(&block.output_left[..osc_copy_len]);
+            state.osc.output_buffer_r[..osc_copy_len]
+                .copy_from_slice(&block.output_right[..osc_copy_len]);
             state.osc.buf_len = osc_copy_len;
 
             let fft_size = state.fft.fft_size;
             let copy_len = block_len.min(fft_size);
             let shift = fft_size - copy_len;
-            state.fft.buffer.copy_within(copy_len..fft_size, 0);
-            match state.fft.channel {
-                SpectrumChannel::Left => {
-                    state.fft.buffer[shift..fft_size].copy_from_slice(&block.left[..copy_len]);
-                }
-                SpectrumChannel::Right => {
-                    state.fft.buffer[shift..fft_size].copy_from_slice(&block.right[..copy_len]);
-                }
-                SpectrumChannel::Sum => {
-                    for index in 0..copy_len {
-                        state.fft.buffer[shift + index] =
-                            0.5 * (block.left[index] + block.right[index]);
-                    }
-                }
-            }
+            state.fft.output_buffer.copy_within(copy_len..fft_size, 0);
+            state.fft.input_buffer.copy_within(copy_len..fft_size, 0);
+            copy_channel(
+                &mut state.fft.output_buffer[shift..fft_size],
+                &block.output_left[..copy_len],
+                &block.output_right[..copy_len],
+                state.fft.channel,
+            );
+            copy_channel(
+                &mut state.fft.input_buffer[shift..fft_size],
+                &block.input_left[..copy_len],
+                &block.input_right[..copy_len],
+                state.fft.channel,
+            );
             state.fft.frame_count += 1;
         }
     }
@@ -223,16 +266,21 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
 }
 
 pub struct OscilloscopeState {
-    buffer_l: [f32; MAX_AUDIO_BUF],
-    buffer_r: [f32; MAX_AUDIO_BUF],
+    input_buffer_l: [f32; MAX_AUDIO_BUF],
+    input_buffer_r: [f32; MAX_AUDIO_BUF],
+    output_buffer_l: [f32; MAX_AUDIO_BUF],
+    output_buffer_r: [f32; MAX_AUDIO_BUF],
     buf_len: usize,
     timebase_ms: f32,
     trigger_level: f32,
     y_range: f32,
     display_mode: OscilloscopeDisplayMode,
+    source: SignalSource,
     frozen: bool,
-    frozen_buffer_l: [f32; MAX_AUDIO_BUF],
-    frozen_buffer_r: [f32; MAX_AUDIO_BUF],
+    frozen_input_l: [f32; MAX_AUDIO_BUF],
+    frozen_input_r: [f32; MAX_AUDIO_BUF],
+    frozen_output_l: [f32; MAX_AUDIO_BUF],
+    frozen_output_r: [f32; MAX_AUDIO_BUF],
     frozen_len: usize,
 }
 
@@ -246,16 +294,21 @@ enum OscilloscopeDisplayMode {
 impl Default for OscilloscopeState {
     fn default() -> Self {
         Self {
-            buffer_l: [0.0; MAX_AUDIO_BUF],
-            buffer_r: [0.0; MAX_AUDIO_BUF],
+            input_buffer_l: [0.0; MAX_AUDIO_BUF],
+            input_buffer_r: [0.0; MAX_AUDIO_BUF],
+            output_buffer_l: [0.0; MAX_AUDIO_BUF],
+            output_buffer_r: [0.0; MAX_AUDIO_BUF],
             buf_len: 0,
             timebase_ms: 5.0,
             trigger_level: 0.0,
             y_range: 1.0,
             display_mode: OscilloscopeDisplayMode::Left,
+            source: SignalSource::Output,
             frozen: false,
-            frozen_buffer_l: [0.0; MAX_AUDIO_BUF],
-            frozen_buffer_r: [0.0; MAX_AUDIO_BUF],
+            frozen_input_l: [0.0; MAX_AUDIO_BUF],
+            frozen_input_r: [0.0; MAX_AUDIO_BUF],
+            frozen_output_l: [0.0; MAX_AUDIO_BUF],
+            frozen_output_r: [0.0; MAX_AUDIO_BUF],
             frozen_len: 0,
         }
     }
@@ -271,8 +324,47 @@ fn find_trigger(buf: &[f32], len: usize, level: f32) -> f32 {
     0.0
 }
 
+fn find_combined_trigger(first: &[f32], second: &[f32], len: usize, level: f32) -> f32 {
+    for index in 0..len.saturating_sub(1) {
+        let current = (first[index] + second[index]).clamp(-1.0, 1.0);
+        let next = (first[index + 1] + second[index + 1]).clamp(-1.0, 1.0);
+        if current < level && next >= level {
+            let fraction = (level - current) / (next - current);
+            return index as f32 + fraction;
+        }
+    }
+    0.0
+}
+
+fn freeze_scope(state: &mut OscilloscopeState) {
+    state.frozen_input_l = state.input_buffer_l;
+    state.frozen_input_r = state.input_buffer_r;
+    state.frozen_output_l = state.output_buffer_l;
+    state.frozen_output_r = state.output_buffer_r;
+    state.frozen_len = state.buf_len;
+}
+
+fn source_selector(ui: &mut egui::Ui, source: &mut SignalSource) -> bool {
+    let before = *source;
+    ui.label("Signal:");
+    for (value, label, color) in [
+        (SignalSource::Input, "I", Some(INPUT_LEFT_COLOR)),
+        (SignalSource::Output, "O", Some(OUTPUT_LEFT_COLOR)),
+        (SignalSource::InputAndOutput, "I+O", None),
+    ] {
+        let text = color.map_or_else(
+            || egui::RichText::new(label),
+            |color| egui::RichText::new(label).color(color),
+        );
+        if ui.selectable_label(*source == value, text).clicked() {
+            *source = value;
+        }
+    }
+    before != *source
+}
+
 fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Timebase:");
         ui.add(
             egui::Slider::new(&mut state.timebase_ms, 1.0..=50.0)
@@ -289,6 +381,8 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
                 .logarithmic(true)
                 .text(""),
         );
+        ui.separator();
+        source_selector(ui, &mut state.source);
         ui.separator();
         ui.label("Trace:");
         for (mode, label) in [
@@ -310,9 +404,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
         {
             state.frozen = !state.frozen;
             if state.frozen {
-                state.frozen_buffer_l = state.buffer_l;
-                state.frozen_buffer_r = state.buffer_r;
-                state.frozen_len = state.buf_len;
+                freeze_scope(state);
             }
         }
     });
@@ -352,7 +444,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
                 egui::pos2(plot_rect.left(), grid_y),
                 egui::pos2(plot_rect.right(), grid_y),
             ],
-            egui::Stroke::new(1.0, grid_color),
+            egui::Stroke::new(1.0_f32, grid_color),
         );
         let val = (1.0 - row as f32 * 0.25) * range;
         painter.text(
@@ -368,7 +460,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
             egui::pos2(plot_rect.left(), center_y),
             egui::pos2(plot_rect.right(), center_y),
         ],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 80)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 80)),
     );
 
     // Trigger level — orange dotted line
@@ -381,7 +473,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
         let end = (dot_x + dot_len).min(plot_rect.right());
         painter.line_segment(
             [egui::pos2(dot_x, trig_y), egui::pos2(end, trig_y)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 160, 40)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 160, 40)),
         );
         dot_x += dot_len + gap;
     }
@@ -394,21 +486,24 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
     if response.clicked_by(PointerButton::Middle) {
         state.frozen = !state.frozen;
         if state.frozen {
-            state.frozen_buffer_l = state.buffer_l;
-            state.frozen_buffer_r = state.buffer_r;
-            state.frozen_len = state.buf_len;
+            freeze_scope(state);
         }
     }
 
-    let buf_l = if state.frozen {
-        &state.frozen_buffer_l[..]
+    let (input_l, input_r, output_l, output_r) = if state.frozen {
+        (
+            &state.frozen_input_l[..],
+            &state.frozen_input_r[..],
+            &state.frozen_output_l[..],
+            &state.frozen_output_r[..],
+        )
     } else {
-        &state.buffer_l[..]
-    };
-    let buf_r = if state.frozen {
-        &state.frozen_buffer_r[..]
-    } else {
-        &state.buffer_r[..]
+        (
+            &state.input_buffer_l[..],
+            &state.input_buffer_r[..],
+            &state.output_buffer_l[..],
+            &state.output_buffer_r[..],
+        )
     };
     let len = if state.frozen {
         state.frozen_len
@@ -417,68 +512,65 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
     };
 
     if len > 1 {
-        let trigger_buf = match state.display_mode {
-            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => buf_l,
-            OscilloscopeDisplayMode::Right => buf_r,
+        let (input_trigger, output_trigger) = match state.display_mode {
+            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => (input_l, output_l),
+            OscilloscopeDisplayMode::Right => (input_r, output_r),
         };
-        let trig_f32 = find_trigger(trigger_buf, len, state.trigger_level);
+        let trig_f32 = match state.source {
+            SignalSource::Input => find_trigger(input_trigger, len, state.trigger_level),
+            SignalSource::Output => find_trigger(output_trigger, len, state.trigger_level),
+            SignalSource::InputAndOutput => {
+                find_combined_trigger(input_trigger, output_trigger, len, state.trigger_level)
+            }
+        };
         let trig_idx = trig_f32 as usize;
         let samples_to_show = (state.timebase_ms / 1000.0 * 44100.0) as usize;
         let samples_to_show = samples_to_show.min(len.saturating_sub(trig_idx)).max(2);
         let start = trig_idx;
         let end = (start + samples_to_show).min(len);
 
-        match state.display_mode {
-            OscilloscopeDisplayMode::Left => draw_oscilloscope_trace(
+        let overlay = state.source == SignalSource::InputAndOutput;
+        if matches!(
+            state.source,
+            SignalSource::Output | SignalSource::InputAndOutput
+        ) {
+            draw_scope_source(
                 &painter,
                 plot_rect,
                 center_y,
                 display_yscale,
-                buf_l,
+                output_l,
+                output_r,
+                state.display_mode,
                 start,
                 end,
                 trig_f32,
                 samples_to_show,
-                egui::Color32::GREEN,
-            ),
-            OscilloscopeDisplayMode::Right => draw_oscilloscope_trace(
+                OUTPUT_LEFT_COLOR,
+                OUTPUT_RIGHT_COLOR,
+                overlay,
+            );
+        }
+        if matches!(
+            state.source,
+            SignalSource::Input | SignalSource::InputAndOutput
+        ) {
+            draw_scope_source(
                 &painter,
                 plot_rect,
                 center_y,
                 display_yscale,
-                buf_r,
+                input_l,
+                input_r,
+                state.display_mode,
                 start,
                 end,
                 trig_f32,
                 samples_to_show,
-                egui::Color32::from_rgb(80, 160, 255),
-            ),
-            OscilloscopeDisplayMode::Stereo => {
-                draw_oscilloscope_trace(
-                    &painter,
-                    plot_rect,
-                    center_y,
-                    display_yscale,
-                    buf_l,
-                    start,
-                    end,
-                    trig_f32,
-                    samples_to_show,
-                    egui::Color32::GREEN,
-                );
-                draw_oscilloscope_trace(
-                    &painter,
-                    plot_rect,
-                    center_y,
-                    display_yscale,
-                    buf_r,
-                    start,
-                    end,
-                    trig_f32,
-                    samples_to_show,
-                    egui::Color32::from_rgb(80, 160, 255),
-                );
-            }
+                INPUT_LEFT_COLOR,
+                INPUT_RIGHT_COLOR,
+                overlay,
+            );
         }
 
         // X-axis time labels
@@ -493,7 +585,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
                         egui::pos2(tick_x, plot_rect.bottom()),
                         egui::pos2(tick_x, plot_rect.bottom() + 4.0),
                     ],
-                    egui::Stroke::new(1.0, grid_color),
+                    egui::Stroke::new(1.0_f32, grid_color),
                 );
                 let label = if tick_ms < 1.0 {
                     format!("{:.1}ms", tick_ms)
@@ -510,6 +602,66 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
             }
             tick_ms += tick_interval;
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_scope_source(
+    painter: &egui::Painter,
+    plot_rect: egui::Rect,
+    center_y: f32,
+    display_yscale: f32,
+    left: &[f32],
+    right: &[f32],
+    mode: OscilloscopeDisplayMode,
+    start: usize,
+    end: usize,
+    trigger: f32,
+    samples_to_show: usize,
+    left_color: egui::Color32,
+    right_color: egui::Color32,
+    translucent: bool,
+) {
+    let color = |color: egui::Color32| {
+        if translucent {
+            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 190)
+        } else {
+            color
+        }
+    };
+    if matches!(
+        mode,
+        OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo
+    ) {
+        draw_oscilloscope_trace(
+            painter,
+            plot_rect,
+            center_y,
+            display_yscale,
+            left,
+            start,
+            end,
+            trigger,
+            samples_to_show,
+            color(left_color),
+        );
+    }
+    if matches!(
+        mode,
+        OscilloscopeDisplayMode::Right | OscilloscopeDisplayMode::Stereo
+    ) {
+        draw_oscilloscope_trace(
+            painter,
+            plot_rect,
+            center_y,
+            display_yscale,
+            right,
+            start,
+            end,
+            trigger,
+            samples_to_show,
+            color(right_color),
+        );
     }
 }
 
@@ -536,7 +688,7 @@ fn draw_oscilloscope_trace(
         .collect();
 
     if pts.len() >= 2 {
-        painter.add(PathShape::line(pts, egui::Stroke::new(1.2, color)));
+        painter.add(PathShape::line(pts, egui::Stroke::new(1.2_f32, color)));
     }
 }
 
@@ -557,9 +709,12 @@ fn nice_tick_interval(range: f32, target_ticks: f32) -> f32 {
 }
 
 pub struct FftState {
-    buffer: [f32; 4096],
-    latest_db: [f32; 2048],
-    peak_hold: [f32; 2048],
+    input_buffer: [f32; 4096],
+    output_buffer: [f32; 4096],
+    input_latest_db: [f32; 2048],
+    output_latest_db: [f32; 2048],
+    input_peak_hold: [f32; 2048],
+    output_peak_hold: [f32; 2048],
     peak_decay: f32,
     frame_count: u32,
     pub fft_size: usize,
@@ -571,6 +726,7 @@ pub struct FftState {
     pub log_scale: bool,
     pub show_peak_hold: bool,
     pub channel: SpectrumChannel,
+    pub source: SignalSource,
 }
 
 impl Default for FftState {
@@ -579,9 +735,12 @@ impl Default for FftState {
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(fft_size);
         Self {
-            buffer: [0.0; 4096],
-            latest_db: [-120.0; 2048],
-            peak_hold: [-120.0; 2048],
+            input_buffer: [0.0; 4096],
+            output_buffer: [0.0; 4096],
+            input_latest_db: [-120.0; 2048],
+            output_latest_db: [-120.0; 2048],
+            input_peak_hold: [-120.0; 2048],
+            output_peak_hold: [-120.0; 2048],
             peak_decay: 0.5,
             frame_count: 0,
             fft_size,
@@ -593,6 +752,63 @@ impl Default for FftState {
             log_scale: true,
             show_peak_hold: false,
             channel: SpectrumChannel::Left,
+            source: SignalSource::Output,
+        }
+    }
+}
+
+impl FftState {
+    fn clear_history(&mut self) {
+        self.input_buffer.fill(0.0);
+        self.output_buffer.fill(0.0);
+        self.input_latest_db.fill(self.db_floor);
+        self.output_latest_db.fill(self.db_floor);
+        self.input_peak_hold.fill(self.db_floor);
+        self.output_peak_hold.fill(self.db_floor);
+    }
+
+    fn clear_peaks(&mut self) {
+        self.input_peak_hold.fill(self.db_floor);
+        self.output_peak_hold.fill(self.db_floor);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_fft_trace(
+    samples: &[f32],
+    latest_db: &mut [f32],
+    peak_hold: &mut [f32],
+    complex_buf: &mut [Complex32],
+    fft: &Arc<dyn Fft<f32>>,
+    fft_size: usize,
+    window_type: usize,
+    peak_decay: f32,
+) {
+    for index in 0..fft_size {
+        let phase = TAU * index as f32 / (fft_size - 1) as f32;
+        let window = match window_type {
+            0 => 0.5 * (1.0 - phase.cos()),
+            1 => 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos(),
+            2 => {
+                0.21557895 - 0.41663158 * phase.cos() + 0.277263158 * (2.0 * phase).cos()
+                    - 0.083578947 * (3.0 * phase).cos()
+                    + 0.006947368 * (4.0 * phase).cos()
+            }
+            _ => 1.0,
+        };
+        complex_buf[index] = Complex32::new(samples[index] * window, 0.0);
+    }
+    fft.process(&mut complex_buf[..fft_size]);
+    let scale = 1.0 / fft_size as f32;
+    for bin in 0..fft_size / 2 {
+        let value = complex_buf[bin];
+        let mag = (value.re * value.re + value.im * value.im).sqrt() * scale;
+        let db = 20.0 * mag.max(1e-10).log10().max(-150.0);
+        latest_db[bin] = db;
+        if db > peak_hold[bin] {
+            peak_hold[bin] = db;
+        } else {
+            peak_hold[bin] += (db - peak_hold[bin]) * peak_decay * 0.05;
         }
     }
 }
@@ -605,51 +821,41 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
             let mut planner = FftPlanner::new();
             state.fft = Some(planner.plan_fft_forward(fft_size));
         }
-        for index in 0..fft_size {
-            let window = match state.window_type {
-                0 => 0.5 * (1.0 - (TAU * index as f32 / (fft_size - 1) as f32).cos()),
-                1 => {
-                    let a0 = 0.42;
-                    let a1 = 0.5;
-                    let a2 = 0.08;
-                    a0 - a1 * (TAU * index as f32 / (fft_size - 1) as f32).cos()
-                        + a2 * (2.0 * TAU * index as f32 / (fft_size - 1) as f32).cos()
-                }
-                2 => {
-                    let a0 = 0.21557895;
-                    let a1 = 0.41663158;
-                    let a2 = 0.277263158;
-                    let a3 = 0.083578947;
-                    let a4 = 0.006947368;
-                    a0 - a1 * (TAU * index as f32 / (fft_size - 1) as f32).cos()
-                        + a2 * (2.0 * TAU * index as f32 / (fft_size - 1) as f32).cos()
-                        - a3 * (3.0 * TAU * index as f32 / (fft_size - 1) as f32).cos()
-                        + a4 * (4.0 * TAU * index as f32 / (fft_size - 1) as f32).cos()
-                }
-                _ => 1.0,
-            };
-            state.complex_buf[index] = Complex32::new(state.buffer[index] * window, 0.0);
+        let fft = state.fft.as_ref().expect("FFT plan initialized").clone();
+        if matches!(
+            state.source,
+            SignalSource::Input | SignalSource::InputAndOutput
+        ) {
+            process_fft_trace(
+                &state.input_buffer,
+                &mut state.input_latest_db,
+                &mut state.input_peak_hold,
+                &mut state.complex_buf,
+                &fft,
+                fft_size,
+                state.window_type,
+                state.peak_decay,
+            );
         }
-        if let Some(ref fft) = state.fft {
-            fft.process(&mut state.complex_buf);
-        }
-        let scale = 1.0 / fft_size as f32;
-        for bin in 0..fft_size / 2 {
-            let re = state.complex_buf[bin].re;
-            let im = state.complex_buf[bin].im;
-            let mag = (re * re + im * im).sqrt() * scale;
-            let db = 20.0 * (mag.max(1e-10)).log10().max(-150.0);
-            state.latest_db[bin] = db;
-            if db > state.peak_hold[bin] {
-                state.peak_hold[bin] = db;
-            } else {
-                state.peak_hold[bin] += (db - state.peak_hold[bin]) * state.peak_decay * 0.05;
-            }
+        if matches!(
+            state.source,
+            SignalSource::Output | SignalSource::InputAndOutput
+        ) {
+            process_fft_trace(
+                &state.output_buffer,
+                &mut state.output_latest_db,
+                &mut state.output_peak_hold,
+                &mut state.complex_buf,
+                &fft,
+                fft_size,
+                state.window_type,
+                state.peak_decay,
+            );
         }
     }
 
     // Controls
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Mode:");
         if ui
             .selectable_label(!state.show_peak_hold, "Instant")
@@ -670,7 +876,11 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
             .on_hover_text("Clear held spectrum peaks.")
             .clicked()
         {
-            state.peak_hold.fill(state.db_floor);
+            state.clear_peaks();
+        }
+        ui.separator();
+        if source_selector(ui, &mut state.source) {
+            state.clear_history();
         }
         ui.separator();
         ui.label("Chan:");
@@ -679,8 +889,10 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
             (SpectrumChannel::Right, "R"),
             (SpectrumChannel::Sum, "L+R"),
         ] {
-            if ui.selectable_label(state.channel == chan, label).clicked() {
+            if ui.selectable_label(state.channel == chan, label).clicked() && state.channel != chan
+            {
                 state.channel = chan;
+                state.clear_history();
             }
         }
         ui.separator();
@@ -702,8 +914,7 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
             {
                 state.fft_size = size;
                 state.fft = None;
-                state.latest_db.fill(state.db_floor);
-                state.peak_hold.fill(state.db_floor);
+                state.clear_history();
             }
         }
         ui.separator();
@@ -739,13 +950,36 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
         min_freq: 20.0,
     };
     let num_bins = state.fft_size / 2;
-    let spectrum_db = if state.show_peak_hold {
-        &state.peak_hold[..num_bins]
+    let input_db = if state.show_peak_hold {
+        &state.input_peak_hold[..num_bins]
     } else {
-        &state.latest_db[..num_bins]
+        &state.input_latest_db[..num_bins]
+    };
+    let output_db = if state.show_peak_hold {
+        &state.output_peak_hold[..num_bins]
+    } else {
+        &state.output_latest_db[..num_bins]
     };
     const HOVER_READOUT_H: f32 = 24.0;
-    let plot_rect = spectrum::render_spectrum(ui, spectrum_db, &config, HOVER_READOUT_H);
+    let input_trace = spectrum::SpectrumTrace {
+        db_values: input_db,
+        color: INPUT_LEFT_COLOR,
+    };
+    let output_trace = spectrum::SpectrumTrace {
+        db_values: output_db,
+        color: OUTPUT_LEFT_COLOR,
+    };
+    let plot_rect = match state.source {
+        SignalSource::Input => {
+            spectrum::render_spectra(ui, &[input_trace], &config, HOVER_READOUT_H)
+        }
+        SignalSource::Output => {
+            spectrum::render_spectra(ui, &[output_trace], &config, HOVER_READOUT_H)
+        }
+        SignalSource::InputAndOutput => {
+            spectrum::render_spectra(ui, &[output_trace, input_trace], &config, HOVER_READOUT_H)
+        }
+    };
 
     let hover_info = ui
         .ctx()
@@ -761,15 +995,21 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
             };
             let bin_hz = 44100.0 / state.fft_size as f32;
             let bin = ((freq / bin_hz).floor() as usize).clamp(0, num_bins.saturating_sub(1));
-            let db = spectrum_db[bin];
+            let input_level = input_db[bin];
+            let output_level = output_db[bin];
+            let db = match state.source {
+                SignalSource::Input => input_level,
+                SignalSource::Output => output_level,
+                SignalSource::InputAndOutput => input_level.max(output_level),
+            };
             let x = plot_rect.left() + x_frac * plot_rect.width();
             let db_range = (state.db_top - state.db_floor).max(1.0);
             let y_frac = ((db - state.db_floor) / db_range).clamp(0.0, 1.0);
             let y = plot_rect.bottom() - y_frac * plot_rect.height();
-            (freq, db, bin, x, y)
+            (freq, input_level, output_level, x, y)
         });
 
-    if let Some((_freq, _db, _bin, x, y)) = hover_info {
+    if let Some((_freq, _input_db, _output_db, x, y)) = hover_info {
         let painter = ui.painter_at(plot_rect);
         painter.line_segment(
             [
@@ -777,13 +1017,13 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
                 egui::pos2(x, plot_rect.bottom()),
             ],
             egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgba_premultiplied(180, 235, 255, 80),
             ),
         );
         painter.line_segment(
             [egui::pos2(x, y), egui::pos2(x + 6.0, y)],
-            egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 250, 255)),
+            egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(230, 250, 255)),
         );
         painter.circle_filled(
             egui::pos2(x, y),
@@ -793,11 +1033,18 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
     }
 
     ui.horizontal(|ui| {
-        if let Some((freq, db, _bin, _, _)) = hover_info {
+        if let Some((freq, input_db, output_db, _, _)) = hover_info {
+            let levels = match state.source {
+                SignalSource::Input => format!("I: {input_db:+.1} dB"),
+                SignalSource::Output => format!("O: {output_db:+.1} dB"),
+                SignalSource::InputAndOutput => {
+                    format!("I: {input_db:+.1} dB   O: {output_db:+.1} dB")
+                }
+            };
             ui.label(format!(
-                "Freq: {}   Level: {:+.1} dB   Note: {}",
+                "Freq: {}   {}   Note: {}",
                 format_hz(freq),
-                db,
+                levels,
                 format_midi_note(freq)
             ));
         } else {
@@ -830,4 +1077,35 @@ fn format_midi_note(hz: f32) -> String {
     let name = NOTE_NAMES[(midi % 12) as usize];
     let octave = midi / 12 - 1;
     format!("{} ({}{})", midi, name, octave)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SignalSource, SpectrumChannel, copy_channel, find_combined_trigger};
+
+    #[test]
+    fn source_defaults_to_internal_output() {
+        assert!(matches!(SignalSource::default(), SignalSource::Output));
+    }
+
+    #[test]
+    fn channel_sum_averages_stereo_samples() {
+        let left = [1.0, -0.5];
+        let right = [-0.5, 0.25];
+        let mut dest = [0.0; 2];
+
+        copy_channel(&mut dest, &left, &right, SpectrumChannel::Sum);
+
+        assert_eq!(dest, [0.25, -0.125]);
+    }
+
+    #[test]
+    fn combined_trigger_uses_both_sources() {
+        let input = [-0.4, -0.2, 0.1, 0.2];
+        let output = [-0.4, -0.1, 0.2, 0.3];
+
+        let trigger = find_combined_trigger(&input, &output, input.len(), 0.0);
+
+        assert!((trigger - 1.5).abs() < f32::EPSILON);
+    }
 }

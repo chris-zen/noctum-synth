@@ -4,11 +4,11 @@ use eframe::egui;
 use eframe::egui::PointerButton;
 use eframe::egui::epaint::PathShape;
 use rustfft::{FftPlanner, num_complex::Complex32};
-use synth_core::{AnalogOscillator, SawMethod, Waveform};
-use wide::f32x4;
-
-use super::spectrum::{self, SpectrumConfig};
 use serde::{Deserialize, Serialize};
+
+use synth_core::{AnalogOscillator, SawMethod, Waveform, f32x4};
+
+use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
 pub struct OscillatorViewState {
     pub waveform: usize,
@@ -220,7 +220,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         ));
         ui.separator();
         ui.label("SR:");
-        for &(label, sr) in &[("44.1k", 44100.0), ("96k", 96000.0), ("192k", 192000.0)] {
+        for &(label, sr) in &[
+            ("44.1k", 44100.0),
+            ("48k", 48000.0),
+            ("96k", 96000.0),
+            ("192k", 192000.0),
+        ] {
             if ui
                 .selectable_label(state.sample_rate == sr, label)
                 .clicked()
@@ -529,7 +534,7 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
                 egui::pos2(plot_rect.left(), grid_y),
                 egui::pos2(plot_rect.right(), grid_y),
             ],
-            egui::Stroke::new(1.0, grid_color),
+            egui::Stroke::new(1.0_f32, grid_color),
         );
         let val = (center_y - grid_y) / y_scale;
         painter.text(
@@ -545,7 +550,7 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
             egui::pos2(plot_rect.left(), center_y),
             egui::pos2(plot_rect.right(), center_y),
         ],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 80)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 80)),
     );
 
     // Right-click reset
@@ -620,7 +625,7 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         if points.len() >= 2 {
             painter.add(PathShape::line(
                 points,
-                egui::Stroke::new(1.2, egui::Color32::from_rgb(100, 220, 140)),
+                egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(100, 220, 140)),
             ));
         }
 
@@ -668,7 +673,7 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
             sr,
             0.0,
             egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_rgba_premultiplied(100, 180, 255, 120),
             ),
             egui::StrokeKind::Inside,
@@ -691,7 +696,7 @@ fn draw_waveform(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
                 egui::pos2(tick_x, plot_rect.bottom()),
                 egui::pos2(tick_x, plot_rect.bottom() + 4.0),
             ],
-            egui::Stroke::new(1.0, grid_color),
+            egui::Stroke::new(1.0_f32, grid_color),
         );
         painter.text(
             egui::pos2(tick_x, label_y),

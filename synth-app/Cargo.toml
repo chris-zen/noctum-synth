@@ -7,7 +7,6 @@ description = "Standalone synth application with egui UI, MIDI input, and real-t
 [dependencies]
 synth-core = { path = "../synth-core" }
 
-wide = "1"
 eframe = "0.34"
 egui = "0.34"
 midir = "0.11"

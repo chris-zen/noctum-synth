@@ -13,15 +13,18 @@ transport. `synth-app` demonstrates that pattern with `rtrb`.
 | --- | --- |
 | `SetParam(ParamId, f32)` | Update one parameter. Boolean controls use `0.0`/`1.0`; enum-like controls use their documented index. |
 | `SetModulation { ... }` | Configure a free or dedicated modulation route. |
+| `SetModulationParam { ... }` | Update one source, destination, or amount field of a modulation route. This supports incremental control protocols such as NRPN. |
 | `SetFilterOversampling` | Change nonlinear-filter oversampling without rebuilding the stream. |
 | `NoteOn` / `NoteOff` / `AllNotesOff` | Send MIDI-style note lifecycle events. Velocity zero is treated as note-off. |
 | `PitchBend`, `ModWheel`, `Pressure` | Send normalized performance-source values. |
 | `SustainPedal` | Hold released notes while pressed. |
 | `ControlChange` | Forward a normalized MIDI controller value. |
 
-Convenience methods on `SynthEngine` exist for parameter updates, notes, all
-notes off, pitch bend, mod wheel, pressure, sustain pedal, and generic control
-changes. They forward to the same message handling path.
+Convenience methods on `SynthEngine` exist for applying a complete `Patch`,
+parameter updates, notes, all notes off, pitch bend, mod wheel, pressure,
+sustain pedal, and generic control changes. They forward to the same message
+handling path. The engine consumes only the generic patch representation and
+has no dependency on MIDI or device-specific protocols.
 
 ## Parameter values
 
@@ -29,6 +32,15 @@ changes. They forward to the same message handling path.
 description. Hosts should present user-friendly labels, units, ranges, and
 enums themselves. The `Patch` conversion helpers are the authoritative mapping
 from stored typed values to message values.
+
+The shared `rev2_midi` module translates Sequential Rev2 CC and NRPN messages
+to this host address space, encodes parameter changes back to NRPN sequences,
+and converts Program Edit Buffer SysEx messages to and from `Patch`. SysEx
+packing and device-specific Layer A/Layer B policy remain at this boundary.
+Reusing the codec in each host keeps desktop and embedded behavior consistent.
+Stored Program Data decoding additionally returns its bank and program metadata
+with the patch so hosts can build libraries without coupling that metadata to
+the synthesis engine.
 
 For example, cutoff is expressed in hertz, while `EffectMix` and other blend
 amounts are normalized. Boolean fields are interpreted using a `0.5` threshold

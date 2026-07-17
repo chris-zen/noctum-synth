@@ -13,6 +13,12 @@ pub struct SpectrumConfig {
     pub min_freq: f32,
 }
 
+#[derive(Clone, Copy)]
+pub struct SpectrumTrace<'a> {
+    pub db_values: &'a [f32],
+    pub color: egui::Color32,
+}
+
 /// Map a frequency (Hz) to an x position within the plot rectangle.
 pub fn freq_to_x(
     hz: f32,
@@ -43,6 +49,24 @@ pub fn freq_to_x(
 pub fn render_spectrum(
     ui: &mut egui::Ui,
     db_values: &[f32],
+    config: &SpectrumConfig,
+    controls_h: f32,
+) -> egui::Rect {
+    render_spectra(
+        ui,
+        &[SpectrumTrace {
+            db_values,
+            color: egui::Color32::from_rgb(100, 200, 255),
+        }],
+        config,
+        controls_h,
+    )
+}
+
+/// Draw one or more alpha-blended FFT bar series on a shared grid.
+pub fn render_spectra(
+    ui: &mut egui::Ui,
+    traces: &[SpectrumTrace<'_>],
     config: &SpectrumConfig,
     controls_h: f32,
 ) -> egui::Rect {
@@ -86,7 +110,7 @@ pub fn render_spectrum(
                     egui::pos2(plot_rect.left(), line_y),
                     egui::pos2(plot_rect.right(), line_y),
                 ],
-                egui::Stroke::new(1.0, grid_color),
+                egui::Stroke::new(1.0_f32, grid_color),
             );
             painter.text(
                 egui::pos2(plot_rect.left() - 4.0, line_y),
@@ -123,7 +147,7 @@ pub fn render_spectrum(
                 egui::pos2(tick_x, plot_rect.top()),
                 egui::pos2(tick_x, plot_rect.bottom()),
             ],
-            egui::Stroke::new(1.0, grid_color),
+            egui::Stroke::new(1.0_f32, grid_color),
         );
         let label = if config.log_scale {
             // label every tick in log mode (sparse ticks)
@@ -149,71 +173,98 @@ pub fn render_spectrum(
 
     // ── FFT bars ─────────────────────────────────────────────────────────
     let num_bins = fft_size / 2;
-    if db_values.len() < num_bins {
+    if traces.iter().any(|trace| trace.db_values.len() < num_bins) {
         return plot_rect;
     }
 
     if config.log_scale {
-        for bin in 0..num_bins {
-            let db = db_values[bin].min(top).max(floor);
-            if db <= floor {
-                continue;
+        for trace in traces {
+            for bin in 0..num_bins {
+                let db = trace.db_values[bin].clamp(floor, top);
+                if db <= floor {
+                    continue;
+                }
+                let freq = bin as f32 * bin_hz;
+                if freq < config.min_freq {
+                    continue;
+                }
+                let x_from = freq_to_x(
+                    freq,
+                    true,
+                    config.min_freq,
+                    max_freq,
+                    plot_rect.left(),
+                    plot_rect.right(),
+                );
+                let next_freq = (bin + 1) as f32 * bin_hz;
+                let x_to = freq_to_x(
+                    next_freq,
+                    true,
+                    config.min_freq,
+                    max_freq,
+                    plot_rect.left(),
+                    plot_rect.right(),
+                );
+                draw_bar(
+                    &painter,
+                    egui::pos2(x_from, plot_rect.bottom()),
+                    (x_to - x_from).max(1.0),
+                    db,
+                    floor,
+                    db_range,
+                    plot_rect.height(),
+                    trace.color,
+                );
             }
-            let freq = bin as f32 * bin_hz;
-            if freq < config.min_freq {
-                continue;
-            }
-            let x_from = freq_to_x(
-                freq,
-                true,
-                config.min_freq,
-                max_freq,
-                plot_rect.left(),
-                plot_rect.right(),
-            );
-            let next_freq = (bin + 1) as f32 * bin_hz;
-            let x_to = freq_to_x(
-                next_freq,
-                true,
-                config.min_freq,
-                max_freq,
-                plot_rect.left(),
-                plot_rect.right(),
-            );
-            let bar_width = (x_to - x_from).max(1.0);
-            let bar_height = plot_rect.height() * ((db - floor) / db_range).max(0.0).min(1.0);
-            let alpha = ((db - floor) / db_range * 180.0) as u8;
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(x_from, plot_rect.bottom() - bar_height),
-                    egui::vec2(bar_width, bar_height),
-                ),
-                0.0,
-                egui::Color32::from_rgba_premultiplied(100, 200, 255, alpha),
-            );
         }
     } else {
         let bar_width = plot_rect.width() / num_bins as f32;
-        for bin in 0..num_bins {
-            let db = db_values[bin].min(top).max(floor);
-            if db <= floor {
-                continue;
+        for trace in traces {
+            for bin in 0..num_bins {
+                let db = trace.db_values[bin].clamp(floor, top);
+                if db <= floor {
+                    continue;
+                }
+                let bar_x = plot_rect.left() + bin as f32 * bar_width;
+                draw_bar(
+                    &painter,
+                    egui::pos2(bar_x, plot_rect.bottom()),
+                    bar_width.max(1.0),
+                    db,
+                    floor,
+                    db_range,
+                    plot_rect.height(),
+                    trace.color,
+                );
             }
-            let bar_x = plot_rect.left() + bin as f32 * bar_width;
-            let bar_height = plot_rect.height() * ((db - floor) / db_range).max(0.0).min(1.0);
-            let alpha = ((db - floor) / db_range * 180.0) as u8;
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(bar_x, plot_rect.bottom() - bar_height),
-                    egui::vec2(bar_width.max(1.0), bar_height),
-                ),
-                0.0,
-                egui::Color32::from_rgba_premultiplied(100, 200, 255, alpha),
-            );
         }
     }
 
     plot_rect
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_bar(
+    painter: &egui::Painter,
+    bottom_left: egui::Pos2,
+    width: f32,
+    db: f32,
+    floor: f32,
+    db_range: f32,
+    plot_height: f32,
+    color: egui::Color32,
+) {
+    let intensity = ((db - floor) / db_range).clamp(0.0, 1.0);
+    let bar_height = plot_height * intensity;
+    let alpha = (intensity * 180.0) as u8;
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            egui::pos2(bottom_left.x, bottom_left.y - bar_height),
+            egui::vec2(width, bar_height),
+        ),
+        0.0,
+        egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+    );
 }
 
 // ── Tick generators ──────────────────────────────────────────────────────

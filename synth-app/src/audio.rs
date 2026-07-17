@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use synth_core::{ControlMessage, FilterOversampling, SynthEngine, VOICE_PACKS};
+use synth_core::{ControlMessage, FilterOversampling, FilterType, SynthEngine, VOICE_PACKS};
 
 /// How long to wait for `cpal` to switch the device sample rate and build a
 /// stream. CoreAudio rate changes can take longer than the default, so give
@@ -37,6 +37,7 @@ pub fn start_audio(
     input_filter: Option<String>,
     desired_rate: Option<u32>,
     filter_oversampling: FilterOversampling,
+    filter_type: FilterType,
 ) {
     std::thread::spawn(move || {
         let host = cpal::default_host();
@@ -63,6 +64,7 @@ pub fn start_audio(
             output.channels,
             input_consumer,
             filter_oversampling,
+            filter_type,
         );
         let Some(output_stream) = build_output_stream(&output.device, output.config, renderer)
         else {
@@ -412,10 +414,12 @@ impl Renderer {
         channels: usize,
         input: Option<rtrb::Consumer<f32>>,
         filter_oversampling: FilterOversampling,
+        filter_type: FilterType,
     ) -> Self {
         let input_enabled = engine_audio.input_enabled.clone();
         let mut engine = SynthEngine::<VOICE_PACKS>::new(sample_rate);
         engine.set_filter_oversampling(filter_oversampling);
+        engine.set_filter_type(filter_type);
         eprintln!(
             "Filter oversampling: {:?} ({}x)",
             filter_oversampling,
@@ -443,10 +447,14 @@ impl Renderer {
         // only the last requested mode per callback so the audio thread does
         // not repeatedly clear decimator state while rendering.
         let mut pending_oversampling = None;
+        let mut pending_filter_type = None;
 
         self.engine_audio.control.drain(|message| match message {
             ControlMessage::SetFilterOversampling(oversampling) => {
                 pending_oversampling = Some(oversampling);
+            }
+            ControlMessage::SetFilterType(filter_type) => {
+                pending_filter_type = Some(filter_type);
             }
             message => self.engine.handle_control(message),
         });
@@ -454,13 +462,22 @@ impl Renderer {
         if let Some(oversampling) = pending_oversampling {
             self.engine.set_filter_oversampling(oversampling);
         }
+        if let Some(filter_type) = pending_filter_type {
+            self.engine.set_filter_type(filter_type);
+        }
 
         let render_start = Instant::now();
         self.engine.process_interleaved(data, self.channels);
-        if self.input_enabled.load(Ordering::Relaxed) {
-            if let Some(consumer) = self.input.as_mut() {
-                mix_input(data, consumer, self.channels, frames);
-            }
+        let mut analysis_block = capture_synth_block(data, self.channels);
+        if let Some(consumer) = self.input.as_mut() {
+            consume_input(
+                data,
+                consumer,
+                self.channels,
+                frames,
+                self.input_enabled.load(Ordering::Relaxed),
+                &mut analysis_block,
+            );
         }
         let render_elapsed = render_start.elapsed();
 
@@ -468,7 +485,7 @@ impl Renderer {
             .feedback
             .set_active_voices(self.engine.active_voice_count());
 
-        self.publish_spectrum_block(data);
+        self.engine_audio.feedback.push_audio_block(analysis_block);
 
         if let Some(metrics) =
             self.timing
@@ -477,21 +494,21 @@ impl Renderer {
             self.engine_audio.feedback.push_metrics(metrics);
         }
     }
+}
 
-    /// Copies the first stereo frames of the buffer to the UI for analysis.
-    fn publish_spectrum_block(&mut self, data: &[f32]) {
-        let mut block = AudioBlock::default();
-        let frame_count = (data.len() / self.channels).min(engine::MAX_AUDIO_BUF);
-        for (index, frame) in data[..frame_count * self.channels]
-            .chunks_exact(self.channels)
-            .enumerate()
-        {
-            block.left[index] = frame[0];
-            block.right[index] = frame.get(1).copied().unwrap_or(frame[0]);
-        }
-        block.len = frame_count as u16;
-        self.engine_audio.feedback.push_audio_block(block);
+/// Copies the pre-input synth render into a synchronized analysis block.
+fn capture_synth_block(data: &[f32], channels: usize) -> AudioBlock {
+    let mut block = AudioBlock::default();
+    let frame_count = (data.len() / channels).min(engine::MAX_AUDIO_BUF);
+    for (index, frame) in data[..frame_count * channels]
+        .chunks_exact(channels)
+        .enumerate()
+    {
+        block.output_left[index] = frame[0];
+        block.output_right[index] = frame.get(1).copied().unwrap_or(frame[0]);
     }
+    block.len = frame_count as u16;
+    block
 }
 
 /// Captures an input device's frames into a ring buffer for the output thread,
@@ -517,7 +534,7 @@ impl InputCapture {
     }
 }
 
-/// Adds captured input samples to the rendered output, re-clamping to `[-1, 1]`.
+/// Captures input samples for analysis and optionally mixes them into the output.
 ///
 /// Consumes only whole frames so the ring's read position stays frame-aligned;
 /// a partially written frame is left in place until the input callback completes
@@ -525,13 +542,15 @@ impl InputCapture {
 ///
 /// Because the input and output streams run on independent clocks (and the input
 /// stream starts filling the ring before the output stream begins draining it),
-/// buffered latency can build up and drift. Before mixing we drop the oldest
+/// buffered latency can build up and drift. Before consuming we drop the oldest
 /// whole frames beyond a small target so monitoring latency stays low and bounded.
-fn mix_input(
+fn consume_input(
     data: &mut [f32],
     consumer: &mut rtrb::Consumer<f32>,
     channels: usize,
     block_frames: usize,
+    mix_enabled: bool,
+    analysis_block: &mut AudioBlock,
 ) {
     // Keep at most a couple of output blocks buffered to absorb jitter without
     // accumulating unbounded latency.
@@ -546,14 +565,27 @@ fn mix_input(
         }
     }
 
-    for frame in data.chunks_exact_mut(channels) {
+    for (frame_index, frame) in data.chunks_exact_mut(channels).enumerate() {
         if consumer.slots() < channels {
             break;
         }
-        for sample in frame.iter_mut() {
+        let mut input_left = 0.0;
+        let mut input_right = None;
+        for (channel, sample) in frame.iter_mut().enumerate() {
             if let Ok(input) = consumer.pop() {
-                *sample = (*sample + input).clamp(-1.0, 1.0);
+                if channel == 0 {
+                    input_left = input;
+                } else if channel == 1 {
+                    input_right = Some(input);
+                }
+                if mix_enabled {
+                    *sample = (*sample + input).clamp(-1.0, 1.0);
+                }
             }
+        }
+        if frame_index < engine::MAX_AUDIO_BUF {
+            analysis_block.input_left[frame_index] = input_left;
+            analysis_block.input_right[frame_index] = input_right.unwrap_or(input_left);
         }
     }
 }
@@ -621,7 +653,8 @@ impl AudioTiming {
 
 #[cfg(test)]
 mod tests {
-    use super::mix_input;
+    use super::consume_input;
+    use crate::engine::AudioBlock;
     use rtrb::RingBuffer;
 
     #[test]
@@ -632,9 +665,12 @@ mod tests {
         }
 
         let mut data = [0.0f32; 8];
-        mix_input(&mut data, &mut consumer, 2, 1024);
+        let mut analysis = AudioBlock::default();
+        consume_input(&mut data, &mut consumer, 2, 1024, true, &mut analysis);
 
         assert_eq!(data, [0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(analysis.input_left[0], 0.1);
+        assert_eq!(analysis.input_right[0], 0.2);
         assert_eq!(consumer.slots(), 1, "partial frame stays buffered");
     }
 
@@ -646,12 +682,13 @@ mod tests {
         producer.push(0.3).unwrap();
 
         let mut first = [0.0f32; 4];
-        mix_input(&mut first, &mut consumer, 2, 1024);
+        let mut analysis = AudioBlock::default();
+        consume_input(&mut first, &mut consumer, 2, 1024, true, &mut analysis);
         assert_eq!(first, [0.1, 0.2, 0.0, 0.0]);
 
         producer.push(0.4).unwrap();
         let mut second = [0.0f32; 4];
-        mix_input(&mut second, &mut consumer, 2, 1024);
+        consume_input(&mut second, &mut consumer, 2, 1024, true, &mut analysis);
         assert_eq!(
             second,
             [0.3, 0.4, 0.0, 0.0],
@@ -666,7 +703,8 @@ mod tests {
         producer.push(-2.0).unwrap();
 
         let mut data = [0.5f32, 0.5];
-        mix_input(&mut data, &mut consumer, 2, 1024);
+        let mut analysis = AudioBlock::default();
+        consume_input(&mut data, &mut consumer, 2, 1024, true, &mut analysis);
         assert_eq!(data, [1.0, -1.0]);
     }
 
@@ -679,9 +717,26 @@ mod tests {
         }
 
         let mut data = [0.0f32; 4];
-        mix_input(&mut data, &mut consumer, 2, 1);
+        let mut analysis = AudioBlock::default();
+        consume_input(&mut data, &mut consumer, 2, 1, true, &mut analysis);
 
         assert_eq!(data, [0.25, 0.28125, 0.3125, 0.34375]);
         assert_eq!(consumer.slots(), 0, "no stale frames left buffered");
+    }
+
+    #[test]
+    fn muted_input_is_captured_without_being_mixed() {
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(8);
+        producer.push(0.25).unwrap();
+        producer.push(-0.5).unwrap();
+
+        let mut data = [0.75f32, 0.75];
+        let mut analysis = AudioBlock::default();
+        consume_input(&mut data, &mut consumer, 2, 1024, false, &mut analysis);
+
+        assert_eq!(data, [0.75, 0.75]);
+        assert_eq!(analysis.input_left[0], 0.25);
+        assert_eq!(analysis.input_right[0], -0.5);
+        assert_eq!(consumer.slots(), 0);
     }
 }

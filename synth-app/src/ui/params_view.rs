@@ -2,15 +2,15 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::engine::SynthEngineControl;
+use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
     KNOB_SIZE, master_volume, param_knob_bipolar, param_knob_f32, param_knob_log_hz, param_toggle,
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, MAX_LFO_RATE_HZ,
+    DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterType, MAX_LFO_RATE_HZ,
     MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    OscillatorPatch, ParamId, Patch,
+    ModulationParam, OscillatorPatch, ParamId, Patch,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 900.0;
@@ -279,6 +279,145 @@ impl UiState {
         self.master_volume = patch.master_volume;
     }
 
+    pub fn apply_midi_update(&mut self, update: MidiUiUpdate) {
+        match update {
+            MidiUiUpdate::Param(param, value) => self.apply_midi_param(param, value),
+            MidiUiUpdate::Modulation { route, parameter } => {
+                self.apply_midi_modulation(route, parameter);
+            }
+        }
+    }
+
+    fn apply_midi_param(&mut self, param: ParamId, value: f32) {
+        let enabled = value >= 0.5;
+        match param {
+            ParamId::Osc1Waveform => self.osc1_waveform = value as usize,
+            ParamId::Osc1Enabled => self.osc1_enabled = enabled,
+            ParamId::Osc1Frequency => self.osc1_freq = value,
+            ParamId::Osc1FineTune => self.osc1_fine = value,
+            ParamId::Osc1Shape => self.osc1_shape = value,
+            ParamId::Osc2Waveform => self.osc2_waveform = value as usize,
+            ParamId::Osc2Enabled => self.osc2_enabled = enabled,
+            ParamId::Osc2Frequency => self.osc2_freq = value,
+            ParamId::Osc2FineTune => self.osc2_fine = value,
+            ParamId::Osc2Shape => self.osc2_shape = value,
+            ParamId::OscMix => self.osc_mix = value,
+            ParamId::SubOscLevel => self.sub_level = value,
+            ParamId::NoiseLevel => self.noise_level = value,
+            ParamId::HardSync => self.sync = enabled,
+            ParamId::OscSlop | ParamId::AnalogDrift => self.osc_slop = value,
+            ParamId::Osc1NoteReset => self.osc1_note_reset = enabled,
+            ParamId::Osc2NoteReset => self.osc2_note_reset = enabled,
+            ParamId::FilterCutoff => self.filter_cutoff = value,
+            ParamId::FilterResonance => self.filter_resonance = value,
+            ParamId::FilterPoles => self.filter_poles = usize::from(enabled),
+            ParamId::FilterKeyTrack => self.filter_key_track = value,
+            ParamId::FilterEnvAmount => self.filter_env_amount = value,
+            ParamId::FilterVelocity => self.filter_velocity = value,
+            ParamId::FilterAudioMod => self.filter_audio_mod = value,
+            ParamId::FilterEgDelay => self.filter_delay = value,
+            ParamId::FilterEgAttack => self.filter_attack = value,
+            ParamId::FilterEgDecay => self.filter_decay = value,
+            ParamId::FilterEgSustain => self.filter_sustain = value,
+            ParamId::FilterEgRelease => self.filter_release = value,
+            ParamId::PanSpread => self.amp_pan_spread = value,
+            ParamId::AmpEnvAmount => self.amp_env_amount = value,
+            ParamId::AmpVelocity => self.amp_velocity = value,
+            ParamId::AmpEgDelay => self.amp_delay = value,
+            ParamId::AmpEgAttack => self.amp_attack = value,
+            ParamId::AmpEgDecay => self.amp_decay = value,
+            ParamId::AmpEgSustain => self.amp_sustain = value,
+            ParamId::AmpEgRelease => self.amp_release = value,
+            ParamId::AuxEgDestination => self.aux_destination = value as usize,
+            ParamId::AuxEgAmount => self.aux_env_amount = value,
+            ParamId::AuxEgVelocity => self.aux_velocity = value,
+            ParamId::AuxEgDelay => self.aux_delay = value,
+            ParamId::AuxEgAttack => self.aux_attack = value,
+            ParamId::AuxEgDecay => self.aux_decay = value,
+            ParamId::AuxEgSustain => self.aux_sustain = value,
+            ParamId::AuxEgRelease => self.aux_release = value,
+            ParamId::AuxEgLoop => self.aux_repeat = enabled,
+            ParamId::Lfo1Rate => self.lfo_rates[0] = value,
+            ParamId::Lfo1Depth => self.lfo_depths[0] = value,
+            ParamId::Lfo1Waveform => self.lfo_waveforms[0] = value as usize,
+            ParamId::Lfo1Destination => self.lfo_destinations[0] = value as usize,
+            ParamId::Lfo1ClockSync => self.lfo_clock_sync[0] = enabled,
+            ParamId::Lfo1KeySync => self.lfo_key_sync[0] = enabled,
+            ParamId::Lfo2Rate => self.lfo_rates[1] = value,
+            ParamId::Lfo2Depth => self.lfo_depths[1] = value,
+            ParamId::Lfo2Waveform => self.lfo_waveforms[1] = value as usize,
+            ParamId::Lfo2Destination => self.lfo_destinations[1] = value as usize,
+            ParamId::Lfo2ClockSync => self.lfo_clock_sync[1] = enabled,
+            ParamId::Lfo2KeySync => self.lfo_key_sync[1] = enabled,
+            ParamId::Lfo3Rate => self.lfo_rates[2] = value,
+            ParamId::Lfo3Depth => self.lfo_depths[2] = value,
+            ParamId::Lfo3Waveform => self.lfo_waveforms[2] = value as usize,
+            ParamId::Lfo3Destination => self.lfo_destinations[2] = value as usize,
+            ParamId::Lfo3ClockSync => self.lfo_clock_sync[2] = enabled,
+            ParamId::Lfo3KeySync => self.lfo_key_sync[2] = enabled,
+            ParamId::Lfo4Rate => self.lfo_rates[3] = value,
+            ParamId::Lfo4Depth => self.lfo_depths[3] = value,
+            ParamId::Lfo4Waveform => self.lfo_waveforms[3] = value as usize,
+            ParamId::Lfo4Destination => self.lfo_destinations[3] = value as usize,
+            ParamId::Lfo4ClockSync => self.lfo_clock_sync[3] = enabled,
+            ParamId::Lfo4KeySync => self.lfo_key_sync[3] = enabled,
+            ParamId::EffectEnabled => self.effect_enabled = enabled,
+            ParamId::EffectType => self.select_effect((value as usize).min(EFFECT_TYPE_COUNT - 1)),
+            ParamId::EffectMix => self.effect_mix = value,
+            ParamId::EffectClockSync => self.effect_clock_sync = enabled,
+            ParamId::EffectParam1 => self.effect_param1 = value,
+            ParamId::EffectParam2 => self.effect_param2 = value,
+            ParamId::MasterVolume => self.master_volume = value,
+            _ => return,
+        }
+        if matches!(
+            param,
+            ParamId::EffectMix
+                | ParamId::EffectClockSync
+                | ParamId::EffectParam1
+                | ParamId::EffectParam2
+        ) {
+            self.store_active_effect_params();
+        }
+    }
+
+    fn apply_midi_modulation(&mut self, route: ModRoute, parameter: ModulationParam) {
+        match route {
+            ModRoute::Free(index) if index < self.mod_enabled.len() => {
+                match parameter {
+                    ModulationParam::Source(source) => self.mod_sources[index] = source.index(),
+                    ModulationParam::Destination(destination) => {
+                        self.mod_destinations[index] = destination.index();
+                    }
+                    ModulationParam::Amount(amount) => self.mod_amounts[index] = amount,
+                }
+                if !matches!(parameter, ModulationParam::Amount(_)) {
+                    self.mod_enabled[index] = self.mod_sources[index] != ModSource::Off.index()
+                        && self.mod_destinations[index] != ModDestination::Off.index();
+                }
+            }
+            ModRoute::Dedicated(source) => {
+                let Some(index) = DedicatedModSource::ALL
+                    .iter()
+                    .position(|item| *item == source)
+                else {
+                    return;
+                };
+                match parameter {
+                    ModulationParam::Destination(destination) => {
+                        self.dedicated_mod_destinations[index] = destination.index();
+                        self.dedicated_mod_enabled[index] = destination != ModDestination::Off;
+                    }
+                    ModulationParam::Amount(amount) => {
+                        self.dedicated_mod_amounts[index] = amount;
+                    }
+                    ModulationParam::Source(_) => {}
+                }
+            }
+            ModRoute::Free(_) => {}
+        }
+    }
+
     fn store_active_effect_params(&mut self) {
         self.effect_runtime_params[self.effect_type] = EffectRuntimeParams {
             mix: self.effect_mix,
@@ -451,8 +590,17 @@ pub fn show(
     control: &SynthEngineControl,
     analysis_open: &mut bool,
     patch_mgr: &mut PatchManager,
+    filter_type: &mut FilterType,
+    midi_output_port: Option<&str>,
 ) {
-    command_row(ui, control, analysis_open, state, patch_mgr);
+    command_row(
+        ui,
+        control,
+        analysis_open,
+        state,
+        patch_mgr,
+        midi_output_port,
+    );
 
     ui.add_space(6.0);
 
@@ -463,8 +611,35 @@ pub fn show(
 
         ui.add_space(8.0);
 
-        module_panel(ui, "Low Frequency Oscillators", |ui| {
-            lfo_module(ui, state, control);
+        if ui.available_width() >= WIDE_LAYOUT_MIN_WIDTH {
+            ui.columns(2, |columns| {
+                module_panel(&mut columns[0], "Low-Pass Filter", |ui| {
+                    filter_module(ui, state, control, filter_type);
+                });
+                module_panel(&mut columns[1], "Amplifier", |ui| {
+                    amplifier_module(ui, state, control);
+                });
+            });
+        } else {
+            module_panel(ui, "Low-Pass Filter", |ui| {
+                filter_module(ui, state, control, filter_type);
+            });
+            ui.add_space(8.0);
+            module_panel(ui, "Amplifier", |ui| {
+                amplifier_module(ui, state, control);
+            });
+        }
+
+        ui.add_space(8.0);
+
+        ui.columns(2, |columns| {
+            module_panel(&mut columns[0], "Low Frequency Oscillators", |ui| {
+                lfo_module(ui, state, control);
+            });
+
+            module_panel(&mut columns[1], "Auxiliary Envelope", |ui| {
+                auxiliary_envelope_module(ui, state, control);
+            });
         });
 
         ui.add_space(8.0);
@@ -478,35 +653,6 @@ pub fn show(
         module_panel(ui, "Effects", |ui| {
             effects_module(ui, state, control);
         });
-
-        ui.add_space(8.0);
-
-        if ui.available_width() >= WIDE_LAYOUT_MIN_WIDTH {
-            ui.columns(2, |columns| {
-                module_panel(&mut columns[0], "Low-Pass Filter", |ui| {
-                    filter_module(ui, state, control);
-                });
-                module_panel(&mut columns[1], "Amplifier", |ui| {
-                    amplifier_module(ui, state, control);
-                });
-            });
-            ui.add_space(8.0);
-            module_panel(ui, "Auxiliary Envelope", |ui| {
-                auxiliary_envelope_module(ui, state, control);
-            });
-        } else {
-            module_panel(ui, "Low-Pass Filter", |ui| {
-                filter_module(ui, state, control);
-            });
-            ui.add_space(8.0);
-            module_panel(ui, "Amplifier", |ui| {
-                amplifier_module(ui, state, control);
-            });
-            ui.add_space(8.0);
-            module_panel(ui, "Auxiliary Envelope", |ui| {
-                auxiliary_envelope_module(ui, state, control);
-            });
-        }
     });
 }
 
@@ -516,6 +662,7 @@ fn command_row(
     analysis_open: &mut bool,
     state: &mut UiState,
     patch_mgr: &mut PatchManager,
+    midi_output_port: Option<&str>,
 ) {
     ui.horizontal(|ui| {
         if ui.button("Play C4").clicked() {
@@ -574,6 +721,21 @@ fn command_row(
                 patch_mgr.refresh();
             }
         }
+        let send = ui.add_enabled(midi_output_port.is_some(), egui::Button::new("Send"));
+        if send.clicked() {
+            let patch = Patch::from(&*state);
+            let sent = control.send_midi_patch(&patch)
+                || (control.set_midi_output_port(midi_output_port)
+                    && control.send_midi_patch(&patch));
+            if !sent {
+                eprintln!("Failed to send Rev2 Program Edit Buffer");
+            }
+        }
+        send.on_hover_text(if midi_output_port.is_some() {
+            "Send the current program to the MIDI output as a Rev2 Program Edit Buffer"
+        } else {
+            "Select a MIDI output device in Settings"
+        });
         let _ = load_clicked;
 
         ui.separator();
@@ -1259,8 +1421,36 @@ fn effect_param_labels(effect: EffectType) -> (&'static str, &'static str) {
     }
 }
 
-fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+fn filter_module(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    control: &SynthEngineControl,
+    filter_type: &mut FilterType,
+) {
     fixed_panel_scroll(ui, "filter_grid_scroll", FILTER_GRID_WIDTH, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Model:");
+            egui::ComboBox::from_id_salt("filter_model")
+                .selected_text(filter_type.name())
+                .show_ui(ui, |ui| {
+                    for candidate in FilterType::ALL {
+                        let response = ui
+                            .add_enabled(
+                                candidate.is_implemented(),
+                                egui::Button::selectable(
+                                    *filter_type == candidate,
+                                    candidate.name(),
+                                ),
+                            )
+                            .on_disabled_hover_text("Implemented in a later experiment phase");
+                        if response.clicked() {
+                            *filter_type = candidate;
+                            control.set_filter_type(candidate);
+                        }
+                    }
+                });
+        });
+        ui.add_space(8.0);
         egui::Grid::new("filter_grid")
             .num_columns(6)
             .spacing(egui::vec2(12.0, 12.0))
@@ -1787,6 +1977,23 @@ impl PatchManager {
         }
     }
 
+    pub fn save_midi_program(
+        &self,
+        program: &synth_core::Rev2ProgramData,
+    ) -> std::io::Result<PathBuf> {
+        let name = crate::rev2_factory_presets::program_filename(program.bank, program.program)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Rev2 program bank or number is outside the factory library",
+                )
+            })?;
+        let path = self.patches_dir.join(format!("{name}.json"));
+        let json = serde_json::to_string_pretty(&program.patch).map_err(std::io::Error::other)?;
+        std::fs::write(&path, json)?;
+        Ok(path)
+    }
+
     pub fn save_autosave(&self, patch: &Patch) {
         let path = self.config_dir.join("patch.json");
         if let Ok(json) = serde_json::to_string_pretty(patch) {
@@ -1829,4 +2036,81 @@ fn list_patch_files(dir: &std::path::Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn midi_parameter_updates_visible_ui_state() {
+        let mut state = UiState::default();
+        state.apply_midi_update(MidiUiUpdate::Param(ParamId::FilterCutoff, 440.0));
+        state.apply_midi_update(MidiUiUpdate::Param(ParamId::Osc2Enabled, 1.0));
+        state.apply_midi_update(MidiUiUpdate::Param(ParamId::EffectType, 3.0));
+        state.apply_midi_update(MidiUiUpdate::Param(ParamId::EffectMix, 0.75));
+
+        assert_eq!(state.filter_cutoff, 440.0);
+        assert!(state.osc2_enabled);
+        assert_eq!(state.effect_type, 3);
+        assert_eq!(state.effect_mix, 0.75);
+        assert_eq!(state.effect_runtime_params[3].mix, 0.75);
+    }
+
+    #[test]
+    fn midi_modulation_fields_update_and_enable_ui_routes() {
+        let mut state = UiState::default();
+        state.apply_midi_update(MidiUiUpdate::Modulation {
+            route: ModRoute::Free(2),
+            parameter: ModulationParam::Source(ModSource::Lfo2),
+        });
+        assert!(!state.mod_enabled[2]);
+
+        state.apply_midi_update(MidiUiUpdate::Modulation {
+            route: ModRoute::Free(2),
+            parameter: ModulationParam::Destination(ModDestination::FilterCutoff),
+        });
+        state.apply_midi_update(MidiUiUpdate::Modulation {
+            route: ModRoute::Free(2),
+            parameter: ModulationParam::Amount(-0.5),
+        });
+
+        assert!(state.mod_enabled[2]);
+        assert_eq!(state.mod_sources[2], ModSource::Lfo2.index());
+        assert_eq!(
+            state.mod_destinations[2],
+            ModDestination::FilterCutoff.index()
+        );
+        assert_eq!(state.mod_amounts[2], -0.5);
+    }
+
+    #[test]
+    fn midi_program_save_uses_deterministic_overwriteable_json() {
+        let root =
+            std::env::temp_dir().join(format!("analog-synth-midi-import-{}", std::process::id()));
+        let patches_dir = root.join("patches");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        let manager = PatchManager {
+            save_name: String::new(),
+            patch_names: Vec::new(),
+            config_dir: root.clone(),
+            patches_dir,
+        };
+        let mut program = synth_core::Rev2ProgramData {
+            bank: 4,
+            program: 0,
+            patch: Patch::default(),
+        };
+        let path = manager.save_midi_program(&program).unwrap();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("F1-001-LosVangelis2041.json")
+        );
+        program.patch.master_volume = 0.25;
+        manager.save_midi_program(&program).unwrap();
+        let decoded: Patch =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(decoded.master_volume, 0.25);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::filter_design::FilterDesignViewConfig;
-use super::osc_design::OscDesignViewConfig;
-use super::real_time::RealTimeViewConfig;
-use super::{AnalysisState, AnalysisTab};
+use crate::ui::analysis::filter_design::FilterDesignViewConfig;
+use crate::ui::analysis::osc_design::OscDesignViewConfig;
+use crate::ui::analysis::real_time::RealTimeViewConfig;
+use crate::ui::analysis::{AnalysisState, AnalysisTab};
 
 #[derive(Serialize, Deserialize)]
 pub struct AnalysisConfig {

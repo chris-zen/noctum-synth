@@ -1,6 +1,6 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use synth_core::FilterOversampling;
+use synth_core::{FilterOversampling, Patch};
 
 use crate::engine::SynthEngineControl;
 use crate::{audio, midi};
@@ -8,6 +8,8 @@ use crate::{audio, midi};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub midi_port: Option<String>,
+    #[serde(default)]
+    pub midi_output_port: Option<String>,
     pub audio_device: Option<String>,
     #[serde(default)]
     pub audio_input: Option<String>,
@@ -22,6 +24,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             midi_port: None,
+            midi_output_port: None,
             audio_device: None,
             audio_input: None,
             sample_rate: None,
@@ -63,8 +66,10 @@ pub fn show(
     baseline: &AudioBaseline,
     control: &crate::engine::SynthEngineControl,
     midi_conn: &mut Option<midir::MidiInputConnection<()>>,
+    current_patch: &Patch,
 ) {
-    let midi_ports = midi::list_ports();
+    let midi_input_ports = midi::list_input_ports();
+    let midi_output_ports = midi::list_output_ports();
     let audio_devices = audio::list_output_devices();
     let audio_inputs = audio::list_input_devices();
 
@@ -77,7 +82,26 @@ pub fn show(
         .show(ui, |ui| {
             let full_width = ui.available_width();
 
-            midi_panel(ui, full_width, settings, control, midi_conn, &midi_ports);
+            let gap = ui.spacing().item_spacing.x;
+            let midi_width = ((full_width - gap) / 2.0).max(0.0);
+            ui.horizontal_top(|ui| {
+                midi_input_panel(
+                    ui,
+                    midi_width,
+                    settings,
+                    control,
+                    midi_conn,
+                    &midi_input_ports,
+                );
+                midi_output_panel(
+                    ui,
+                    midi_width,
+                    settings,
+                    control,
+                    &midi_output_ports,
+                    current_patch,
+                );
+            });
             ui.add_space(PANEL_SPACING);
 
             // Audio output, audio input and sample rate share a row. The sample
@@ -142,7 +166,7 @@ fn settings_list(ui: &mut egui::Ui, id: &str, width: f32, add_items: impl FnOnce
         });
 }
 
-fn midi_panel(
+fn midi_input_panel(
     ui: &mut egui::Ui,
     width: f32,
     settings: &mut Settings,
@@ -179,6 +203,55 @@ fn midi_panel(
                 ui.colored_label(egui::Color32::GREEN, format!("Connected: {port}"));
             }
         } else if settings.midi_port.is_some() {
+            ui.colored_label(
+                egui::Color32::RED,
+                "Failed to connect. Port may be unavailable.",
+            );
+        }
+    });
+}
+
+fn midi_output_panel(
+    ui: &mut egui::Ui,
+    width: f32,
+    settings: &mut Settings,
+    control: &SynthEngineControl,
+    ports: &[String],
+    current_patch: &Patch,
+) {
+    settings_panel(ui, width, "MIDI Output Device", false, |ui, width| {
+        settings_list(ui, "midi_output_list_scroll", width, |ui| {
+            if ports.is_empty() {
+                ui.label("No MIDI output devices detected.");
+            }
+            for port in ports {
+                let selected = settings.midi_output_port.as_deref() == Some(port.as_str());
+                if ui.selectable_label(selected, port).clicked()
+                    && (!selected || !control.midi_output_connected())
+                {
+                    settings.midi_output_port = Some(port.clone());
+                    if control.set_midi_output_port(Some(port)) {
+                        control.load_patch(current_patch);
+                    }
+                }
+            }
+            let none_selected = settings.midi_output_port.is_none();
+            if ui
+                .selectable_label(none_selected, "None (disconnect)")
+                .clicked()
+                && !none_selected
+            {
+                settings.midi_output_port = None;
+                control.set_midi_output_port(None);
+            }
+        });
+
+        ui.add_space(4.0);
+        if control.midi_output_connected() {
+            if let Some(ref port) = settings.midi_output_port {
+                ui.colored_label(egui::Color32::GREEN, format!("Connected: {port}"));
+            }
+        } else if settings.midi_output_port.is_some() {
             ui.colored_label(
                 egui::Color32::RED,
                 "Failed to connect. Port may be unavailable.",

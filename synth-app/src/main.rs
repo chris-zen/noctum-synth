@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod engine;
 mod midi;
+mod rev2_factory_presets;
 mod ui;
 
 use crate::engine::create_synth_engine_bridge;
@@ -29,6 +30,7 @@ fn main() -> eframe::Result {
     let audio_input = audio_input_arg.or_else(|| config.settings.audio_input.clone());
     let sample_rate = config.settings.sample_rate;
     let filter_oversampling = config.settings.filter_oversampling;
+    let filter_type = config.filter_type;
 
     audio::start_audio(
         engine_audio,
@@ -36,6 +38,7 @@ fn main() -> eframe::Result {
         audio_input,
         sample_rate,
         filter_oversampling,
+        filter_type,
     );
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))

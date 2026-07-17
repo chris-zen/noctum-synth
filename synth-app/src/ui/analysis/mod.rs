@@ -7,10 +7,13 @@ pub mod spectrum;
 use eframe::egui;
 use std::collections::VecDeque;
 
-use self::filter_design::FilterDesignState;
-use self::osc_design::OscillatorViewState;
-use self::real_time::RealTimeState;
+use synth_core::FilterType;
+
 use crate::engine::AudioBlock;
+use crate::engine::SynthEngineControl;
+use crate::ui::analysis::filter_design::FilterDesignState;
+use crate::ui::analysis::osc_design::OscillatorViewState;
+use crate::ui::analysis::real_time::RealTimeState;
 
 // ---------------------------------------------------------------------------
 // State
@@ -42,7 +45,13 @@ impl Default for AnalysisState {
     }
 }
 
-pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut AnalysisState) {
+pub fn show(
+    ui: &mut egui::Ui,
+    audio_blocks: VecDeque<AudioBlock>,
+    state: &mut AnalysisState,
+    control: &SynthEngineControl,
+    filter_type: &mut FilterType,
+) {
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.active_tab, AnalysisTab::RealTime, "Real Time");
         ui.selectable_value(&mut state.active_tab, AnalysisTab::OscDesign, "Osc Design");
@@ -57,6 +66,8 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut A
     match state.active_tab {
         AnalysisTab::RealTime => real_time::show(ui, audio_blocks, &mut state.real_time),
         AnalysisTab::OscDesign => osc_design::show(ui, &mut state.osc_design),
-        AnalysisTab::FilterDesign => filter_design::show(ui, &mut state.filter_design),
+        AnalysisTab::FilterDesign => {
+            filter_design::show(ui, &mut state.filter_design, control, filter_type)
+        }
     }
 }

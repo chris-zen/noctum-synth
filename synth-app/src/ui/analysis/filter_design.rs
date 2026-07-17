@@ -1,12 +1,15 @@
 use eframe::egui;
 use rustfft::{FftPlanner, num_complex::Complex32};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use synth_core::{FilterOversampling, LANES, LadderFilter, filter::SELF_OSC_RESONANCE_START};
-use wide::f32x4;
+use synth_core::{
+    Filter, FilterOversampling, FilterType, LANES, f32x4, filter::SELF_OSC_RESONANCE_START,
+};
 
-use super::spectrum::{self, SpectrumConfig};
-use serde::{Deserialize, Serialize};
+use crate::engine::SynthEngineControl;
+use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
 /// Small impulse used to keep analysis mostly in the filter's linear region.
 const ANALYSIS_IMPULSE_GAIN: f32 = 1.0e-4;
@@ -24,6 +27,7 @@ const SINE_PROBE_MEASURE_FRAMES: usize = 2048;
 const SMOOTHING_FRACTIONAL_OCTAVE: f32 = 12.0;
 /// Space reserved below the plot for the non-overlapping hover readout.
 const HOVER_READOUT_H: f32 = 24.0;
+const RESPONSE_CACHE_CAPACITY: usize = 32;
 
 pub struct FilterDesignState {
     pub cutoff: f32,
@@ -42,11 +46,14 @@ pub struct FilterDesignState {
     pub sample_rate: f32,
     pub oversampling: FilterOversampling,
     pub smooth_response: bool,
+    pub overlay_all_models: bool,
 
     pub live_mode: bool,
     pub needs_render: bool,
     pub last_params_hash: u64,
     pending_response: Option<Receiver<AnalysisResult>>,
+    overlay_responses: Vec<ModelResponse>,
+    response_cache: HashMap<u64, CachedResponse>,
 }
 
 #[derive(Clone, Copy)]
@@ -58,13 +65,30 @@ struct AnalysisParams {
     sample_rate: f32,
     oversampling: FilterOversampling,
     db_floor: f32,
+    filter_type: FilterType,
 }
 
 struct AnalysisResult {
     hash: u64,
+    filter_type: FilterType,
     response_db: Vec<f32>,
     peak_freq_hz: f32,
     peak_db: f32,
+    overlays: Vec<ModelResponse>,
+}
+
+#[derive(Clone)]
+struct ModelResponse {
+    filter_type: FilterType,
+    response_db: Vec<f32>,
+}
+
+#[derive(Clone)]
+struct CachedResponse {
+    response_db: Vec<f32>,
+    peak_freq_hz: f32,
+    peak_db: f32,
+    overlays: Vec<ModelResponse>,
 }
 
 impl Default for FilterDesignState {
@@ -85,10 +109,13 @@ impl Default for FilterDesignState {
             sample_rate: 44100.0,
             oversampling: FilterOversampling::Auto,
             smooth_response: true,
+            overlay_all_models: false,
             live_mode: true,
             needs_render: true,
             last_params_hash: 0,
             pending_response: None,
+            overlay_responses: Vec::new(),
+            response_cache: HashMap::new(),
         }
     }
 }
@@ -106,6 +133,8 @@ pub struct FilterDesignViewConfig {
     #[serde(default)]
     pub oversampling: FilterOversampling,
     pub smooth_response: bool,
+    #[serde(default)]
+    pub overlay_all_models: bool,
     pub live_mode: bool,
 }
 
@@ -128,6 +157,7 @@ impl FilterDesignViewConfig {
             sample_rate: state.sample_rate,
             oversampling: state.oversampling,
             smooth_response: state.smooth_response,
+            overlay_all_models: state.overlay_all_models,
             live_mode: state.live_mode,
         }
     }
@@ -143,17 +173,44 @@ impl FilterDesignViewConfig {
         state.sample_rate = self.sample_rate;
         state.oversampling = self.oversampling;
         state.smooth_response = self.smooth_response;
+        state.overlay_all_models = self.overlay_all_models;
         state.live_mode = self.live_mode;
         state.needs_render = true;
         state.pending_response = None;
     }
 }
 
-pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
-    let old_hash = param_hash(state);
+pub fn show(
+    ui: &mut egui::Ui,
+    state: &mut FilterDesignState,
+    control: &SynthEngineControl,
+    filter_type: &mut FilterType,
+) {
+    let old_hash = param_hash(state, *filter_type);
 
     // ---- Filter parameters ----
     ui.horizontal(|ui| {
+        ui.label("Model:");
+        egui::ComboBox::from_id_salt("filter_design_model")
+            .selected_text(filter_type.name())
+            .show_ui(ui, |ui| {
+                for candidate in FilterType::ALL {
+                    let response = ui
+                        .add_enabled(
+                            candidate.is_implemented(),
+                            egui::Button::selectable(*filter_type == candidate, candidate.name()),
+                        )
+                        .on_disabled_hover_text("Implemented in a later experiment phase");
+                    if response.clicked() {
+                        *filter_type = candidate;
+                        control.set_filter_type(candidate);
+                        state.needs_render = true;
+                    }
+                }
+            });
+
+        ui.separator();
+
         ui.label("Cutoff:");
         let mut cutoff_norm = cutoff_hz_to_normalized(state.cutoff);
         if ui
@@ -168,11 +225,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
         ui.separator();
         ui.label("Resonance:");
         ui.add(egui::Slider::new(&mut state.resonance, 0.0..=1.0).text(""));
-    });
 
-    ui.add_space(4.0);
+        ui.separator();
 
-    ui.horizontal(|ui| {
         ui.label("Poles:");
         for (index, name) in ["2", "4"].iter().enumerate() {
             let poles_value = if index == 0 { 2u8 } else { 4u8 };
@@ -193,9 +248,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
             state.needs_render = true;
         }
         ui.checkbox(&mut state.live_mode, "Live");
+        ui.checkbox(&mut state.overlay_all_models, "Overlay all models")
+            .on_hover_text(
+                "Render every model offline; only the selected model controls the synth.",
+            );
         ui.separator();
         ui.label("SR:");
-        for &(label, sr) in &[("44.1k", 44100.0), ("96k", 96000.0), ("192k", 192000.0)] {
+        for &(label, sr) in &[
+            ("44.1k", 44100.0),
+            ("48k", 48000.0),
+            ("96k", 96000.0),
+            ("192k", 192000.0),
+        ] {
             if ui
                 .selectable_label(state.sample_rate == sr, label)
                 .clicked()
@@ -281,9 +345,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
     });
 
     // ---- Render scheduling ----
-    poll_pending_response(ui, state);
+    poll_pending_response(ui, state, *filter_type);
 
-    let new_hash = param_hash(state);
+    let new_hash = param_hash(state, *filter_type);
     if new_hash != old_hash {
         state.last_params_hash = new_hash;
         if state.live_mode {
@@ -296,7 +360,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
     }
 
     if state.needs_render {
-        start_response_job(state, new_hash);
+        start_response_job(state, *filter_type, new_hash);
     }
     if state.pending_response.is_some() {
         ui.ctx().request_repaint();
@@ -319,6 +383,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut FilterDesignState) {
         }
         draw_response_overlay(ui, state, plot_rect);
         draw_hover_readout(ui, state, hovered_bin);
+        if state.overlay_all_models {
+            draw_model_legend(ui, *filter_type);
+        }
     } else if state.pending_response.is_some() {
         ui.label("Rendering frequency response...");
     } else {
@@ -356,7 +423,7 @@ fn format_hz(hz: f32) -> String {
     }
 }
 
-fn param_hash(state: &FilterDesignState) -> u64 {
+fn param_hash(state: &FilterDesignState, filter_type: FilterType) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     state.cutoff.to_bits().hash(&mut hasher);
@@ -364,11 +431,14 @@ fn param_hash(state: &FilterDesignState) -> u64 {
     state.poles.hash(&mut hasher);
     state.sample_rate.to_bits().hash(&mut hasher);
     state.oversampling.hash(&mut hasher);
+    filter_type.hash(&mut hasher);
+    state.overlay_all_models.hash(&mut hasher);
     state.fft_size.hash(&mut hasher);
+    state.db_floor.to_bits().hash(&mut hasher);
     hasher.finish()
 }
 
-fn analysis_params(state: &FilterDesignState) -> AnalysisParams {
+fn analysis_params(state: &FilterDesignState, filter_type: FilterType) -> AnalysisParams {
     AnalysisParams {
         cutoff: state.cutoff,
         resonance: state.resonance,
@@ -377,26 +447,59 @@ fn analysis_params(state: &FilterDesignState) -> AnalysisParams {
         sample_rate: state.sample_rate,
         oversampling: state.oversampling,
         db_floor: state.db_floor,
+        filter_type,
     }
 }
 
-fn start_response_job(state: &mut FilterDesignState, hash: u64) {
+fn start_response_job(state: &mut FilterDesignState, filter_type: FilterType, hash: u64) {
     if state.pending_response.is_some() {
         return;
     }
 
-    let params = analysis_params(state);
+    if let Some(cached) = state.response_cache.get(&hash).cloned() {
+        state.raw_response_db = cached.response_db;
+        state.peak_freq_hz = cached.peak_freq_hz;
+        state.peak_db = cached.peak_db;
+        state.overlay_responses = cached.overlays;
+        state.needs_render = false;
+        update_display_response(state);
+        return;
+    }
+
+    let params = analysis_params(state, filter_type);
     let (sender, receiver) = mpsc::channel();
     state.pending_response = Some(receiver);
     state.needs_render = false;
 
+    let overlay_all_models = state.overlay_all_models;
     thread::spawn(move || {
-        let result = compute_response(params, hash);
+        let mut result = compute_response(params, hash);
+        if overlay_all_models {
+            result.overlays = FilterType::ALL
+                .into_iter()
+                .filter(|filter_type| {
+                    filter_type.is_implemented() && *filter_type != params.filter_type
+                })
+                .map(|filter_type| {
+                    let mut overlay_params = params;
+                    overlay_params.filter_type = filter_type;
+                    let overlay = compute_response(overlay_params, hash);
+                    ModelResponse {
+                        filter_type,
+                        response_db: overlay.response_db,
+                    }
+                })
+                .collect();
+        }
         let _ = sender.send(result);
     });
 }
 
-fn poll_pending_response(ui: &mut egui::Ui, state: &mut FilterDesignState) {
+fn poll_pending_response(
+    ui: &mut egui::Ui,
+    state: &mut FilterDesignState,
+    filter_type: FilterType,
+) {
     let Some(receiver) = state.pending_response.as_ref() else {
         return;
     };
@@ -404,10 +507,21 @@ fn poll_pending_response(ui: &mut egui::Ui, state: &mut FilterDesignState) {
     match receiver.try_recv() {
         Ok(result) => {
             state.pending_response = None;
-            if result.hash == param_hash(state) {
-                state.raw_response_db = result.response_db;
+            if result.hash == param_hash(state, filter_type) && result.filter_type == filter_type {
+                let cached = CachedResponse {
+                    response_db: result.response_db,
+                    peak_freq_hz: result.peak_freq_hz,
+                    peak_db: result.peak_db,
+                    overlays: result.overlays,
+                };
+                if state.response_cache.len() >= RESPONSE_CACHE_CAPACITY {
+                    state.response_cache.clear();
+                }
+                state.response_cache.insert(result.hash, cached.clone());
+                state.raw_response_db = cached.response_db;
                 state.peak_freq_hz = result.peak_freq_hz;
                 state.peak_db = result.peak_db;
+                state.overlay_responses = cached.overlays;
                 update_display_response(state);
             } else {
                 state.needs_render = true;
@@ -463,16 +577,20 @@ fn compute_impulse_response(params: AnalysisParams, hash: u64) -> AnalysisResult
     {
         AnalysisResult {
             hash,
+            filter_type: params.filter_type,
             response_db: db,
             peak_freq_hz: bin as f32 * bin_hz,
             peak_db,
+            overlays: Vec::new(),
         }
     } else {
         AnalysisResult {
             hash,
+            filter_type: params.filter_type,
             response_db: db,
             peak_freq_hz: 0.0,
             peak_db: 0.0,
+            overlays: Vec::new(),
         }
     }
 }
@@ -522,9 +640,11 @@ fn compute_sine_probe_response(params: AnalysisParams, hash: u64) -> AnalysisRes
 
     AnalysisResult {
         hash,
+        filter_type: params.filter_type,
         response_db: db,
         peak_freq_hz,
         peak_db,
+        overlays: Vec::new(),
     }
 }
 
@@ -584,7 +704,7 @@ fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -
     let sr = params.sample_rate;
     let phase_step = freq_hz.map(|freq| std::f32::consts::TAU * freq / sr);
     let mut phase = [0.0f32; LANES];
-    let mut filter = LadderFilter::default();
+    let mut filter = Filter::new(params.filter_type);
     filter.set_oversampling(params.oversampling);
     filter.set_cutoff(params.cutoff);
     filter.set_resonance(analysis_resonance(params));
@@ -632,7 +752,7 @@ fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -
 fn render_analysis_response(params: AnalysisParams, impulse_gain: f32) -> Vec<f32> {
     let fft_size = params.fft_size;
     let sr = params.sample_rate;
-    let mut filter = LadderFilter::default();
+    let mut filter = Filter::new(params.filter_type);
     filter.set_oversampling(params.oversampling);
     filter.set_cutoff(params.cutoff);
     filter.set_resonance(analysis_resonance(params));
@@ -652,7 +772,7 @@ fn render_analysis_response(params: AnalysisParams, impulse_gain: f32) -> Vec<f3
 }
 
 fn process_analysis_vector_output(
-    filter: &mut LadderFilter,
+    filter: &mut Filter,
     input: f32x4,
     sample_rate: f32,
 ) -> [f32; LANES] {
@@ -758,6 +878,19 @@ fn update_display_peak(state: &mut FilterDesignState) {
 }
 
 fn draw_response_overlay(ui: &egui::Ui, state: &FilterDesignState, plot_rect: egui::Rect) {
+    if state.overlay_all_models {
+        for model in &state.overlay_responses {
+            draw_model_curve(
+                ui,
+                state,
+                plot_rect,
+                &model.response_db,
+                model_color(model.filter_type),
+                1.25,
+            );
+        }
+    }
+
     let response = overlay_response_db(state);
     if response.len() < 2 {
         return;
@@ -791,7 +924,7 @@ fn draw_response_overlay(ui: &egui::Ui, state: &FilterDesignState, plot_rect: eg
     if points.len() > 1 {
         painter.add(egui::Shape::line(
             points,
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 214, 102)),
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 214, 102)),
         ));
     }
 
@@ -811,6 +944,78 @@ fn draw_response_overlay(ui: &egui::Ui, state: &FilterDesignState, plot_rect: eg
             egui::Color32::from_rgb(130, 220, 255),
         );
     }
+}
+
+fn draw_model_curve(
+    ui: &egui::Ui,
+    state: &FilterDesignState,
+    plot_rect: egui::Rect,
+    response: &[f32],
+    color: egui::Color32,
+    width: f32,
+) {
+    if response.len() < 2 {
+        return;
+    }
+    let max_freq = state.sample_rate * 0.5;
+    let bin_hz = state.sample_rate / state.fft_size as f32;
+    let db_range = state.db_top - state.db_floor;
+    let points: Vec<_> = response
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(bin, &db)| {
+            let hz = bin as f32 * bin_hz;
+            if hz < 20.0 || hz > max_freq {
+                return None;
+            }
+            let x = spectrum::freq_to_x(
+                hz,
+                state.log_scale,
+                20.0,
+                max_freq,
+                plot_rect.left(),
+                plot_rect.right(),
+            );
+            let normalized = ((db.clamp(state.db_floor, state.db_top) - state.db_floor) / db_range)
+                .clamp(0.0, 1.0);
+            Some(egui::pos2(
+                x,
+                plot_rect.bottom() - plot_rect.height() * normalized,
+            ))
+        })
+        .collect();
+    if points.len() > 1 {
+        ui.painter_at(plot_rect)
+            .add(egui::Shape::line(points, egui::Stroke::new(width, color)));
+    }
+}
+
+fn model_color(filter_type: FilterType) -> egui::Color32 {
+    match filter_type {
+        FilterType::DistributedNewtonTpt => egui::Color32::from_rgb(255, 214, 102),
+        FilterType::ScalarFeedbackTpt => egui::Color32::from_rgb(100, 205, 255),
+        FilterType::GainLimitedTpt => egui::Color32::from_rgb(130, 225, 145),
+        FilterType::HuovilainenLadder => egui::Color32::from_rgb(235, 135, 230),
+        FilterType::CascadedTptSvf => egui::Color32::from_rgb(255, 145, 95),
+    }
+}
+
+fn draw_model_legend(ui: &mut egui::Ui, selected: FilterType) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Models:");
+        for filter_type in FilterType::ALL
+            .into_iter()
+            .filter(|filter_type| filter_type.is_implemented())
+        {
+            let label = if filter_type == selected {
+                format!("{} (live)", filter_type.name())
+            } else {
+                filter_type.name().to_owned()
+            };
+            ui.colored_label(model_color(filter_type), label);
+        }
+    });
 }
 
 fn overlay_response_db(state: &FilterDesignState) -> &[f32] {
@@ -901,7 +1106,7 @@ fn draw_hovered_bin_highlight(
     painter.rect_stroke(
         rect,
         0.0,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 250, 255)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(230, 250, 255)),
         egui::StrokeKind::Inside,
     );
 }
@@ -953,6 +1158,39 @@ fn draw_frequency_marker(
             egui::pos2(x, plot_rect.top()),
             egui::pos2(x, plot_rect.bottom()),
         ],
-        egui::Stroke::new(1.0, color),
+        egui::Stroke::new(1.0_f32, color),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn implemented_model_analyzers_render_supported_sample_rates() {
+        for filter_type in FilterType::ALL
+            .into_iter()
+            .filter(|filter_type| filter_type.is_implemented())
+        {
+            for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+                let result = compute_response(
+                    AnalysisParams {
+                        cutoff: 1_200.0,
+                        resonance: 0.65,
+                        poles: 4,
+                        fft_size: 1_024,
+                        sample_rate,
+                        oversampling: FilterOversampling::Off,
+                        db_floor: -96.0,
+                        filter_type,
+                    },
+                    (sample_rate.to_bits() as u64) ^ filter_type as u64,
+                );
+                assert_eq!(result.response_db.len(), 512);
+                assert!(result.response_db.iter().all(|value| value.is_finite()));
+                assert!(result.peak_freq_hz.is_finite());
+                assert!(result.peak_db.is_finite());
+            }
+        }
+    }
 }

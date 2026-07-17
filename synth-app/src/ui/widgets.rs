@@ -22,7 +22,6 @@ fn knob_value_edit(
     value: &mut f32,
     min: f32,
     max: f32,
-    refresh_text: bool,
     format: impl Fn(f32) -> String,
     font_id: egui::FontId,
     text_color: egui::Color32,
@@ -33,7 +32,7 @@ fn knob_value_edit(
 
     let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
 
-    if !edit_has_focus && refresh_text {
+    if !edit_has_focus {
         edit_text = format(*value);
     }
 
@@ -110,15 +109,7 @@ pub fn param_knob_f32(
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
     let edited = knob_value_edit(
-        ui,
-        edit_id,
-        value,
-        min,
-        max,
-        response.changed() || *value != previous,
-        &format_fn,
-        font_id,
-        text_color,
+        ui, edit_id, value, min, max, &format_fn, font_id, text_color,
     );
 
     if edited || response.changed() || *value != previous {
@@ -184,15 +175,7 @@ pub fn param_knob_log_hz(
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
     let edited = knob_value_edit(
-        ui,
-        edit_id,
-        value_hz,
-        min_hz,
-        max_hz,
-        response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON,
-        format_hz,
-        font_id,
-        text_color,
+        ui, edit_id, value_hz, min_hz, max_hz, format_hz, font_id, text_color,
     );
 
     if edited || response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON {
@@ -251,7 +234,11 @@ pub fn master_volume(ui: &mut egui::Ui, value: &mut f32, control: &SynthEngineCo
         let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
         let changed = *value != previous;
 
-        if !edit_has_focus && changed {
+        // Patch and MIDI loads update `value` before this widget is rendered,
+        // so comparing it with the value captured at the start of this frame
+        // cannot detect those external changes. Keep the inactive text editor
+        // synchronized with the authoritative value on every frame.
+        if !edit_has_focus {
             edit_text = format!("{:.2}", *value);
         }
 

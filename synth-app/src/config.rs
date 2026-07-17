@@ -38,6 +38,8 @@ pub struct Config {
     path: PathBuf,
     pub active_tab: Tab,
     pub settings: Settings,
+    #[serde(default)]
+    pub filter_type: synth_core::FilterType,
     pub main_viewport: Option<WindowGeometry>,
     pub analysis_open: bool,
     pub analysis_viewport: Option<WindowGeometry>,
