@@ -1,0 +1,1013 @@
+//! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
+
+use crate::{
+    DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModRoute, ModSource,
+    ModulationParam, ParamId, Patch,
+};
+
+pub const REV2_PROGRAM_DATA_LEN: usize = 2046;
+pub const REV2_PROGRAM_PACKED_LEN: usize = 2339;
+pub const REV2_PROGRAM_DATA_SYSEX_LEN: usize = 2346;
+pub const REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
+const REV2_LAYER_DATA_LEN: usize = REV2_PROGRAM_DATA_LEN / 2;
+const REV2_SYSEX_HEADER: [u8; 4] = [0xf0, 0x01, 0x2f, 0x03];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rev2SysexError {
+    InvalidLength,
+    InvalidFraming,
+    InvalidManufacturer,
+    InvalidModel,
+    UnsupportedCommand,
+    InvalidBank,
+    NonSevenBitData,
+    OutputTooSmall,
+}
+
+#[derive(Debug, Clone)]
+pub struct Rev2ProgramData {
+    pub bank: u8,
+    pub program: u8,
+    pub patch: Patch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rev2MidiUpdate {
+    Param(ParamId, f32),
+    Modulation {
+        route: ModRoute,
+        parameter: ModulationParam,
+    },
+}
+
+#[derive(Clone, Copy, Default)]
+struct NrpnChannelState {
+    number_msb: Option<u8>,
+    number_lsb: Option<u8>,
+    data_msb: Option<u8>,
+    current_value: Option<u16>,
+    rpn_msb: Option<u8>,
+    rpn_lsb: Option<u8>,
+}
+
+impl NrpnChannelState {
+    fn number(self) -> Option<u16> {
+        Some(u16::from(self.number_msb?) * 128 + u16::from(self.number_lsb?))
+    }
+
+    fn clear_nrpn(&mut self) {
+        self.number_msb = None;
+        self.number_lsb = None;
+        self.data_msb = None;
+        self.current_value = None;
+    }
+}
+
+/// Stateful Rev2 controller decoder. NRPN selection is independent per channel.
+pub struct Rev2MidiDecoder {
+    channels: [NrpnChannelState; 16],
+}
+
+impl Default for Rev2MidiDecoder {
+    fn default() -> Self {
+        Self {
+            channels: [NrpnChannelState::default(); 16],
+        }
+    }
+}
+
+impl Rev2MidiDecoder {
+    /// Decode a stored Prophet Rev2 Program Data dump.
+    pub fn program_data(message: &[u8]) -> Result<Rev2ProgramData, Rev2SysexError> {
+        validate_header(message, REV2_PROGRAM_DATA_SYSEX_LEN, 0x02)?;
+        let bank = message[4];
+        let program = message[5];
+        if bank > 7 {
+            return Err(Rev2SysexError::InvalidBank);
+        }
+        if program & 0x80 != 0 {
+            return Err(Rev2SysexError::NonSevenBitData);
+        }
+        let patch = decode_patch_payload(&message[6..6 + REV2_PROGRAM_PACKED_LEN])?;
+        Ok(Rev2ProgramData {
+            bank,
+            program,
+            patch,
+        })
+    }
+
+    /// Decode a Prophet Rev2 Program Edit Buffer data dump into Layer A of a patch.
+    pub fn program_edit_buffer(message: &[u8]) -> Result<Patch, Rev2SysexError> {
+        validate_header(message, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN, 0x03)?;
+        decode_patch_payload(&message[4..4 + REV2_PROGRAM_PACKED_LEN])
+    }
+}
+
+fn validate_header(
+    message: &[u8],
+    expected_len: usize,
+    expected_command: u8,
+) -> Result<(), Rev2SysexError> {
+    if message.len() != expected_len {
+        return Err(Rev2SysexError::InvalidLength);
+    }
+    if message[0] != 0xf0 || message[expected_len - 1] != 0xf7 {
+        return Err(Rev2SysexError::InvalidFraming);
+    }
+    if message[1] != 0x01 {
+        return Err(Rev2SysexError::InvalidManufacturer);
+    }
+    if message[2] != 0x2f {
+        return Err(Rev2SysexError::InvalidModel);
+    }
+    if message[3] != expected_command {
+        return Err(Rev2SysexError::UnsupportedCommand);
+    }
+    Ok(())
+}
+
+fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
+    if packed.iter().any(|byte| byte & 0x80 != 0) {
+        return Err(Rev2SysexError::NonSevenBitData);
+    }
+
+    let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+    unpack_program_data(packed, &mut raw);
+    let mut patch = Patch::default();
+    for (number, value) in raw[..REV2_LAYER_DATA_LEN].iter().copied().enumerate() {
+        map_nrpn(
+            number as u16,
+            u16::from(value),
+            &mut |update| match update {
+                Rev2MidiUpdate::Param(param, value) => patch.set_param(param, value),
+                Rev2MidiUpdate::Modulation { route, parameter } => {
+                    patch.set_modulation_param(route, parameter);
+                }
+            },
+        );
+    }
+    Ok(patch)
+}
+
+impl Rev2MidiDecoder {
+    /// Decode one CC. Returns `true` when the controller belongs to the Rev2
+    /// parameter protocol, even when the sequence is not complete yet.
+    pub fn control_change(
+        &mut self,
+        channel: u8,
+        controller: u8,
+        value: u8,
+        mut emit: impl FnMut(Rev2MidiUpdate),
+    ) -> bool {
+        let Some(state) = self.channels.get_mut(usize::from(channel)) else {
+            return false;
+        };
+        match controller {
+            99 => {
+                state.number_msb = Some(value);
+                state.data_msb = None;
+                state.current_value = None;
+                state.rpn_msb = None;
+                state.rpn_lsb = None;
+                true
+            }
+            98 => {
+                state.number_lsb = Some(value);
+                state.data_msb = None;
+                state.current_value = None;
+                state.rpn_msb = None;
+                state.rpn_lsb = None;
+                true
+            }
+            6 => {
+                state.data_msb = Some(value);
+                true
+            }
+            38 => {
+                if let (Some(number), Some(msb)) = (state.number(), state.data_msb) {
+                    let raw = clamp_nrpn_value(number, u16::from(msb) * 128 + u16::from(value));
+                    state.current_value = Some(raw);
+                    map_nrpn(number, raw, &mut emit);
+                }
+                true
+            }
+            96 | 97 => {
+                if let (Some(number), Some(current)) = (state.number(), state.current_value) {
+                    let next = if controller == 96 {
+                        current.saturating_add(1)
+                    } else {
+                        current.saturating_sub(1)
+                    };
+                    let next = clamp_nrpn_value(number, next);
+                    state.current_value = Some(next);
+                    map_nrpn(number, next, &mut emit);
+                }
+                true
+            }
+            101 => {
+                state.rpn_msb = Some(value);
+                if state.rpn_msb == Some(127) && state.rpn_lsb == Some(127) {
+                    state.clear_nrpn();
+                }
+                true
+            }
+            100 => {
+                state.rpn_lsb = Some(value);
+                if state.rpn_msb == Some(127) && state.rpn_lsb == Some(127) {
+                    state.clear_nrpn();
+                }
+                true
+            }
+            _ => map_cc(controller, value, &mut emit),
+        }
+    }
+}
+
+/// Stateful Rev2 NRPN encoder. Oscillator shape combines enabled/waveform state.
+pub struct Rev2MidiEncoder {
+    oscillator_waveforms: [u8; 2],
+    oscillator_enabled: [bool; 2],
+}
+
+impl Default for Rev2MidiEncoder {
+    fn default() -> Self {
+        Self {
+            oscillator_waveforms: [0; 2],
+            oscillator_enabled: [true, false],
+        }
+    }
+}
+
+impl Rev2MidiEncoder {
+    /// Encode a patch as a Prophet Rev2 Program Edit Buffer data dump.
+    pub fn program_edit_buffer(patch: &Patch, output: &mut [u8]) -> Result<usize, Rev2SysexError> {
+        if output.len() < REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN {
+            return Err(Rev2SysexError::OutputTooSmall);
+        }
+
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        encode_patch_layer(patch, &mut raw[..REV2_LAYER_DATA_LEN]);
+        encode_patch_layer(&Patch::default(), &mut raw[REV2_LAYER_DATA_LEN..]);
+
+        output[..4].copy_from_slice(&REV2_SYSEX_HEADER);
+        pack_program_data(&raw, &mut output[4..4 + REV2_PROGRAM_PACKED_LEN]);
+        output[REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN - 1] = 0xf7;
+        Ok(REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN)
+    }
+
+    pub fn param(
+        &mut self,
+        channel: u8,
+        param: ParamId,
+        value: f32,
+        mut emit: impl FnMut([u8; 3]),
+    ) -> bool {
+        let mapped = match param {
+            ParamId::Osc1Waveform => {
+                self.oscillator_waveforms[0] = value as u8;
+                (2, u16::from(self.oscillator_shape(0)))
+            }
+            ParamId::Osc1Enabled => {
+                self.oscillator_enabled[0] = value >= 0.5;
+                (2, u16::from(self.oscillator_shape(0)))
+            }
+            ParamId::Osc1Frequency => (0, quantize(value, 0.0, 120.0, 120)),
+            ParamId::Osc1FineTune => (1, quantize(value, -50.0, 50.0, 100)),
+            ParamId::Osc1Shape => (102, quantize(value, 0.0, 1.0, 99)),
+            ParamId::Osc2Waveform => {
+                self.oscillator_waveforms[1] = value as u8;
+                (7, u16::from(self.oscillator_shape(1)))
+            }
+            ParamId::Osc2Enabled => {
+                self.oscillator_enabled[1] = value >= 0.5;
+                (7, u16::from(self.oscillator_shape(1)))
+            }
+            ParamId::Osc2Frequency => (5, quantize(value, 0.0, 120.0, 120)),
+            ParamId::Osc2FineTune => (6, quantize(value, -50.0, 50.0, 100)),
+            ParamId::Osc2Shape => (103, quantize(value, 0.0, 1.0, 99)),
+            ParamId::OscMix => (13, quantize(value, 0.0, 1.0, 127)),
+            ParamId::SubOscLevel => (110, quantize(value, 0.0, 1.0, 127)),
+            ParamId::NoiseLevel => (14, quantize(value, 0.0, 1.0, 127)),
+            ParamId::HardSync => (10, bool_raw(value)),
+            ParamId::OscSlop | ParamId::AnalogDrift => (12, quantize(value, 0.0, 1.0, 127)),
+            ParamId::Osc1NoteReset => (99, bool_raw(value)),
+            ParamId::Osc2NoteReset => (104, bool_raw(value)),
+            ParamId::FilterCutoff => (15, quantize_log(value, 20.0, 20_000.0, 164)),
+            ParamId::FilterResonance => (16, quantize(value, 0.0, 1.0, 127)),
+            ParamId::FilterPoles => (19, bool_raw(value)),
+            ParamId::FilterKeyTrack => (17, quantize(value, 0.0, 1.0, 127)),
+            ParamId::FilterEnvAmount => (20, quantize(value, -1.0, 1.0, 254)),
+            ParamId::FilterVelocity => (21, quantize(value, 0.0, 1.0, 127)),
+            ParamId::FilterAudioMod => (18, quantize(value, 0.0, 1.0, 127)),
+            ParamId::FilterEgDelay => (22, quantize(value, 0.0, 5.0, 127)),
+            ParamId::FilterEgAttack => (23, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::FilterEgDecay => (24, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::FilterEgSustain => (25, quantize(value, 0.0, 1.0, 127)),
+            ParamId::FilterEgRelease => (26, quantize(value, 0.0005, 10.0, 127)),
+            ParamId::PanSpread => (28, quantize(value, 0.0, 1.0, 127)),
+            ParamId::AmpEnvAmount => (30, quantize(value, 0.0, 1.0, 127)),
+            ParamId::AmpVelocity => (31, quantize(value, 0.0, 1.0, 127)),
+            ParamId::AmpEgDelay => (32, quantize(value, 0.0, 5.0, 127)),
+            ParamId::AmpEgAttack => (33, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::AmpEgDecay => (34, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::AmpEgSustain => (35, quantize(value, 0.0, 1.0, 127)),
+            ParamId::AmpEgRelease => (36, quantize(value, 0.0005, 10.0, 127)),
+            ParamId::AuxEgDestination => (57, quantize(value, 0.0, 52.0, 52)),
+            ParamId::AuxEgAmount => (58, quantize(value, -1.0, 1.0, 254)),
+            ParamId::AuxEgVelocity => (59, quantize(value, 0.0, 1.0, 127)),
+            ParamId::AuxEgDelay => (60, quantize(value, 0.0, 5.0, 127)),
+            ParamId::AuxEgAttack => (61, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::AuxEgDecay => (62, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::AuxEgSustain => (63, quantize(value, 0.0, 1.0, 127)),
+            ParamId::AuxEgRelease => (64, quantize(value, 0.0005, 10.0, 127)),
+            ParamId::AuxEgLoop => (97, bool_raw(value)),
+            ParamId::Lfo1Rate => (
+                37,
+                quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
+            ),
+            ParamId::Lfo1Waveform => (38, quantize(value, 0.0, 4.0, 4)),
+            ParamId::Lfo1Depth => (39, quantize(value, 0.0, 1.0, 127)),
+            ParamId::Lfo1Destination => (40, quantize(value, 0.0, 52.0, 52)),
+            ParamId::Lfo1ClockSync => (41, bool_raw(value)),
+            ParamId::Lfo1KeySync => (105, bool_raw(value)),
+            ParamId::Lfo2Rate => (
+                42,
+                quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
+            ),
+            ParamId::Lfo2Waveform => (43, quantize(value, 0.0, 4.0, 4)),
+            ParamId::Lfo2Depth => (44, quantize(value, 0.0, 1.0, 127)),
+            ParamId::Lfo2Destination => (45, quantize(value, 0.0, 52.0, 52)),
+            ParamId::Lfo2ClockSync => (46, bool_raw(value)),
+            ParamId::Lfo2KeySync => (106, bool_raw(value)),
+            ParamId::Lfo3Rate => (
+                47,
+                quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
+            ),
+            ParamId::Lfo3Waveform => (48, quantize(value, 0.0, 4.0, 4)),
+            ParamId::Lfo3Depth => (49, quantize(value, 0.0, 1.0, 127)),
+            ParamId::Lfo3Destination => (50, quantize(value, 0.0, 52.0, 52)),
+            ParamId::Lfo3ClockSync => (51, bool_raw(value)),
+            ParamId::Lfo3KeySync => (107, bool_raw(value)),
+            ParamId::Lfo4Rate => (
+                52,
+                quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
+            ),
+            ParamId::Lfo4Waveform => (53, quantize(value, 0.0, 4.0, 4)),
+            ParamId::Lfo4Depth => (54, quantize(value, 0.0, 1.0, 127)),
+            ParamId::Lfo4Destination => (55, quantize(value, 0.0, 52.0, 52)),
+            ParamId::Lfo4ClockSync => (56, bool_raw(value)),
+            ParamId::Lfo4KeySync => (108, bool_raw(value)),
+            ParamId::EffectEnabled => (153, bool_raw(value)),
+            ParamId::EffectType => (154, quantize(value, 0.0, 12.0, 12)),
+            ParamId::EffectMix => (155, quantize(value, 0.0, 1.0, 127)),
+            ParamId::EffectClockSync => (158, bool_raw(value)),
+            ParamId::EffectParam1 => (156, quantize(value, 0.0, 1.0, 255)),
+            ParamId::EffectParam2 => (157, quantize(value, 0.0, 1.0, 127)),
+            ParamId::MasterVolume => (29, quantize(value, 0.0, 1.0, 127)),
+            _ => return false,
+        };
+        emit_nrpn(channel, mapped.0, mapped.1, &mut emit);
+        true
+    }
+
+    pub fn modulation(
+        &mut self,
+        channel: u8,
+        route: ModRoute,
+        enabled: bool,
+        source: ModSource,
+        destination: ModDestination,
+        amount: f32,
+        mut emit: impl FnMut([u8; 3]),
+    ) {
+        match route {
+            ModRoute::Free(index) if index < 8 => {
+                let base = 65 + index as u16 * 3;
+                emit_nrpn(
+                    channel,
+                    base,
+                    if enabled { source.index() as u16 } else { 0 },
+                    &mut emit,
+                );
+                emit_nrpn(
+                    channel,
+                    base + 1,
+                    quantize(amount, -1.0, 1.0, 254),
+                    &mut emit,
+                );
+                emit_nrpn(
+                    channel,
+                    base + 2,
+                    destination.index().min(52) as u16,
+                    &mut emit,
+                );
+            }
+            ModRoute::Dedicated(source) => {
+                let Some(index) = DedicatedModSource::ALL
+                    .iter()
+                    .position(|item| *item == source)
+                else {
+                    return;
+                };
+                let base = 116 + index as u16 * 2;
+                emit_nrpn(channel, base, quantize(amount, -1.0, 1.0, 254), &mut emit);
+                emit_nrpn(
+                    channel,
+                    base + 1,
+                    if enabled {
+                        destination.index().min(52) as u16
+                    } else {
+                        0
+                    },
+                    &mut emit,
+                );
+            }
+            ModRoute::Free(_) => {}
+        }
+    }
+
+    fn oscillator_shape(&self, index: usize) -> u8 {
+        if self.oscillator_enabled[index] {
+            self.oscillator_waveforms[index].min(3) + 1
+        } else {
+            0
+        }
+    }
+}
+
+fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
+    debug_assert_eq!(raw.len(), REV2_LAYER_DATA_LEN);
+    let mut encoder = Rev2MidiEncoder::default();
+    patch.for_each_param(|param, value| {
+        let mut messages = [[0_u8; 3]; 4];
+        let mut len = 0;
+        if encoder.param(0, param, value, |message| {
+            messages[len] = message;
+            len += 1;
+        }) {
+            store_nrpn(raw, &messages[..len]);
+        }
+    });
+    patch.for_each_modulation(|route, slot| {
+        let mut messages = [[0_u8; 3]; 12];
+        let mut len = 0;
+        encoder.modulation(
+            0,
+            route,
+            slot.enabled,
+            slot.source,
+            slot.destination,
+            slot.amount,
+            |message| {
+                messages[len] = message;
+                len += 1;
+            },
+        );
+        for sequence in messages[..len].chunks_exact(4) {
+            store_nrpn(raw, sequence);
+        }
+    });
+}
+
+fn store_nrpn(raw: &mut [u8], messages: &[[u8; 3]]) {
+    if messages.len() != 4 {
+        return;
+    }
+    let number = usize::from(messages[0][2]) * 128 + usize::from(messages[1][2]);
+    let value = u16::from(messages[2][2]) * 128 + u16::from(messages[3][2]);
+    if let Some(destination) = raw.get_mut(number) {
+        *destination = value.min(255) as u8;
+    }
+}
+
+fn pack_program_data(raw: &[u8; REV2_PROGRAM_DATA_LEN], packed: &mut [u8]) {
+    let mut output = 0;
+    for chunk in raw.chunks(7) {
+        let mut high_bits = 0_u8;
+        for (index, byte) in chunk.iter().copied().enumerate() {
+            high_bits |= (byte >> 7) << index;
+        }
+        packed[output] = high_bits;
+        output += 1;
+        for byte in chunk.iter().copied() {
+            packed[output] = byte & 0x7f;
+            output += 1;
+        }
+    }
+    debug_assert_eq!(output, REV2_PROGRAM_PACKED_LEN);
+}
+
+fn unpack_program_data(packed: &[u8], raw: &mut [u8; REV2_PROGRAM_DATA_LEN]) {
+    let mut input = 0;
+    let mut output = 0;
+    while output < raw.len() {
+        let high_bits = packed[input];
+        input += 1;
+        let count = (raw.len() - output).min(7);
+        for index in 0..count {
+            raw[output] = packed[input] | (((high_bits >> index) & 1) << 7);
+            input += 1;
+            output += 1;
+        }
+    }
+    debug_assert_eq!(input, REV2_PROGRAM_PACKED_LEN);
+}
+
+fn emit_nrpn(channel: u8, number: u16, value: u16, emit: &mut impl FnMut([u8; 3])) {
+    let status = 0xb0 | (channel & 0x0f);
+    emit([status, 99, ((number / 128) & 0x7f) as u8]);
+    emit([status, 98, (number & 0x7f) as u8]);
+    emit([status, 6, ((value / 128) & 0x7f) as u8]);
+    emit([status, 38, (value & 0x7f) as u8]);
+}
+
+fn bool_raw(value: f32) -> u16 {
+    u16::from(value >= 0.5)
+}
+
+fn quantize(value: f32, min: f32, max: f32, raw_max: u16) -> u16 {
+    crate::math::round((value.clamp(min, max) - min) / (max - min) * raw_max as f32) as u16
+}
+
+fn quantize_log(value: f32, min: f32, max: f32, raw_max: u16) -> u16 {
+    let normalized = crate::math::ln(value.clamp(min, max) / min) / crate::math::ln(max / min);
+    crate::math::round(normalized * raw_max as f32) as u16
+}
+
+fn unit(raw: u16, max: u16) -> f32 {
+    f32::from(raw.min(max)) / f32::from(max)
+}
+
+fn bipolar(raw: u16, max: u16) -> f32 {
+    unit(raw, max) * 2.0 - 1.0
+}
+
+fn ranged(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
+    min + unit(raw, raw_max) * (max - min)
+}
+
+fn logarithmic(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
+    min * crate::math::powf(max / min, unit(raw, raw_max))
+}
+
+fn emit_param(emit: &mut impl FnMut(Rev2MidiUpdate), param: ParamId, value: f32) {
+    emit(Rev2MidiUpdate::Param(param, value));
+}
+
+fn emit_osc_shape(emit: &mut impl FnMut(Rev2MidiUpdate), osc1: bool, raw: u16) {
+    let (enabled_param, waveform_param) = if osc1 {
+        (ParamId::Osc1Enabled, ParamId::Osc1Waveform)
+    } else {
+        (ParamId::Osc2Enabled, ParamId::Osc2Waveform)
+    };
+    emit_param(emit, enabled_param, f32::from(raw != 0));
+    if raw != 0 {
+        emit_param(
+            emit,
+            waveform_param,
+            f32::from(raw.saturating_sub(1).min(3)),
+        );
+    }
+}
+
+fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> bool {
+    let raw = u16::from(raw);
+    match controller {
+        3 => emit_param(
+            emit,
+            ParamId::EffectType,
+            crate::math::round(ranged(raw, 127, 0.0, 12.0)),
+        ),
+        7 | 37 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
+        8 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
+        9 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
+        12 => emit_param(emit, ParamId::EffectParam1, unit(raw, 127)),
+        13 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
+        16 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw >= 64)),
+        17 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
+        20 => emit_param(emit, ParamId::Osc1Frequency, ranged(raw, 127, 0.0, 120.0)),
+        21 => emit_param(emit, ParamId::Osc1FineTune, ranged(raw, 127, -50.0, 50.0)),
+        22 => emit_osc_shape(
+            emit,
+            true,
+            crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
+        ),
+        24 => emit_param(emit, ParamId::Osc2Frequency, ranged(raw, 127, 0.0, 120.0)),
+        25 => emit_param(emit, ParamId::Osc2FineTune, ranged(raw, 127, -50.0, 50.0)),
+        26 => emit_osc_shape(
+            emit,
+            false,
+            crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
+        ),
+        28 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
+        29 => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
+        30 => emit_param(emit, ParamId::Osc1Shape, unit(raw, 127)),
+        31 => emit_param(emit, ParamId::Osc2Shape, unit(raw, 127)),
+        71 | 103 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
+        74 | 102 => emit_param(
+            emit,
+            ParamId::FilterCutoff,
+            logarithmic(raw, 127, 20.0, 20_000.0),
+        ),
+        75 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
+        76 => emit_param(emit, ParamId::AmpEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        77 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
+        78 => emit_param(emit, ParamId::AuxEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        85 => emit_param(
+            emit,
+            ParamId::AuxEgDestination,
+            crate::math::round(ranged(raw, 127, 0.0, 52.0)),
+        ),
+        86 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 127)),
+        87 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
+        88 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        89 => emit_param(emit, ParamId::AuxEgAttack, ranged(raw, 127, 0.0005, 5.0)),
+        90 => emit_param(emit, ParamId::AuxEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        104 => emit_param(emit, ParamId::FilterKeyTrack, unit(raw, 127)),
+        105 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
+        106 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 127)),
+        107 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
+        108 => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        109 => emit_param(emit, ParamId::FilterEgAttack, ranged(raw, 127, 0.0005, 5.0)),
+        110 => emit_param(emit, ParamId::FilterEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        111 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
+        112 => emit_param(
+            emit,
+            ParamId::FilterEgRelease,
+            ranged(raw, 127, 0.0005, 10.0),
+        ),
+        114 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
+        115 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
+        116 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
+        117 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        118 => emit_param(emit, ParamId::AmpEgAttack, ranged(raw, 127, 0.0005, 5.0)),
+        119 => emit_param(emit, ParamId::AmpEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        _ => return false,
+    }
+    true
+}
+
+fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+    match number {
+        0 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
+        1 => emit_param(emit, ParamId::Osc1FineTune, f32::from(raw.min(100)) - 50.0),
+        2 => emit_osc_shape(emit, true, raw.min(4)),
+        5 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
+        6 => emit_param(emit, ParamId::Osc2FineTune, f32::from(raw.min(100)) - 50.0),
+        7 => emit_osc_shape(emit, false, raw.min(4)),
+        10 => emit_param(emit, ParamId::HardSync, f32::from(raw != 0)),
+        12 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
+        13 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
+        14 => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
+        15 => emit_param(
+            emit,
+            ParamId::FilterCutoff,
+            logarithmic(raw, 164, 20.0, 20_000.0),
+        ),
+        16 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
+        17 => emit_param(emit, ParamId::FilterKeyTrack, unit(raw, 127)),
+        18 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
+        19 => emit_param(emit, ParamId::FilterPoles, f32::from(raw != 0)),
+        20 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 254)),
+        21 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
+        22 => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        23 => emit_param(emit, ParamId::FilterEgAttack, ranged(raw, 127, 0.0005, 5.0)),
+        24 => emit_param(emit, ParamId::FilterEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        25 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
+        26 => emit_param(
+            emit,
+            ParamId::FilterEgRelease,
+            ranged(raw, 127, 0.0005, 10.0),
+        ),
+        28 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
+        29 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
+        30 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
+        31 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
+        32 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        33 => emit_param(emit, ParamId::AmpEgAttack, ranged(raw, 127, 0.0005, 5.0)),
+        34 => emit_param(emit, ParamId::AmpEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        35 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
+        36 => emit_param(emit, ParamId::AmpEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        37..=56 => map_lfo_nrpn(number, raw, emit),
+        57 => emit_param(emit, ParamId::AuxEgDestination, f32::from(raw.min(52))),
+        58 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 254)),
+        59 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
+        60 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        61 => emit_param(emit, ParamId::AuxEgAttack, ranged(raw, 127, 0.0005, 5.0)),
+        62 => emit_param(emit, ParamId::AuxEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        63 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
+        64 => emit_param(emit, ParamId::AuxEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        65..=88 => map_free_mod_nrpn(number, raw, emit),
+        97 => emit_param(emit, ParamId::AuxEgLoop, f32::from(raw != 0)),
+        99 => emit_param(emit, ParamId::Osc1NoteReset, f32::from(raw != 0)),
+        102 => emit_param(emit, ParamId::Osc1Shape, unit(raw, 99)),
+        103 => emit_param(emit, ParamId::Osc2Shape, unit(raw, 99)),
+        104 => emit_param(emit, ParamId::Osc2NoteReset, f32::from(raw != 0)),
+        105 => emit_param(emit, ParamId::Lfo1KeySync, f32::from(raw != 0)),
+        106 => emit_param(emit, ParamId::Lfo2KeySync, f32::from(raw != 0)),
+        107 => emit_param(emit, ParamId::Lfo3KeySync, f32::from(raw != 0)),
+        108 => emit_param(emit, ParamId::Lfo4KeySync, f32::from(raw != 0)),
+        110 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
+        116..=125 => map_dedicated_mod_nrpn(number, raw, emit),
+        153 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw != 0)),
+        154 => emit_param(emit, ParamId::EffectType, f32::from(raw.min(12))),
+        155 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
+        156 => emit_param(emit, ParamId::EffectParam1, unit(raw, 255)),
+        157 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
+        158 => emit_param(emit, ParamId::EffectClockSync, f32::from(raw != 0)),
+        _ => {}
+    }
+}
+
+fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+    let lfo = usize::from((number - 37) / 5);
+    let field = (number - 37) % 5;
+    let params = [
+        [
+            ParamId::Lfo1Rate,
+            ParamId::Lfo1Waveform,
+            ParamId::Lfo1Depth,
+            ParamId::Lfo1Destination,
+            ParamId::Lfo1ClockSync,
+        ],
+        [
+            ParamId::Lfo2Rate,
+            ParamId::Lfo2Waveform,
+            ParamId::Lfo2Depth,
+            ParamId::Lfo2Destination,
+            ParamId::Lfo2ClockSync,
+        ],
+        [
+            ParamId::Lfo3Rate,
+            ParamId::Lfo3Waveform,
+            ParamId::Lfo3Depth,
+            ParamId::Lfo3Destination,
+            ParamId::Lfo3ClockSync,
+        ],
+        [
+            ParamId::Lfo4Rate,
+            ParamId::Lfo4Waveform,
+            ParamId::Lfo4Depth,
+            ParamId::Lfo4Destination,
+            ParamId::Lfo4ClockSync,
+        ],
+    ];
+    let value = match field {
+        0 => logarithmic(raw, 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
+        1 => f32::from(raw.min(4)),
+        2 => unit(raw, 127),
+        3 => f32::from(raw.min(52)),
+        _ => f32::from(raw != 0),
+    };
+    emit_param(emit, params[lfo][field as usize], value);
+}
+
+fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+    let index = usize::from((number - 65) / 3);
+    let parameter = match (number - 65) % 3 {
+        0 => ModulationParam::Source(ModSource::from_index(usize::from(raw.min(22)))),
+        1 => ModulationParam::Amount(bipolar(raw, 254)),
+        _ => ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(52)))),
+    };
+    emit(Rev2MidiUpdate::Modulation {
+        route: ModRoute::Free(index),
+        parameter,
+    });
+}
+
+fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+    let index = usize::from((number - 116) / 2);
+    let parameter = if (number - 116) % 2 == 0 {
+        ModulationParam::Amount(bipolar(raw, 254))
+    } else {
+        ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(52))))
+    };
+    emit(Rev2MidiUpdate::Modulation {
+        route: ModRoute::Dedicated(DedicatedModSource::ALL[index]),
+        parameter,
+    });
+}
+
+fn clamp_nrpn_value(number: u16, raw: u16) -> u16 {
+    raw.min(nrpn_max(number).unwrap_or(u16::MAX))
+}
+
+fn nrpn_max(number: u16) -> Option<u16> {
+    Some(match number {
+        0 | 5 => 120,
+        1 | 6 => 100,
+        2 | 7 | 38 | 43 | 48 | 53 => 4,
+        10 | 19 | 41 | 46 | 51 | 56 | 97 | 99 | 104..=108 | 153 | 158 => 1,
+        15 => 164,
+        20 | 58 | 66 | 69 | 72 | 75 | 78 | 81 | 84 | 87 | 116 | 118 | 120 | 122 | 124 => 254,
+        37 | 42 | 47 | 52 => 150,
+        40 | 45 | 50 | 55 | 57 | 67 | 70 | 73 | 76 | 79 | 82 | 85 | 88 | 117 | 119 | 121 | 123
+        | 125 => 52,
+        65 | 68 | 71 | 74 | 77 | 80 | 83 | 86 => 22,
+        102 | 103 => 99,
+        154 => 13,
+        156 => 255,
+        12..=14 | 16..=18 | 21..=26 | 28..=36 | 39 | 44 | 49 | 54 | 59..=64 | 110 | 155 | 157 => {
+            127
+        }
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program_data_message(
+        bank: u8,
+        program: u8,
+        patch: &Patch,
+    ) -> [u8; REV2_PROGRAM_DATA_SYSEX_LEN] {
+        let mut edit = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        Rev2MidiEncoder::program_edit_buffer(patch, &mut edit).unwrap();
+        let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+        message[..4].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02]);
+        message[4] = bank;
+        message[5] = program;
+        message[6..6 + REV2_PROGRAM_PACKED_LEN]
+            .copy_from_slice(&edit[4..4 + REV2_PROGRAM_PACKED_LEN]);
+        message[REV2_PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
+        message
+    }
+
+    #[test]
+    fn nrpn_round_trips_bipolar_filter_envelope() {
+        let mut encoder = Rev2MidiEncoder::default();
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoded = None;
+        assert!(encoder.param(0, ParamId::FilterEnvAmount, 1.0, |message| {
+            decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+        }));
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
+        );
+    }
+
+    #[test]
+    fn oscillator_shape_combines_enabled_and_waveform() {
+        let mut encoder = Rev2MidiEncoder::default();
+        let mut messages = [[0; 3]; 8];
+        let mut len = 0;
+        encoder.param(0, ParamId::Osc1Waveform, 3.0, |message| {
+            messages[len] = message;
+            len += 1;
+        });
+        encoder.param(0, ParamId::Osc1Enabled, 0.0, |message| {
+            messages[len] = message;
+            len += 1;
+        });
+        assert_eq!(messages[3], [0xb0, 38, 4]);
+        assert_eq!(messages[7], [0xb0, 38, 0]);
+    }
+
+    #[test]
+    fn program_data_pack_round_trips_high_bits_and_partial_packet() {
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        raw[..9].copy_from_slice(&[0x80, 0x01, 0xfe, 0x7f, 0xaa, 0x55, 0xff, 0x81, 0x42]);
+        raw[REV2_PROGRAM_DATA_LEN - 2..].copy_from_slice(&[0x80, 0xff]);
+        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        pack_program_data(&raw, &mut packed);
+        assert_eq!(packed[0], 0b0101_0101);
+        assert!(packed.iter().all(|byte| *byte < 0x80));
+
+        let mut decoded = [0_u8; REV2_PROGRAM_DATA_LEN];
+        unpack_program_data(&packed, &mut decoded);
+        assert_eq!(decoded, raw);
+    }
+
+    #[test]
+    fn program_edit_buffer_round_trips_supported_patch_fields() {
+        let mut source = Patch::default();
+        source.osc1.waveform = 3;
+        source.osc1.enabled = true;
+        source.osc2.waveform = 2;
+        source.osc2.enabled = true;
+        source.filter.cutoff = 1_234.0;
+        source.filter.env_amount = -0.5;
+        source.lfos[2].destination = ModDestination::FilterCutoff;
+        source.effects.enabled = true;
+        source.effects.effect_type = crate::EffectType::Reverb;
+        source.effects.param1 = 0.75;
+        source.mod_matrix.free_slots[0] = crate::ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Lfo1,
+            destination: ModDestination::Osc1Shape,
+            amount: -0.25,
+        };
+
+        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        let len = Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        assert_eq!(len, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN);
+        assert_eq!(&message[..4], &[0xf0, 0x01, 0x2f, 0x03]);
+        assert_eq!(message[len - 1], 0xf7);
+
+        let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+        assert_eq!(decoded.osc1.waveform, 3);
+        assert!(decoded.osc1.enabled);
+        assert_eq!(decoded.osc2.waveform, 2);
+        assert!(decoded.osc2.enabled);
+        assert!((decoded.filter.cutoff - source.filter.cutoff).abs() < 50.0);
+        assert!((decoded.filter.env_amount - source.filter.env_amount).abs() < 0.01);
+        assert_eq!(decoded.lfos[2].destination, ModDestination::FilterCutoff);
+        assert!(decoded.effects.enabled);
+        assert_eq!(decoded.effects.effect_type, crate::EffectType::Reverb);
+        assert!((decoded.effects.param1 - source.effects.param1).abs() < 0.01);
+        let slot = decoded.mod_matrix.free_slots[0];
+        assert!(slot.enabled);
+        assert_eq!(slot.source, ModSource::Lfo1);
+        assert_eq!(slot.destination, ModDestination::Osc1Shape);
+        assert!((slot.amount - source.mod_matrix.free_slots[0].amount).abs() < 0.01);
+    }
+
+    #[test]
+    fn program_edit_buffer_rejects_malformed_messages() {
+        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        Rev2MidiEncoder::program_edit_buffer(&Patch::default(), &mut message).unwrap();
+        assert!(matches!(
+            Rev2MidiDecoder::program_edit_buffer(&message[..message.len() - 1]),
+            Err(Rev2SysexError::InvalidLength)
+        ));
+        message[1] = 2;
+        assert!(matches!(
+            Rev2MidiDecoder::program_edit_buffer(&message),
+            Err(Rev2SysexError::InvalidManufacturer)
+        ));
+        message[1] = 1;
+        message[4] = 0x80;
+        assert!(matches!(
+            Rev2MidiDecoder::program_edit_buffer(&message),
+            Err(Rev2SysexError::NonSevenBitData)
+        ));
+    }
+
+    #[test]
+    fn program_edit_buffer_uses_default_layer_b_and_decodes_only_layer_a() {
+        let mut source = Patch::default();
+        source.filter.resonance = 0.25;
+        source.osc1.waveform = 3;
+        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        unpack_program_data(&message[4..4 + REV2_PROGRAM_PACKED_LEN], &mut raw);
+        assert_eq!(raw[2], 4);
+        assert_eq!(raw[REV2_LAYER_DATA_LEN + 2], 1);
+        raw[REV2_LAYER_DATA_LEN + 16] = 127;
+        pack_program_data(&raw, &mut message[4..4 + REV2_PROGRAM_PACKED_LEN]);
+
+        let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+        assert!((decoded.filter.resonance - source.filter.resonance).abs() < 0.01);
+    }
+
+    #[test]
+    fn program_edit_buffer_requires_complete_output_capacity() {
+        let mut output = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN - 1];
+        assert_eq!(
+            Rev2MidiEncoder::program_edit_buffer(&Patch::default(), &mut output),
+            Err(Rev2SysexError::OutputTooSmall)
+        );
+    }
+
+    #[test]
+    fn stored_program_data_decodes_metadata_and_patch() {
+        let mut source = Patch::default();
+        source.filter.resonance = 1.0;
+        let message = program_data_message(7, 127, &source);
+        let decoded = Rev2MidiDecoder::program_data(&message).unwrap();
+        assert_eq!(decoded.bank, 7);
+        assert_eq!(decoded.program, 127);
+        assert_eq!(decoded.patch.filter.resonance, 1.0);
+    }
+
+    #[test]
+    fn stored_program_data_rejects_invalid_metadata_and_payload() {
+        let mut message = program_data_message(0, 0, &Patch::default());
+        message[4] = 8;
+        assert!(matches!(
+            Rev2MidiDecoder::program_data(&message),
+            Err(Rev2SysexError::InvalidBank)
+        ));
+        message[4] = 0;
+        message[3] = 3;
+        assert!(matches!(
+            Rev2MidiDecoder::program_data(&message),
+            Err(Rev2SysexError::UnsupportedCommand)
+        ));
+        message[3] = 2;
+        message[6] = 0x80;
+        assert!(matches!(
+            Rev2MidiDecoder::program_data(&message),
+            Err(Rev2SysexError::NonSevenBitData)
+        ));
+        assert!(matches!(
+            Rev2MidiDecoder::program_data(&message[..message.len() - 1]),
+            Err(Rev2SysexError::InvalidLength)
+        ));
+    }
+}

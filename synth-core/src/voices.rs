@@ -1,15 +1,21 @@
 //! Polyphonic voice allocation and mixing.
 
 use crate::effects::EffectModulation;
+use crate::filter::{MAX_CUTOFF_HZ, MIN_CUTOFF_HZ};
 use crate::fixed_index_list::FixedIndexList;
+#[cfg(all(feature = "profiling", test))]
+use crate::profiling::NoopProfiler;
 #[cfg(feature = "profiling")]
 use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
-    ControlMessage, FilterOversampling, LANES, LfoWaveform, ModDestination, ParamId, VOICE_PACKS,
-    VoiceBlock, Waveform,
+    ControlMessage, FilterOversampling, FilterType, LANES, LfoWaveform, ModDestination, ParamId,
+    VOICE_PACKS, VoiceBlock, Waveform,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
+
+const MIDI_CC_FILTER_RESONANCE: u8 = 71;
+const MIDI_CC_FILTER_CUTOFF: u8 = 74;
 
 /// Snapshot of MIDI notes currently sounding across all voices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +163,7 @@ impl<const PACKS: usize> Voices<PACKS> {
                 self.sustained_voices = [[false; LANES]; PACKS];
             }
             ControlMessage::SetParam(id, value) => self.set_param(id, value),
+            ControlMessage::SetFilterType(filter_type) => self.set_filter_type(filter_type),
             ControlMessage::SetModulation {
                 route,
                 enabled,
@@ -166,6 +173,11 @@ impl<const PACKS: usize> Voices<PACKS> {
             } => {
                 for block in &mut self.blocks {
                     block.set_mod_route(route, enabled, source, destination, amount);
+                }
+            }
+            ControlMessage::SetModulationParam { route, parameter } => {
+                for block in &mut self.blocks {
+                    block.set_mod_route_param(route, parameter);
                 }
             }
             ControlMessage::PitchBend { value } => {
@@ -186,6 +198,17 @@ impl<const PACKS: usize> Voices<PACKS> {
                     2 => self.performance.breath = value,
                     4 => self.performance.foot = value,
                     11 => self.performance.expression = value,
+                    MIDI_CC_FILTER_RESONANCE => {
+                        for block in &mut self.blocks {
+                            block.filter.set_resonance(value);
+                        }
+                    }
+                    MIDI_CC_FILTER_CUTOFF => {
+                        let cutoff = midi_filter_cutoff_hz(value);
+                        for block in &mut self.blocks {
+                            block.filter.set_cutoff(cutoff);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -419,6 +442,10 @@ impl<const PACKS: usize> Voices<PACKS> {
     }
 }
 
+fn midi_filter_cutoff_hz(value: f32) -> f32 {
+    MIN_CUTOFF_HZ * crate::math::powf(MAX_CUTOFF_HZ / MIN_CUTOFF_HZ, value)
+}
+
 fn int_to_waveform(value: i32) -> Waveform {
     match value {
         0 => Waveform::Saw,
@@ -446,6 +473,11 @@ impl<const PACKS: usize> Voices<PACKS> {
         self.next_inner()
     }
 
+    #[cfg(all(feature = "profiling", test))]
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        self.next_inner(&mut NoopProfiler)
+    }
+
     #[cfg(feature = "profiling")]
     pub(crate) fn next_profiled(&mut self, profiler: &mut impl RenderProfiler) -> (f32, f32) {
         self.next_inner(profiler)
@@ -459,7 +491,8 @@ impl<const PACKS: usize> Voices<PACKS> {
         let mut right = 0.0f32;
         let mut effects = EffectModulation::default();
         for block in &mut self.blocks {
-            if block.active_lane_count() == 0 {
+            let block_voice_count = block.active_lane_count();
+            if block_voice_count == 0 {
                 block.last_effect_modulation = EffectModulation::default();
                 continue;
             }
@@ -526,6 +559,12 @@ impl<const PACKS: usize> Voices<PACKS> {
             block.set_filter_oversampling(oversampling);
         }
     }
+
+    pub fn set_filter_type(&mut self, filter_type: FilterType) {
+        for block in &mut self.blocks {
+            block.set_filter_type(filter_type);
+        }
+    }
 }
 
 impl<const PACKS: usize> Deref for Voices<PACKS> {
@@ -559,7 +598,7 @@ impl<const PACKS: usize> IndexMut<usize> for Voices<PACKS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ParamId, VOICE_COUNT};
+    use crate::{ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT};
 
     fn process_frames(voices: &mut Voices, frames: usize) {
         for _ in 0..frames {
@@ -805,6 +844,51 @@ mod tests {
 
         assert!(voices.active_notes().is_empty());
         assert_eq!(voices.active_voice_count(), 0);
+    }
+
+    #[test]
+    fn standard_filter_control_changes_update_every_voice_block() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+
+        voices.handle_control(ControlMessage::ControlChange {
+            controller: MIDI_CC_FILTER_CUTOFF,
+            value: 0.5,
+        });
+        voices.handle_control(ControlMessage::ControlChange {
+            controller: MIDI_CC_FILTER_RESONANCE,
+            value: 0.75,
+        });
+
+        let expected_cutoff = (MIN_CUTOFF_HZ * MAX_CUTOFF_HZ).sqrt();
+        for block in &voices.blocks {
+            assert!((block.filter.cutoff() - expected_cutoff).abs() < 0.001);
+            assert_eq!(block.filter.resonance(), 0.75);
+        }
+    }
+
+    #[test]
+    fn partial_modulation_updates_activate_complete_routes() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetModulationParam {
+            route: ModRoute::Free(0),
+            parameter: ModulationParam::Source(ModSource::Lfo1),
+        });
+        voices.handle_control(ControlMessage::SetModulationParam {
+            route: ModRoute::Free(0),
+            parameter: ModulationParam::Destination(ModDestination::FilterCutoff),
+        });
+        voices.handle_control(ControlMessage::SetModulationParam {
+            route: ModRoute::Free(0),
+            parameter: ModulationParam::Amount(0.75),
+        });
+
+        for block in &voices.blocks {
+            let slot = block.mod_matrix_slots[0];
+            assert!(slot.enabled);
+            assert_eq!(slot.source, ModSource::Lfo1);
+            assert_eq!(slot.destination, ModDestination::FilterCutoff);
+            assert_eq!(slot.amount, 0.75);
+        }
     }
 
     #[test]

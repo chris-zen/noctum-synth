@@ -2,12 +2,20 @@
 
 use crate::EffectType;
 use crate::effects::EffectsWithMemory;
+use crate::output_limiter::OutputLimiter;
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::voices::Voices;
 use crate::{
-    ActiveNotes, ControlMessage, DEFAULT_TEMPO_BPM, FilterOversampling, ParamId, VOICE_PACKS,
+    ActiveNotes, ControlMessage, DEFAULT_TEMPO_BPM, FilterOversampling, FilterType, ParamId, Patch,
+    VOICE_PACKS,
 };
+
+/// Fixed headroom between the polyphonic voice sum and global effects.
+///
+/// This models the Prophet's calibrated voice/output summing gain without
+/// changing gain dynamically with the number of active voices.
+const MIX_BUS_GAIN: f32 = 0.55;
 
 /// Synthesis engine with inline effects storage.
 pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize = 48_000> =
@@ -23,6 +31,7 @@ pub struct SynthEngineWithMemory<const PACKS: usize, Memory> {
     effects: EffectsWithMemory<Memory>,
     tempo_bpm: f32,
     master_volume: f32,
+    output_limiter: OutputLimiter,
 }
 
 impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [f32; FX_SAMPLES]> {
@@ -35,6 +44,7 @@ impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [
             effects,
             tempo_bpm: DEFAULT_TEMPO_BPM,
             master_volume: 0.8,
+            output_limiter: OutputLimiter::new(sample_rate),
         }
     }
 }
@@ -52,6 +62,7 @@ where
             effects,
             tempo_bpm: DEFAULT_TEMPO_BPM,
             master_volume: 0.8,
+            output_limiter: OutputLimiter::new(sample_rate),
         }
     }
 
@@ -84,12 +95,29 @@ where
             ControlMessage::SetFilterOversampling(oversampling) => {
                 self.set_filter_oversampling(oversampling);
             }
+            ControlMessage::SetFilterType(filter_type) => self.set_filter_type(filter_type),
             message => self.voices.handle_control(message),
         }
     }
 
     pub fn set_param(&mut self, param: ParamId, value: f32) {
         self.handle_control(ControlMessage::SetParam(param, value));
+    }
+
+    /// Applies every parameter and modulation route in a patch.
+    pub fn apply_patch(&mut self, patch: &Patch) {
+        patch.for_each_param(|param, value| {
+            self.handle_control(ControlMessage::SetParam(param, value))
+        });
+        patch.for_each_modulation(|route, slot| {
+            self.handle_control(ControlMessage::SetModulation {
+                route,
+                enabled: slot.enabled,
+                source: slot.source,
+                destination: slot.destination,
+                amount: slot.amount,
+            });
+        });
     }
 
     /// Updates the global tempo and propagates it to clock-synchronized effects.
@@ -105,6 +133,11 @@ where
     /// Applies the nonlinear filter oversampling policy to all voices.
     pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
         self.voices.set_filter_oversampling(oversampling);
+    }
+
+    /// Applies a filter model to all voices, resetting their filter state.
+    pub fn set_filter_type(&mut self, filter_type: FilterType) {
+        self.voices.set_filter_type(filter_type);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -211,6 +244,8 @@ where
 
         #[cfg(feature = "profiling")]
         profiler.begin(RenderStage::Effects);
+        let left = left * MIX_BUS_GAIN;
+        let right = right * MIX_BUS_GAIN;
         let (left, right) = self.effects.next(
             left,
             right,
@@ -223,10 +258,8 @@ where
         #[cfg(feature = "profiling")]
         profiler.begin(RenderStage::MasterOutput);
         let gain = self.master_volume;
-        let output = (
-            (left * gain).clamp(-1.0, 1.0),
-            (right * gain).clamp(-1.0, 1.0),
-        );
+        let (left, right) = self.output_limiter.next(left * gain, right * gain);
+        let output = (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0));
         #[cfg(feature = "profiling")]
         profiler.end(RenderStage::MasterOutput);
         output
@@ -238,5 +271,21 @@ where
 
     pub fn active_voice_count(&self) -> usize {
         self.voices.active_voice_count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_patch_updates_engine_owned_parameters() {
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        let mut patch = Patch::default();
+        patch.master_volume = 0.25;
+        patch.effects.enabled = true;
+        patch.effects.mix = 0.75;
+        engine.apply_patch(&patch);
+        assert_eq!(engine.master_volume, 0.25);
     }
 }

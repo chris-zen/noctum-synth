@@ -1,36 +1,54 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use synth_core::f32x4;
-use synth_core::{LANES, LadderFilter, VOICE_PACKS};
+use synth_core::{Filter, FilterOversampling, FilterType, LANES, VOICE_PACKS, f32x4};
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 1_000_000;
 const BUFFER_FRAMES: usize = 512;
 
 fn main() {
-    let linear_static = time_static_filter(0.65);
-    let linear_modulated = time_modulated_filter(0.65);
-    let self_osc_1_voice_block = time_static_filter(1.0);
-    let self_osc_4_voice_blocks = time_static_voice_blocks(1.0, VOICE_PACKS);
-
+    let selected_model = std::env::args().nth(1);
     eprintln!(
         "Filter perf: {ITERATIONS} iterations, {SAMPLE_RATE:.0}Hz, {BUFFER_FRAMES}-frame estimate"
     );
-    print_one_block("linear_static", linear_static);
-    print_one_block("linear_modulated", linear_modulated);
-    print_one_block("self_osc_1_voice_block", self_osc_1_voice_block);
-    print_voice_blocks(
-        "self_osc_4_voice_blocks_estimate",
-        self_osc_4_voice_blocks,
-        VOICE_PACKS,
-    );
+    for filter_type in FilterType::ALL
+        .into_iter()
+        .filter(|filter_type| filter_type.is_implemented())
+        .filter(|filter_type| {
+            selected_model
+                .as_deref()
+                .is_none_or(|selected| filter_type.name() == selected)
+        })
+    {
+        eprintln!();
+        eprintln!("Model: {}", filter_type.name());
+        print_one_block("linear_static", time_static_filter(filter_type, 0.65));
+        print_one_block("linear_modulated", time_modulated_filter(filter_type, 0.65));
+        print_one_block(
+            "self_osc_1_voice_block",
+            time_static_filter(filter_type, 1.0),
+        );
+        print_voice_blocks(
+            "self_osc_4_voice_blocks_estimate",
+            time_static_voice_blocks(filter_type, 1.0, VOICE_PACKS),
+            VOICE_PACKS,
+        );
+        print_one_block(
+            "self_osc_off_1_voice_block",
+            time_static_filter_mode(filter_type, 1.0, FilterOversampling::Off),
+        );
+        print_voice_blocks(
+            "self_osc_off_4_voice_blocks",
+            time_static_voice_blocks_mode(filter_type, 1.0, VOICE_PACKS, FilterOversampling::Off),
+            VOICE_PACKS,
+        );
 
-    eprintln!();
-    eprintln!("Resonance sweep:");
-    for resonance in [0.89, 0.90, 0.95, 0.98, 1.0] {
-        let elapsed = time_static_filter(resonance);
-        print_sweep(resonance, elapsed);
+        eprintln!("Resonance sweep:");
+        for resonance in [0.89, 0.90, 0.95, 0.98, 1.0] {
+            let elapsed = time_static_filter(filter_type, resonance);
+            print_sweep(resonance, elapsed);
+        }
     }
 }
 
@@ -70,8 +88,16 @@ fn ms_per_buffer(ns_per_sample_block: f64, voice_blocks: usize) -> f64 {
     ns_per_sample_block * BUFFER_FRAMES as f64 * voice_blocks as f64 / 1_000_000.0
 }
 
-fn time_static_filter(resonance: f32) -> Duration {
-    let mut filter = configured_filter(resonance);
+fn time_static_filter(filter_type: FilterType, resonance: f32) -> Duration {
+    time_static_filter_mode(filter_type, resonance, FilterOversampling::Auto)
+}
+
+fn time_static_filter_mode(
+    filter_type: FilterType,
+    resonance: f32,
+    oversampling: FilterOversampling,
+) -> Duration {
+    let mut filter = configured_filter(filter_type, resonance, oversampling);
     let mut phase = [0.0, 0.17, 0.33, 0.71];
     let phase_inc = [0.013, 0.019, 0.023, 0.031];
     let notes = f32x4::new([48.0, 55.0, 60.0, 67.0]);
@@ -87,8 +113,8 @@ fn time_static_filter(resonance: f32) -> Duration {
     start.elapsed()
 }
 
-fn time_modulated_filter(resonance: f32) -> Duration {
-    let mut filter = configured_filter(resonance);
+fn time_modulated_filter(filter_type: FilterType, resonance: f32) -> Duration {
+    let mut filter = configured_filter(filter_type, resonance, FilterOversampling::Auto);
     filter.set_key_track(0.5);
     filter.set_env_amount(0.45);
     filter.set_audio_mod(0.35);
@@ -118,9 +144,27 @@ fn time_modulated_filter(resonance: f32) -> Duration {
     start.elapsed()
 }
 
-fn time_static_voice_blocks(resonance: f32, voice_blocks: usize) -> Duration {
-    let mut filters: Vec<LadderFilter> = (0..voice_blocks)
-        .map(|_| configured_filter(resonance))
+fn time_static_voice_blocks(
+    filter_type: FilterType,
+    resonance: f32,
+    voice_blocks: usize,
+) -> Duration {
+    time_static_voice_blocks_mode(
+        filter_type,
+        resonance,
+        voice_blocks,
+        FilterOversampling::Auto,
+    )
+}
+
+fn time_static_voice_blocks_mode(
+    filter_type: FilterType,
+    resonance: f32,
+    voice_blocks: usize,
+    oversampling: FilterOversampling,
+) -> Duration {
+    let mut filters: Vec<Filter> = (0..voice_blocks)
+        .map(|_| configured_filter(filter_type, resonance, oversampling))
         .collect();
     let mut phase = [0.0, 0.17, 0.33, 0.71];
     let phase_inc = [0.013, 0.019, 0.023, 0.031];
@@ -139,7 +183,7 @@ fn time_static_voice_blocks(resonance: f32, voice_blocks: usize) -> Duration {
     start.elapsed()
 }
 
-fn process(filter: &mut LadderFilter, input: f32x4, note: f32x4, sample_rate: f32) -> f32x4 {
+fn process(filter: &mut Filter, input: f32x4, note: f32x4, sample_rate: f32) -> f32x4 {
     process_modulated(
         filter,
         input,
@@ -152,7 +196,7 @@ fn process(filter: &mut LadderFilter, input: f32x4, note: f32x4, sample_rate: f3
 }
 
 fn process_modulated(
-    filter: &mut LadderFilter,
+    filter: &mut Filter,
     input: f32x4,
     note: f32x4,
     filter_env: f32x4,
@@ -173,11 +217,16 @@ fn process_modulated(
     )
 }
 
-fn configured_filter(resonance: f32) -> LadderFilter {
-    let mut filter = LadderFilter::default();
+fn configured_filter(
+    filter_type: FilterType,
+    resonance: f32,
+    oversampling: FilterOversampling,
+) -> Filter {
+    let mut filter = Filter::new(filter_type);
     filter.set_cutoff(1_200.0);
     filter.set_resonance(resonance);
     filter.set_poles(4);
+    filter.set_oversampling(oversampling);
     filter
 }
 

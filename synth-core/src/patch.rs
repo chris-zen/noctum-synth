@@ -333,7 +333,7 @@ impl DedicatedModSource {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModRoute {
     Free(usize),
     Dedicated(DedicatedModSource),
@@ -850,5 +850,156 @@ impl Patch {
                 },
             );
         }
+    }
+
+    pub(crate) fn set_param(&mut self, id: ParamId, value: f32) {
+        let flag = value >= 0.5;
+        match id {
+            ParamId::Osc1Waveform => self.osc1.waveform = value as u8,
+            ParamId::Osc1Enabled => self.osc1.enabled = flag,
+            ParamId::Osc1Frequency => self.osc1.frequency = value,
+            ParamId::Osc1FineTune => self.osc1.fine_tune = value,
+            ParamId::Osc1Shape => self.osc1.shape = value,
+            ParamId::Osc1Level => self.osc1.level = value,
+            ParamId::Osc1NoteReset => self.osc1.note_reset = flag,
+            ParamId::Osc1KeyboardOn => self.osc1.keyboard_on = flag,
+            ParamId::Osc1Glide => self.osc1.glide = flag,
+            ParamId::Osc2Waveform => self.osc2.waveform = value as u8,
+            ParamId::Osc2Enabled => self.osc2.enabled = flag,
+            ParamId::Osc2Frequency => self.osc2.frequency = value,
+            ParamId::Osc2FineTune => self.osc2.fine_tune = value,
+            ParamId::Osc2Shape => self.osc2.shape = value,
+            ParamId::Osc2Level => self.osc2.level = value,
+            ParamId::Osc2NoteReset => self.osc2.note_reset = flag,
+            ParamId::Osc2KeyboardOn => self.osc2.keyboard_on = flag,
+            ParamId::Osc2Glide => self.osc2.glide = flag,
+            ParamId::OscMix => self.osc_mix = value,
+            ParamId::SubOscLevel => self.sub_osc_level = value,
+            ParamId::NoiseLevel => self.noise_level = value,
+            ParamId::HardSync => self.hard_sync = flag,
+            ParamId::OscSlop | ParamId::AnalogDrift => self.osc_slop = value,
+            ParamId::GlideTime => self.glide_time = value,
+            ParamId::FilterCutoff => self.filter.cutoff = value,
+            ParamId::FilterResonance => self.filter.resonance = value,
+            ParamId::FilterPoles => self.filter.poles = if flag { 4 } else { 2 },
+            ParamId::FilterKeyTrack => self.filter.key_track = value,
+            ParamId::FilterEnvAmount => self.filter.env_amount = value,
+            ParamId::FilterVelocity => self.filter.velocity = value,
+            ParamId::FilterAudioMod => self.filter.audio_mod = value,
+            ParamId::FilterEgDelay => self.filter.eg_delay = value,
+            ParamId::FilterEgAttack => self.filter.eg_attack = value,
+            ParamId::FilterEgDecay => self.filter.eg_decay = value,
+            ParamId::FilterEgSustain => self.filter.eg_sustain = value,
+            ParamId::FilterEgRelease => self.filter.eg_release = value,
+            ParamId::PanSpread => self.amplifier.pan_spread = value,
+            ParamId::AmpEnvAmount => self.amplifier.env_amount = value,
+            ParamId::AmpVelocity => self.amplifier.velocity = value,
+            ParamId::AmpEgDelay => self.amplifier.eg_delay = value,
+            ParamId::AmpEgAttack => self.amplifier.eg_attack = value,
+            ParamId::AmpEgDecay => self.amplifier.eg_decay = value,
+            ParamId::AmpEgSustain => self.amplifier.eg_sustain = value,
+            ParamId::AmpEgRelease => self.amplifier.eg_release = value,
+            ParamId::AuxEgDestination => {
+                self.aux_envelope.destination = ModDestination::from_index(value as usize)
+            }
+            ParamId::AuxEgAmount => self.aux_envelope.amount = value,
+            ParamId::AuxEgVelocity => self.aux_envelope.velocity = value,
+            ParamId::AuxEgDelay => self.aux_envelope.delay = value,
+            ParamId::AuxEgAttack => self.aux_envelope.attack = value,
+            ParamId::AuxEgDecay => self.aux_envelope.decay = value,
+            ParamId::AuxEgSustain => self.aux_envelope.sustain = value,
+            ParamId::AuxEgRelease => self.aux_envelope.release = value,
+            ParamId::AuxEgLoop => self.aux_envelope.repeat = flag,
+            ParamId::Lfo1Rate => self.lfos[0].rate_hz = value,
+            ParamId::Lfo1Depth => self.lfos[0].depth = value,
+            ParamId::Lfo1Waveform => self.lfos[0].waveform = lfo_waveform(value),
+            ParamId::Lfo1Destination => {
+                self.lfos[0].destination = ModDestination::from_index(value as usize)
+            }
+            ParamId::Lfo1ClockSync => self.lfos[0].clock_sync = flag,
+            ParamId::Lfo1KeySync => self.lfos[0].key_sync = flag,
+            ParamId::Lfo2Rate => self.lfos[1].rate_hz = value,
+            ParamId::Lfo2Depth => self.lfos[1].depth = value,
+            ParamId::Lfo2Waveform => self.lfos[1].waveform = lfo_waveform(value),
+            ParamId::Lfo2Destination => {
+                self.lfos[1].destination = ModDestination::from_index(value as usize)
+            }
+            ParamId::Lfo2ClockSync => self.lfos[1].clock_sync = flag,
+            ParamId::Lfo2KeySync => self.lfos[1].key_sync = flag,
+            ParamId::Lfo3Rate => self.lfos[2].rate_hz = value,
+            ParamId::Lfo3Depth => self.lfos[2].depth = value,
+            ParamId::Lfo3Waveform => self.lfos[2].waveform = lfo_waveform(value),
+            ParamId::Lfo3Destination => {
+                self.lfos[2].destination = ModDestination::from_index(value as usize)
+            }
+            ParamId::Lfo3ClockSync => self.lfos[2].clock_sync = flag,
+            ParamId::Lfo3KeySync => self.lfos[2].key_sync = flag,
+            ParamId::Lfo4Rate => self.lfos[3].rate_hz = value,
+            ParamId::Lfo4Depth => self.lfos[3].depth = value,
+            ParamId::Lfo4Waveform => self.lfos[3].waveform = lfo_waveform(value),
+            ParamId::Lfo4Destination => {
+                self.lfos[3].destination = ModDestination::from_index(value as usize)
+            }
+            ParamId::Lfo4ClockSync => self.lfos[3].clock_sync = flag,
+            ParamId::Lfo4KeySync => self.lfos[3].key_sync = flag,
+            ParamId::EffectEnabled => self.effects.enabled = flag,
+            ParamId::EffectType => {
+                self.effects.effect_type = EffectType::from_index(value as usize)
+            }
+            ParamId::EffectMix => self.effects.mix = value,
+            ParamId::EffectClockSync => self.effects.clock_sync = flag,
+            ParamId::EffectParam1 => self.effects.param1 = value,
+            ParamId::EffectParam2 => self.effects.param2 = value,
+            ParamId::MasterVolume => self.master_volume = value,
+            ParamId::VcaDrive => {}
+        }
+    }
+
+    pub(crate) fn set_modulation_param(
+        &mut self,
+        route: ModRoute,
+        parameter: crate::ModulationParam,
+    ) {
+        match route {
+            ModRoute::Free(index) => {
+                if let Some(slot) = self.mod_matrix.free_slots.get_mut(index) {
+                    match parameter {
+                        crate::ModulationParam::Source(source) => slot.source = source,
+                        crate::ModulationParam::Destination(destination) => {
+                            slot.destination = destination
+                        }
+                        crate::ModulationParam::Amount(amount) => slot.amount = amount,
+                    }
+                    slot.enabled =
+                        slot.source != ModSource::Off && slot.destination != ModDestination::Off;
+                }
+            }
+            ModRoute::Dedicated(source) => {
+                let index = DedicatedModSource::ALL
+                    .iter()
+                    .position(|candidate| *candidate == source);
+                if let Some(slot) = index.and_then(|index| self.mod_matrix.dedicated.get_mut(index))
+                {
+                    match parameter {
+                        crate::ModulationParam::Destination(destination) => {
+                            slot.destination = destination
+                        }
+                        crate::ModulationParam::Amount(amount) => slot.amount = amount,
+                        crate::ModulationParam::Source(_) => {}
+                    }
+                    slot.enabled = slot.destination != ModDestination::Off;
+                }
+            }
+        }
+    }
+}
+
+fn lfo_waveform(value: f32) -> LfoWaveform {
+    match value as usize {
+        1 => LfoWaveform::Saw,
+        2 => LfoWaveform::ReverseSaw,
+        3 => LfoWaveform::Square,
+        4 => LfoWaveform::SampleAndHold,
+        _ => LfoWaveform::Triangle,
     }
 }

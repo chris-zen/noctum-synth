@@ -61,21 +61,23 @@ pub(crate) mod math;
 #[cfg(feature = "embedded-math")]
 mod micromath;
 pub mod noise;
+mod output_limiter;
 pub mod patch;
 #[cfg(feature = "profiling")]
 pub mod profiling;
+pub mod rev2_midi;
 pub(crate) mod rng;
 pub mod tuning;
 pub mod voice;
 pub mod voices;
 
 #[cfg(feature = "embedded-math")]
-pub use self::micromath::f32x4;
+pub use crate::micromath::f32x4;
 #[cfg(not(feature = "embedded-math"))]
 pub use wide::f32x4;
 
 #[cfg(feature = "embedded-math")]
-pub(crate) use self::micromath::i32x4;
+pub(crate) use crate::micromath::i32x4;
 #[cfg(not(feature = "embedded-math"))]
 pub(crate) use wide::i32x4;
 
@@ -90,7 +92,7 @@ pub use envelope::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     DadsrEnvelope,
 };
-pub use filter::{FilterOversampling, LadderFilter};
+pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
 pub use patch::{
@@ -100,6 +102,11 @@ pub use patch::{
 };
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};
+pub use rev2_midi::{
+    REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
+    REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,
+    Rev2SysexError,
+};
 pub use tuning::midi_to_hz;
 pub use voice::{PerformanceModulation, VoiceBlock};
 pub use voices::{ActiveNotes, Voices};
@@ -198,6 +205,111 @@ pub enum ParamId {
     MasterVolume,
 }
 
+impl ParamId {
+    /// Human-readable parameter label shared by hosts and diagnostics.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Osc1Waveform => "Osc 1 Waveform",
+            Self::Osc1Enabled => "Osc 1 Enabled",
+            Self::Osc1Frequency => "Osc 1 Frequency",
+            Self::Osc1FineTune => "Osc 1 Fine Tune",
+            Self::Osc1Shape => "Osc 1 Shape",
+            Self::Osc1Level => "Osc 1 Level",
+            Self::Osc2Waveform => "Osc 2 Waveform",
+            Self::Osc2Enabled => "Osc 2 Enabled",
+            Self::Osc2Frequency => "Osc 2 Frequency",
+            Self::Osc2FineTune => "Osc 2 Fine Tune",
+            Self::Osc2Shape => "Osc 2 Shape",
+            Self::Osc2Level => "Osc 2 Level",
+            Self::OscMix => "Osc Mix",
+            Self::SubOscLevel => "Sub Osc Level",
+            Self::NoiseLevel => "Noise Level",
+            Self::HardSync => "Hard Sync",
+            Self::OscSlop => "Osc Slop",
+            Self::Osc1NoteReset => "Osc 1 Note Reset",
+            Self::Osc2NoteReset => "Osc 2 Note Reset",
+            Self::Osc1KeyboardOn => "Osc 1 Keyboard",
+            Self::Osc2KeyboardOn => "Osc 2 Keyboard",
+            Self::Osc1Glide => "Osc 1 Glide",
+            Self::Osc2Glide => "Osc 2 Glide",
+            Self::GlideTime => "Glide Time",
+            Self::FilterCutoff => "Filter Cutoff",
+            Self::FilterResonance => "Filter Resonance",
+            Self::FilterPoles => "Filter Poles",
+            Self::FilterKeyTrack => "Filter Key Track",
+            Self::FilterEnvAmount => "Filter Env Amount",
+            Self::FilterVelocity => "Filter Velocity",
+            Self::FilterAudioMod => "Filter Audio Mod",
+            Self::FilterEgDelay => "Filter Delay",
+            Self::FilterEgAttack => "Filter Attack",
+            Self::FilterEgDecay => "Filter Decay",
+            Self::FilterEgSustain => "Filter Sustain",
+            Self::FilterEgRelease => "Filter Release",
+            Self::AmpEnvAmount => "Amp Env Amount",
+            Self::AmpVelocity => "Amp Velocity",
+            Self::AmpEgDelay => "Amp Delay",
+            Self::AmpEgAttack => "Amp Attack",
+            Self::AmpEgDecay => "Amp Decay",
+            Self::AmpEgSustain => "Amp Sustain",
+            Self::AmpEgRelease => "Amp Release",
+            Self::AuxEgDestination => "Aux Env Destination",
+            Self::AuxEgAmount => "Aux Env Amount",
+            Self::AuxEgVelocity => "Aux Env Velocity",
+            Self::AuxEgDelay => "Aux Env Delay",
+            Self::AuxEgAttack => "Aux Env Attack",
+            Self::AuxEgDecay => "Aux Env Decay",
+            Self::AuxEgSustain => "Aux Env Sustain",
+            Self::AuxEgRelease => "Aux Env Release",
+            Self::AuxEgLoop => "Aux Env Loop",
+            Self::Lfo1Rate => "LFO 1 Rate",
+            Self::Lfo1Depth => "LFO 1 Depth",
+            Self::Lfo1Waveform => "LFO 1 Waveform",
+            Self::Lfo1Destination => "LFO 1 Destination",
+            Self::Lfo1ClockSync => "LFO 1 Clock Sync",
+            Self::Lfo1KeySync => "LFO 1 Key Sync",
+            Self::Lfo2Rate => "LFO 2 Rate",
+            Self::Lfo2Depth => "LFO 2 Depth",
+            Self::Lfo2Waveform => "LFO 2 Waveform",
+            Self::Lfo2Destination => "LFO 2 Destination",
+            Self::Lfo2ClockSync => "LFO 2 Clock Sync",
+            Self::Lfo2KeySync => "LFO 2 Key Sync",
+            Self::Lfo3Rate => "LFO 3 Rate",
+            Self::Lfo3Depth => "LFO 3 Depth",
+            Self::Lfo3Waveform => "LFO 3 Waveform",
+            Self::Lfo3Destination => "LFO 3 Destination",
+            Self::Lfo3ClockSync => "LFO 3 Clock Sync",
+            Self::Lfo3KeySync => "LFO 3 Key Sync",
+            Self::Lfo4Rate => "LFO 4 Rate",
+            Self::Lfo4Depth => "LFO 4 Depth",
+            Self::Lfo4Waveform => "LFO 4 Waveform",
+            Self::Lfo4Destination => "LFO 4 Destination",
+            Self::Lfo4ClockSync => "LFO 4 Clock Sync",
+            Self::Lfo4KeySync => "LFO 4 Key Sync",
+            Self::EffectEnabled => "Effect Enabled",
+            Self::EffectType => "Effect Type",
+            Self::EffectMix => "Effect Mix",
+            Self::EffectClockSync => "Effect Clock Sync",
+            Self::EffectParam1 => "Effect Param 1",
+            Self::EffectParam2 => "Effect Param 2",
+            Self::AnalogDrift => "Analog Drift",
+            Self::VcaDrive => "VCA Drive",
+            Self::PanSpread => "Pan Spread",
+            Self::MasterVolume => "Master Volume",
+        }
+    }
+}
+
+/// One independently addressable field of a modulation route.
+///
+/// MIDI NRPN messages update modulation source, amount, and destination as
+/// separate parameters, whereas the UI normally submits a complete route.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ModulationParam {
+    Source(ModSource),
+    Destination(ModDestination),
+    Amount(f32),
+}
+
 /// Host-to-engine control and performance input.
 pub enum ControlMessage {
     SetParam(ParamId, f32),
@@ -212,9 +324,15 @@ pub enum ControlMessage {
         destination: ModDestination,
         amount: f32,
     },
+    SetModulationParam {
+        route: ModRoute,
+        parameter: ModulationParam,
+    },
     /// Changes nonlinear filter self-oscillation oversampling without rebuilding
     /// the audio stream.
     SetFilterOversampling(FilterOversampling),
+    /// Selects a filter model and resets its per-voice DSP state.
+    SetFilterType(FilterType),
     NoteOn {
         note: u8,
         velocity: f32,
@@ -262,4 +380,19 @@ pub const DEFAULT_TEMPO_BPM: f32 = 120.0;
 #[inline]
 pub(crate) fn wrap01(phase: f32x4) -> f32x4 {
     phase - phase.floor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ParamId;
+
+    #[test]
+    fn parameter_names_are_human_readable() {
+        assert_eq!(ParamId::Osc1Frequency.name(), "Osc 1 Frequency");
+        assert_eq!(ParamId::FilterEgAttack.name(), "Filter Attack");
+        assert_eq!(ParamId::AmpEgAttack.name(), "Amp Attack");
+        assert_eq!(ParamId::Lfo4Destination.name(), "LFO 4 Destination");
+        assert_eq!(ParamId::EffectParam2.name(), "Effect Param 2");
+        assert_eq!(ParamId::MasterVolume.name(), "Master Volume");
+    }
 }

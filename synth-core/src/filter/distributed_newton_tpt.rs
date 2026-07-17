@@ -1,44 +1,21 @@
-//! Rev2/Curtis-inspired low-pass filter.
+//! Existing distributed-Newton TPT baseline implementation.
 
-use crate::f32x4;
+use crate::{LANES, f32x4};
 
-use crate::LANES;
-
-/// Lowest cutoff accepted by the filter core.
-const MIN_CUTOFF_HZ: f32 = 20.0;
-/// Highest cutoff accepted by the filter core.
-const MAX_CUTOFF_HZ: f32 = 18_000.0;
-/// Full filter-envelope modulation depth in semitones.
-const ENV_DEPTH_SEMITONES: f32 = 96.0;
-/// Full audio-rate filter modulation depth in semitones.
-const AUDIO_MOD_DEPTH_SEMITONES: f32 = 48.0;
-/// MIDI note that produces zero semitones of filter keyboard tracking.
-///
-/// A lower reference than middle C matches Prophet-style behavior where full
-/// keyboard tracking substantially opens the self-oscillating filter at C4.
-const KEY_TRACK_REFERENCE_NOTE: f32 = 36.0;
-/// Exponent applied to the public resonance control before DSP calibration.
-const RESONANCE_CONTROL_EXPONENT: f32 = 1.75;
+use crate::filter::{
+    FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_PITCH_TUNING_CENTS,
+    SELF_OSC_RESONANCE_START,
+};
 /// Maximum 2-pole feedback; intentionally below self-oscillation.
 const TWO_POLE_MAX_RESONANCE: f32 = 1.9;
 /// Maximum linear 4-pole feedback before the nonlinear self-oscillation region.
 const FOUR_POLE_MAX_RESONANCE: f32 = 3.75;
 /// SynthLab-style fraction of 4-pole feedback reused for bass compensation.
 const RESONANCE_BASS_COMP: f32 = 1.22;
-/// Public resonance value where 4-pole nonlinear self-oscillation begins.
-pub const SELF_OSC_RESONANCE_START: f32 = 0.71;
 /// Nonlinear 4-pole feedback at the start of audible self-oscillation.
 const FOUR_POLE_SELF_OSC_START_RESONANCE: f32 = 4.05;
 /// Maximum 4-pole feedback used by the nonlinear self-oscillation solver.
 const FOUR_POLE_SELF_OSC_RESONANCE: f32 = 5.25;
-/// Pitch trim, in cents, applied as nonlinear self-oscillation fades in.
-///
-/// The TPT cascade's free-running oscillation lands slightly flat relative to
-/// the user-facing cutoff value; this trim keeps max-resonance oscillation
-/// closer to measured Prophet-family behavior. Lower this value if the
-/// self-oscillation beats too quickly above a tuned oscillator; raise it if the
-/// self-oscillation is audibly flat.
-pub const SELF_OSC_PITCH_TUNING_CENTS: f32 = 133.0;
 /// Per-sample noise seed level that lets max resonance start from silence.
 const SELF_OSC_EXCITATION: f32 = 1.0e-7;
 /// Drive applied inside the self-oscillation limiter; lower values reduce harmonic spread.
@@ -54,84 +31,29 @@ const NONLINEAR_NEWTON_STEPS: usize = 3;
 /// Number of one-pole stages used to suppress oversampled nonlinear foldback.
 const OVERSAMPLE_DECIMATOR_POLES: usize = 2;
 
-/// Runtime quality setting for nonlinear filter self-oscillation oversampling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum FilterOversampling {
-    /// Disable filter oversampling.
-    Off,
-    /// Select an oversampling factor from the effective audio sample rate.
-    #[default]
-    Auto,
-    /// Run the nonlinear self-oscillation path at twice the audio sample rate.
-    X2,
-    /// Run the nonlinear self-oscillation path at four times the audio sample rate.
-    X4,
-}
-
-impl FilterOversampling {
-    /// Resolves this setting to an actual integer oversampling factor.
-    pub fn factor(self, sample_rate: f32) -> usize {
-        match self {
-            Self::Off => 1,
-            Self::Auto if sample_rate >= 176_400.0 => 1,
-            Self::Auto if sample_rate >= 88_200.0 => 2,
-            Self::Auto => 4,
-            Self::X2 => 2,
-            Self::X4 => 4,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct StaticCoefficientKey {
-    cutoff_bits: u32,
-    resonance_bits: u32,
-    sample_rate_bits: u32,
-    self_osc_pitch_tuning_bits: u32,
-    poles: u8,
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 struct StaticCoefficientCache {
-    key: Option<StaticCoefficientKey>,
+    /// Sample-rate and effective pitch-trim bits. Cutoff changes explicitly
+    /// invalidate the cache through the runtime wrapper.
+    key: [u32; 2],
     value: f32,
 }
 
 /// Four-lane Rev2-style low-pass with 2- or 4-pole slope, key tracking, and
 /// 4-pole self-oscillation.
-pub struct LadderFilter {
-    cutoff: f32,
-    resonance: f32,
-    poles: u8,
-    key_track: f32,
-    env_amount: f32,
-    env_velocity_amount: f32,
-    audio_mod: f32,
+pub(super) struct DistributedNewtonTpt {
     self_osc_pitch_tuning_cents: f32,
-    shaped_resonance: f32,
     static_coefficient_cache: StaticCoefficientCache,
-    oversampling: FilterOversampling,
     z: [f32x4; 4],
     oversample_decimator_z: [f32x4; OVERSAMPLE_DECIMATOR_POLES],
     excitation_seed: [u32; LANES],
 }
 
-impl Default for LadderFilter {
+impl Default for DistributedNewtonTpt {
     fn default() -> Self {
         Self {
-            cutoff: MAX_CUTOFF_HZ,
-            resonance: 0.0,
-            poles: 4,
-            key_track: 0.0,
-            env_amount: 0.0,
-            env_velocity_amount: 0.0,
-            audio_mod: 0.0,
             self_osc_pitch_tuning_cents: SELF_OSC_PITCH_TUNING_CENTS,
-            shaped_resonance: 0.0,
             static_coefficient_cache: StaticCoefficientCache::default(),
-            oversampling: FilterOversampling::Auto,
             z: [f32x4::splat(0.0); 4],
             oversample_decimator_z: [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES],
             excitation_seed: [0x1234_5678, 0x8765_4321, 0x9e37_79b9, 0x7f4a_7c15],
@@ -139,72 +61,7 @@ impl Default for LadderFilter {
     }
 }
 
-impl LadderFilter {
-    /// Sets the base cutoff frequency in hertz.
-    pub fn set_cutoff(&mut self, cutoff: f32) {
-        self.cutoff = cutoff.clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ);
-    }
-
-    /// Returns the base cutoff frequency in hertz.
-    pub fn cutoff(&self) -> f32 {
-        self.cutoff
-    }
-
-    /// Sets the public resonance control value.
-    pub fn set_resonance(&mut self, resonance: f32) {
-        self.resonance = resonance.clamp(0.0, 1.0);
-        self.shaped_resonance = shape_resonance_scalar(self.resonance);
-    }
-
-    /// Returns the public resonance control value.
-    pub fn resonance(&self) -> f32 {
-        self.resonance
-    }
-
-    /// Selects the low-pass slope. Values up to 2 select 2-pole mode; all
-    /// higher values select 4-pole mode.
-    pub fn set_poles(&mut self, poles: u8) {
-        self.poles = if poles <= 2 { 2 } else { 4 };
-    }
-
-    /// Sets keyboard tracking depth from no tracking to full tracking.
-    pub fn set_key_track(&mut self, key_track: f32) {
-        self.key_track = key_track.clamp(0.0, 1.0);
-    }
-
-    /// Sets filter envelope depth as a bipolar fraction of the internal
-    /// envelope modulation range.
-    pub fn set_env_amount(&mut self, env_amount: f32) {
-        self.env_amount = env_amount.clamp(-1.0, 1.0);
-    }
-
-    /// Sets how much note velocity scales the filter envelope.
-    pub fn set_env_velocity_amount(&mut self, env_velocity_amount: f32) {
-        self.env_velocity_amount = env_velocity_amount.clamp(0.0, 1.0);
-    }
-
-    /// Sets audio-rate cutoff modulation depth from oscillator 1.
-    pub fn set_audio_mod(&mut self, audio_mod: f32) {
-        self.audio_mod = audio_mod.clamp(0.0, 1.0);
-    }
-
-    /// Sets the oversampling policy for the nonlinear self-oscillation path.
-    ///
-    /// Changing this at runtime clears only the oversampling decimator state so
-    /// the filter core keeps its musical state while avoiding stale decimator
-    /// tails from a previous factor.
-    pub fn set_oversampling(&mut self, oversampling: FilterOversampling) {
-        if self.oversampling != oversampling {
-            self.oversampling = oversampling;
-            self.oversample_decimator_z = [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES];
-        }
-    }
-
-    /// Returns the current oversampling policy.
-    pub fn oversampling(&self) -> FilterOversampling {
-        self.oversampling
-    }
-
+impl DistributedNewtonTpt {
     /// Overrides the self-oscillation pitch trim for calibration.
     ///
     /// The public synth parameter surface does not expose this value; callers
@@ -213,6 +70,7 @@ impl LadderFilter {
     /// recompiling the crate.
     pub fn set_self_osc_pitch_tuning_cents(&mut self, cents: f32) {
         self.self_osc_pitch_tuning_cents = cents.clamp(-1200.0, 1200.0);
+        self.static_coefficient_cache = StaticCoefficientCache::default();
     }
 
     /// Returns the self-oscillation pitch trim in cents.
@@ -244,104 +102,45 @@ impl LadderFilter {
     /// threshold, 4-pole mode crossfades from the linear cascade into the
     /// nonlinear self-oscillation solver; optional oversampling is applied only
     /// to that nonlinear branch.
-    pub fn process(
-        &mut self,
-        input: f32x4,
-        note: f32x4,
-        filter_env: f32x4,
-        velocity: f32x4,
-        osc1_audio: f32x4,
-        cutoff_mod_semitones: f32x4,
-        resonance_mod: f32x4,
-        audio_mod: f32x4,
-        sample_rate: f32,
-    ) -> f32x4 {
-        let resonance_control = (f32x4::splat(self.resonance) + resonance_mod)
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let shaped_resonance = if resonance_mod == f32x4::ZERO {
-            f32x4::splat(self.shaped_resonance)
-        } else {
-            shape_resonance_control(resonance_control)
-        };
-
-        if self.uses_nonlinear_self_oscillation(resonance_control) {
-            let factor = self.oversampling.factor(sample_rate);
+    pub fn process(&mut self, frame: FilterFrame) -> f32x4 {
+        if self.uses_nonlinear_self_oscillation(frame) {
+            let factor = frame.oversampling.factor(frame.sample_rate);
             if factor > 1 {
-                return self.process_oversampled_self_oscillation(
-                    input,
-                    note,
-                    filter_env,
-                    velocity,
-                    osc1_audio,
-                    cutoff_mod_semitones,
-                    resonance_mod,
-                    resonance_control,
-                    shaped_resonance,
-                    audio_mod,
-                    sample_rate,
-                    factor,
-                );
+                return self.process_oversampled_self_oscillation(frame, factor);
             }
 
-            let g = self.coefficients(
-                note,
-                filter_env,
-                velocity,
-                osc1_audio,
-                cutoff_mod_semitones,
-                resonance_mod,
-                resonance_control,
-                audio_mod,
-                sample_rate,
-            );
+            let g = self.coefficients(frame, frame.sample_rate);
             return self.process_self_oscillation_sample(
-                input,
+                frame.input,
                 g,
-                shaped_resonance,
-                resonance_control,
+                frame.shaped_resonance,
+                frame.resonance_control,
+                frame.poles,
             );
         }
 
-        let g = self.coefficients(
-            note,
-            filter_env,
-            velocity,
-            osc1_audio,
-            cutoff_mod_semitones,
-            resonance_mod,
-            resonance_control,
-            audio_mod,
-            sample_rate,
-        );
-        let max_resonance = if self.poles == 2 {
+        let g = self.coefficients(frame, frame.sample_rate);
+        let max_resonance = if frame.poles == 2 {
             TWO_POLE_MAX_RESONANCE
         } else {
             FOUR_POLE_MAX_RESONANCE
         };
-        let resonance = shaped_resonance * f32x4::splat(max_resonance);
-        let driven_input =
-            self.resonance_compensated_input(analog_soft_clip(input), shaped_resonance);
-        self.process_linear_cascade(driven_input, g, resonance)
+        let resonance = frame.shaped_resonance * f32x4::splat(max_resonance);
+        let driven_input = self.resonance_compensated_input(
+            analog_soft_clip(frame.input),
+            frame.shaped_resonance,
+            frame.poles,
+        );
+        self.process_linear_cascade(driven_input, g, resonance, frame.poles)
     }
 
-    fn process_oversampled_self_oscillation(
-        &mut self,
-        input: f32x4,
-        note: f32x4,
-        filter_env: f32x4,
-        velocity: f32x4,
-        osc1_audio: f32x4,
-        cutoff_mod_semitones: f32x4,
-        resonance_mod: f32x4,
-        resonance_control: f32x4,
-        shaped_resonance: f32x4,
-        audio_mod: f32x4,
-        sample_rate: f32,
-        factor: usize,
-    ) -> f32x4 {
-        let amount = self.self_oscillation_amount(resonance_control);
-        let driven_input =
-            self.resonance_compensated_input(analog_soft_clip(input), shaped_resonance);
+    fn process_oversampled_self_oscillation(&mut self, frame: FilterFrame, factor: usize) -> f32x4 {
+        let amount = self.self_oscillation_amount(frame.resonance_control);
+        let driven_input = self.resonance_compensated_input(
+            analog_soft_clip(frame.input),
+            frame.shaped_resonance,
+            frame.poles,
+        );
         let blend = self_oscillation_blend(amount);
 
         // Keep the linear branch at the host sample rate. Oversampling the
@@ -351,52 +150,27 @@ impl LadderFilter {
         if all_lanes_near_zero(f32x4::splat(1.0) - blend) {
             return self.process_oversampled_nonlinear_self_oscillation(
                 driven_input,
-                note,
-                filter_env,
-                velocity,
-                osc1_audio,
-                cutoff_mod_semitones,
-                resonance_mod,
-                resonance_control,
+                frame,
                 amount,
-                audio_mod,
-                sample_rate,
                 factor,
             );
         }
 
         let original_z = self.z;
-        let g = self.coefficients(
-            note,
-            filter_env,
-            velocity,
-            osc1_audio,
-            cutoff_mod_semitones,
-            resonance_mod,
-            resonance_control,
-            audio_mod,
-            sample_rate,
-        );
+        let g = self.coefficients(frame, frame.sample_rate);
         let linear_output = self.process_linear_cascade(
             driven_input,
             g,
-            shaped_resonance * f32x4::splat(FOUR_POLE_MAX_RESONANCE),
+            frame.shaped_resonance * f32x4::splat(FOUR_POLE_MAX_RESONANCE),
+            frame.poles,
         );
         let linear_z = self.z;
 
         self.z = original_z;
         let nonlinear_output = self.process_oversampled_nonlinear_self_oscillation(
             driven_input,
-            note,
-            filter_env,
-            velocity,
-            osc1_audio,
-            cutoff_mod_semitones,
-            resonance_mod,
-            resonance_control,
+            frame,
             amount,
-            audio_mod,
-            sample_rate,
             factor,
         );
         let nonlinear_z = self.z;
@@ -408,38 +182,20 @@ impl LadderFilter {
     fn process_oversampled_nonlinear_self_oscillation(
         &mut self,
         driven_input: f32x4,
-        note: f32x4,
-        filter_env: f32x4,
-        velocity: f32x4,
-        osc1_audio: f32x4,
-        cutoff_mod_semitones: f32x4,
-        resonance_mod: f32x4,
-        resonance_control: f32x4,
+        frame: FilterFrame,
         amount: f32x4,
-        audio_mod: f32x4,
-        sample_rate: f32,
         factor: usize,
     ) -> f32x4 {
-        let oversampled_rate = sample_rate * factor as f32;
+        let oversampled_rate = frame.sample_rate * factor as f32;
         let k = self_oscillation_feedback(amount);
         let mut output = f32x4::splat(0.0);
 
         for _ in 0..factor {
-            let g = self.coefficients(
-                note,
-                filter_env,
-                velocity,
-                osc1_audio,
-                cutoff_mod_semitones,
-                resonance_mod,
-                resonance_control,
-                audio_mod,
-                oversampled_rate,
-            );
+            let g = self.coefficients(frame, oversampled_rate);
             let excitation = self.self_oscillation_excitation(amount);
             output = self.process_nonlinear_four_pole(driven_input + excitation, g, k)
                 * self_oscillation_output_makeup(amount);
-            output = self.decimate_oversampled_output(output, sample_rate, oversampled_rate);
+            output = self.decimate_oversampled_output(output, frame.sample_rate, oversampled_rate);
         }
 
         output
@@ -451,11 +207,12 @@ impl LadderFilter {
         g: f32x4,
         shaped_resonance: f32x4,
         resonance_control: f32x4,
+        poles: u8,
     ) -> f32x4 {
         let amount = self.self_oscillation_amount(resonance_control);
         let k = self_oscillation_feedback(amount);
         let driven_input =
-            self.resonance_compensated_input(analog_soft_clip(input), shaped_resonance);
+            self.resonance_compensated_input(analog_soft_clip(input), shaped_resonance, poles);
         let blend = self_oscillation_blend(amount);
 
         if all_lanes_near_zero(f32x4::splat(1.0) - blend) {
@@ -469,6 +226,7 @@ impl LadderFilter {
             driven_input,
             g,
             shaped_resonance * f32x4::splat(FOUR_POLE_MAX_RESONANCE),
+            poles,
         );
         let linear_z = self.z;
 
@@ -505,20 +263,27 @@ impl LadderFilter {
         }
     }
 
-    fn process_linear_cascade(&mut self, driven_input: f32x4, g: f32x4, resonance: f32x4) -> f32x4 {
-        let x = self.zero_delay_feedback_input(driven_input, g, resonance);
+    fn process_linear_cascade(
+        &mut self,
+        driven_input: f32x4,
+        g: f32x4,
+        resonance: f32x4,
+        poles: u8,
+    ) -> f32x4 {
+        let x = self.zero_delay_feedback_input(driven_input, g, resonance, poles);
 
         let y0 = tpt_one_pole(x, &mut self.z[0], g);
         let y1 = tpt_one_pole(y0, &mut self.z[1], g);
         let y2 = tpt_one_pole(y1, &mut self.z[2], g);
         let y3 = tpt_one_pole(y2, &mut self.z[3], g);
 
-        if self.poles == 2 { y1 } else { y3 }
+        if poles == 2 { y1 } else { y3 }
     }
 
-    fn uses_nonlinear_self_oscillation(&self, resonance_control: f32x4) -> bool {
-        self.poles == 4
-            && resonance_control
+    fn uses_nonlinear_self_oscillation(&self, frame: FilterFrame) -> bool {
+        frame.poles == 4
+            && frame
+                .resonance_control
                 .simd_gt(f32x4::splat(SELF_OSC_RESONANCE_START))
                 .any()
     }
@@ -529,8 +294,13 @@ impl LadderFilter {
         .clamp(f32x4::splat(0.0), f32x4::splat(1.0))
     }
 
-    fn resonance_compensated_input(&self, input: f32x4, shaped_resonance: f32x4) -> f32x4 {
-        if self.poles == 4 {
+    fn resonance_compensated_input(
+        &self,
+        input: f32x4,
+        shaped_resonance: f32x4,
+        poles: u8,
+    ) -> f32x4 {
+        if poles == 4 {
             input
                 * (f32x4::splat(1.0)
                     + shaped_resonance
@@ -540,14 +310,20 @@ impl LadderFilter {
         }
     }
 
-    fn zero_delay_feedback_input(&self, input: f32x4, g: f32x4, resonance: f32x4) -> f32x4 {
+    fn zero_delay_feedback_input(
+        &self,
+        input: f32x4,
+        g: f32x4,
+        resonance: f32x4,
+        poles: u8,
+    ) -> f32x4 {
         let one = f32x4::splat(1.0);
         let s0 = stage_offset(self.z[0], g);
         let s1 = stage_offset(self.z[1], g);
         let s2 = stage_offset(self.z[2], g);
         let s3 = stage_offset(self.z[3], g);
 
-        if self.poles == 2 {
+        if poles == 2 {
             let g2 = g * g;
             let state_offset = g * s0 + s1;
             let denominator = one + resonance * g2;
@@ -573,7 +349,7 @@ impl LadderFilter {
         let s2 = stage_offset(z2, g);
         let s3 = stage_offset(z3, g);
 
-        let u = self.zero_delay_feedback_input(input, g, resonance);
+        let u = self.zero_delay_feedback_input(input, g, resonance, 4);
         let mut y0 = g * u + s0;
         let mut y1 = g * y0 + s1;
         let mut y2 = g * y1 + s2;
@@ -640,126 +416,90 @@ impl LadderFilter {
         f32x4::new(out)
     }
 
-    fn coefficients(
-        &mut self,
-        note: f32x4,
-        filter_env: f32x4,
-        velocity: f32x4,
-        osc1_audio: f32x4,
-        cutoff_mod_semitones: f32x4,
-        resonance_mod: f32x4,
-        resonance_control: f32x4,
-        audio_mod: f32x4,
-        sample_rate: f32,
-    ) -> f32x4 {
-        if self.uses_static_cutoff(cutoff_mod_semitones, resonance_mod, audio_mod) {
-            return f32x4::splat(self.static_coefficient(sample_rate, resonance_control));
+    fn coefficients(&mut self, frame: FilterFrame, sample_rate: f32) -> f32x4 {
+        if frame.static_cutoff {
+            return f32x4::splat(self.static_coefficient(frame, sample_rate));
         }
 
-        let cutoff = self.modulated_cutoff(
-            note,
-            filter_env,
-            velocity,
-            osc1_audio,
-            cutoff_mod_semitones,
-            resonance_control,
-            audio_mod,
-            sample_rate,
-        );
+        let cutoff = self.modulated_cutoff(frame, sample_rate);
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
         coefficients_from_cutoff(cutoff, max_cutoff, sample_rate)
     }
 
-    fn uses_static_cutoff(
-        &self,
-        cutoff_mod_semitones: f32x4,
-        resonance_mod: f32x4,
-        audio_mod: f32x4,
-    ) -> bool {
-        self.key_track == 0.0
-            && self.env_amount == 0.0
-            && self.audio_mod == 0.0
-            && all_lanes_near_zero(cutoff_mod_semitones)
-            && all_lanes_near_zero(resonance_mod)
-            && all_lanes_near_zero(audio_mod)
-    }
-
-    fn static_coefficient(&mut self, sample_rate: f32, resonance_control: f32x4) -> f32 {
-        let key = StaticCoefficientKey {
-            cutoff_bits: self.cutoff.to_bits(),
-            resonance_bits: resonance_control.to_array()[0].to_bits(),
-            sample_rate_bits: sample_rate.to_bits(),
-            self_osc_pitch_tuning_bits: self.self_osc_pitch_tuning_cents.to_bits(),
-            poles: self.poles,
+    fn static_coefficient(&mut self, frame: FilterFrame, sample_rate: f32) -> f32 {
+        let uses_pitch_tuning = frame.poles == 4
+            && frame
+                .resonance_control
+                .simd_gt(f32x4::splat(SELF_OSC_RESONANCE_START))
+                .any();
+        let self_osc_cents = if uses_pitch_tuning {
+            self_oscillation_pitch_amount(self.self_oscillation_amount(frame.resonance_control))
+                .to_array()[0]
+                * self.self_osc_pitch_tuning_cents
+        } else {
+            0.0
         };
-        if self.static_coefficient_cache.key == Some(key) {
+        let key = [sample_rate.to_bits(), self_osc_cents.to_bits()];
+        if self.static_coefficient_cache.key == key {
             return self.static_coefficient_cache.value;
         }
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
-        let hz = if self.poles == 4
-            && resonance_control
-                .simd_gt(f32x4::splat(SELF_OSC_RESONANCE_START))
-                .any()
-        {
-            let self_osc_cents =
-                self_oscillation_pitch_amount(self.self_oscillation_amount(resonance_control))
-                    .to_array()[0]
-                    * self.self_osc_pitch_tuning_cents;
+        let hz = if uses_pitch_tuning {
             let scale = crate::math::powf(2.0, self_osc_cents / 1200.0);
-            self.cutoff * scale
+            frame.cutoff_hz * scale
         } else {
-            self.cutoff
+            frame.cutoff_hz
         }
         .clamp(MIN_CUTOFF_HZ, max_cutoff);
         let g = crate::math::tan(core::f32::consts::PI * hz / sample_rate);
         let value = g / (1.0 + g);
-        self.static_coefficient_cache = StaticCoefficientCache {
-            key: Some(key),
-            value,
-        };
+        self.static_coefficient_cache = StaticCoefficientCache { key, value };
         value
     }
 
-    fn modulated_cutoff(
-        &self,
-        note: f32x4,
-        filter_env: f32x4,
-        velocity: f32x4,
-        osc1_audio: f32x4,
-        cutoff_mod_semitones: f32x4,
-        resonance_control: f32x4,
-        audio_mod: f32x4,
-        sample_rate: f32,
-    ) -> f32x4 {
+    fn modulated_cutoff(&self, frame: FilterFrame, sample_rate: f32) -> f32x4 {
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
-        let key_semitones =
-            (note - f32x4::splat(KEY_TRACK_REFERENCE_NOTE)) * f32x4::splat(self.key_track);
-        let velocity_scale = f32x4::splat(1.0 - self.env_velocity_amount)
-            + velocity.clamp(f32x4::splat(0.0), f32x4::splat(1.0))
-                * f32x4::splat(self.env_velocity_amount);
-        let env_semitones = filter_env.clamp(f32x4::splat(0.0), f32x4::splat(1.0))
-            * velocity_scale
-            * f32x4::splat(self.env_amount * ENV_DEPTH_SEMITONES);
-        let audio_mod_amount =
-            (f32x4::splat(self.audio_mod) + audio_mod).clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let audio_semitones = osc1_audio.clamp(f32x4::splat(-1.0), f32x4::splat(1.0))
-            * audio_mod_amount
-            * f32x4::splat(AUDIO_MOD_DEPTH_SEMITONES);
-        let self_osc_semitones = if self.poles == 4 {
-            self_oscillation_pitch_amount(self.self_oscillation_amount(resonance_control))
+        let self_osc_semitones = if frame.poles == 4 {
+            self_oscillation_pitch_amount(self.self_oscillation_amount(frame.resonance_control))
                 * f32x4::splat(self.self_osc_pitch_tuning_cents / 100.0)
         } else {
             f32x4::splat(0.0)
         };
-        let total_semitones = key_semitones
-            + env_semitones
-            + audio_semitones
-            + cutoff_mod_semitones
-            + self_osc_semitones;
+        let total_semitones = frame.cutoff_mod_semitones + self_osc_semitones;
         let scale = (total_semitones * f32x4::splat(1.0 / 12.0)).exp2();
-        (f32x4::splat(self.cutoff) * scale)
+        (f32x4::splat(frame.cutoff_hz) * scale)
             .clamp(f32x4::splat(MIN_CUTOFF_HZ), f32x4::splat(max_cutoff))
+    }
+}
+
+impl FilterAlgorithm for DistributedNewtonTpt {
+    fn reset(&mut self) {
+        DistributedNewtonTpt::reset(self);
+    }
+
+    fn reset_lane(&mut self, lane: usize) {
+        DistributedNewtonTpt::reset_lane(self, lane);
+    }
+
+    fn invalidate_coefficients(&mut self) {
+        self.static_coefficient_cache = StaticCoefficientCache::default();
+    }
+
+    fn clear_oversampling_state(&mut self) {
+        self.oversample_decimator_z = [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES];
+    }
+
+    fn set_self_osc_pitch_tuning_cents(&mut self, cents: f32) {
+        DistributedNewtonTpt::set_self_osc_pitch_tuning_cents(self, cents);
+    }
+
+    fn self_osc_pitch_tuning_cents(&self) -> f32 {
+        DistributedNewtonTpt::self_osc_pitch_tuning_cents(self)
+    }
+
+    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+        DistributedNewtonTpt::process(self, frame)
     }
 }
 
@@ -769,18 +509,6 @@ fn stage_offset(z: f32x4, g: f32x4) -> f32x4 {
 
 fn raw_integrator_coefficient(g: f32x4) -> f32x4 {
     g / (f32x4::splat(1.0) - g)
-}
-
-fn shape_resonance_control(value: f32x4) -> f32x4 {
-    let mut values = value.to_array();
-    for value in &mut values {
-        *value = shape_resonance_scalar(*value);
-    }
-    f32x4::new(values)
-}
-
-fn shape_resonance_scalar(value: f32) -> f32 {
-    crate::math::powf(value.clamp(0.0, 1.0), RESONANCE_CONTROL_EXPONENT)
 }
 
 fn self_oscillation_blend(value: f32x4) -> f32x4 {

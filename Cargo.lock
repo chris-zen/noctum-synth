@@ -3305,7 +3305,6 @@ dependencies = [
  "serde",
  "serde_json",
  "synth-core",
- "wide",
  "wmidi",
 ]
 

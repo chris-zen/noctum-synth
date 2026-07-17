@@ -1,7 +1,7 @@
 use synth_core::f32x4;
 
 use synth_core::{
-    LANES, LadderFilter,
+    Filter, FilterType, LANES, LadderFilter,
     filter::{FilterOversampling, SELF_OSC_PITCH_TUNING_CENTS, SELF_OSC_RESONANCE_START},
     midi_to_hz,
 };
@@ -16,6 +16,64 @@ fn process(filter: &mut LadderFilter, input: f32x4, note: f32x4, sample_rate: f3
         f32x4::splat(0.0),
         sample_rate,
     )
+}
+
+#[test]
+fn switching_filter_type_resets_state_and_retains_common_controls() {
+    let mut switched = Filter::new(FilterType::DistributedNewtonTpt);
+    switched.set_cutoff(930.0);
+    switched.set_resonance(0.64);
+    switched.set_poles(2);
+    switched.set_key_track(0.55);
+    switched.set_env_amount(-0.4);
+    switched.set_env_velocity_amount(0.7);
+    switched.set_audio_mod(0.45);
+    switched.set_oversampling(FilterOversampling::Off);
+
+    for _ in 0..64 {
+        let _ = switched.process(
+            f32x4::splat(0.2),
+            f32x4::splat(64.0),
+            f32x4::splat(0.3),
+            f32x4::splat(0.8),
+            f32x4::splat(-0.25),
+            f32x4::splat(3.0),
+            f32x4::splat(0.02),
+            f32x4::splat(0.1),
+            48_000.0,
+        );
+    }
+    switched.set_filter_type(FilterType::ScalarFeedbackTpt);
+
+    let mut fresh = Filter::new(FilterType::ScalarFeedbackTpt);
+    fresh.set_cutoff(930.0);
+    fresh.set_resonance(0.64);
+    fresh.set_poles(2);
+    fresh.set_key_track(0.55);
+    fresh.set_env_amount(-0.4);
+    fresh.set_env_velocity_amount(0.7);
+    fresh.set_audio_mod(0.45);
+    fresh.set_oversampling(FilterOversampling::Off);
+
+    let args = (
+        f32x4::splat(0.2),
+        f32x4::splat(64.0),
+        f32x4::splat(0.3),
+        f32x4::splat(0.8),
+        f32x4::splat(-0.25),
+        f32x4::splat(3.0),
+        f32x4::splat(0.02),
+        f32x4::splat(0.1),
+    );
+    let switched_output = switched.process(
+        args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, 48_000.0,
+    );
+    let fresh_output = fresh.process(
+        args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7, 48_000.0,
+    );
+
+    assert_eq!(switched.filter_type(), FilterType::ScalarFeedbackTpt);
+    assert_eq!(switched_output, fresh_output);
 }
 
 fn process_modulated(
@@ -38,6 +96,123 @@ fn process_modulated(
         f32x4::splat(0.0),
         sample_rate,
     )
+}
+
+#[cfg(not(feature = "embedded-math"))]
+fn golden_stream(
+    poles: u8,
+    resonance: f32,
+    oversampling: FilterOversampling,
+    modulation_heavy: bool,
+) -> [u32; 32] {
+    let mut filter = LadderFilter::default();
+    filter.set_cutoff(if modulation_heavy { 730.0 } else { 1_250.0 });
+    filter.set_resonance(resonance);
+    filter.set_poles(poles);
+    filter.set_oversampling(oversampling);
+    if modulation_heavy {
+        filter.set_key_track(0.73);
+        filter.set_env_amount(-0.61);
+        filter.set_env_velocity_amount(0.84);
+        filter.set_audio_mod(0.67);
+    }
+
+    let mut output = [0u32; 32];
+    for frame in 0..520 {
+        let phase = frame as f32;
+        let input = f32x4::new([
+            (phase * 0.071).sin() * 0.21,
+            (phase * 0.047).cos() * 0.17,
+            if frame % 11 < 5 { 0.13 } else { -0.09 },
+            ((frame * 37 % 101) as f32 / 50.0 - 1.0) * 0.08,
+        ]);
+        let rendered = filter.process(
+            input,
+            f32x4::new([36.0, 52.0, 67.0, 83.0]),
+            if modulation_heavy {
+                f32x4::new([0.05, 0.35, 0.7, 0.95])
+            } else {
+                f32x4::splat(0.0)
+            },
+            f32x4::new([0.2, 0.45, 0.75, 1.0]),
+            if modulation_heavy {
+                f32x4::new([
+                    (phase * 0.031).sin(),
+                    (phase * 0.043).cos(),
+                    (phase * 0.059).sin(),
+                    (phase * 0.073).cos(),
+                ])
+            } else {
+                f32x4::splat(0.0)
+            },
+            if modulation_heavy {
+                f32x4::new([-17.0, -3.5, 8.0, 23.0])
+            } else {
+                f32x4::splat(0.0)
+            },
+            if modulation_heavy {
+                f32x4::new([-0.08, 0.02, 0.11, -0.03])
+            } else {
+                f32x4::splat(0.0)
+            },
+            if modulation_heavy {
+                f32x4::new([0.2, -0.15, 0.25, -0.1])
+            } else {
+                f32x4::splat(0.0)
+            },
+            48_000.0,
+        );
+        if frame >= 512 {
+            let values = rendered.to_array();
+            let offset = (frame - 512) * LANES;
+            for lane in 0..LANES {
+                output[offset + lane] = values[lane].to_bits();
+            }
+        }
+    }
+    output
+}
+
+#[cfg(not(feature = "embedded-math"))]
+#[test]
+fn distributed_newton_tpt_golden_streams_are_bit_identical() {
+    let actual = [
+        golden_stream(2, 0.58, FilterOversampling::Off, false),
+        golden_stream(4, 0.58, FilterOversampling::Off, false),
+        golden_stream(4, 1.0, FilterOversampling::Off, false),
+        golden_stream(4, 1.0, FilterOversampling::X2, true),
+    ];
+    let expected = [
+        [
+            0xbde6c3bb, 0x3c84e4ff, 0x3c82f663, 0xbb8abb93, 0xbdeaf662, 0x3ca9a1b8, 0x3c7bf08b,
+            0xbb7d3b2f, 0xbdedfd64, 0x3ccdfb73, 0x3c49173a, 0xbb34cee2, 0xbdefd55a, 0x3cf1dd07,
+            0x3bf59646, 0xbad9b7d0, 0xbdf07c37, 0x3d0a98d1, 0x3ade778a, 0xba90d6c6, 0xbdeff145,
+            0x3d1bf26c, 0xbb5b96e2, 0xbabebe06, 0xbdee3528, 0x3d2cf158, 0xbba8c0e4, 0xbb041846,
+            0xbdeb49db, 0x3d3d8bd8, 0xbb570d80, 0xbb1522e6,
+        ],
+        [
+            0xbe7c8ef3, 0x3ac4a87c, 0x3c164cab, 0x39fa9d2a, 0xbe83d464, 0x3c3ae181, 0x3c1fa749,
+            0xb910fcba, 0xbe88b5fb, 0x3cae7064, 0x3c2ff6a9, 0xba559dae, 0xbe8ce60a, 0x3cff1a10,
+            0x3c423407, 0xbac17c6d, 0xbe905f50, 0x3d279f29, 0x3c50f1ac, 0xbb0731b0, 0xbe931d84,
+            0x3d4f56e6, 0x3c57816c, 0xbb27ee5b, 0xbe951d58, 0x3d769caf, 0x3c5383e3, 0xbb44ed39,
+            0xbe965c7a, 0x3d8eac90, 0x3c462761, 0xbb608f09,
+        ],
+        [
+            0xbf32dde3, 0xbf219dce, 0x3f0036e7, 0xbf29f572, 0xbf457e36, 0xbf20e2ac, 0x3ed7bffa,
+            0xbf2a5372, 0xbf5488a6, 0xbf1b072a, 0x3ea958b0, 0xbf25a612, 0xbf5f7228, 0xbf10362c,
+            0x3e6d184c, 0xbf1c08c7, 0xbf65bcce, 0xbf00ce26, 0x3e016317, 0xbf0dcb36, 0xbf6704a0,
+            0xbedab23e, 0x3c91df0a, 0xbef6dabb, 0xbf630d04, 0xbead0164, 0xbdbb42c5, 0xbecb2a24,
+            0xbf59cc04, 0xbe74018c, 0xbe4b44ab, 0xbe99fe3a,
+        ],
+        [
+            0xbee811f6, 0xbec6aa4a, 0xbe2e55d5, 0x3ef14c6a, 0xbee5d209, 0xbecca551, 0xbe2827c7,
+            0x3f1c4431, 0xbee3a348, 0xbed29791, 0xbe2197ef, 0x3f19fe52, 0xbee187db, 0xbed8844c,
+            0xbe1a91ce, 0x3ede101a, 0xbedf8127, 0xbede6e98, 0xbe12fdee, 0x3e19d9cb, 0xbedd8ff8,
+            0xbee45978, 0xbe0ac13e, 0xbe300bc6, 0xbedbb4a3, 0xbeea47c3, 0xbe01bc5f, 0xbee85f63,
+            0xbed9ef23, 0xbef03c2f, 0xbdef9573, 0xbf1ffa5b,
+        ],
+    ];
+    assert_eq!(actual, expected);
 }
 
 #[test]
