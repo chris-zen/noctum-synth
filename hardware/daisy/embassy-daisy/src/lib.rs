@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(test, no_main)]
 #![doc = include_str!("../README.md")]
 
 #[cfg(not(any(
@@ -41,25 +42,39 @@ compile_error!("96 kHz audio is reserved but has not been validated yet");
 #[cfg(feature = "block_length_64")]
 compile_error!("64-frame audio blocks are reserved but have not been validated yet");
 
-pub mod format;
+#[cfg(not(target_arch = "arm"))]
+compile_error!("embassy-daisy targets Cortex-M7 only; build with thumbv7em-none-eabihf");
+
 mod wm8731;
 
-#[cfg(target_arch = "arm")]
 pub mod audio;
-#[cfg(target_arch = "arm")]
 pub mod board;
-#[cfg(target_arch = "arm")]
 pub mod clocks;
-#[cfg(target_arch = "arm")]
+pub mod led;
 mod memory;
-#[cfg(target_arch = "arm")]
 pub mod pins;
-#[cfg(target_arch = "arm")]
+pub mod pwm;
 pub mod qspi;
-#[cfg(target_arch = "arm")]
 pub mod sdram;
-#[cfg(target_arch = "arm")]
 pub mod usb;
 
-#[cfg(target_arch = "arm")]
 pub use board::{Board, BoardParts, TakeError};
+pub use led::{PwmUserLed, UserLed, UserLedPin};
+pub use pwm::{PwmChannel, PwmChannels, PwmFrequency, PwmOutput};
+
+#[cfg(test)]
+#[embedded_test::setup]
+fn setup() {
+    use defmt_rtt as _;
+}
+
+#[cfg(test)]
+#[embedded_test::tests]
+mod link_hack {
+    use defmt_rtt as _;
+    use embassy_stm32 as _;
+    use panic_probe as _;
+
+    #[test]
+    fn embassy_stm32_linked() {}
+}

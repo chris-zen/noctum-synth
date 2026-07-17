@@ -2,9 +2,12 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use embassy_stm32::{Peri, peripherals};
+
 use crate::audio::AudioResources;
+use crate::led::UserLedPin;
 use crate::memory::zero_sram1_bss;
-use crate::pins::{Pins, UserLed};
+use crate::pins::Pins;
 use crate::qspi::QspiFlashResources;
 use crate::sdram::SdramResources;
 use crate::usb::UsbResources;
@@ -27,7 +30,8 @@ pub struct Board;
 #[non_exhaustive]
 pub struct BoardParts {
     pub pins: Pins,
-    pub user_led: UserLed,
+    pub user_led_pin: UserLedPin,
+    pub tim3: Peri<'static, peripherals::TIM3>,
     pub audio: AudioResources,
     pub usb: UsbResources,
     pub sdram: SdramResources,
@@ -82,7 +86,8 @@ impl Board {
                 pin_29: p.PB14,
                 pin_30: p.PB15,
             },
-            user_led: p.PC7,
+            user_led_pin: UserLedPin::new(p.PC7),
+            tim3: p.TIM3,
             audio: AudioResources {
                 sai: p.SAI1,
                 mclk: p.PE2,

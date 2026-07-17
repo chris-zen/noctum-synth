@@ -8,14 +8,16 @@ license = "MIT"
 rust-version = "1.93"
 
 [workspace.dependencies]
+embassy-daisy = { path = "embassy-daisy", features = ["seed_1_1"] }
+synth-core = { path = "../../synth-core", default-features = false }
 cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7.5"
 defmt = "1.0.1"
-defmt-rtt = "1.0.0"
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
+defmt-rtt = { version = "1.0.0", features = ["disable-blocking-mode"] }
+embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-interrupt", "executor-thread", "defmt"] }
 embassy-futures = "0.1.2"
-embassy-sync = { version = "0.8.0", features = ["defmt"] }
-embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32h750ib", "time-driver-any"] }
+embassy-sync = "0.8.0"
+embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32h750ib", "time-driver-any", "memory-x"] }
 embassy-time = "0.5.0"
 embassy-usb = { version = "0.6.0", default-features = false, features = ["defmt"] }
 libm = "0.2.15"
@@ -23,6 +25,7 @@ panic-probe = "1.0.0"
 static_cell = "2.1.1"
 stm32-fmc = "0.4.0"
 wmidi = { version = "4.0.11", default-features = false }
+embedded-test = { version = "0.7", default-features = true }
 
 [profile.release]
 debug = 2

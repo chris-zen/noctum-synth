@@ -8,11 +8,13 @@ rust-version.workspace = true
 
 [features]
 default = ["embedded-math"]
-audio-profiling = ["synth-core/profiling"]
+audio-profiling = ["diagnostics", "synth-core/profiling"]
+diagnostics = []
 embedded-math = ["synth-core/embedded-math"]
 
 [dependencies]
-synth-core = { path = "../../../synth-core", default-features = false }
+embassy-sync.workspace = true
+synth-core.workspace = true
 wmidi.workspace = true
 
 [target.'cfg(target_arch = "arm")'.dependencies]
@@ -20,10 +22,11 @@ cortex-m.workspace = true
 cortex-m-rt.workspace = true
 defmt.workspace = true
 defmt-rtt.workspace = true
-embassy-daisy = { path = "../embassy-daisy", features = ["seed_1_1"] }
+embassy-daisy.workspace = true
 embassy-executor.workspace = true
 embassy-futures.workspace = true
-embassy-sync.workspace = true
+embassy-stm32.workspace = true
+embassy-time.workspace = true
 embassy-usb.workspace = true
 panic-probe.workspace = true
 static_cell.workspace = true

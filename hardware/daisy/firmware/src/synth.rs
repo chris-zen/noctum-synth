@@ -1,7 +1,8 @@
 //! Translation from typed MIDI messages to synthesizer control commands.
 
-use synth_core::ControlMessage;
 use wmidi::MidiMessage;
+
+use synth_core::{ControlMessage, Patch, Rev2MidiDecoder, Rev2MidiUpdate};
 
 /// Convert a supported MIDI message into one real-time synth command.
 ///
@@ -44,49 +45,194 @@ pub fn message_to_control(message: MidiMessage<'_>) -> Option<ControlMessage> {
     }
 }
 
-#[cfg(target_arch = "arm")]
-pub struct SynthMidiHandler<'a, const N: usize> {
-    sender: embassy_sync::channel::Sender<
-        'a,
-        embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
-        ControlMessage,
-        N,
-    >,
-}
-
-#[cfg(target_arch = "arm")]
-impl<'a, const N: usize> SynthMidiHandler<'a, N> {
-    pub const fn new(
-        sender: embassy_sync::channel::Sender<
-            'a,
-            embassy_sync::blocking_mutex::raw::ThreadModeRawMutex,
-            ControlMessage,
-            N,
-        >,
-    ) -> Self {
-        Self { sender }
+/// Translate one MIDI message, including stateful Rev2 NRPN sequences.
+pub fn message_to_controls(
+    message: MidiMessage<'_>,
+    decoder: &mut Rev2MidiDecoder,
+    mut emit: impl FnMut(ControlMessage),
+) {
+    if let MidiMessage::ControlChange(channel, controller, value) = message {
+        let controller = u8::from(controller);
+        let value = u8::from(value);
+        if !matches!(controller, 1 | 64 | 120 | 123) {
+            if decoder.control_change(channel.index(), controller, value, |update| {
+                emit(match update {
+                    Rev2MidiUpdate::Param(param, value) => ControlMessage::SetParam(param, value),
+                    Rev2MidiUpdate::Modulation { route, parameter } => {
+                        ControlMessage::SetModulationParam { route, parameter }
+                    }
+                });
+            }) {
+                return;
+            }
+        }
+    }
+    if let Some(command) = message_to_control(message) {
+        emit(command);
     }
 }
 
-#[cfg(target_arch = "arm")]
+pub fn patch_to_controls(patch: &Patch, mut emit: impl FnMut(ControlMessage)) {
+    patch.for_each_param(|param, value| emit(ControlMessage::SetParam(param, value)));
+    patch.for_each_modulation(|route, slot| {
+        emit(ControlMessage::SetModulation {
+            route,
+            enabled: slot.enabled,
+            source: slot.source,
+            destination: slot.destination,
+            amount: slot.amount,
+        });
+    });
+}
+
+pub struct SynthMidiHandler<'a, const N: usize> {
+    sender: embassy_sync::channel::Sender<
+        'a,
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        ControlMessage,
+        N,
+    >,
+    indicator: crate::indicator::Sender<'a>,
+    decoder: Rev2MidiDecoder,
+    #[cfg(feature = "diagnostics")]
+    nrpn_monitor: NrpnMonitor,
+}
+
+impl<'a, const N: usize> SynthMidiHandler<'a, N> {
+    pub fn new(
+        sender: embassy_sync::channel::Sender<
+            'a,
+            embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+            ControlMessage,
+            N,
+        >,
+        indicator: crate::indicator::Sender<'a>,
+    ) -> Self {
+        Self {
+            sender,
+            indicator,
+            decoder: Rev2MidiDecoder::default(),
+            #[cfg(feature = "diagnostics")]
+            nrpn_monitor: NrpnMonitor::default(),
+        }
+    }
+}
+
 impl<const N: usize> crate::midi::MidiMessageHandler for SynthMidiHandler<'_, N> {
     fn handle(&mut self, _cable: u8, message: MidiMessage<'_>) {
-        if let Some(command) = message_to_control(message)
-            && self.sender.try_send(command).is_err()
+        self.indicator.notify_midi();
+
+        #[cfg(feature = "diagnostics")]
+        let completed_nrpn = if let MidiMessage::ControlChange(channel, controller, value) = message
         {
-            defmt::warn!("synth control queue full; dropping newest MIDI command");
+            self.nrpn_monitor
+                .control_change(channel.index(), u8::from(controller), u8::from(value))
+                .map(|nrpn| (channel.index() + 1, nrpn))
+        } else {
+            None
+        };
+
+        let sender = self.sender;
+        message_to_controls(message, &mut self.decoder, |command| {
+            if sender.try_send(command).is_err() {
+                crate::diagnostics::emit(crate::diagnostics::Event::ControlQueueFull);
+            }
+        });
+
+        #[cfg(feature = "diagnostics")]
+        if let Some((channel, nrpn)) = completed_nrpn {
+            crate::diagnostics::emit(crate::diagnostics::Event::NrpnRx {
+                channel,
+                number: nrpn.number,
+                value: nrpn.value,
+            });
         }
     }
 
     fn decode_error(&mut self, cable: u8, _error: crate::midi::DecodeError) {
-        defmt::warn!("invalid MIDI message on cable {}", cable);
+        crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi { cable });
+    }
+
+    fn handle_sysex(&mut self, cable: u8, message: &[u8]) {
+        self.indicator.notify_midi();
+        let Ok(patch) = Rev2MidiDecoder::program_edit_buffer(message) else {
+            crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi { cable });
+            return;
+        };
+        let sender = self.sender;
+        patch_to_controls(&patch, |command| {
+            if sender.try_send(command).is_err() {
+                crate::diagnostics::emit(crate::diagnostics::Event::ControlQueueFull);
+            }
+        });
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+#[derive(Clone, Copy, Default)]
+struct NrpnMonitorChannel {
+    number_msb: Option<u8>,
+    number_lsb: Option<u8>,
+    data_msb: Option<u8>,
+}
+
+#[cfg(feature = "diagnostics")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CompletedNrpn {
+    number: u16,
+    value: u16,
+}
+
+/// Firmware-only observer used solely to collapse the four transport CCs into
+/// one diagnostic event. Synth parameter decoding remains in `synth-core`.
+#[cfg(feature = "diagnostics")]
+struct NrpnMonitor {
+    channels: [NrpnMonitorChannel; 16],
+}
+
+#[cfg(feature = "diagnostics")]
+impl Default for NrpnMonitor {
+    fn default() -> Self {
+        Self {
+            channels: [NrpnMonitorChannel::default(); 16],
+        }
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+impl NrpnMonitor {
+    fn control_change(&mut self, channel: u8, controller: u8, value: u8) -> Option<CompletedNrpn> {
+        let state = self.channels.get_mut(usize::from(channel))?;
+        match controller {
+            99 => {
+                state.number_msb = Some(value);
+                state.data_msb = None;
+            }
+            98 => {
+                state.number_lsb = Some(value);
+                state.data_msb = None;
+            }
+            6 => state.data_msb = Some(value),
+            38 => {
+                let number = u16::from(state.number_msb?) * 128 + u16::from(state.number_lsb?);
+                let value = u16::from(state.data_msb?) * 128 + u16::from(value);
+                return Some(CompletedNrpn { number, value });
+            }
+            // Selecting an RPN cancels the diagnostic NRPN assembly. The
+            // authoritative decoder independently applies its full RPN rules.
+            100 | 101 => *state = NrpnMonitorChannel::default(),
+            _ => {}
+        }
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::message_to_control;
-    use synth_core::ControlMessage;
+    #[cfg(feature = "diagnostics")]
+    use super::{CompletedNrpn, NrpnMonitor};
+    use super::{message_to_control, message_to_controls};
+    use synth_core::{ControlMessage, ParamId, Rev2MidiDecoder};
     use wmidi::MidiMessage;
 
     fn command(bytes: &[u8]) -> Option<ControlMessage> {
@@ -166,5 +312,38 @@ mod tests {
     fn ignores_messages_without_synth_commands() {
         assert!(command(&[0xc0, 5]).is_none());
         assert!(command(&[0xf8]).is_none());
+    }
+
+    #[test]
+    fn decodes_rev2_nrpn_parameter_sequences() {
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut command = None;
+        for bytes in [[0xb0, 99, 0], [0xb0, 98, 16], [0xb0, 6, 0], [0xb0, 38, 127]] {
+            message_to_controls(
+                MidiMessage::try_from(bytes.as_slice()).unwrap(),
+                &mut decoder,
+                |next| command = Some(next),
+            );
+        }
+        assert!(matches!(
+            command,
+            Some(ControlMessage::SetParam(ParamId::FilterResonance, 1.0))
+        ));
+    }
+
+    #[cfg(feature = "diagnostics")]
+    #[test]
+    fn firmware_monitor_emits_one_completed_nrpn() {
+        let mut monitor = NrpnMonitor::default();
+        assert_eq!(monitor.control_change(0, 99, 0), None);
+        assert_eq!(monitor.control_change(0, 98, 33), None);
+        assert_eq!(monitor.control_change(0, 6, 0), None);
+        assert_eq!(
+            monitor.control_change(0, 38, 13),
+            Some(CompletedNrpn {
+                number: 33,
+                value: 13,
+            })
+        );
     }
 }

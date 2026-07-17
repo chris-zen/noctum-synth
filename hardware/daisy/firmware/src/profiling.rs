@@ -3,6 +3,15 @@ use synth_core::{RenderProfiler, RenderStage};
 
 pub const REPORT_INTERVAL_BLOCKS: u32 = 1_500;
 
+pub struct Snapshot {
+    pub blocks: u32,
+    pub overruns: u32,
+    pub block_average: u32,
+    pub block_max: u32,
+    pub stage_average: [u32; RenderStage::COUNT],
+    pub stage_max: [u32; RenderStage::COUNT],
+}
+
 pub struct AudioProfiler {
     block_cycle_budget: u32,
     block_started: u32,
@@ -32,27 +41,6 @@ impl AudioProfiler {
         }
     }
 
-    #[inline]
-    pub fn begin_block(&mut self) {
-        self.current_stage_cycles = [0; RenderStage::COUNT];
-        self.block_started = DWT::cycle_count();
-    }
-
-    #[inline]
-    pub fn end_block(&mut self) {
-        let cycles = DWT::cycle_count().wrapping_sub(self.block_started);
-        self.blocks += 1;
-        self.block_cycles = self.block_cycles.wrapping_add(cycles);
-        self.block_max = self.block_max.max(cycles);
-        if cycles > self.block_cycle_budget {
-            self.overruns += 1;
-        }
-        for stage in RenderStage::ALL {
-            let index = stage.index();
-            self.stage_max[index] = self.stage_max[index].max(self.current_stage_cycles[index]);
-        }
-    }
-
     pub fn report_due(&self) -> bool {
         self.blocks >= REPORT_INTERVAL_BLOCKS
     }
@@ -75,6 +63,27 @@ impl AudioProfiler {
         self.stage_max = [0; RenderStage::COUNT];
         snapshot
     }
+
+    #[inline]
+    pub fn begin_block(&mut self) {
+        self.current_stage_cycles = [0; RenderStage::COUNT];
+        self.block_started = DWT::cycle_count();
+    }
+
+    #[inline]
+    pub fn end_block(&mut self) {
+        let cycles = DWT::cycle_count().wrapping_sub(self.block_started);
+        self.blocks += 1;
+        self.block_cycles = self.block_cycles.wrapping_add(cycles);
+        self.block_max = self.block_max.max(cycles);
+        if cycles > self.block_cycle_budget {
+            self.overruns += 1;
+        }
+        for stage in RenderStage::ALL {
+            let index = stage.index();
+            self.stage_max[index] = self.stage_max[index].max(self.current_stage_cycles[index]);
+        }
+    }
 }
 
 impl RenderProfiler for AudioProfiler {
@@ -90,13 +99,4 @@ impl RenderProfiler for AudioProfiler {
         self.current_stage_cycles[index] = self.current_stage_cycles[index].wrapping_add(cycles);
         self.stage_cycles[index] = self.stage_cycles[index].wrapping_add(cycles);
     }
-}
-
-pub struct Snapshot {
-    pub blocks: u32,
-    pub overruns: u32,
-    pub block_average: u32,
-    pub block_max: u32,
-    pub stage_average: [u32; RenderStage::COUNT],
-    pub stage_max: [u32; RenderStage::COUNT],
 }

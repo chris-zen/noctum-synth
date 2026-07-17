@@ -1,41 +1,36 @@
 #![no_std]
 #![no_main]
 
-use analog_synth_daisy_firmware::midi;
-#[cfg(feature = "audio-profiling")]
-use analog_synth_daisy_firmware::profiling;
-use analog_synth_daisy_firmware::synth::SynthMidiHandler;
-use embassy_daisy::Board;
-use embassy_daisy::audio::{Audio, AudioResources, BLOCK_LENGTH, Block};
-use embassy_futures::{join::join, yield_now};
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_daisy::{Board, PwmChannels, PwmFrequency};
+use embassy_stm32::interrupt::{self, InterruptExt, Priority};
 use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
-use synth_core::{ControlMessage, SynthEngineWithMemory};
 use {defmt_rtt as _, panic_probe as _};
 
+use synth_core::{FilterOversampling, FilterType};
+
+use analog_synth_daisy_firmware::audio::{ControlQueue, HardwareSynth};
+use analog_synth_daisy_firmware::synth::SynthMidiHandler;
+use analog_synth_daisy_firmware::{audio, diagnostics, indicator, midi};
+
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
-const CONTROL_QUEUE_CAPACITY: usize = 32;
 const EFFECTS_SAMPLES: usize = 48_000;
-#[cfg(feature = "audio-profiling")]
-const AUDIO_BLOCK_CYCLE_BUDGET: u32 =
-    embassy_daisy::clocks::SYSCLK_HZ / embassy_daisy::audio::SAMPLE_RATE_HZ * BLOCK_LENGTH as u32;
-type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
-type ControlQueue = Channel<ThreadModeRawMutex, ControlMessage, CONTROL_QUEUE_CAPACITY>;
+const FIRMWARE_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
+const FIRMWARE_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
 
 static ENGINE: StaticCell<HardwareSynth> = StaticCell::new();
 static CONTROLS: ControlQueue = Channel::new();
+static INDICATOR: indicator::Indicator = indicator::Indicator::new();
 
 #[embassy_executor::main]
-async fn main(_spawner: embassy_executor::Spawner) {
+async fn main(spawner: embassy_executor::Spawner) {
     defmt::info!("initializing Daisy Seed 1.1");
 
+    diagnostics::init();
+
     let mut core = cortex_m::Peripherals::take().expect("Cortex-M peripherals already initialized");
-    #[cfg(feature = "audio-profiling")]
-    {
-        core.DCB.enable_trace();
-        core.DWT.enable_cycle_counter();
-    }
+    core.DCB.enable_trace();
+    core.DWT.enable_cycle_counter();
     // Do not inherit cache state from whichever bootloader version launched
     // us. SDRAM initialization tests physical memory before the BSP installs
     // its own MPU regions and re-enables D-cache.
@@ -54,108 +49,30 @@ async fn main(_spawner: embassy_executor::Spawner) {
         "initialized SDRAM; reserved {} effect samples",
         EFFECTS_SAMPLES
     );
-    let engine =
-        ENGINE.init_with(|| HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory));
-    let midi_handler = SynthMidiHandler::new(CONTROLS.sender());
-    join(
-        run_audio(parts.audio, engine, &CONTROLS),
-        midi::run(parts.usb, midi_handler),
-    )
-    .await;
-}
 
-async fn run_audio(
-    resources: AudioResources,
-    engine: &'static mut HardwareSynth,
-    controls: &'static ControlQueue,
-) -> ! {
-    let mut audio = Audio::new(resources).expect("WM8731/SAI initialization failed");
-    yield_now().await;
+    let engine = ENGINE.init_with(|| {
+        let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
+        engine.set_filter_type(FIRMWARE_FILTER_TYPE);
+        engine.set_filter_oversampling(FIRMWARE_FILTER_OVERSAMPLING);
+        engine
+    });
 
-    let mut output: Block = [(0.0, 0.0); BLOCK_LENGTH];
-    let mut input: Block = [(0.0, 0.0); BLOCK_LENGTH];
-    let mut interleaved = [0.0f32; BLOCK_LENGTH * 2];
-    #[cfg(feature = "audio-profiling")]
-    let mut profiler = profiling::AudioProfiler::new(AUDIO_BLOCK_CYCLE_BUDGET);
-
-    // Render before starting the receive clock. The SAI input ring cannot
-    // overrun while the first, comparatively expensive DSP block is prepared.
-    engine.process_interleaved(&mut interleaved, 2);
-    copy_output(&interleaved, &mut output);
-    yield_now().await;
-    defmt::info!("running four-voice synth engine at 48 kHz");
-    audio
-        .start(&output)
-        .await
-        .expect("SAI stream failed to start");
-
-    loop {
-        while let Ok(command) = controls.try_receive() {
-            engine.handle_control(command);
-        }
-
-        if let Err(error) = audio.transfer(&output, &mut input).await {
-            defmt::error!("audio transfer failed: {}", error.category());
-            #[cfg(feature = "audio-profiling")]
-            report_profile(profiler.take_snapshot());
-            panic!("audio transfer failed");
-        }
-
-        #[cfg(feature = "audio-profiling")]
-        if profiler.report_due() {
-            report_profile(profiler.take_snapshot());
-        }
-
-        while let Ok(command) = controls.try_receive() {
-            engine.handle_control(command);
-        }
-
-        #[cfg(feature = "audio-profiling")]
-        {
-            profiler.begin_block();
-            engine.process_interleaved_profiled(&mut interleaved, 2, &mut profiler);
-            profiler.end_block();
-        }
-        #[cfg(not(feature = "audio-profiling"))]
-        engine.process_interleaved(&mut interleaved, 2);
-        copy_output(&interleaved, &mut output);
-        yield_now().await;
-    }
-}
-
-#[cfg(feature = "audio-profiling")]
-fn report_profile(snapshot: profiling::Snapshot) {
-    let average = snapshot.stage_average;
-    let maximum = snapshot.stage_max;
-    defmt::info!(
-        "audio profile blocks={} overruns={} block_avg={} block_max={}",
-        snapshot.blocks,
-        snapshot.overruns,
-        snapshot.block_average,
-        snapshot.block_max
+    let pwm_channels = PwmChannels::new(parts.tim3, PwmFrequency::khz(1));
+    let status_led = parts.user_led_pin.into_pwm_led(pwm_channels.ch2);
+    let (indicator_tx, indicator_rx) = INDICATOR.split();
+    spawner.spawn(
+        indicator::run_task(status_led, indicator_rx).expect("failed to spawn status LED task"),
     );
-    defmt::info!(
-        "stage avg env_mod={} osc={} filter={} amp_pan={} effects={} output={}",
-        average[0],
-        average[1],
-        average[2],
-        average[3],
-        average[4],
-        average[5]
-    );
-    defmt::info!(
-        "stage max env_mod={} osc={} filter={} amp_pan={} effects={} output={}",
-        maximum[0],
-        maximum[1],
-        maximum[2],
-        maximum[3],
-        maximum[4],
-        maximum[5]
-    );
-}
+    #[cfg(feature = "diagnostics")]
+    spawner.spawn(diagnostics::run_task().expect("failed to spawn diagnostics reporter"));
 
-fn copy_output(interleaved: &[f32; BLOCK_LENGTH * 2], output: &mut Block) {
-    for (frame, samples) in output.iter_mut().zip(interleaved.chunks_exact(2)) {
-        *frame = (samples[0], samples[1]);
-    }
+    let midi_handler = SynthMidiHandler::new(CONTROLS.sender(), indicator_tx);
+
+    // Any interrupt preempts thread mode. P1 leaves the DMA/USB handlers at
+    // their default P0 while guaranteeing that blocking diagnostics cannot
+    // delay audio rendering or SAI servicing.
+    interrupt::I2C4_EV.set_priority(Priority::P1);
+    audio::spawn(parts.audio, engine, &CONTROLS, indicator_tx).expect("failed to spawn audio task");
+
+    midi::run(parts.usb, midi_handler).await;
 }

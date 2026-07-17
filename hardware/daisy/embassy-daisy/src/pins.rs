@@ -41,6 +41,3 @@ pub struct Pins {
     pub pin_29: Peri<'static, peripherals::PB14>,
     pub pin_30: Peri<'static, peripherals::PB15>,
 }
-
-/// Pin connected to the user LED.
-pub type UserLed = Peri<'static, peripherals::PC7>;

@@ -2,6 +2,10 @@
 
 use wmidi::{FromBytesError, MidiMessage};
 
+use synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN;
+
+const SYSEX_CAPACITY: usize = REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN;
+
 /// Temporary USB vendor ID used only for local development.
 ///
 /// This identity is not globally assigned and must be replaced before any
@@ -11,12 +15,26 @@ pub const DEVELOPMENT_VID: u16 = 0xc0de;
 /// Temporary USB product ID used only for local development.
 pub const DEVELOPMENT_PID: u16 = 0xcafe;
 
-#[cfg(target_arch = "arm")]
 const MANUFACTURER: &str = "chris-zen";
-#[cfg(any(target_arch = "arm", test))]
 const PRODUCT: &str = "Analog Synth USB MIDI (development)";
-#[cfg(any(target_arch = "arm", test))]
 const CONTROL_BUFFER_SIZE: usize = 128;
+
+/// Failure while converting a USB-MIDI event stream into MIDI messages.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecodeError {
+    /// The endpoint currently exposes only cable zero.
+    UnsupportedCable(u8),
+    /// USB-MIDI CIN values zero and one are reserved.
+    UnsupportedCodeIndex(u8),
+    /// A SysEx continuation arrived without a preceding `0xf0` start byte.
+    UnexpectedSysExContinuation,
+    /// A new SysEx start arrived before the current message ended.
+    NestedSysExStart,
+    /// The fixed-capacity SysEx assembly buffer was exhausted.
+    SysExTooLong,
+    /// `wmidi` rejected the assembled MIDI bytes.
+    InvalidMessage(FromBytesError),
+}
 
 /// One USB-MIDI 1.0 event packet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +62,23 @@ impl MidiEventPacket {
     }
 }
 
+/// Application-facing boundary for typed MIDI messages.
+///
+/// Implementations run synchronously in the USB receive task and must not
+/// block. A future synth handler should translate relevant messages into
+/// `synth_core::ControlMessage` values and enqueue them for the audio task.
+pub trait MidiMessageHandler {
+    fn handle(&mut self, cable: u8, message: MidiMessage<'_>);
+
+    fn handle_sysex(&mut self, cable: u8, message: &[u8]) {
+        let _ = (cable, message);
+    }
+
+    fn decode_error(&mut self, cable: u8, error: DecodeError) {
+        let _ = (cable, error);
+    }
+}
+
 /// Synchronous, allocation-free boundary between USB transport and MIDI
 /// behavior.
 ///
@@ -53,38 +88,6 @@ impl MidiEventPacket {
 pub trait MidiEventHandler {
     fn handle(&mut self, event: MidiEventPacket);
 }
-
-/// Failure while converting a USB-MIDI event stream into MIDI messages.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DecodeError {
-    /// The endpoint currently exposes only cable zero.
-    UnsupportedCable(u8),
-    /// USB-MIDI CIN values zero and one are reserved.
-    UnsupportedCodeIndex(u8),
-    /// A SysEx continuation arrived without a preceding `0xf0` start byte.
-    UnexpectedSysExContinuation,
-    /// A new SysEx start arrived before the current message ended.
-    NestedSysExStart,
-    /// The fixed-capacity SysEx assembly buffer was exhausted.
-    SysExTooLong,
-    /// `wmidi` rejected the assembled MIDI bytes.
-    InvalidMessage(FromBytesError),
-}
-
-/// Application-facing boundary for typed MIDI messages.
-///
-/// Implementations run synchronously in the USB receive task and must not
-/// block. A future synth handler should translate relevant messages into
-/// `synth_core::ControlMessage` values and enqueue them for the audio task.
-pub trait MidiMessageHandler {
-    fn handle(&mut self, cable: u8, message: MidiMessage<'_>);
-
-    fn decode_error(&mut self, cable: u8, error: DecodeError) {
-        let _ = (cable, error);
-    }
-}
-
-const SYSEX_CAPACITY: usize = 256;
 
 /// Stateful USB-MIDI event decoder backed by `wmidi`.
 ///
@@ -146,13 +149,8 @@ impl<H: MidiMessageHandler> WmidiDecoder<H> {
         self.sysex_len = end;
 
         if ends_message {
-            let result = MidiMessage::try_from(&self.sysex[..self.sysex_len]);
-            match result {
-                Ok(message) => self.handler.handle(cable, message),
-                Err(error) => self
-                    .handler
-                    .decode_error(cable, DecodeError::InvalidMessage(error)),
-            }
+            self.handler
+                .handle_sysex(cable, &self.sysex[..self.sysex_len]);
             self.sysex_len = 0;
         }
     }
@@ -193,7 +191,6 @@ impl<H: MidiMessageHandler> MidiEventHandler for WmidiDecoder<H> {
 
 /// Deliver all complete four-byte events and return the number of malformed
 /// trailing bytes.
-#[cfg_attr(not(target_arch = "arm"), allow(dead_code))]
 fn dispatch_events(bytes: &[u8], handler: &mut impl MidiEventHandler) -> usize {
     let complete_len = bytes.len() - bytes.len() % 4;
     for chunk in bytes[..complete_len].chunks_exact(4) {
@@ -204,7 +201,6 @@ fn dispatch_events(bytes: &[u8], handler: &mut impl MidiEventHandler) -> usize {
     bytes.len() - complete_len
 }
 
-#[cfg(target_arch = "arm")]
 pub async fn run(
     resources: embassy_daisy::usb::UsbResources,
     handler: impl MidiMessageHandler,
@@ -255,22 +251,26 @@ pub async fn run(
         let mut packet = [0u8; 64];
         loop {
             class.wait_connection().await;
-            defmt::info!("USB MIDI connected");
+            crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiConnected);
 
             loop {
                 match class.read_packet(&mut packet).await {
                     Ok(length) => {
                         let trailing = dispatch_events(&packet[..length], &mut decoder);
                         if trailing != 0 {
-                            defmt::warn!("USB MIDI transfer had {} trailing byte(s)", trailing);
+                            crate::diagnostics::emit(
+                                crate::diagnostics::Event::UsbMidiTrailingBytes {
+                                    count: trailing as u8,
+                                },
+                            );
                         }
                     }
                     Err(EndpointError::Disabled) => {
-                        defmt::info!("USB MIDI disconnected");
+                        crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiDisconnected);
                         break;
                     }
                     Err(EndpointError::BufferOverflow) => {
-                        defmt::error!("USB MIDI endpoint buffer overflow");
+                        crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiBufferOverflow);
                         break;
                     }
                 }
@@ -316,6 +316,10 @@ mod tests {
 
         fn decode_error(&mut self, cable: u8, error: DecodeError) {
             self.errors.push((cable, error));
+        }
+
+        fn handle_sysex(&mut self, cable: u8, message: &[u8]) {
+            self.messages.push((cable, message.to_vec()));
         }
     }
 
@@ -370,6 +374,25 @@ mod tests {
             decoder.handler.messages,
             [(0, std::vec![0xf0, 0x7e, 0x7f, 0x06, 0x01, 0x02, 0x03, 0xf7])]
         );
+        assert!(decoder.handler.errors.is_empty());
+    }
+
+    #[test]
+    fn wmidi_decoder_reassembles_full_rev2_edit_buffer() {
+        let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        synth_core::Rev2MidiEncoder::program_edit_buffer(
+            &synth_core::Patch::default(),
+            &mut message,
+        )
+        .unwrap();
+        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+        let complete = message.len() - 1;
+        for chunk in message[..complete].chunks_exact(3) {
+            decoder.handle(MidiEventPacket::new([0x04, chunk[0], chunk[1], chunk[2]]));
+        }
+        decoder.handle(MidiEventPacket::new([0x05, 0xf7, 0, 0]));
+
+        assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
         assert!(decoder.handler.errors.is_empty());
     }
 }

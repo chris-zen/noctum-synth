@@ -1,5 +1,3 @@
-#![cfg_attr(not(target_arch = "arm"), allow(dead_code))]
-
 #[derive(Clone, Copy)]
 #[repr(u8)]
 enum Register {
@@ -36,20 +34,15 @@ const fn command(register: Register, value: u16) -> [u8; 2] {
     [((register as u8) << 1) | ((value >> 8) as u8), value as u8]
 }
 
-#[cfg(target_arch = "arm")]
 use embassy_stm32::i2c::{self, I2c, Master};
-#[cfg(target_arch = "arm")]
 use embassy_stm32::mode::Blocking;
 
-#[cfg(target_arch = "arm")]
 const ADDRESS: u8 = 0x1a;
 
-#[cfg(target_arch = "arm")]
 pub struct Wm8731 {
     bus: I2c<'static, Blocking, Master>,
 }
 
-#[cfg(target_arch = "arm")]
 impl Wm8731 {
     pub fn new(bus: I2c<'static, Blocking, Master>) -> Self {
         Self { bus }
@@ -68,6 +61,7 @@ impl Wm8731 {
 }
 
 #[cfg(test)]
+#[embedded_test::tests]
 mod tests {
     use super::{Register, command};
 
@@ -75,5 +69,20 @@ mod tests {
     fn encodes_nine_bit_register_write() {
         assert_eq!(command(Register::Interface, 0x109), [0x0f, 0x09]);
         assert_eq!(command(Register::Reset, 0), [0x1e, 0x00]);
+    }
+
+    #[test]
+    fn masks_value_to_nine_bits() {
+        assert_eq!(
+            command(Register::Reset, 0x3ff),
+            command(Register::Reset, 0x1ff)
+        );
+    }
+
+    #[test]
+    fn register_address_in_high_byte() {
+        assert_eq!(command(Register::Power, 0), [0x0c, 0x00]);
+        assert_eq!(command(Register::Active, 0x001), [0x12, 0x01]);
+        assert_eq!(command(Register::LeftInputVolume, 0x017), [0x00, 0x17]);
     }
 }

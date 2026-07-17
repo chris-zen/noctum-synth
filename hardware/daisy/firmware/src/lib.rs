@@ -3,7 +3,10 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod audio;
+pub mod diagnostics;
+pub mod indicator;
 pub mod midi;
-#[cfg(all(feature = "audio-profiling", target_arch = "arm"))]
+#[cfg(feature = "audio-profiling")]
 pub mod profiling;
 pub mod synth;
