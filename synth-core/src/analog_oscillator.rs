@@ -1,9 +1,13 @@
 use crate::f32x4;
 
 pub use crate::blep::SawMethod;
-use crate::blep::{blep_pulse, blep_saw};
+use crate::blep::{PulseBlepState, blep_pulse, blep_pulse_prepared, blep_saw};
+#[cfg(feature = "profiling")]
+use crate::profiling::NoopProfiler;
 use crate::rng::DspRng;
 use crate::{DEFAULT_SAMPLE_RATE, LANES, wrap01};
+#[cfg(feature = "profiling")]
+use crate::{RenderProfiler, RenderStage};
 
 pub(crate) const MIN_PHASE_INC: f32 = 0.0;
 pub(crate) const MAX_PHASE_INC: f32 = 0.499;
@@ -48,6 +52,7 @@ pub struct AnalogOscillator {
     sample_rate: f32,
     phase: f32x4,
     phase_inc: f32x4,
+    pulse_blep: PulseBlepState,
     intended_frequency_hz: f32x4,
     effective_frequency_hz: f32x4,
     enabled_mask: f32x4,
@@ -67,6 +72,7 @@ impl Default for AnalogOscillator {
             sample_rate: DEFAULT_SAMPLE_RATE,
             phase: f32x4::splat(0.0),
             phase_inc: f32x4::splat(0.0),
+            pulse_blep: PulseBlepState::new(f32x4::splat(0.5)),
             intended_frequency_hz: f32x4::splat(0.0),
             effective_frequency_hz: f32x4::splat(0.0),
             enabled_mask: f32x4::splat(1.0),
@@ -89,6 +95,9 @@ impl AnalogOscillator {
     /// Sets the active waveform.
     pub fn set_waveform(&mut self, waveform: Waveform) {
         self.waveform = waveform;
+        if waveform == Waveform::Pulse && self.saw_method == SawMethod::Blep {
+            self.pulse_blep.set_phase_inc(self.phase_inc);
+        }
         if matches!(waveform, Waveform::Triangle | Waveform::SawTri) {
             self.triangle_integrator = naive_triangle(self.phase);
         }
@@ -97,6 +106,9 @@ impl AnalogOscillator {
     /// Selects the band-limiting method used for saw/pulse edges.
     pub fn set_saw_method(&mut self, saw_method: SawMethod) {
         self.saw_method = saw_method;
+        if saw_method == SawMethod::Blep && self.waveform == Waveform::Pulse {
+            self.pulse_blep.set_phase_inc(self.phase_inc);
+        }
         if saw_method == SawMethod::PolyBlep
             && matches!(self.waveform, Waveform::Triangle | Waveform::SawTri)
         {
@@ -107,6 +119,8 @@ impl AnalogOscillator {
     /// Sets the waveform shape/morph amount, clamped to `[0, 1]`.
     pub fn set_shape(&mut self, shape: f32) {
         self.shape = shape.clamp(0.0, 1.0);
+        self.pulse_blep
+            .set_width(f32x4::splat(pulse_width_from_shape(self.shape)));
     }
 
     /// Enables or mutes all lanes uniformly.
@@ -241,8 +255,33 @@ impl AnalogOscillator {
         self.next_step().output
     }
 
+    #[cfg(feature = "profiling")]
+    pub(crate) fn next_profiled(&mut self, profiler: &mut impl RenderProfiler) -> f32x4 {
+        self.next_step_inner(profiler).output
+    }
+
     /// Advances one sample, returning the output plus phase-wrap metadata.
     pub(crate) fn next_step(&mut self) -> OscillatorStep {
+        #[cfg(feature = "profiling")]
+        {
+            return self.next_step_inner(&mut NoopProfiler);
+        }
+        #[cfg(not(feature = "profiling"))]
+        self.next_step_inner()
+    }
+
+    #[cfg(feature = "profiling")]
+    pub(crate) fn next_step_profiled(
+        &mut self,
+        profiler: &mut impl RenderProfiler,
+    ) -> OscillatorStep {
+        self.next_step_inner(profiler)
+    }
+
+    fn next_step_inner(
+        &mut self,
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) -> OscillatorStep {
         if self.slop.is_enabled() {
             self.slop.advance(self.sample_rate);
             self.refresh_effective_frequency();
@@ -254,10 +293,14 @@ impl AnalogOscillator {
         let wrap_phase_fraction = wrap_phase_fraction(phi, self.phase_inc, wrapped);
         self.phase = wrap01(next_phase);
 
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::OscillatorWaveform);
         let raw = self.sample_waveform(phi);
         let output = self.apply_shape_morph(phi, raw);
         self.last_output = output;
         self.align_triangle_integrator_after_wrap(wrapped);
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::OscillatorWaveform);
         OscillatorStep {
             output: output * self.enabled_mask,
             wrapped,
@@ -276,12 +319,9 @@ impl AnalogOscillator {
                 saw + (tri - saw) * mix
             }
             Waveform::Triangle => self.triangle(phi),
-            Waveform::Pulse => blep_pulse(
-                phi,
-                self.phase_inc,
-                f32x4::splat(pulse_width_from_shape(self.shape)),
-                self.saw_method,
-            ),
+            Waveform::Pulse => {
+                blep_pulse_prepared(phi, self.phase_inc, &self.pulse_blep, self.saw_method)
+            }
         }
     }
 
@@ -351,6 +391,9 @@ impl AnalogOscillator {
         let freq = clamp_frequency(freq, self.sample_rate);
         self.effective_frequency_hz = freq;
         self.phase_inc = freq * f32x4::splat(1.0 / self.sample_rate);
+        if self.waveform == Waveform::Pulse && self.saw_method == SawMethod::Blep {
+            self.pulse_blep.set_phase_inc(self.phase_inc);
+        }
     }
 }
 
@@ -524,14 +567,74 @@ fn wrap_phase_fraction(phi: f32x4, phase_inc: f32x4, wrapped: [bool; LANES]) -> 
 /// Evaluates a band-limited triangle per SIMD lane, correcting the two
 /// slope discontinuities with second-order polyBLAMP residuals.
 fn polyblamp2_triangle(phi: f32x4, dt: f32x4) -> f32x4 {
+    #[cfg(feature = "embedded-math")]
+    {
+        return polyblamp2_triangle_scalar_lanes(phi, dt);
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    polyblamp2_triangle_simd(phi, dt)
+}
+
+/// Cortex-M7 has a scalar FPU, so skip corner arithmetic independently for
+/// every inactive lane instead of evaluating and blending four divisions.
+#[cfg(feature = "embedded-math")]
+fn polyblamp2_triangle_scalar_lanes(phi: f32x4, dt: f32x4) -> f32x4 {
+    let phases = phi.to_array();
+    let phase_increments = dt.to_array();
+    let mut output = [0.0; LANES];
+
+    for lane in 0..LANES {
+        let phase = phases[lane];
+        let phase_increment = phase_increments[lane];
+        let naive = naive_triangle_lane(phase);
+        if !(phase_increment > 0.0 && phase_increment < MAX_POLYBLAMP2_PHASE_INC) {
+            output[lane] = naive;
+            continue;
+        }
+
+        let midpoint_phase = if phase >= 0.5 {
+            phase - 0.5
+        } else {
+            phase + 0.5
+        };
+        output[lane] = naive + 8.0 * polyblamp2_corner_lane(phase, phase_increment)
+            - 8.0 * polyblamp2_corner_lane(midpoint_phase, phase_increment);
+    }
+
+    f32x4::new(output)
+}
+
+#[cfg(feature = "embedded-math")]
+#[inline]
+fn polyblamp2_corner_lane(phase_from_corner: f32, dt: f32) -> f32 {
+    let distance = if phase_from_corner < dt {
+        phase_from_corner
+    } else if phase_from_corner > 1.0 - dt {
+        1.0 - phase_from_corner
+    } else {
+        return 0.0;
+    };
+    let safe_dt = dt.max(MIN_POLYBLAMP2_PHASE_INC);
+    let t = 1.0 - distance / safe_dt;
+    t * t * t * safe_dt * (1.0 / 3.0)
+}
+
+/// SIMD-capable hosts retain branchless evaluation, but share one reciprocal
+/// across both corners instead of issuing four vector divisions.
+#[cfg(not(feature = "embedded-math"))]
+fn polyblamp2_triangle_simd(phi: f32x4, dt: f32x4) -> f32x4 {
     let zero = f32x4::splat(0.0);
+    let one = f32x4::splat(1.0);
     let slope_jump = f32x4::splat(8.0);
     let naive = naive_triangle(phi);
     let active = dt.simd_gt(zero) & dt.simd_lt(f32x4::splat(MAX_POLYBLAMP2_PHASE_INC));
+    let safe_dt = dt.max(f32x4::splat(MIN_POLYBLAMP2_PHASE_INC));
+    let inverse_dt = one / safe_dt;
 
     active.blend(
-        naive + slope_jump * polyblamp2_corner(phi, dt)
-            - slope_jump * polyblamp2_corner(wrap01(phi - f32x4::splat(0.5)), dt),
+        naive + slope_jump * polyblamp2_corner_simd(phi, dt, safe_dt, inverse_dt)
+            - slope_jump
+                * polyblamp2_corner_simd(wrap01(phi - f32x4::splat(0.5)), dt, safe_dt, inverse_dt),
         naive,
     )
 }
@@ -550,9 +653,42 @@ fn naive_triangle_lane(phase: f32) -> f32 {
     1.0 - (phase - 0.5).abs() * 4.0
 }
 
-/// Computes the second-order polyBLAMP correction near a slope corner, given
-/// the phase distance from that corner and the per-sample phase increment `dt`.
-fn polyblamp2_corner(phase_from_corner: f32x4, dt: f32x4) -> f32x4 {
+#[cfg(not(feature = "embedded-math"))]
+fn polyblamp2_corner_simd(
+    phase_from_corner: f32x4,
+    dt: f32x4,
+    safe_dt: f32x4,
+    inverse_dt: f32x4,
+) -> f32x4 {
+    let zero = f32x4::splat(0.0);
+    let one = f32x4::splat(1.0);
+    let third = f32x4::splat(1.0 / 3.0);
+    let right_t = one - phase_from_corner * inverse_dt;
+    let right = right_t * right_t * right_t * safe_dt * third;
+    let left_t = one - (one - phase_from_corner) * inverse_dt;
+    let left = left_t * left_t * left_t * safe_dt * third;
+
+    phase_from_corner
+        .simd_lt(dt)
+        .blend(right, phase_from_corner.simd_gt(one - dt).blend(left, zero))
+}
+
+#[cfg(test)]
+fn polyblamp2_triangle_reference(phi: f32x4, dt: f32x4) -> f32x4 {
+    let zero = f32x4::splat(0.0);
+    let slope_jump = f32x4::splat(8.0);
+    let naive = naive_triangle(phi);
+    let active = dt.simd_gt(zero) & dt.simd_lt(f32x4::splat(MAX_POLYBLAMP2_PHASE_INC));
+
+    active.blend(
+        naive + slope_jump * polyblamp2_corner_reference(phi, dt)
+            - slope_jump * polyblamp2_corner_reference(wrap01(phi - f32x4::splat(0.5)), dt),
+        naive,
+    )
+}
+
+#[cfg(test)]
+fn polyblamp2_corner_reference(phase_from_corner: f32x4, dt: f32x4) -> f32x4 {
     let zero = f32x4::splat(0.0);
     let one = f32x4::splat(1.0);
     let third = f32x4::splat(1.0 / 3.0);
@@ -585,6 +721,105 @@ pub fn pulse_width_from_shape(shape_mod: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optimized_polyblamp_matches_branchless_reference() {
+        let phase_increments = [
+            [0.0, 1.0e-15, 110.0 / 48_000.0, 440.0 / 48_000.0],
+            [880.0 / 48_000.0, 3_520.0 / 48_000.0, 0.249, 0.25],
+        ];
+        let mut maximum_error = 0.0f32;
+
+        for increments in phase_increments {
+            let dt = f32x4::new(increments);
+            for sample in 0..4_096 {
+                let base = sample as f32 / 4_096.0;
+                let phi = f32x4::new([
+                    base,
+                    (base + 0.127).fract(),
+                    (base + 0.499).fract(),
+                    (base + 0.773).fract(),
+                ]);
+                let optimized = polyblamp2_triangle(phi, dt).to_array();
+                let reference = polyblamp2_triangle_reference(phi, dt).to_array();
+                for lane in 0..LANES {
+                    maximum_error = maximum_error.max((optimized[lane] - reference[lane]).abs());
+                }
+            }
+        }
+
+        assert!(
+            maximum_error <= 2.0e-6,
+            "optimized PolyBLAMP diverged from reference by {maximum_error}"
+        );
+    }
+
+    #[cfg(feature = "profiling")]
+    struct BoundaryCounter {
+        waveform_begins: u32,
+        waveform_ends: u32,
+    }
+
+    #[cfg(feature = "profiling")]
+    impl RenderProfiler for BoundaryCounter {
+        fn begin(&mut self, stage: RenderStage) {
+            self.waveform_begins += u32::from(stage == RenderStage::OscillatorWaveform);
+        }
+
+        fn end(&mut self, stage: RenderStage) {
+            self.waveform_ends += u32::from(stage == RenderStage::OscillatorWaveform);
+        }
+    }
+
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn profiled_triangle_is_bit_exact_and_balances_waveform_boundaries() {
+        let mut normal = AnalogOscillator::new(48_000.0);
+        let mut profiled = AnalogOscillator::new(48_000.0);
+        for oscillator in [&mut normal, &mut profiled] {
+            oscillator.set_waveform(Waveform::Triangle);
+            oscillator.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+            oscillator.set_shape(0.35);
+        }
+        let mut profiler = BoundaryCounter {
+            waveform_begins: 0,
+            waveform_ends: 0,
+        };
+
+        for _ in 0..1_024 {
+            assert_eq!(
+                normal.next().to_array(),
+                profiled.next_profiled(&mut profiler).to_array()
+            );
+        }
+        assert_eq!(profiler.waveform_begins, 1_024);
+        assert_eq!(profiler.waveform_ends, 1_024);
+    }
+
+    #[cfg(feature = "profiling")]
+    #[test]
+    fn profiled_pulse_is_bit_exact_and_balances_waveform_boundaries() {
+        let mut normal = AnalogOscillator::new(48_000.0);
+        let mut profiled = AnalogOscillator::new(48_000.0);
+        for oscillator in [&mut normal, &mut profiled] {
+            oscillator.set_waveform(Waveform::Pulse);
+            oscillator.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+            oscillator.set_shape(0.5);
+        }
+        let mut profiler = BoundaryCounter {
+            waveform_begins: 0,
+            waveform_ends: 0,
+        };
+
+        for _ in 0..1_024 {
+            assert_eq!(
+                normal.next().to_array(),
+                profiled.next_profiled(&mut profiler).to_array()
+            );
+        }
+        assert_eq!(profiler.waveform_begins, 1_024);
+        assert_eq!(profiler.waveform_ends, 1_024);
+    }
 
     #[test]
     fn next_step_reports_phase_wraps_per_lane() {

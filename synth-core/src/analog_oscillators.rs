@@ -2,7 +2,11 @@
 
 use crate::f32x4;
 
+#[cfg(feature = "profiling")]
+use crate::profiling::NoopProfiler;
 use crate::{AnalogOscillator, AnalogSubOscillator, Waveform, WhiteNoise, midi_to_hz};
+#[cfg(feature = "profiling")]
+use crate::{RenderProfiler, RenderStage};
 
 const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
 
@@ -15,7 +19,7 @@ pub struct Oscillators {
     params: OscillatorsParams,
     note_frequency_hz: f32x4,
     last_frequency_modulation: [f32x4; 2],
-    last_shape_modulation: [f32x4; 2],
+    last_shape_modulation: [f32; 2],
     sample_rate: f32,
 }
 
@@ -29,7 +33,7 @@ impl Oscillators {
             params: OscillatorsParams::default(),
             note_frequency_hz: f32x4::splat(0.0),
             last_frequency_modulation: [f32x4::splat(0.0); 2],
-            last_shape_modulation: [f32x4::splat(0.0); 2],
+            last_shape_modulation: [0.0; 2],
             sample_rate,
         };
         oscillators.apply_params_without_frequency();
@@ -58,14 +62,14 @@ impl Oscillators {
         self.params.osc1.waveform = waveform;
         self.osc1.set_waveform(waveform);
         apply_shape_mod(&mut self.osc1, &self.params.osc1);
-        self.last_shape_modulation[0] = f32x4::splat(0.0);
+        self.last_shape_modulation[0] = 0.0;
     }
 
     pub fn set_osc2_waveform(&mut self, waveform: Waveform) {
         self.params.osc2.waveform = waveform;
         self.osc2.set_waveform(waveform);
         apply_shape_mod(&mut self.osc2, &self.params.osc2);
-        self.last_shape_modulation[1] = f32x4::splat(0.0);
+        self.last_shape_modulation[1] = 0.0;
     }
 
     pub fn set_osc1_frequency_semitones(&mut self, semitones: f32) {
@@ -91,13 +95,13 @@ impl Oscillators {
     pub fn set_osc1_shape_mod(&mut self, shape_mod: f32) {
         self.params.osc1.shape_mod = shape_mod.clamp(0.0, 1.0);
         apply_shape_mod(&mut self.osc1, &self.params.osc1);
-        self.last_shape_modulation[0] = f32x4::splat(0.0);
+        self.last_shape_modulation[0] = 0.0;
     }
 
     pub fn set_osc2_shape_mod(&mut self, shape_mod: f32) {
         self.params.osc2.shape_mod = shape_mod.clamp(0.0, 1.0);
         apply_shape_mod(&mut self.osc2, &self.params.osc2);
-        self.last_shape_modulation[1] = f32x4::splat(0.0);
+        self.last_shape_modulation[1] = 0.0;
     }
 
     pub fn set_osc1_note_reset(&mut self, note_reset: bool) {
@@ -160,6 +164,42 @@ impl Oscillators {
     }
 
     pub fn next(&mut self, modulation: OscillatorModulation) -> OscillatorsOutput {
+        let shape_modulation = scalar_shape_modulation(modulation);
+        #[cfg(feature = "profiling")]
+        {
+            return self.next_inner(modulation, shape_modulation, &mut NoopProfiler);
+        }
+        #[cfg(not(feature = "profiling"))]
+        self.next_inner(modulation, shape_modulation)
+    }
+
+    #[cfg(not(feature = "profiling"))]
+    pub(crate) fn next_prepared(
+        &mut self,
+        modulation: OscillatorModulation,
+        shape_modulation: [f32; 2],
+    ) -> OscillatorsOutput {
+        self.next_inner(modulation, shape_modulation)
+    }
+
+    #[cfg(feature = "profiling")]
+    pub(crate) fn next_prepared_profiled(
+        &mut self,
+        modulation: OscillatorModulation,
+        shape_modulation: [f32; 2],
+        profiler: &mut impl RenderProfiler,
+    ) -> OscillatorsOutput {
+        self.next_inner(modulation, shape_modulation, profiler)
+    }
+
+    fn next_inner(
+        &mut self,
+        modulation: OscillatorModulation,
+        shape_modulation: [f32; 2],
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) -> OscillatorsOutput {
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::OscillatorControl);
         let frequency_modulation = [
             modulation.osc1_frequency_semitones,
             modulation.osc2_frequency_semitones,
@@ -168,22 +208,24 @@ impl Oscillators {
             self.update_frequencies_modulated(frequency_modulation[0], frequency_modulation[1]);
         }
 
-        let shape_modulation = [modulation.osc1_shape, modulation.osc2_shape];
         if shape_modulation[0] != self.last_shape_modulation[0] {
-            self.osc1.set_shape(modulated_scalar_shape(
-                self.params.osc1.shape_mod,
-                shape_modulation[0],
-            ));
+            self.osc1
+                .set_shape((self.params.osc1.shape_mod + shape_modulation[0]).clamp(0.0, 1.0));
         }
         if shape_modulation[1] != self.last_shape_modulation[1] {
-            self.osc2.set_shape(modulated_scalar_shape(
-                self.params.osc2.shape_mod,
-                shape_modulation[1],
-            ));
+            self.osc2
+                .set_shape((self.params.osc2.shape_mod + shape_modulation[1]).clamp(0.0, 1.0));
         }
         self.last_shape_modulation = shape_modulation;
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::OscillatorControl);
 
         let osc2_step = if self.params.osc2.enabled {
+            #[cfg(feature = "profiling")]
+            {
+                self.osc2.next_step_profiled(profiler)
+            }
+            #[cfg(not(feature = "profiling"))]
             self.osc2.next_step()
         } else {
             crate::analog_oscillator::OscillatorStep {
@@ -192,11 +234,18 @@ impl Oscillators {
                 wrap_phase_fraction: [0.0; crate::LANES],
             }
         };
+
         if self.params.sync && self.params.osc2.enabled {
             self.osc1
                 .sync_reset_lanes_at(osc2_step.wrapped, osc2_step.wrap_phase_fraction);
         }
+        #[cfg(feature = "profiling")]
+        let osc1 = self.osc1.next_profiled(profiler);
+        #[cfg(not(feature = "profiling"))]
         let osc1 = self.osc1.next();
+
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::OscillatorMix);
         let osc2 = osc2_step.output;
         self.sub_osc
             .set_frequency(self.osc1.frequency_hz(), self.sample_rate);
@@ -221,13 +270,20 @@ impl Oscillators {
         let osc2_gain = (mix + modulation.osc2_level).clamp(f32x4::splat(0.0), f32x4::splat(1.0));
         let audio = osc1 * osc1_gain + osc2 * osc2_gain + sub + noise;
 
-        OscillatorsOutput {
+        let output = OscillatorsOutput {
             osc1,
             osc2,
             sub,
             noise,
             audio,
-        }
+            audio_source_active: (self.params.osc1.enabled && osc1_gain != f32x4::ZERO)
+                || (self.params.osc2.enabled && osc2_gain != f32x4::ZERO)
+                || sub_level != f32x4::ZERO
+                || noise_level != f32x4::ZERO,
+        };
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::OscillatorMix);
+        output
     }
 
     fn apply_params_without_frequency(&mut self) {
@@ -303,6 +359,8 @@ pub struct OscillatorsOutput {
     pub sub: f32x4,
     pub noise: f32x4,
     pub audio: f32x4,
+    /// True when a configured source is audibly feeding the filter input.
+    pub audio_source_active: bool,
 }
 
 /// Patch-level settings for the full oscillator section.
@@ -382,9 +440,11 @@ fn oscillator_frequency(
     keyboard_base * (total_semitones * f32x4::splat(1.0 / 12.0)).exp2()
 }
 
-fn modulated_scalar_shape(base: f32, modulation: f32x4) -> f32 {
-    let average = modulation.reduce_add() * 0.25;
-    (base + average).clamp(0.0, 1.0)
+fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
+    [
+        modulation.osc1_shape.reduce_add() * 0.25,
+        modulation.osc2_shape.reduce_add() * 0.25,
+    ]
 }
 
 #[cfg(test)]
@@ -399,6 +459,45 @@ mod tests {
         for _ in 0..frames {
             oscillators.next(OscillatorModulation::default());
         }
+    }
+
+    #[test]
+    fn output_reports_whether_an_audio_source_drives_the_filter() {
+        let mut oscillators = Oscillators::new(SAMPLE_RATE);
+        assert!(
+            oscillators
+                .next(OscillatorModulation::default())
+                .audio_source_active
+        );
+
+        oscillators.set_mix(1.0);
+        assert!(
+            !oscillators
+                .next(OscillatorModulation::default())
+                .audio_source_active,
+            "an enabled oscillator at zero mixer gain is not an audible source"
+        );
+        oscillators.set_osc2_enabled(true);
+        assert!(
+            oscillators
+                .next(OscillatorModulation::default())
+                .audio_source_active
+        );
+
+        oscillators.set_osc1_enabled(false);
+        oscillators.set_osc2_enabled(false);
+        assert!(
+            !oscillators
+                .next(OscillatorModulation::default())
+                .audio_source_active
+        );
+
+        oscillators.set_noise(0.1);
+        assert!(
+            oscillators
+                .next(OscillatorModulation::default())
+                .audio_source_active
+        );
     }
 
     #[test]

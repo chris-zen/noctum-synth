@@ -8,7 +8,22 @@
 #[repr(u8)]
 pub enum RenderStage {
     EnvelopesAndModulation,
+    /// Envelope generation within the modulation parent stage.
+    EnvelopeAdvance,
+    /// Routes which alter LFO rate or amount, using prior LFO outputs.
+    LfoControlRouting,
+    /// LFO waveform generation and latent phase advancement.
+    LfoGeneration,
+    /// Routes applied to audio destinations using current LFO outputs.
+    AudioModulationRouting,
+    /// Complete oscillator section, including the nested stages below.
     Oscillators,
+    /// Frequency and shape modulation updates.
+    OscillatorControl,
+    /// Waveform-specific generation and post-processing across enabled oscillators.
+    OscillatorWaveform,
+    /// Sub/noise generation, level calculation, and final oscillator mix.
+    OscillatorMix,
     Filter,
     AmplifierAndPan,
     Effects,
@@ -16,10 +31,17 @@ pub enum RenderStage {
 }
 
 impl RenderStage {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 13;
     pub const ALL: [Self; Self::COUNT] = [
         Self::EnvelopesAndModulation,
+        Self::EnvelopeAdvance,
+        Self::LfoControlRouting,
+        Self::LfoGeneration,
+        Self::AudioModulationRouting,
         Self::Oscillators,
+        Self::OscillatorControl,
+        Self::OscillatorWaveform,
+        Self::OscillatorMix,
         Self::Filter,
         Self::AmplifierAndPan,
         Self::Effects,

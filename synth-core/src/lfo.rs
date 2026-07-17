@@ -2,8 +2,8 @@
 
 use crate::f32x4;
 
+use crate::LANES;
 use crate::rng::DspRng;
-use crate::{LANES, wrap01};
 
 /// Minimum LFO rate in Hz.
 pub const MIN_LFO_RATE_HZ: f32 = 0.022;
@@ -24,6 +24,7 @@ pub enum LfoWaveform {
 /// Four-lane LFO with configurable rate, depth, waveform, and key sync.
 pub struct Lfo {
     phase: f32x4,
+    phase_uniform: bool,
     phase_inc: f32x4,
     waveform: LfoWaveform,
     key_sync: bool,
@@ -43,6 +44,7 @@ impl Lfo {
     pub fn new(sample_rate: f32) -> Self {
         let mut lfo = Self {
             phase: f32x4::splat(0.0),
+            phase_uniform: true,
             phase_inc: f32x4::splat(0.0),
             waveform: LfoWaveform::Triangle,
             key_sync: true,
@@ -88,8 +90,14 @@ impl Lfo {
         self.key_sync
     }
 
+    #[inline(always)]
+    pub(crate) fn output_is_uniform(&self) -> bool {
+        self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold
+    }
+
     pub fn reset_all(&mut self) {
         self.phase = f32x4::splat(0.0);
+        self.phase_uniform = true;
         if self.waveform == LfoWaveform::SampleAndHold {
             self.refresh_sample_and_hold();
         }
@@ -99,6 +107,9 @@ impl Lfo {
         let mut phases = self.phase.to_array();
         phases[lane] = 0.0;
         self.phase = f32x4::new(phases);
+        self.phase_uniform = phases
+            .iter()
+            .all(|phase| phase.to_bits() == phases[0].to_bits());
 
         if self.waveform == LfoWaveform::SampleAndHold {
             let mut values = self.sample_and_hold.to_array();
@@ -108,12 +119,25 @@ impl Lfo {
     }
 
     pub fn next(&mut self) -> f32x4 {
-        let output = self.raw_output() * f32x4::splat(self.depth);
+        let output = if self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold {
+            f32x4::splat(self.uniform_raw_output() * self.depth)
+        } else {
+            self.raw_output() * f32x4::splat(self.depth)
+        };
         self.advance();
         output
     }
 
+    /// Advances phase without evaluating the waveform. This preserves latent
+    /// phase and sample-and-hold RNG state for LFOs whose output is not used.
+    pub(crate) fn advance_silent(&mut self) {
+        self.advance();
+    }
+
     pub fn raw_output(&self) -> f32x4 {
+        if self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold {
+            return f32x4::splat(self.uniform_raw_output());
+        }
         match self.waveform {
             LfoWaveform::Triangle => triangle(self.phase),
             LfoWaveform::Saw => self.phase,
@@ -123,9 +147,49 @@ impl Lfo {
         }
     }
 
+    fn uniform_raw_output(&self) -> f32 {
+        let phase = self.phase.to_array()[0];
+        match self.waveform {
+            LfoWaveform::Triangle => {
+                let scaled = phase * 4.0;
+                if phase < 0.25 {
+                    scaled
+                } else if phase < 0.75 {
+                    2.0 - scaled
+                } else {
+                    scaled - 4.0
+                }
+            }
+            LfoWaveform::Saw => phase,
+            LfoWaveform::ReverseSaw => 1.0 - phase,
+            LfoWaveform::Square => {
+                if phase < 0.5 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            LfoWaveform::SampleAndHold => 0.0,
+        }
+    }
+
     fn advance(&mut self) {
+        if self.phase_uniform {
+            let next = self.phase.to_array()[0] + self.phase_inc.to_array()[0];
+            self.phase = f32x4::splat(if next < 1.0 { next } else { next - 1.0 });
+            if self.waveform == LfoWaveform::SampleAndHold && next >= 1.0 {
+                self.refresh_sample_and_hold();
+            }
+            return;
+        }
+
         let next = self.phase + self.phase_inc;
-        self.phase = wrap01(next);
+        // LFO phase and its clamped increment are non-negative and their sum
+        // is below two, so wrapping needs only one exact subtraction. Avoid
+        // the considerably more expensive four-lane floor operation on Daisy.
+        self.phase = next
+            .simd_lt(f32x4::splat(1.0))
+            .blend(next, next - f32x4::splat(1.0));
 
         if self.waveform == LfoWaveform::SampleAndHold {
             let next_lanes = next.to_array();
@@ -174,6 +238,34 @@ mod tests {
 
     fn first_lane(value: f32x4) -> f32 {
         value.to_array()[0]
+    }
+
+    #[test]
+    fn uniform_phase_fast_path_matches_four_lane_path_bit_exactly() {
+        for waveform in [
+            LfoWaveform::Triangle,
+            LfoWaveform::Saw,
+            LfoWaveform::ReverseSaw,
+            LfoWaveform::Square,
+            LfoWaveform::SampleAndHold,
+        ] {
+            let mut fast = Lfo::new(48_000.0);
+            let mut reference = Lfo::new(48_000.0);
+            for lfo in [&mut fast, &mut reference] {
+                lfo.set_rate_hz(499.0);
+                lfo.set_depth(0.73);
+                lfo.set_waveform(waveform);
+            }
+            reference.phase_uniform = false;
+
+            for _ in 0..4096 {
+                assert_eq!(
+                    fast.next().to_array().map(f32::to_bits),
+                    reference.next().to_array().map(f32::to_bits),
+                    "uniform fast path changed {waveform:?} output"
+                );
+            }
+        }
     }
 
     #[test]
