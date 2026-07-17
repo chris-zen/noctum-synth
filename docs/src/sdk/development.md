@@ -6,7 +6,7 @@ this narrative book.
 
 ## Requirements
 
-- Rust 1.93 or newer, as configured by `rust-toolchain.toml`.
+- Rust 1.93 or newer.
 - An audio output device to run `synth-app`.
 - Optional MIDI keyboard or controller.
 - `mdbook` and `mdbook-mermaid` to author this book.
