@@ -37,6 +37,9 @@ The shared `rev2_midi` module translates Sequential Rev2 CC and NRPN messages
 to this host address space, encodes parameter changes back to NRPN sequences,
 and converts Program Edit Buffer SysEx messages to and from `Patch`. SysEx
 packing and device-specific Layer A/Layer B policy remain at this boundary.
+The unpacked 2,046-byte Rev2 program image is not indexed by NRPN number: the
+codec uses the program-image offset table and reconstructs bipolar or extended
+values whose high bit is stored in another parameter byte.
 Reusing the codec in each host keeps desktop and embedded behavior consistent.
 Stored Program Data decoding additionally returns its bank and program metadata
 with the patch so hosts can build libraries without coupling that metadata to

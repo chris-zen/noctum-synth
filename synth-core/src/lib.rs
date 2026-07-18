@@ -58,10 +58,12 @@ pub mod filter;
 pub mod fixed_index_list;
 pub mod lfo;
 pub(crate) mod math;
+pub(crate) mod midi_program;
 #[cfg(feature = "embedded-math")]
 mod micromath;
 pub mod noise;
 mod output_limiter;
+pub mod p08_midi;
 pub mod patch;
 #[cfg(feature = "profiling")]
 pub mod profiling;
@@ -102,6 +104,11 @@ pub use patch::{
 };
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};
+pub use midi_program::{MidiProgramImport, MidiProgramSource};
+pub use p08_midi::{
+    P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN, P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
+    P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
+};
 pub use rev2_midi::{
     REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
     REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,

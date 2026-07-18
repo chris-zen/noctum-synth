@@ -9,7 +9,7 @@ pub const REV2_PROGRAM_DATA_LEN: usize = 2046;
 pub const REV2_PROGRAM_PACKED_LEN: usize = 2339;
 pub const REV2_PROGRAM_DATA_SYSEX_LEN: usize = 2346;
 pub const REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
-const REV2_LAYER_DATA_LEN: usize = REV2_PROGRAM_DATA_LEN / 2;
+const REV2_LAYER_DATA_LEN: usize = 1024;
 const REV2_SYSEX_HEADER: [u8; 4] = [0xf0, 0x01, 0x2f, 0x03];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,17 +134,15 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
     let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
     unpack_program_data(packed, &mut raw);
     let mut patch = Patch::default();
-    for (number, value) in raw[..REV2_LAYER_DATA_LEN].iter().copied().enumerate() {
-        map_nrpn(
-            number as u16,
-            u16::from(value),
-            &mut |update| match update {
+    for number in 0..=158 {
+        if let Some(value) = program_nrpn_value(&raw, number, 0) {
+            map_nrpn(number, value, &mut |update| match update {
                 Rev2MidiUpdate::Param(param, value) => patch.set_param(param, value),
                 Rev2MidiUpdate::Modulation { route, parameter } => {
                     patch.set_modulation_param(route, parameter);
                 }
-            },
-        );
+            });
+        }
     }
     Ok(patch)
 }
@@ -436,7 +434,6 @@ impl Rev2MidiEncoder {
 }
 
 fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
-    debug_assert_eq!(raw.len(), REV2_LAYER_DATA_LEN);
     let mut encoder = Rev2MidiEncoder::default();
     patch.for_each_param(|param, value| {
         let mut messages = [[0_u8; 3]; 4];
@@ -475,8 +472,108 @@ fn store_nrpn(raw: &mut [u8], messages: &[[u8; 3]]) {
     }
     let number = usize::from(messages[0][2]) * 128 + usize::from(messages[1][2]);
     let value = u16::from(messages[2][2]) * 128 + u16::from(messages[3][2]);
-    if let Some(destination) = raw.get_mut(number) {
-        *destination = value.min(255) as u8;
+    store_program_nrpn(raw, number as u16, value.min(255), 0);
+}
+
+#[derive(Clone, Copy)]
+struct ProgramField {
+    value_offset: usize,
+    msb_offset: Option<usize>,
+}
+
+fn program_field(number: u16, layer_offset: usize) -> Option<ProgramField> {
+    // Appendix E documents the transport packing but not the internal program
+    // image. These offsets are the Rev2 program-image layout, verified against
+    // Sequential's v1.0 factory bank. They are intentionally not NRPN indexes.
+    const OFFSETS_0_TO_26: [usize; 27] = [
+        0, 2, 4, 8, 10, 1, 3, 5, 9, 11, 17, 18, 21, 14, 16, 22, 23, 24, 25, 26, 32, 35, 38, 41, 44,
+        47, 50,
+    ];
+    const OFFSETS_28_TO_64: [usize; 37] = [
+        29, 28, 33, 36, 39, 42, 45, 48, 51, 53, 57, 61, 65, 69, 54, 58, 62, 66, 70, 55, 59, 63, 67,
+        71, 56, 60, 64, 68, 72, 30, 34, 37, 40, 43, 46, 49, 52,
+    ];
+
+    let value_offset = match number {
+        0..=26 => OFFSETS_0_TO_26[number as usize],
+        28..=64 => OFFSETS_28_TO_64[(number - 28) as usize],
+        65..=88 => {
+            let route = usize::from((number - 65) / 3);
+            match (number - 65) % 3 {
+                0 => 77 + route,
+                1 => 85 + route,
+                _ => 93 + route,
+            }
+        }
+        97 => 31,
+        99 => 12,
+        102 => 6,
+        103 => 7,
+        104 => 13,
+        105..=108 => 73 + usize::from(number - 105),
+        110 => 15,
+        116..=125 => 101 + usize::from(number - 116),
+        153 => 116,
+        154 => 115,
+        155 => 117,
+        156 => 118,
+        157 => 119,
+        158 => 120,
+        _ => return None,
+    };
+    let msb_offset = match number {
+        20 => Some(30),
+        58 => Some(28),
+        66 => Some(89),
+        69 => Some(88),
+        72 => Some(87),
+        75 => Some(86),
+        78 => Some(85),
+        81 => Some(84),
+        84 => Some(97),
+        87 => Some(96),
+        116 => Some(101),
+        118 => Some(99),
+        120 => Some(111),
+        122 => Some(109),
+        124 => Some(107),
+        _ => None,
+    };
+    Some(ProgramField {
+        value_offset: value_offset + layer_offset,
+        msb_offset: msb_offset.map(|offset| offset + layer_offset),
+    })
+}
+
+fn program_nrpn_value(raw: &[u8], number: u16, layer_offset: usize) -> Option<u16> {
+    let field = program_field(number, layer_offset)?;
+    let value = *raw.get(field.value_offset)?;
+    if let Some(msb_offset) = field.msb_offset {
+        Some(u16::from(value & 0x7f) | u16::from(*raw.get(msb_offset)? & 0x80))
+    } else if nrpn_max(number).is_some_and(|maximum| maximum > 127) {
+        Some(u16::from(value))
+    } else {
+        Some(u16::from(value & 0x7f))
+    }
+}
+
+fn store_program_nrpn(raw: &mut [u8], number: u16, value: u16, layer_offset: usize) {
+    let Some(field) = program_field(number, layer_offset) else {
+        return;
+    };
+    if field.value_offset >= raw.len() {
+        return;
+    }
+    if let Some(msb_offset) = field.msb_offset {
+        if msb_offset >= raw.len() {
+            return;
+        }
+        raw[field.value_offset] = (raw[field.value_offset] & 0x80) | value as u8 & 0x7f;
+        raw[msb_offset] = (raw[msb_offset] & 0x7f) | value as u8 & 0x80;
+    } else if nrpn_max(number).is_some_and(|maximum| maximum > 127) {
+        raw[field.value_offset] = value as u8;
+    } else {
+        raw[field.value_offset] = (raw[field.value_offset] & 0x80) | value as u8 & 0x7f;
     }
 }
 
@@ -485,7 +582,7 @@ fn pack_program_data(raw: &[u8; REV2_PROGRAM_DATA_LEN], packed: &mut [u8]) {
     for chunk in raw.chunks(7) {
         let mut high_bits = 0_u8;
         for (index, byte) in chunk.iter().copied().enumerate() {
-            high_bits |= (byte >> 7) << index;
+            high_bits |= (byte >> 7) << (6 - index);
         }
         packed[output] = high_bits;
         output += 1;
@@ -505,7 +602,7 @@ fn unpack_program_data(packed: &[u8], raw: &mut [u8; REV2_PROGRAM_DATA_LEN]) {
         input += 1;
         let count = (raw.len() - output).min(7);
         for index in 0..count {
-            raw[output] = packed[input] | (((high_bits >> index) & 1) << 7);
+            raw[output] = packed[input] | (((high_bits >> (6 - index)) & 1) << 7);
             input += 1;
             output += 1;
         }
@@ -882,6 +979,52 @@ mod tests {
     }
 
     #[test]
+    fn program_data_pack_uses_rev2_msb_bit_order() {
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        raw[0] = 0x80;
+        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        pack_program_data(&raw, &mut packed);
+        assert_eq!(packed[0], 0b0100_0000);
+
+        raw.fill(0);
+        raw[6] = 0x80;
+        pack_program_data(&raw, &mut packed);
+        assert_eq!(packed[0], 0b0000_0001);
+    }
+
+    #[test]
+    fn factory_program_prefix_uses_program_offsets_not_nrpn_offsets() {
+        // First two packed packets from Sequential's Rev2 factory bank v1.0.
+        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        packed[..16].copy_from_slice(&[
+            0x00, 0x18, 0x18, 0x30, 0x34, 0x01, 0x04, 0x32, 0x00, 0x2b, 0x29, 0x29, 0x01, 0x01,
+            0x00, 0x00,
+        ]);
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        unpack_program_data(&packed, &mut raw);
+
+        assert_eq!(program_nrpn_value(&raw, 0, 0), Some(24));
+        assert_eq!(program_nrpn_value(&raw, 1, 0), Some(48));
+        assert_eq!(program_nrpn_value(&raw, 2, 0), Some(1));
+        assert_eq!(program_nrpn_value(&raw, 5, 0), Some(24));
+        assert_eq!(program_nrpn_value(&raw, 6, 0), Some(52));
+        assert_eq!(program_nrpn_value(&raw, 7, 0), Some(4));
+    }
+
+    #[test]
+    fn program_fields_round_trip_split_msb_values() {
+        for number in [
+            20, 58, 66, 69, 72, 75, 78, 81, 84, 87, 116, 118, 120, 122, 124,
+        ] {
+            for value in [0, 127, 254] {
+                let mut raw = [0x55_u8; REV2_PROGRAM_DATA_LEN];
+                store_program_nrpn(&mut raw, number, value, 0);
+                assert_eq!(program_nrpn_value(&raw, number, 0), Some(value));
+            }
+        }
+    }
+
+    #[test]
     fn program_edit_buffer_round_trips_supported_patch_fields() {
         let mut source = Patch::default();
         source.osc1.waveform = 3;
@@ -956,9 +1099,9 @@ mod tests {
 
         let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
         unpack_program_data(&message[4..4 + REV2_PROGRAM_PACKED_LEN], &mut raw);
-        assert_eq!(raw[2], 4);
-        assert_eq!(raw[REV2_LAYER_DATA_LEN + 2], 1);
-        raw[REV2_LAYER_DATA_LEN + 16] = 127;
+        assert_eq!(raw[4] & 0x7f, 4);
+        assert_eq!(raw[REV2_LAYER_DATA_LEN + 4] & 0x7f, 1);
+        raw[REV2_LAYER_DATA_LEN + 23] = 127;
         pack_program_data(&raw, &mut message[4..4 + REV2_PROGRAM_PACKED_LEN]);
 
         let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
