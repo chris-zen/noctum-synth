@@ -1,10 +1,11 @@
 //! Dual-oscillator mixer with sub oscillator, noise, sync, and glide.
 
+use crate::analog_oscillator::EngineOscillator;
 use crate::f32x4;
 
 #[cfg(feature = "profiling")]
 use crate::profiling::NoopProfiler;
-use crate::{AnalogOscillator, AnalogSubOscillator, Waveform, WhiteNoise, midi_to_hz};
+use crate::{AnalogSubOscillator, Waveform, WhiteNoise, midi_to_hz};
 #[cfg(feature = "profiling")]
 use crate::{RenderProfiler, RenderStage};
 
@@ -12,8 +13,8 @@ const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
 
 /// Oscillator section for one [`crate::VoiceBlock`]: two analog oscillators, sub, and noise.
 pub struct Oscillators {
-    osc1: AnalogOscillator,
-    osc2: AnalogOscillator,
+    osc1: EngineOscillator,
+    osc2: EngineOscillator,
     sub_osc: AnalogSubOscillator,
     noise: WhiteNoise,
     params: OscillatorsParams,
@@ -26,8 +27,8 @@ pub struct Oscillators {
 impl Oscillators {
     pub fn new(sample_rate: f32) -> Self {
         let mut oscillators = Self {
-            osc1: AnalogOscillator::new(sample_rate),
-            osc2: AnalogOscillator::new(sample_rate),
+            osc1: EngineOscillator::new_engine(sample_rate),
+            osc2: EngineOscillator::new_engine(sample_rate),
             sub_osc: AnalogSubOscillator::default(),
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
@@ -247,8 +248,6 @@ impl Oscillators {
         #[cfg(feature = "profiling")]
         profiler.begin(RenderStage::OscillatorMix);
         let osc2 = osc2_step.output;
-        self.sub_osc
-            .set_frequency(self.osc1.frequency_hz(), self.sample_rate);
         let sub_level = (f32x4::splat(self.params.sub_octave) + modulation.sub_level)
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
         let noise_level = (f32x4::splat(self.params.noise) + modulation.noise_level)
@@ -256,6 +255,8 @@ impl Oscillators {
         let sub = if sub_level == f32x4::ZERO {
             f32x4::splat(0.0)
         } else {
+            self.sub_osc
+                .set_frequency(self.osc1.frequency_hz(), self.sample_rate);
             self.sub_osc.next() * sub_level
         };
         let noise = if noise_level == f32x4::ZERO {
@@ -419,7 +420,7 @@ impl Default for OscillatorParams {
     }
 }
 
-fn apply_shape_mod(osc: &mut AnalogOscillator, params: &OscillatorParams) {
+fn apply_shape_mod(osc: &mut EngineOscillator, params: &OscillatorParams) {
     let shape_mod = params.shape_mod.clamp(0.0, 1.0);
     osc.set_shape(shape_mod);
 }
@@ -799,7 +800,9 @@ mod tests {
                 .next(OscillatorModulation::default())
                 .osc1
                 .to_array()[0];
-            if sample < prev - 0.9 {
+            // Detect the falling zero crossing rather than assuming that a
+            // band-limited edge completes within one sample.
+            if prev > 0.0 && sample <= 0.0 && sample < prev - 0.1 {
                 max_gap = max_gap.max(gap);
                 gap = 0;
             } else {

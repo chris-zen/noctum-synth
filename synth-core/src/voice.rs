@@ -44,6 +44,7 @@ pub struct VoiceBlock {
     pub mod_matrix_slots: [ModMatrixSlot; 8],
     pub dedicated_mod_slots: [DedicatedModSlot; 5],
     modulation_plan: ModulationExecutionPlan,
+    defer_modulation_plan_rebuild: bool,
     pub amp_env_amount: f32,
     pub amp_velocity_amount: f32,
     pub pan_spread: f32,
@@ -81,6 +82,7 @@ impl VoiceBlock {
             mod_matrix_slots: [ModMatrixSlot::default(); 8],
             dedicated_mod_slots: [DedicatedModSlot::default(); 5],
             modulation_plan: ModulationExecutionPlan::default(),
+            defer_modulation_plan_rebuild: false,
             amp_env_amount: 1.0,
             amp_velocity_amount: 1.0,
             pan_spread: 0.0,
@@ -150,26 +152,38 @@ impl VoiceBlock {
     }
 
     pub fn next(&mut self, performance: PerformanceModulation) -> (f32, f32) {
+        let active_lane_count = self.active_lane_count();
         #[cfg(feature = "profiling")]
         {
-            return self.next_inner(performance, &mut NoopProfiler);
+            return self.next_inner(performance, active_lane_count, &mut NoopProfiler);
         }
         #[cfg(not(feature = "profiling"))]
-        self.next_inner(performance)
+        self.next_inner(performance, active_lane_count)
     }
 
     #[cfg(feature = "profiling")]
     pub(crate) fn next_profiled(
         &mut self,
         performance: PerformanceModulation,
+        active_lane_count: usize,
         profiler: &mut impl RenderProfiler,
     ) -> (f32, f32) {
-        self.next_inner(performance, profiler)
+        self.next_inner(performance, active_lane_count, profiler)
+    }
+
+    #[cfg(not(feature = "profiling"))]
+    pub(crate) fn next_with_active_lane_count(
+        &mut self,
+        performance: PerformanceModulation,
+        active_lane_count: usize,
+    ) -> (f32, f32) {
+        self.next_inner(performance, active_lane_count)
     }
 
     fn next_inner(
         &mut self,
         performance: PerformanceModulation,
+        active_lane_count: usize,
         #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
     ) -> (f32, f32) {
         #[cfg(feature = "profiling")]
@@ -285,7 +299,7 @@ impl VoiceBlock {
             .clamp(f32x4::splat(0.0), f32x4::splat(2.0));
         let output = filtered * velocity_gain * env_gain * amp_lfo_gain;
 
-        let stereo = self.pan_lanes(output, lfo_modulation.pan);
+        let stereo = self.pan_lanes(output, lfo_modulation.pan, active_lane_count);
         #[cfg(feature = "profiling")]
         profiler.end(RenderStage::AmplifierAndPan);
         stereo
@@ -354,8 +368,7 @@ impl VoiceBlock {
         f32x4::new(self.notes.map(midi_to_hz))
     }
 
-    fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
-        let active_lane_count = self.active_lane_count();
+    fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4, active_lane_count: usize) -> (f32, f32) {
         if active_lane_count <= 1 || (self.pan_spread == 0.0 && pan_mod == f32x4::ZERO) {
             return (
                 (lanes * self.centered_pan_cos).reduce_add(),
@@ -471,7 +484,7 @@ impl VoiceBlock {
         if let Some(lfo) = self.lfos.get_mut(index) {
             self.lfo_base_depths[index] = depth.clamp(0.0, 1.0);
             lfo.set_depth(depth);
-            self.rebuild_modulation_plan();
+            self.refresh_modulation_plan();
         }
     }
 
@@ -484,7 +497,7 @@ impl VoiceBlock {
     pub fn set_lfo_destination(&mut self, index: usize, destination: ModDestination) {
         if let Some(slot) = self.lfo_destinations.get_mut(index) {
             *slot = destination;
-            self.rebuild_modulation_plan();
+            self.refresh_modulation_plan();
         }
     }
 
@@ -522,7 +535,7 @@ impl VoiceBlock {
 
     pub fn set_aux_destination(&mut self, destination: ModDestination) {
         self.aux_env_destination = destination;
-        self.rebuild_modulation_plan();
+        self.refresh_modulation_plan();
     }
 
     pub fn set_aux_amount(&mut self, amount: f32) {
@@ -587,7 +600,7 @@ impl VoiceBlock {
                 }
             }
         }
-        self.rebuild_modulation_plan();
+        self.refresh_modulation_plan();
     }
 
     pub fn set_mod_route_param(&mut self, route: ModRoute, parameter: ModulationParam) {
@@ -625,7 +638,7 @@ impl VoiceBlock {
                 }
             }
         }
-        self.rebuild_modulation_plan();
+        self.refresh_modulation_plan();
     }
 
     fn apply_audio_modulation_routes(
@@ -654,6 +667,21 @@ impl VoiceBlock {
             self.lfos[index].set_rate_hz(self.lfo_base_rates_hz[index]);
             self.lfos[index].set_depth(self.lfo_base_depths[index]);
         }
+    }
+
+    fn refresh_modulation_plan(&mut self) {
+        if !self.defer_modulation_plan_rebuild {
+            self.rebuild_modulation_plan();
+        }
+    }
+
+    pub(crate) fn begin_patch_update(&mut self) {
+        self.defer_modulation_plan_rebuild = true;
+    }
+
+    pub(crate) fn finish_patch_update(&mut self) {
+        self.defer_modulation_plan_rebuild = false;
+        self.rebuild_modulation_plan();
     }
 
     #[cfg(test)]
@@ -1430,14 +1458,14 @@ mod tests {
         block.set_pan_spread(1.0);
         block.note_on(0, 60, 1.0, -1.0, false);
         let expected = pan_lanes_reference(&block, lanes, f32x4::splat(0.75));
-        let actual = block.pan_lanes(lanes, f32x4::splat(0.75));
+        let actual = block.pan_lanes(lanes, f32x4::splat(0.75), block.active_lane_count());
         assert_eq!(actual.0.to_bits(), expected.0.to_bits());
         assert_eq!(actual.1.to_bits(), expected.1.to_bits());
 
         block.note_on(1, 67, 1.0, 1.0, false);
         block.set_pan_spread(0.0);
         let expected = pan_lanes_reference(&block, lanes, f32x4::ZERO);
-        let actual = block.pan_lanes(lanes, f32x4::ZERO);
+        let actual = block.pan_lanes(lanes, f32x4::ZERO, block.active_lane_count());
         assert_eq!(actual.0.to_bits(), expected.0.to_bits());
         assert_eq!(actual.1.to_bits(), expected.1.to_bits());
     }

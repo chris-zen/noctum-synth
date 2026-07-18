@@ -6,32 +6,88 @@
 
 #[inline]
 pub(crate) fn exp(x: f32) -> f32 {
-    libm::expf(x)
+    #[cfg(feature = "embedded-math")]
+    {
+        ::micromath::F32Ext::exp(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::expf(x)
+    }
 }
 
 #[inline]
 pub(crate) fn ln(x: f32) -> f32 {
-    libm::logf(x)
+    #[cfg(feature = "embedded-math")]
+    {
+        ::micromath::F32Ext::ln(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::logf(x)
+    }
 }
 
 #[inline]
 pub(crate) fn powf(x: f32, y: f32) -> f32 {
-    libm::powf(x, y)
+    #[cfg(feature = "embedded-math")]
+    {
+        ::micromath::F32Ext::powf(x, y)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::powf(x, y)
+    }
+}
+
+#[inline]
+pub(crate) fn exp2(x: f32) -> f32 {
+    #[cfg(feature = "embedded-math")]
+    {
+        crate::micromath::scalar_exp2(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        // Preserve the desktop operation used before the embedded exp2
+        // specialization so existing renders remain bit-identical.
+        libm::powf(2.0, x)
+    }
 }
 
 #[inline]
 pub(crate) fn round(x: f32) -> f32 {
-    libm::roundf(x)
+    #[cfg(feature = "embedded-math")]
+    {
+        ::micromath::F32Ext::round(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::roundf(x)
+    }
 }
 
 #[inline]
 pub(crate) fn floor(x: f32) -> f32 {
-    libm::floorf(x)
+    #[cfg(feature = "embedded-math")]
+    {
+        ::micromath::F32Ext::floor(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::floorf(x)
+    }
 }
 
 #[inline]
 pub(crate) fn tan(x: f32) -> f32 {
-    libm::tanf(x)
+    #[cfg(feature = "embedded-math")]
+    {
+        crate::micromath::scalar_tan(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::tanf(x)
+    }
 }
 
 #[inline]
@@ -48,7 +104,14 @@ pub(crate) fn effect_sin(x: f32) -> f32 {
 
 #[inline]
 pub(crate) fn tanh(x: f32) -> f32 {
-    libm::tanhf(x)
+    #[cfg(feature = "embedded-math")]
+    {
+        crate::micromath::scalar_tanh(x)
+    }
+    #[cfg(not(feature = "embedded-math"))]
+    {
+        libm::tanhf(x)
+    }
 }
 
 #[cfg(test)]

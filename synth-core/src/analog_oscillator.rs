@@ -26,6 +26,140 @@ pub enum Waveform {
     Pulse,
 }
 
+trait OscillatorKernel {
+    fn saw_method(&self) -> SawMethod;
+
+    #[inline(always)]
+    fn prepare_sample(&mut self, _phase_inc: f32x4) {}
+
+    #[inline(always)]
+    fn finish_sample(&mut self) {}
+
+    #[inline(always)]
+    fn saw(&self, phase: f32x4, phase_inc: f32x4) -> f32x4 {
+        blep_saw(phase, phase_inc, self.saw_method())
+    }
+
+    #[inline(always)]
+    fn pulse(&self, phase: f32x4, phase_inc: f32x4, state: &PulseBlepState) -> f32x4 {
+        blep_pulse_prepared(phase, phase_inc, state, self.saw_method())
+    }
+
+    #[inline(always)]
+    fn triangle(&self, phase: f32x4, phase_inc: f32x4, integrator: &mut f32x4) -> f32x4 {
+        if self.saw_method() == SawMethod::PolyBlep {
+            let square = blep_pulse(phase, phase_inc, f32x4::splat(0.5), SawMethod::PolyBlep);
+            *integrator = (*integrator - square * phase_inc * f32x4::splat(4.0))
+                .clamp(f32x4::splat(-1.2), f32x4::splat(1.2));
+            *integrator
+        } else {
+            polyblamp2_triangle(phase, phase_inc)
+        }
+    }
+
+    #[inline(always)]
+    fn triangle_at(&self, phase: f32x4, phase_inc: f32x4) -> f32x4 {
+        polyblamp2_triangle(phase, phase_inc)
+    }
+
+    #[inline(always)]
+    fn needs_triangle_wrap_alignment(&self) -> bool {
+        self.saw_method() == SawMethod::PolyBlep
+    }
+}
+
+impl OscillatorKernel for crate::wavetable::WavetableOscillatorKernel {
+    fn saw_method(&self) -> SawMethod {
+        // The public SawMethod enum intentionally remains BLEP/PolyBLEP-only.
+        SawMethod::Blep
+    }
+
+    fn prepare_sample(&mut self, phase_inc: f32x4) {
+        crate::wavetable::WavetableOscillatorKernel::prepare(self, phase_inc);
+    }
+
+    fn finish_sample(&mut self) {
+        crate::wavetable::WavetableOscillatorKernel::finish(self);
+    }
+
+    fn saw(&self, phase: f32x4, _phase_inc: f32x4) -> f32x4 {
+        crate::wavetable::WavetableOscillatorKernel::saw(self, phase)
+    }
+
+    fn pulse(&self, phase: f32x4, _phase_inc: f32x4, state: &PulseBlepState) -> f32x4 {
+        let width = state.width();
+        let shifted = wrap01(phase + width);
+        crate::wavetable::WavetableOscillatorKernel::saw(self, phase)
+            - crate::wavetable::WavetableOscillatorKernel::saw(self, shifted)
+            + width * f32x4::splat(2.0)
+            - f32x4::splat(1.0)
+    }
+
+    fn triangle(&self, phase: f32x4, _phase_inc: f32x4, _integrator: &mut f32x4) -> f32x4 {
+        crate::wavetable::WavetableOscillatorKernel::triangle(self, phase)
+    }
+
+    fn triangle_at(&self, phase: f32x4, _phase_inc: f32x4) -> f32x4 {
+        crate::wavetable::WavetableOscillatorKernel::triangle(self, phase)
+    }
+
+    fn needs_triangle_wrap_alignment(&self) -> bool {
+        false
+    }
+}
+
+/// Runtime-selectable kernel retained for oscillator analysis and the public
+/// low-level oscillator API. The synth engine uses a fixed typed kernel.
+#[doc(hidden)]
+pub struct RuntimeOscillatorKernel {
+    method: SawMethod,
+}
+
+impl Default for RuntimeOscillatorKernel {
+    fn default() -> Self {
+        Self {
+            method: SawMethod::Blep,
+        }
+    }
+}
+
+impl OscillatorKernel for RuntimeOscillatorKernel {
+    #[inline(always)]
+    fn saw_method(&self) -> SawMethod {
+        self.method
+    }
+}
+
+#[cfg(any(test, not(feature = "oscillator-polyblep")))]
+#[derive(Default)]
+pub(crate) struct BlepOscillatorKernel;
+
+#[cfg(any(test, not(feature = "oscillator-polyblep")))]
+impl OscillatorKernel for BlepOscillatorKernel {
+    #[inline(always)]
+    fn saw_method(&self) -> SawMethod {
+        SawMethod::Blep
+    }
+}
+
+#[cfg(any(test, feature = "oscillator-polyblep"))]
+#[derive(Default)]
+pub(crate) struct PolyBlepOscillatorKernel;
+
+#[cfg(any(test, feature = "oscillator-polyblep"))]
+impl OscillatorKernel for PolyBlepOscillatorKernel {
+    #[inline(always)]
+    fn saw_method(&self) -> SawMethod {
+        SawMethod::PolyBlep
+    }
+}
+
+#[cfg(feature = "oscillator-polyblep")]
+type EngineOscillatorKernel = PolyBlepOscillatorKernel;
+#[cfg(not(feature = "oscillator-polyblep"))]
+type EngineOscillatorKernel = BlepOscillatorKernel;
+pub(crate) type EngineOscillator = AnalogOscillator<EngineOscillatorKernel>;
+
 /// Output of a single oscillator sample step, including phase-wrap metadata
 /// used by oscillator sync.
 #[derive(Debug, Clone, Copy)]
@@ -43,9 +177,9 @@ pub(crate) struct OscillatorStep {
 /// Each lane is an independent voice sharing the same waveform/shape settings.
 /// Pitch drift ("slop") is intrinsic and applied internally on top of the
 /// intended frequency.
-pub struct AnalogOscillator {
+pub struct AnalogOscillator<K = RuntimeOscillatorKernel> {
     waveform: Waveform,
-    saw_method: SawMethod,
+    kernel: K,
     shape: f32,
     fine_cents: f32,
     note_offset: f32,
@@ -61,11 +195,13 @@ pub struct AnalogOscillator {
     slop: OscSlopState,
 }
 
-impl Default for AnalogOscillator {
+impl Default for AnalogOscillator<RuntimeOscillatorKernel> {
     fn default() -> Self {
         Self {
             waveform: Waveform::Saw,
-            saw_method: SawMethod::Blep,
+            kernel: RuntimeOscillatorKernel {
+                method: SawMethod::Blep,
+            },
             shape: 0.0,
             fine_cents: 0.0,
             note_offset: 0.0,
@@ -83,7 +219,7 @@ impl Default for AnalogOscillator {
     }
 }
 
-impl AnalogOscillator {
+impl AnalogOscillator<RuntimeOscillatorKernel> {
     /// Creates an oscillator running at `sample_rate` with default settings.
     pub fn new(sample_rate: f32) -> Self {
         Self {
@@ -92,26 +228,67 @@ impl AnalogOscillator {
         }
     }
 
-    /// Sets the active waveform.
-    pub fn set_waveform(&mut self, waveform: Waveform) {
-        self.waveform = waveform;
-        if waveform == Waveform::Pulse && self.saw_method == SawMethod::Blep {
-            self.pulse_blep.set_phase_inc(self.phase_inc);
-        }
-        if matches!(waveform, Waveform::Triangle | Waveform::SawTri) {
-            self.triangle_integrator = naive_triangle(self.phase);
-        }
-    }
-
     /// Selects the band-limiting method used for saw/pulse edges.
     pub fn set_saw_method(&mut self, saw_method: SawMethod) {
-        self.saw_method = saw_method;
+        self.kernel.method = saw_method;
         if saw_method == SawMethod::Blep && self.waveform == Waveform::Pulse {
             self.pulse_blep.set_phase_inc(self.phase_inc);
         }
         if saw_method == SawMethod::PolyBlep
             && matches!(self.waveform, Waveform::Triangle | Waveform::SawTri)
         {
+            self.triangle_integrator = naive_triangle(self.phase);
+        }
+    }
+}
+
+impl EngineOscillator {
+    pub(crate) fn new_engine(sample_rate: f32) -> Self {
+        AnalogOscillator::new_with_kernel(sample_rate, EngineOscillatorKernel::default())
+    }
+}
+
+pub type WavetableOscillator = AnalogOscillator<crate::wavetable::WavetableOscillatorKernel>;
+
+impl WavetableOscillator {
+    /// Creates a wavetable oscillator backed by the supplied immutable bank.
+    pub fn new_wavetable(sample_rate: f32, bank: crate::wavetable::WavetableBank) -> Self {
+        AnalogOscillator::new_with_kernel(
+            sample_rate,
+            crate::wavetable::WavetableOscillatorKernel::new(bank),
+        )
+    }
+}
+
+#[allow(private_bounds)]
+impl<K: OscillatorKernel> AnalogOscillator<K> {
+    fn new_with_kernel(sample_rate: f32, kernel: K) -> Self {
+        Self {
+            waveform: Waveform::Saw,
+            kernel,
+            shape: 0.0,
+            fine_cents: 0.0,
+            note_offset: 0.0,
+            sample_rate,
+            phase: f32x4::splat(0.0),
+            phase_inc: f32x4::splat(0.0),
+            pulse_blep: PulseBlepState::new(f32x4::splat(0.5)),
+            intended_frequency_hz: f32x4::splat(0.0),
+            effective_frequency_hz: f32x4::splat(0.0),
+            enabled_mask: f32x4::splat(1.0),
+            last_output: f32x4::splat(0.0),
+            triangle_integrator: f32x4::splat(-1.0),
+            slop: OscSlopState::new(),
+        }
+    }
+
+    /// Sets the active waveform.
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.waveform = waveform;
+        if waveform == Waveform::Pulse && self.kernel.saw_method() == SawMethod::Blep {
+            self.pulse_blep.set_phase_inc(self.phase_inc);
+        }
+        if matches!(waveform, Waveform::Triangle | Waveform::SawTri) {
             self.triangle_integrator = naive_triangle(self.phase);
         }
     }
@@ -247,7 +424,7 @@ impl AnalogOscillator {
     /// and fine tuning.
     pub fn update_frequency_from_note(&mut self, note_frequency_hz: f32x4) {
         let semitones = self.note_offset + self.fine_cents / 100.0;
-        let ratio = f32x4::splat(crate::math::powf(2.0, semitones / 12.0));
+        let ratio = f32x4::splat(crate::math::exp2(semitones / 12.0));
         self.set_frequency(note_frequency_hz * ratio);
     }
     /// Advances one sample and returns just the waveform output.
@@ -295,10 +472,12 @@ impl AnalogOscillator {
 
         #[cfg(feature = "profiling")]
         profiler.begin(RenderStage::OscillatorWaveform);
+        self.kernel.prepare_sample(self.phase_inc);
         let raw = self.sample_waveform(phi);
         let output = self.apply_shape_morph(phi, raw);
         self.last_output = output;
         self.align_triangle_integrator_after_wrap(wrapped);
+        self.kernel.finish_sample();
         #[cfg(feature = "profiling")]
         profiler.end(RenderStage::OscillatorWaveform);
         OscillatorStep {
@@ -311,33 +490,21 @@ impl AnalogOscillator {
     /// Evaluates the band-limited base waveform at phase `phi`.
     fn sample_waveform(&mut self, phi: f32x4) -> f32x4 {
         match self.waveform {
-            Waveform::Saw => blep_saw(phi, self.phase_inc, self.saw_method),
+            Waveform::Saw => self.kernel.saw(phi, self.phase_inc),
             Waveform::SawTri => {
-                let saw = blep_saw(phi, self.phase_inc, self.saw_method);
+                let saw = self.kernel.saw(phi, self.phase_inc);
                 let tri = self.triangle(phi);
                 let mix = f32x4::splat(self.shape.abs());
                 saw + (tri - saw) * mix
             }
             Waveform::Triangle => self.triangle(phi),
-            Waveform::Pulse => {
-                blep_pulse_prepared(phi, self.phase_inc, &self.pulse_blep, self.saw_method)
-            }
+            Waveform::Pulse => self.kernel.pulse(phi, self.phase_inc, &self.pulse_blep),
         }
     }
 
     fn triangle(&mut self, phi: f32x4) -> f32x4 {
-        match self.saw_method {
-            SawMethod::PolyBlep => self.polyblep_integrated_triangle(phi),
-            SawMethod::Blep => polyblamp2_triangle(phi, self.phase_inc),
-        }
-    }
-
-    fn polyblep_integrated_triangle(&mut self, phi: f32x4) -> f32x4 {
-        let square = blep_pulse(phi, self.phase_inc, f32x4::splat(0.5), SawMethod::PolyBlep);
-        self.triangle_integrator = (self.triangle_integrator
-            - square * self.phase_inc * f32x4::splat(4.0))
-        .clamp(f32x4::splat(-1.2), f32x4::splat(1.2));
-        self.triangle_integrator
+        self.kernel
+            .triangle(phi, self.phase_inc, &mut self.triangle_integrator)
     }
 
     /// Morphs saw/triangle timbre by crossfading `raw` with a phase-shifted
@@ -358,18 +525,15 @@ impl AnalogOscillator {
 
     fn sample_waveform_at(&self, phi: f32x4) -> f32x4 {
         match self.waveform {
-            Waveform::Saw => blep_saw(phi, self.phase_inc, self.saw_method),
-            Waveform::Triangle => match self.saw_method {
-                SawMethod::PolyBlep => polyblamp2_triangle(phi, self.phase_inc),
-                SawMethod::Blep => polyblamp2_triangle(phi, self.phase_inc),
-            },
+            Waveform::Saw => self.kernel.saw(phi, self.phase_inc),
+            Waveform::Triangle => self.kernel.triangle_at(phi, self.phase_inc),
             _ => self.last_output,
         }
     }
 
     fn align_triangle_integrator_after_wrap(&mut self, wrapped: [bool; LANES]) {
         if !matches!(self.waveform, Waveform::Triangle | Waveform::SawTri)
-            || self.saw_method != SawMethod::PolyBlep
+            || !self.kernel.needs_triangle_wrap_alignment()
         {
             return;
         }
@@ -391,7 +555,7 @@ impl AnalogOscillator {
         let freq = clamp_frequency(freq, self.sample_rate);
         self.effective_frequency_hz = freq;
         self.phase_inc = freq * f32x4::splat(1.0 / self.sample_rate);
-        if self.waveform == Waveform::Pulse && self.saw_method == SawMethod::Blep {
+        if self.waveform == Waveform::Pulse && self.kernel.saw_method() == SawMethod::Blep {
             self.pulse_blep.set_phase_inc(self.phase_inc);
         }
     }
@@ -705,7 +869,7 @@ fn polyblamp2_corner_reference(phase_from_corner: f32x4, dt: f32x4) -> f32x4 {
 
 /// Converts a pitch offset in cents to a multiplicative frequency ratio.
 fn cents_to_ratio(cents: f32) -> f32 {
-    crate::math::powf(2.0, cents / 1200.0)
+    crate::math::exp2(cents / 1200.0)
 }
 
 /// Returns a uniform random value in `[-1, 1)`.
@@ -752,6 +916,80 @@ mod tests {
             maximum_error <= 2.0e-6,
             "optimized PolyBLAMP diverged from reference by {maximum_error}"
         );
+    }
+
+    #[test]
+    fn typed_kernels_match_runtime_method_selection() {
+        for method in [SawMethod::Blep, SawMethod::PolyBlep] {
+            for waveform in [
+                Waveform::Saw,
+                Waveform::SawTri,
+                Waveform::Triangle,
+                Waveform::Pulse,
+            ] {
+                let mut runtime = AnalogOscillator::new(48_000.0);
+                runtime.set_saw_method(method);
+                runtime.set_waveform(waveform);
+                runtime.set_shape(0.37);
+                runtime.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+
+                let mut typed = match method {
+                    SawMethod::Blep => TypedKernel::Blep(AnalogOscillator::new_with_kernel(
+                        48_000.0,
+                        BlepOscillatorKernel,
+                    )),
+                    SawMethod::PolyBlep => TypedKernel::PolyBlep(
+                        AnalogOscillator::new_with_kernel(48_000.0, PolyBlepOscillatorKernel),
+                    ),
+                };
+                typed.set_waveform(waveform);
+                typed.set_shape(0.37);
+                typed.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+
+                for sample in 0..4096 {
+                    assert_eq!(
+                        runtime.next().to_array().map(f32::to_bits),
+                        typed.next().to_array().map(f32::to_bits),
+                        "typed {method:?} {waveform:?} diverged at sample {sample}"
+                    );
+                }
+            }
+        }
+    }
+
+    enum TypedKernel {
+        Blep(AnalogOscillator<BlepOscillatorKernel>),
+        PolyBlep(AnalogOscillator<PolyBlepOscillatorKernel>),
+    }
+
+    impl TypedKernel {
+        fn set_waveform(&mut self, waveform: Waveform) {
+            match self {
+                Self::Blep(oscillator) => oscillator.set_waveform(waveform),
+                Self::PolyBlep(oscillator) => oscillator.set_waveform(waveform),
+            }
+        }
+
+        fn set_shape(&mut self, shape: f32) {
+            match self {
+                Self::Blep(oscillator) => oscillator.set_shape(shape),
+                Self::PolyBlep(oscillator) => oscillator.set_shape(shape),
+            }
+        }
+
+        fn set_frequency(&mut self, frequency: f32x4) {
+            match self {
+                Self::Blep(oscillator) => oscillator.set_frequency(frequency),
+                Self::PolyBlep(oscillator) => oscillator.set_frequency(frequency),
+            }
+        }
+
+        fn next(&mut self) -> f32x4 {
+            match self {
+                Self::Blep(oscillator) => oscillator.next(),
+                Self::PolyBlep(oscillator) => oscillator.next(),
+            }
+        }
     }
 
     #[cfg(feature = "profiling")]

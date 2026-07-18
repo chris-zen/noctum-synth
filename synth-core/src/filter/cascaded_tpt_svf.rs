@@ -257,7 +257,7 @@ impl CascadedTptSvf {
         let key = [sample_rate.to_bits(), pitch_cents.to_bits()];
         if self.static_coefficient_cache.key != key {
             let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
-            let cutoff = (frame.cutoff_hz * crate::math::powf(2.0, pitch_cents / 1200.0))
+            let cutoff = (frame.cutoff_hz * crate::math::exp2(pitch_cents / 1200.0))
                 .clamp(MIN_CUTOFF_HZ, max_cutoff);
             let g = crate::math::tan(core::f32::consts::PI * cutoff / sample_rate);
             self.static_coefficient_cache = StaticCoefficientCache {

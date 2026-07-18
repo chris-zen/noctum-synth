@@ -67,6 +67,8 @@ pub mod p08_midi;
 pub mod patch;
 #[cfg(feature = "profiling")]
 pub mod profiling;
+mod render_rate;
+pub mod wavetable;
 pub mod rev2_midi;
 pub(crate) mod rng;
 pub mod tuning;
@@ -84,6 +86,7 @@ pub(crate) use crate::micromath::i32x4;
 pub(crate) use wide::i32x4;
 
 pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
+pub use analog_oscillator::WavetableOscillator;
 pub use analog_oscillators::{
     OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput, OscillatorsParams,
 };
@@ -117,6 +120,10 @@ pub use rev2_midi::{
 pub use tuning::midi_to_hz;
 pub use voice::{PerformanceModulation, VoiceBlock};
 pub use voices::{ActiveNotes, Voices};
+pub use wavetable::{
+    WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
+    generate_wavetable_bank,
+};
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
 ///

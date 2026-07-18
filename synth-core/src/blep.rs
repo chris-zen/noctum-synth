@@ -42,6 +42,11 @@ impl PulseBlepState {
         self.edge = f32x4::splat(1.0) - self.width;
     }
 
+    #[inline(always)]
+    pub(crate) fn width(&self) -> f32x4 {
+        self.width
+    }
+
     pub(crate) fn set_phase_inc(&mut self, phase_inc: f32x4) {
         self.table_window = table_blep_windows(phase_inc);
     }

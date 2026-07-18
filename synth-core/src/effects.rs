@@ -1,6 +1,9 @@
 //! Post-voice effects.
 
+#[cfg(feature = "profiling")]
+use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::{DEFAULT_TEMPO_BPM, EffectParams, EffectType, TAU, midi_to_hz};
+use core::marker::PhantomData;
 
 const DELAY_TIME_CROSSFADE_SECONDS: f32 = 0.035;
 const DELAY_TIME_CHANGE_THRESHOLD_SAMPLES: f32 = 8.0;
@@ -156,7 +159,7 @@ pub struct EffectsWithMemory<Memory> {
     phaser_mst: Phaser,
     flanger1: Flanger,
     flanger2: Flanger,
-    reverb: Reverb,
+    reverb: EngineReverb,
     ring_mod: RingMod,
     distortion: Distortion,
     high_pass: HighPass,
@@ -164,6 +167,12 @@ pub struct EffectsWithMemory<Memory> {
 
 /// Effects processor with inline, statically sized sample storage.
 pub type Effects<const SAMPLES: usize> = EffectsWithMemory<[f32; SAMPLES]>;
+
+/// Effects implementation selected at the effects subsystem boundary.
+///
+/// Keeping the alias here lets an embedded kernel be introduced without
+/// leaking platform selection into the engine.
+pub(crate) type EngineEffects<Memory> = EffectsWithMemory<Memory>;
 
 impl<const SAMPLES: usize> EffectsWithMemory<[f32; SAMPLES]> {
     /// Creates an effects processor with an inline, statically sized buffer.
@@ -229,7 +238,7 @@ where
         self.selected = selected;
         *self.selected_params_mut() = RuntimeParams::from_patch(params);
         if changed {
-            self.clear_audio_memory();
+            self.reset_selected_effect();
         }
     }
 
@@ -256,7 +265,7 @@ where
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled != enabled {
             self.enabled = enabled;
-            self.clear_audio_memory();
+            self.reset_selected_effect();
         }
     }
 
@@ -264,7 +273,7 @@ where
         let selected = SelectedEffect::from(effect_type);
         if self.selected != selected {
             self.selected = selected;
-            self.clear_audio_memory();
+            self.reset_selected_effect();
         }
     }
 
@@ -291,10 +300,38 @@ where
         modulation: EffectModulation,
         lowest_note: Option<u8>,
     ) -> (f32, f32) {
+        #[cfg(feature = "profiling")]
+        return self.next_inner(left, right, modulation, lowest_note, &mut NoopProfiler);
+        #[cfg(not(feature = "profiling"))]
+        self.next_inner(left, right, modulation, lowest_note)
+    }
+
+    #[cfg(feature = "profiling")]
+    pub(crate) fn next_profiled(
+        &mut self,
+        left: f32,
+        right: f32,
+        modulation: EffectModulation,
+        lowest_note: Option<u8>,
+        profiler: &mut impl RenderProfiler,
+    ) -> (f32, f32) {
+        self.next_inner(left, right, modulation, lowest_note, profiler)
+    }
+
+    fn next_inner(
+        &mut self,
+        left: f32,
+        right: f32,
+        modulation: EffectModulation,
+        lowest_note: Option<u8>,
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) -> (f32, f32) {
         if !self.enabled {
             return (left, right);
         }
 
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::EffectsPreparation);
         let params = self.selected_params();
         let mix = (params.mix + modulation.mix).clamp(0.0, 1.0);
         let context = ProcessContext {
@@ -305,6 +342,8 @@ where
             clock_sync: params.clock_sync,
             lowest_note,
         };
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::EffectsPreparation);
 
         let wet = match self.selected {
             SelectedEffect::DelayMono => {
@@ -346,7 +385,15 @@ where
                 self.flanger2
                     .next(left, right, self.buffer.as_mut(), context)
             }
-            SelectedEffect::Reverb => self.reverb.next(left, right, self.buffer.as_mut(), context),
+            SelectedEffect::Reverb => {
+                #[cfg(feature = "profiling")]
+                {
+                    self.reverb
+                        .next_profiled(left, right, self.buffer.as_mut(), context, profiler)
+                }
+                #[cfg(not(feature = "profiling"))]
+                self.reverb.next(left, right, self.buffer.as_mut(), context)
+            }
             SelectedEffect::RingMod => Some(self.ring_mod.next(left, right, context)),
             SelectedEffect::Distortion => Some(self.distortion.next(left, right, context)),
             SelectedEffect::HighPass => Some(self.high_pass.next(left, right, context)),
@@ -355,27 +402,36 @@ where
         let Some((wet_left, wet_right)) = wet else {
             return (left, right);
         };
-        (
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::EffectsMix);
+        let output = (
             crossfade(left, wet_left, mix).clamp(-1.0, 1.0),
             crossfade(right, wet_right, mix).clamp(-1.0, 1.0),
-        )
+        );
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::EffectsMix);
+        output
     }
 
-    fn clear_audio_memory(&mut self) {
-        self.buffer.as_mut().fill(0.0);
-        self.delay_mono.clear();
-        self.ddl_stereo.clear();
-        self.bucket_brigade_delay.clear();
-        self.chorus.clear();
-        self.phaser_high.clear();
-        self.phaser_low.clear();
-        self.phaser_mst.clear();
-        self.flanger1.clear();
-        self.flanger2.clear();
-        self.reverb.clear();
-        self.ring_mod.clear();
-        self.distortion.clear();
-        self.high_pass.clear();
+    /// Reset only compact algorithm state. Delay-line validity tracking makes
+    /// old samples in the shared buffer unreachable without an O(buffer)
+    /// memory clear on the real-time thread.
+    fn reset_selected_effect(&mut self) {
+        match self.selected {
+            SelectedEffect::DelayMono => self.delay_mono.clear(),
+            SelectedEffect::DdlStereo => self.ddl_stereo.clear(),
+            SelectedEffect::BucketBrigadeDelay => self.bucket_brigade_delay.clear(),
+            SelectedEffect::Chorus => self.chorus.clear(),
+            SelectedEffect::PhaserHigh => self.phaser_high.clear(),
+            SelectedEffect::PhaserLow => self.phaser_low.clear(),
+            SelectedEffect::PhaserMst => self.phaser_mst.clear(),
+            SelectedEffect::Flanger1 => self.flanger1.clear(),
+            SelectedEffect::Flanger2 => self.flanger2.clear(),
+            SelectedEffect::Reverb => self.reverb.clear(),
+            SelectedEffect::RingMod => self.ring_mod.clear(),
+            SelectedEffect::Distortion => self.distortion.clear(),
+            SelectedEffect::HighPass => self.high_pass.clear(),
+        }
     }
 
     fn selected_params(&self) -> RuntimeParams {
@@ -424,6 +480,23 @@ struct DelayTransition {
     initialized: bool,
 }
 
+/// Write cursor plus the amount of history that belongs to the current effect
+/// activation. Shared delay memory is deliberately not cleared on the audio
+/// thread; samples older than `written` are treated exactly like zero-filled
+/// memory until the line has been primed again.
+#[derive(Clone, Copy, Default)]
+struct DelayLineState {
+    index: usize,
+    written: usize,
+}
+
+impl DelayLineState {
+    #[inline]
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 impl DelayTransition {
     fn retarget(&mut self, target: f32, max_delay: f32, sample_rate: f32) -> (f32, f32, f32) {
         let target = target.clamp(MIN_DELAY_SAMPLES, max_delay.max(MIN_DELAY_SAMPLES));
@@ -465,7 +538,7 @@ impl DelayTransition {
 #[derive(Default)]
 struct MonoDelay {
     params: RuntimeParams,
-    index: usize,
+    delay: DelayLineState,
     transition: DelayTransition,
 }
 
@@ -477,7 +550,7 @@ impl MonoDelay {
         buffer: &mut [f32],
         context: ProcessContext,
     ) -> Option<(f32, f32)> {
-        let mut delay = DelayBuffer::new(buffer, &mut self.index)?;
+        let mut delay = DelayBuffer::new(buffer, &mut self.delay)?;
         let target = delay_seconds(context) * context.sample_rate;
         let (old, new, fade) =
             self.transition
@@ -488,7 +561,7 @@ impl MonoDelay {
     }
 
     fn clear(&mut self) {
-        self.index = 0;
+        self.delay.clear();
         self.transition.clear();
     }
 }
@@ -500,8 +573,8 @@ impl MonoDelay {
 #[derive(Default)]
 struct StereoDelay {
     params: RuntimeParams,
-    left_index: usize,
-    right_index: usize,
+    left_delay: DelayLineState,
+    right_delay: DelayLineState,
     transition: DelayTransition,
 }
 
@@ -514,8 +587,8 @@ impl StereoDelay {
         context: ProcessContext,
     ) -> Option<(f32, f32)> {
         let (left_buffer, right_buffer) = split_stereo(buffer)?;
-        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_index)?;
-        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_index)?;
+        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_delay)?;
+        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_delay)?;
         let target = delay_seconds(context) * context.sample_rate;
         let max_delay = left_delay.max_delay().min(right_delay.max_delay());
         let (old, new, fade) = self
@@ -530,8 +603,8 @@ impl StereoDelay {
     }
 
     fn clear(&mut self) {
-        self.left_index = 0;
-        self.right_index = 0;
+        self.left_delay.clear();
+        self.right_delay.clear();
         self.transition.clear();
     }
 }
@@ -544,8 +617,8 @@ impl StereoDelay {
 #[derive(Default)]
 struct BucketBrigadeDelay {
     params: RuntimeParams,
-    left_index: usize,
-    right_index: usize,
+    left_delay: DelayLineState,
+    right_delay: DelayLineState,
     transition: DelayTransition,
     tone_left: f32,
     tone_right: f32,
@@ -560,8 +633,8 @@ impl BucketBrigadeDelay {
         context: ProcessContext,
     ) -> Option<(f32, f32)> {
         let (left_buffer, right_buffer) = split_stereo(buffer)?;
-        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_index)?;
-        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_index)?;
+        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_delay)?;
+        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_delay)?;
         let target = delay_seconds(context) * context.sample_rate;
         let max_delay = left_delay.max_delay().min(right_delay.max_delay());
         let (old, new, fade) = self
@@ -578,8 +651,8 @@ impl BucketBrigadeDelay {
     }
 
     fn clear(&mut self) {
-        self.left_index = 0;
-        self.right_index = 0;
+        self.left_delay.clear();
+        self.right_delay.clear();
         self.transition.clear();
         self.tone_left = 0.0;
         self.tone_right = 0.0;
@@ -593,8 +666,8 @@ impl BucketBrigadeDelay {
 #[derive(Default)]
 struct Chorus {
     params: RuntimeParams,
-    left_index: usize,
-    right_index: usize,
+    left_delay: DelayLineState,
+    right_delay: DelayLineState,
     phase: f32,
 }
 
@@ -607,8 +680,8 @@ impl Chorus {
         context: ProcessContext,
     ) -> Option<(f32, f32)> {
         let (left_buffer, right_buffer) = split_stereo(buffer)?;
-        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_index)?;
-        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_index)?;
+        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_delay)?;
+        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_delay)?;
         let rate = 0.05 + context.param1 * 7.5;
         let depth_ms = 1.0 + context.param2 * 12.0;
         let phase_left = self.phase;
@@ -624,8 +697,8 @@ impl Chorus {
     }
 
     fn clear(&mut self) {
-        self.left_index = 0;
-        self.right_index = 0;
+        self.left_delay.clear();
+        self.right_delay.clear();
         self.phase = 0.0;
     }
 }
@@ -636,8 +709,8 @@ impl Chorus {
 /// The two public flanger variants select different fixed feedback amounts.
 struct Flanger {
     params: RuntimeParams,
-    left_index: usize,
-    right_index: usize,
+    left_delay: DelayLineState,
+    right_delay: DelayLineState,
     phase: f32,
     feedback: f32,
 }
@@ -646,8 +719,8 @@ impl Flanger {
     fn new(feedback: f32) -> Self {
         Self {
             params: RuntimeParams::default(),
-            left_index: 0,
-            right_index: 0,
+            left_delay: DelayLineState::default(),
+            right_delay: DelayLineState::default(),
             phase: 0.0,
             feedback,
         }
@@ -661,8 +734,8 @@ impl Flanger {
         context: ProcessContext,
     ) -> Option<(f32, f32)> {
         let (left_buffer, right_buffer) = split_stereo(buffer)?;
-        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_index)?;
-        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_index)?;
+        let mut left_delay = DelayBuffer::new(left_buffer, &mut self.left_delay)?;
+        let mut right_delay = DelayBuffer::new(right_buffer, &mut self.right_delay)?;
         let rate = 0.03 + context.param1 * 4.0;
         let depth_ms = 0.2 + context.param2 * 4.8;
         let phase_left = self.phase;
@@ -678,8 +751,8 @@ impl Flanger {
     }
 
     fn clear(&mut self) {
-        self.left_index = 0;
-        self.right_index = 0;
+        self.left_delay.clear();
+        self.right_delay.clear();
         self.phase = 0.0;
     }
 }
@@ -727,18 +800,141 @@ impl Phaser {
 ///
 /// Parameter 1 controls decay feedback and parameter 2 controls damping. The
 /// left and right delay tunings differ to produce a diffuse stereo tail.
-#[derive(Default)]
-struct Reverb {
-    params: RuntimeParams,
-    comb_left_indices: [usize; 4],
-    comb_right_indices: [usize; 4],
-    allpass_left_indices: [usize; 3],
-    allpass_right_indices: [usize; 3],
-    tone_left: [f32; 4],
-    tone_right: [f32; 4],
+#[derive(Clone, Copy, Default)]
+struct PreparedDelay {
+    /// Age of the older interpolation sample relative to the write cursor.
+    older_age: usize,
+    /// Clamped delay retained so the reference interpolation fraction can be
+    /// reconstructed from the live cursor without floor or modulo.
+    #[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+    delay_samples: f32,
+    /// Fast embedded interpolation weight. Desktop reconstructs the reference
+    /// weight from the live cursor instead.
+    #[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+    newer_weight: f32,
 }
 
-impl Reverb {
+impl PreparedDelay {
+    fn new(delay_samples: f32, maximum_delay: f32) -> Self {
+        let delay = delay_samples.clamp(MIN_DELAY_SAMPLES, maximum_delay);
+        // Derive the interpolation fraction in the same subtraction order as
+        // `DelayBuffer::read`. Rewriting it as `ceil(delay) - delay` changes a
+        // few low bits and can exceed the reverb's transparent-error gate.
+        let length = maximum_delay as usize + 2;
+        let read_position = length as f32 - delay;
+        let read_floor = crate::math::floor(read_position);
+        let older_age = length - read_floor as usize;
+        Self {
+            older_age,
+            #[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+            delay_samples: delay,
+            #[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+            newer_weight: read_position - read_floor,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ReverbLayout {
+    buffer_len: usize,
+    sample_rate_bits: u32,
+    segment_len: usize,
+    segment_offsets: [usize; REVERB_SEGMENTS],
+    comb_left: [PreparedDelay; 4],
+    comb_right: [PreparedDelay; 4],
+    allpass_left: [PreparedDelay; 3],
+    allpass_right: [PreparedDelay; 3],
+}
+
+impl ReverbLayout {
+    fn prepare(buffer_len: usize, sample_rate: f32) -> Option<Self> {
+        let segment_len = buffer_len / REVERB_SEGMENTS;
+        if segment_len < MIN_BUFFER_SAMPLES {
+            return None;
+        }
+        let maximum_delay = (segment_len - 2) as f32;
+        Some(Self {
+            buffer_len,
+            sample_rate_bits: sample_rate.to_bits(),
+            segment_len,
+            segment_offsets: core::array::from_fn(|index| index * segment_len),
+            comb_left: REVERB_COMB_LEFT_SECONDS
+                .map(|seconds| PreparedDelay::new(seconds * sample_rate, maximum_delay)),
+            comb_right: REVERB_COMB_RIGHT_SECONDS
+                .map(|seconds| PreparedDelay::new(seconds * sample_rate, maximum_delay)),
+            allpass_left: REVERB_ALLPASS_LEFT_SECONDS
+                .map(|seconds| PreparedDelay::new(seconds * sample_rate, maximum_delay)),
+            allpass_right: REVERB_ALLPASS_RIGHT_SECONDS
+                .map(|seconds| PreparedDelay::new(seconds * sample_rate, maximum_delay)),
+        })
+    }
+
+    fn matches(self, buffer_len: usize, sample_rate: f32) -> bool {
+        self.buffer_len == buffer_len && self.sample_rate_bits == sample_rate.to_bits()
+    }
+}
+
+trait ReverbKernel {
+    fn read(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32;
+}
+
+#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+struct ExactReverbKernel;
+
+#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+impl ReverbKernel for ExactReverbKernel {
+    #[inline(always)]
+    fn read(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
+        reverb_read_exact(samples, state, delay)
+    }
+}
+
+#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+struct PreparedReverbKernel;
+
+#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+impl ReverbKernel for PreparedReverbKernel {
+    #[inline(always)]
+    fn read(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
+        reverb_read_fast(samples, state, delay)
+    }
+}
+
+#[cfg(all(feature = "embedded-math", target_os = "none"))]
+type EngineReverb = Reverb<PreparedReverbKernel>;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+type EngineReverb = Reverb<ExactReverbKernel>;
+
+struct Reverb<K: ReverbKernel> {
+    params: RuntimeParams,
+    layout: ReverbLayout,
+    comb_left_delays: [DelayLineState; 4],
+    comb_right_delays: [DelayLineState; 4],
+    allpass_left_delays: [DelayLineState; 3],
+    allpass_right_delays: [DelayLineState; 3],
+    tone_left: [f32; 4],
+    tone_right: [f32; 4],
+    kernel: PhantomData<K>,
+}
+
+impl<K: ReverbKernel> Default for Reverb<K> {
+    fn default() -> Self {
+        Self {
+            params: RuntimeParams::default(),
+            layout: ReverbLayout::default(),
+            comb_left_delays: [DelayLineState::default(); 4],
+            comb_right_delays: [DelayLineState::default(); 4],
+            allpass_left_delays: [DelayLineState::default(); 3],
+            allpass_right_delays: [DelayLineState::default(); 3],
+            tone_left: [0.0; 4],
+            tone_right: [0.0; 4],
+            kernel: PhantomData,
+        }
+    }
+}
+
+impl<K: ReverbKernel> Reverb<K> {
+    #[cfg(not(feature = "profiling"))]
     fn next(
         &mut self,
         left: f32,
@@ -746,68 +942,106 @@ impl Reverb {
         buffer: &mut [f32],
         context: ProcessContext,
     ) -> Option<(f32, f32)> {
-        let segment_len = buffer.len() / REVERB_SEGMENTS;
-        if segment_len < MIN_BUFFER_SAMPLES {
-            return None;
+        self.next_inner(left, right, buffer, context)
+    }
+
+    #[cfg(feature = "profiling")]
+    fn next_profiled(
+        &mut self,
+        left: f32,
+        right: f32,
+        buffer: &mut [f32],
+        context: ProcessContext,
+        profiler: &mut impl RenderProfiler,
+    ) -> Option<(f32, f32)> {
+        self.next_inner(left, right, buffer, context, profiler)
+    }
+
+    fn next_inner(
+        &mut self,
+        left: f32,
+        right: f32,
+        buffer: &mut [f32],
+        context: ProcessContext,
+        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
+    ) -> Option<(f32, f32)> {
+        if !self.layout.matches(buffer.len(), context.sample_rate) {
+            self.layout = ReverbLayout::prepare(buffer.len(), context.sample_rate)?;
         }
+        let layout = self.layout;
+        let segment_len = layout.segment_len;
         let input = (left + right) * 0.5;
         let feedback = 0.70 + context.param1 * 0.24;
         let tone = 0.08 + context.param2 * 0.34;
-        let mut remaining = buffer;
         let mut sum_left = 0.0;
         let mut sum_right = 0.0;
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::ReverbCombs);
         for index in 0..4 {
-            let segment = take_segment(&mut remaining, segment_len);
-            sum_left += reverb_comb(
+            let offset = layout.segment_offsets[index];
+            let segment = &mut buffer[offset..offset + segment_len];
+            sum_left += reverb_comb::<K>(
                 segment,
-                &mut self.comb_left_indices[index],
+                &mut self.comb_left_delays[index],
                 &mut self.tone_left[index],
                 input,
-                REVERB_COMB_LEFT_SECONDS[index] * context.sample_rate,
+                layout.comb_left[index],
                 feedback,
                 tone,
             );
         }
         for index in 0..4 {
-            let segment = take_segment(&mut remaining, segment_len);
-            sum_right += reverb_comb(
+            let segment_index = 4 + index;
+            let offset = layout.segment_offsets[segment_index];
+            let segment = &mut buffer[offset..offset + segment_len];
+            sum_right += reverb_comb::<K>(
                 segment,
-                &mut self.comb_right_indices[index],
+                &mut self.comb_right_delays[index],
                 &mut self.tone_right[index],
                 input,
-                REVERB_COMB_RIGHT_SECONDS[index] * context.sample_rate,
+                layout.comb_right[index],
                 feedback,
                 tone,
             );
         }
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::ReverbCombs);
         let mut wet_left = sum_left * 0.18;
         let mut wet_right = sum_right * 0.18;
+        #[cfg(feature = "profiling")]
+        profiler.begin(RenderStage::ReverbAllpasses);
         for index in 0..3 {
-            let segment = take_segment(&mut remaining, segment_len);
-            wet_left = reverb_allpass(
+            let segment_index = 8 + index;
+            let offset = layout.segment_offsets[segment_index];
+            let segment = &mut buffer[offset..offset + segment_len];
+            wet_left = reverb_allpass::<K>(
                 segment,
-                &mut self.allpass_left_indices[index],
+                &mut self.allpass_left_delays[index],
                 wet_left,
-                REVERB_ALLPASS_LEFT_SECONDS[index] * context.sample_rate,
+                layout.allpass_left[index],
             );
         }
         for index in 0..3 {
-            let segment = take_segment(&mut remaining, segment_len);
-            wet_right = reverb_allpass(
+            let segment_index = 11 + index;
+            let offset = layout.segment_offsets[segment_index];
+            let segment = &mut buffer[offset..offset + segment_len];
+            wet_right = reverb_allpass::<K>(
                 segment,
-                &mut self.allpass_right_indices[index],
+                &mut self.allpass_right_delays[index],
                 wet_right,
-                REVERB_ALLPASS_RIGHT_SECONDS[index] * context.sample_rate,
+                layout.allpass_right[index],
             );
         }
+        #[cfg(feature = "profiling")]
+        profiler.end(RenderStage::ReverbAllpasses);
         Some((wet_left * 0.7, wet_right * 0.7))
     }
 
     fn clear(&mut self) {
-        self.comb_left_indices = [0; 4];
-        self.comb_right_indices = [0; 4];
-        self.allpass_left_indices = [0; 3];
-        self.allpass_right_indices = [0; 3];
+        self.comb_left_delays = [DelayLineState::default(); 4];
+        self.comb_right_delays = [DelayLineState::default(); 4];
+        self.allpass_left_delays = [DelayLineState::default(); 3];
+        self.allpass_right_delays = [DelayLineState::default(); 3];
         self.tone_left = [0.0; 4];
         self.tone_right = [0.0; 4];
     }
@@ -821,12 +1055,18 @@ impl Reverb {
 struct RingMod {
     params: RuntimeParams,
     phase: f32,
+    tracked_note: Option<u8>,
+    tracked_frequency_hz: f32,
 }
 
 impl RingMod {
     fn next(&mut self, left: f32, right: f32, context: ProcessContext) -> (f32, f32) {
         let frequency = if context.param2 >= 0.5 {
-            context.lowest_note.map(midi_to_hz).unwrap_or(110.0) * (0.25 + context.param1 * 4.0)
+            if self.tracked_note != context.lowest_note || self.tracked_frequency_hz == 0.0 {
+                self.tracked_note = context.lowest_note;
+                self.tracked_frequency_hz = context.lowest_note.map(midi_to_hz).unwrap_or(110.0);
+            }
+            self.tracked_frequency_hz * (0.25 + context.param1 * 4.0)
         } else {
             20.0 + context.param1 * 1980.0
         };
@@ -874,15 +1114,24 @@ struct HighPass {
     params: RuntimeParams,
     left: OnePoleHighPass,
     right: OnePoleHighPass,
+    coefficient_key: [u32; 2],
+    coefficient: f32,
 }
 
 impl HighPass {
     fn next(&mut self, left: f32, right: f32, context: ProcessContext) -> (f32, f32) {
-        let cutoff = 20.0 * crate::math::powf(600.0, context.param1);
+        let key = [context.param1.to_bits(), context.sample_rate.to_bits()];
+        if self.coefficient_key != key {
+            let cutoff = effect_coefficient_math::high_pass_cutoff(context.param1);
+            let rc = 1.0 / (TAU * cutoff.clamp(20.0, context.sample_rate * 0.45));
+            let dt = 1.0 / context.sample_rate.max(1.0);
+            self.coefficient = rc / (rc + dt);
+            self.coefficient_key = key;
+        }
         let resonance_gain = 1.0 + context.param2 * 0.75;
         (
-            self.left.process(left, cutoff, context.sample_rate) * resonance_gain,
-            self.right.process(right, cutoff, context.sample_rate) * resonance_gain,
+            self.left.process(left, self.coefficient) * resonance_gain,
+            self.right.process(right, self.coefficient) * resonance_gain,
         )
     }
 
@@ -894,18 +1143,19 @@ impl HighPass {
 
 struct DelayBuffer<'a> {
     samples: &'a mut [f32],
-    index: &'a mut usize,
+    state: &'a mut DelayLineState,
 }
 
 impl<'a> DelayBuffer<'a> {
-    fn new(samples: &'a mut [f32], index: &'a mut usize) -> Option<Self> {
+    fn new(samples: &'a mut [f32], state: &'a mut DelayLineState) -> Option<Self> {
         if samples.len() < MIN_BUFFER_SAMPLES {
             return None;
         }
-        if *index >= samples.len() {
-            *index = 0;
+        if state.index >= samples.len() {
+            state.clear();
         }
-        Some(Self { samples, index })
+        state.written = state.written.min(samples.len());
+        Some(Self { samples, state })
     }
 
     fn max_delay(&self) -> f32 {
@@ -915,17 +1165,38 @@ impl<'a> DelayBuffer<'a> {
     fn read(&self, delay_samples: f32) -> f32 {
         let len = self.samples.len();
         let delay = delay_samples.clamp(MIN_DELAY_SAMPLES, self.max_delay());
-        let read_position = *self.index as f32 + len as f32 - delay;
+        let read_position = self.state.index as f32 + len as f32 - delay;
         let read_floor = crate::math::floor(read_position);
         let base = read_floor as usize % len;
         let fraction = read_position - read_floor;
         let next = (base + 1) % len;
-        self.samples[base] * (1.0 - fraction) + self.samples[next] * fraction
+        self.valid_sample(base) * (1.0 - fraction) + self.valid_sample(next) * fraction
     }
 
     fn write(&mut self, sample: f32) {
-        self.samples[*self.index] = sample.clamp(-2.0, 2.0);
-        *self.index = (*self.index + 1) % self.samples.len();
+        self.samples[self.state.index] = sample.clamp(-2.0, 2.0);
+        self.state.index += 1;
+        if self.state.index == self.samples.len() {
+            self.state.index = 0;
+        }
+        self.state.written = (self.state.written + 1).min(self.samples.len());
+    }
+
+    #[inline]
+    fn valid_sample(&self, index: usize) -> f32 {
+        if self.state.written == self.samples.len() {
+            return self.samples[index];
+        }
+        let age = if self.state.index >= index {
+            self.state.index - index
+        } else {
+            self.state.index + self.samples.len() - index
+        };
+        if age != 0 && age <= self.state.written {
+            self.samples[index]
+        } else {
+            0.0
+        }
     }
 }
 
@@ -955,14 +1226,37 @@ struct OnePoleHighPass {
 }
 
 impl OnePoleHighPass {
-    fn process(&mut self, input: f32, cutoff: f32, sample_rate: f32) -> f32 {
-        let rc = 1.0 / (TAU * cutoff.clamp(20.0, sample_rate * 0.45));
-        let dt = 1.0 / sample_rate.max(1.0);
-        let alpha = rc / (rc + dt);
-        let output = alpha * (self.previous_output + input - self.previous_input);
+    fn process(&mut self, input: f32, coefficient: f32) -> f32 {
+        let output = coefficient * (self.previous_output + input - self.previous_input);
         self.previous_input = input;
         self.previous_output = output;
         output
+    }
+}
+
+mod effect_coefficient_math {
+    #[cfg(all(feature = "embedded-math", target_os = "none"))]
+    const LOG2_600: f32 = 9.228_819;
+
+    #[inline(always)]
+    pub(super) fn high_pass_cutoff(param: f32) -> f32 {
+        backend::high_pass_cutoff(param)
+    }
+
+    #[cfg(all(feature = "embedded-math", target_os = "none"))]
+    mod backend {
+        #[inline(always)]
+        pub(super) fn high_pass_cutoff(param: f32) -> f32 {
+            20.0 * crate::math::exp2(super::LOG2_600 * param)
+        }
+    }
+
+    #[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+    mod backend {
+        #[inline(always)]
+        pub(super) fn high_pass_cutoff(param: f32) -> f32 {
+            20.0 * crate::math::powf(600.0, param)
+        }
     }
 }
 
@@ -970,13 +1264,6 @@ fn split_stereo(buffer: &mut [f32]) -> Option<(&mut [f32], &mut [f32])> {
     let midpoint = buffer.len() / 2;
     let (left, right) = buffer.split_at_mut(midpoint);
     (left.len() >= MIN_BUFFER_SAMPLES && right.len() >= MIN_BUFFER_SAMPLES).then_some((left, right))
-}
-
-fn take_segment<'a>(remaining: &mut &'a mut [f32], length: usize) -> &'a mut [f32] {
-    let samples = core::mem::take(remaining);
-    let (segment, rest) = samples.split_at_mut(length);
-    *remaining = rest;
-    segment
 }
 
 fn delay_seconds(context: ProcessContext) -> f32 {
@@ -1005,28 +1292,114 @@ fn delay_seconds(context: ProcessContext) -> f32 {
     }
 }
 
-fn reverb_comb(
+#[inline(always)]
+fn reverb_comb<K: ReverbKernel>(
     buffer: &mut [f32],
-    index: &mut usize,
+    state: &mut DelayLineState,
     tone_state: &mut f32,
     input: f32,
-    delay_samples: f32,
+    tap: PreparedDelay,
     feedback: f32,
     tone: f32,
 ) -> f32 {
-    let mut delay = DelayBuffer::new(buffer, index).expect("reverb segments are validated");
-    let delayed = delay.read(delay_samples);
-    *tone_state += (delayed - *tone_state) * tone.clamp(0.01, 1.0);
-    delay.write(input * 0.55 + *tone_state * feedback.clamp(0.0, 0.97));
+    let delayed = K::read(buffer, state, tap);
+    *tone_state += (delayed - *tone_state) * tone;
+    reverb_write(buffer, state, input * 0.55 + *tone_state * feedback);
     *tone_state
 }
 
-fn reverb_allpass(buffer: &mut [f32], index: &mut usize, input: f32, delay_samples: f32) -> f32 {
-    let mut delay = DelayBuffer::new(buffer, index).expect("reverb segments are validated");
-    let delayed = delay.read(delay_samples);
+#[inline(always)]
+fn reverb_allpass<K: ReverbKernel>(
+    buffer: &mut [f32],
+    state: &mut DelayLineState,
+    input: f32,
+    tap: PreparedDelay,
+) -> f32 {
+    let delayed = K::read(buffer, state, tap);
     let output = delayed - input;
-    delay.write(input + delayed * 0.5);
+    reverb_write(buffer, state, input + delayed * 0.5);
     output
+}
+
+#[inline(always)]
+#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+fn reverb_read_exact(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
+    let length = samples.len();
+    let read_position = state.index as f32 + length as f32 - delay.delay_samples;
+    let base_position = state.index + length - delay.older_age;
+    let newer_weight = read_position - base_position as f32;
+    let older_index = if state.index >= delay.older_age {
+        state.index - delay.older_age
+    } else {
+        length - (delay.older_age - state.index)
+    };
+    let newer_index = if older_index + 1 == length {
+        0
+    } else {
+        older_index + 1
+    };
+    let (older, newer) = if state.written == length {
+        (samples[older_index], samples[newer_index])
+    } else {
+        (
+            if delay.older_age <= state.written {
+                samples[older_index]
+            } else {
+                0.0
+            },
+            if delay.older_age > 1 && delay.older_age - 1 <= state.written {
+                samples[newer_index]
+            } else {
+                0.0
+            },
+        )
+    };
+    older * (1.0 - newer_weight) + newer * newer_weight
+}
+
+#[inline(always)]
+#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+fn reverb_read_fast(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
+    let length = samples.len();
+    let older_index = if state.index >= delay.older_age {
+        state.index - delay.older_age
+    } else {
+        length - (delay.older_age - state.index)
+    };
+    let newer_index = if older_index + 1 == length {
+        0
+    } else {
+        older_index + 1
+    };
+    let (older, newer) = if state.written == length {
+        (samples[older_index], samples[newer_index])
+    } else {
+        (
+            if delay.older_age <= state.written {
+                samples[older_index]
+            } else {
+                0.0
+            },
+            if delay.older_age > 1 && delay.older_age - 1 <= state.written {
+                samples[newer_index]
+            } else {
+                0.0
+            },
+        )
+    };
+    older * (1.0 - delay.newer_weight) + newer * delay.newer_weight
+}
+
+#[inline(always)]
+fn reverb_write(samples: &mut [f32], state: &mut DelayLineState, sample: f32) {
+    samples[state.index] = sample.clamp(-2.0, 2.0);
+    state.index += 1;
+    if state.index == samples.len() {
+        state.index = 0;
+    }
+    if state.written < samples.len() {
+        state.written += 1;
+    }
 }
 
 fn advance_phase(phase: f32, frequency: f32, sample_rate: f32) -> f32 {
@@ -1052,4 +1425,165 @@ fn crossfade(left: f32, right: f32, amount: f32) -> f32 {
 
 fn soft_clip(input: f32, gain: f32) -> f32 {
     crate::math::tanh(input * gain)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    extern crate std;
+
+    const TEST_BUFFER_SAMPLES: usize = 4096;
+
+    const DELAY_EFFECTS: [EffectType; 7] = [
+        EffectType::DelayMono,
+        EffectType::DdlStereo,
+        EffectType::BucketBrigadeDelay,
+        EffectType::Chorus,
+        EffectType::Flanger1,
+        EffectType::Flanger2,
+        EffectType::Reverb,
+    ];
+
+    fn configured(effect_type: EffectType) -> Effects<TEST_BUFFER_SAMPLES> {
+        let mut effects = Effects::new(48_000.0);
+        effects.set_params(EffectParams {
+            enabled: true,
+            effect_type,
+            mix: 1.0,
+            clock_sync: false,
+            param1: 0.55,
+            param2: 0.65,
+        });
+        effects
+    }
+
+    #[test]
+    fn effect_changes_do_not_clear_shared_delay_memory() {
+        let mut effects = configured(EffectType::DelayMono);
+        effects.buffer.as_mut().fill(0.375);
+
+        effects.set_type(EffectType::Reverb);
+
+        assert!(
+            effects
+                .buffer
+                .as_ref()
+                .iter()
+                .all(|sample| *sample == 0.375)
+        );
+    }
+
+    #[test]
+    fn logical_delay_reset_matches_zero_filled_memory() {
+        for effect_type in DELAY_EFFECTS {
+            let mut logical = configured(effect_type);
+            for index in 0..512 {
+                let input = if index == 0 { 0.8 } else { 0.0 };
+                logical.next(input, -input, EffectModulation::default(), Some(60));
+            }
+            logical.set_type(EffectType::Distortion);
+            logical.buffer.as_mut().fill(0.375);
+            logical.set_type(effect_type);
+
+            let mut physical = configured(effect_type);
+            physical.buffer.as_mut().fill(0.0);
+
+            for index in 0..4096 {
+                let input = if index == 0 { 0.8 } else { 0.0 };
+                let expected = physical.next(input, -input, EffectModulation::default(), Some(60));
+                let actual = logical.next(input, -input, EffectModulation::default(), Some(60));
+                assert_eq!(
+                    [actual.0.to_bits(), actual.1.to_bits()],
+                    [expected.0.to_bits(), expected.1.to_bits()],
+                    "logical reset diverged for {effect_type:?} at sample {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_reverb_taps_match_dynamic_interpolation() {
+        let sample_rate = 48_000.0;
+        let mut samples = [0.0; 48_000 / REVERB_SEGMENTS];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = ((index * 37 % 101) as f32 - 50.0) / 50.0;
+        }
+        let maximum_delay = (samples.len() - 2) as f32;
+        let delays = REVERB_COMB_LEFT_SECONDS
+            .into_iter()
+            .chain(REVERB_COMB_RIGHT_SECONDS)
+            .chain(REVERB_ALLPASS_LEFT_SECONDS)
+            .chain(REVERB_ALLPASS_RIGHT_SECONDS);
+
+        for delay_samples in delays.map(|seconds| seconds * sample_rate) {
+            let prepared = PreparedDelay::new(delay_samples, maximum_delay);
+            for index in 0..samples.len() {
+                let mut state = DelayLineState {
+                    index,
+                    written: samples.len(),
+                };
+                let expected = {
+                    let delay = DelayBuffer::new(&mut samples, &mut state).unwrap();
+                    delay.read(delay_samples)
+                };
+                let actual = reverb_read_exact(&samples, &state, prepared);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "tap differed at delay {delay_samples} and index {index}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_reverb_kernel_stays_close_to_exact_output() {
+        let mut exact = Reverb::<ExactReverbKernel>::default();
+        let mut prepared = Reverb::<PreparedReverbKernel>::default();
+        let mut exact_buffer = std::vec![0.0; 48_000];
+        let mut prepared_buffer = std::vec![0.0; 48_000];
+        let context = ProcessContext {
+            sample_rate: 48_000.0,
+            tempo_bpm: 120.0,
+            param1: 0.55,
+            param2: 0.65,
+            clock_sync: false,
+            lowest_note: Some(60),
+        };
+        let mut maximum_error = 0.0f32;
+
+        for index in 0..32_768 {
+            let left = if index == 0 {
+                0.8
+            } else {
+                ((index * 37 % 101) as f32 - 50.0) * 0.0002
+            };
+            let right = if index == 0 { -0.4 } else { left * -0.37 };
+            #[cfg(not(feature = "profiling"))]
+            let expected = exact.next(left, right, &mut exact_buffer, context).unwrap();
+            #[cfg(feature = "profiling")]
+            let expected = exact
+                .next_inner(left, right, &mut exact_buffer, context, &mut NoopProfiler)
+                .unwrap();
+            #[cfg(not(feature = "profiling"))]
+            let actual = prepared
+                .next(left, right, &mut prepared_buffer, context)
+                .unwrap();
+            #[cfg(feature = "profiling")]
+            let actual = prepared
+                .next_inner(
+                    left,
+                    right,
+                    &mut prepared_buffer,
+                    context,
+                    &mut NoopProfiler,
+                )
+                .unwrap();
+            maximum_error = maximum_error
+                .max((actual.0 - expected.0).abs())
+                .max((actual.1 - expected.1).abs());
+        }
+
+        assert!(maximum_error <= 2e-6, "maximum error was {maximum_error}");
+    }
 }

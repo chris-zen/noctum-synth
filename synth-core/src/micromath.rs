@@ -385,6 +385,26 @@ fn rational_tanh(value: f32) -> f32 {
     numerator / denominator
 }
 
+/// Embedded scalar entry points used by subsystem math backends.
+///
+/// Keeping these beside the four-lane implementation ensures the scalar and
+/// lane paths use the same bounded approximations without exposing them as DSP
+/// API surface.
+#[inline]
+pub(crate) fn scalar_tanh(value: f32) -> f32 {
+    rational_tanh(value)
+}
+
+#[inline]
+pub(crate) fn scalar_tan(value: f32) -> f32 {
+    accurate_tan(value)
+}
+
+#[inline]
+pub(crate) fn scalar_exp2(value: f32) -> f32 {
+    accurate_exp2(value)
+}
+
 #[inline]
 fn embedded_floor(value: f32) -> f32 {
     if value == 0.0 || !value.is_finite() {

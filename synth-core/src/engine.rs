@@ -1,10 +1,11 @@
 //! Top-level synthesis engine and audio render entry point.
 
 use crate::EffectType;
-use crate::effects::EffectsWithMemory;
+use crate::effects::EngineEffects;
 use crate::output_limiter::OutputLimiter;
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
+use crate::render_rate::EngineRateAdapter;
 use crate::voices::Voices;
 use crate::{
     ActiveNotes, ControlMessage, DEFAULT_TEMPO_BPM, FilterOversampling, FilterType, ParamId, Patch,
@@ -28,23 +29,26 @@ pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize =
 /// [`SynthEngine::process_interleaved`] on the audio thread.
 pub struct SynthEngineWithMemory<const PACKS: usize, Memory> {
     voices: Voices<PACKS>,
-    effects: EffectsWithMemory<Memory>,
+    effects: EngineEffects<Memory>,
     tempo_bpm: f32,
     master_volume: f32,
     output_limiter: OutputLimiter,
+    output_rate: EngineRateAdapter,
 }
 
 impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [f32; FX_SAMPLES]> {
     /// Creates an engine at `sample_rate` with inline effects storage.
     pub fn new(sample_rate: f32) -> Self {
-        let mut effects = crate::effects::Effects::new(sample_rate);
+        let internal_sample_rate = EngineRateAdapter::internal_sample_rate(sample_rate);
+        let mut effects = crate::effects::Effects::new(internal_sample_rate);
         effects.set_tempo_bpm(DEFAULT_TEMPO_BPM);
         Self {
-            voices: Voices::<PACKS>::new(sample_rate),
+            voices: Voices::<PACKS>::new(internal_sample_rate),
             effects,
             tempo_bpm: DEFAULT_TEMPO_BPM,
             master_volume: 0.8,
-            output_limiter: OutputLimiter::new(sample_rate),
+            output_limiter: OutputLimiter::new(internal_sample_rate),
+            output_rate: EngineRateAdapter::default(),
         }
     }
 }
@@ -55,14 +59,16 @@ where
 {
     /// Creates an engine using caller-provided effects memory.
     pub fn new_with_effects_memory(sample_rate: f32, effects_memory: Memory) -> Self {
-        let mut effects = EffectsWithMemory::new_with_memory(sample_rate, effects_memory);
+        let internal_sample_rate = EngineRateAdapter::internal_sample_rate(sample_rate);
+        let mut effects = EngineEffects::new_with_memory(internal_sample_rate, effects_memory);
         effects.set_tempo_bpm(DEFAULT_TEMPO_BPM);
         Self {
-            voices: Voices::<PACKS>::new(sample_rate),
+            voices: Voices::<PACKS>::new(internal_sample_rate),
             effects,
             tempo_bpm: DEFAULT_TEMPO_BPM,
             master_volume: 0.8,
-            output_limiter: OutputLimiter::new(sample_rate),
+            output_limiter: OutputLimiter::new(internal_sample_rate),
+            output_rate: EngineRateAdapter::default(),
         }
     }
 
@@ -106,18 +112,9 @@ where
 
     /// Applies every parameter and modulation route in a patch.
     pub fn apply_patch(&mut self, patch: &Patch) {
-        patch.for_each_param(|param, value| {
-            self.handle_control(ControlMessage::SetParam(param, value))
-        });
-        patch.for_each_modulation(|route, slot| {
-            self.handle_control(ControlMessage::SetModulation {
-                route,
-                enabled: slot.enabled,
-                source: slot.source,
-                destination: slot.destination,
-                amount: slot.amount,
-            });
-        });
+        self.voices.apply_patch(patch);
+        self.effects.set_params(patch.effects);
+        self.master_volume = patch.master_volume.clamp(0.0, 1.0);
     }
 
     /// Updates the global tempo and propagates it to clock-synchronized effects.
@@ -209,10 +206,15 @@ where
         }
 
         for frame in buffer.chunks_exact_mut(channels) {
-            #[cfg(feature = "profiling")]
-            let (left, right) = self.next_profiled(profiler);
-            #[cfg(not(feature = "profiling"))]
-            let (left, right) = self.next();
+            if self.output_rate.needs_render() {
+                #[cfg(feature = "profiling")]
+                let rendered = self.next_profiled(profiler);
+                #[cfg(not(feature = "profiling"))]
+                let rendered = self.next();
+                self.output_rate.submit(rendered);
+            }
+            let (left, right) = self.output_rate.output();
+            self.output_rate.advance();
             if channels == 1 {
                 frame[0] = (0.5 * (left + right)).clamp(-1.0, 1.0);
             } else {
@@ -246,6 +248,15 @@ where
         profiler.begin(RenderStage::Effects);
         let left = left * MIX_BUS_GAIN;
         let right = right * MIX_BUS_GAIN;
+        #[cfg(feature = "profiling")]
+        let (left, right) = self.effects.next_profiled(
+            left,
+            right,
+            self.voices.effect_modulation(),
+            self.voices.lowest_active_note(),
+            profiler,
+        );
+        #[cfg(not(feature = "profiling"))]
         let (left, right) = self.effects.next(
             left,
             right,

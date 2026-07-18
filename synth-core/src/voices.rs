@@ -1,7 +1,9 @@
 //! Polyphonic voice allocation and mixing.
 
 use crate::effects::EffectModulation;
-use crate::filter::{MAX_CUTOFF_HZ, MIN_CUTOFF_HZ};
+#[cfg(test)]
+use crate::filter::MAX_CUTOFF_HZ;
+use crate::filter::MIN_CUTOFF_HZ;
 use crate::fixed_index_list::FixedIndexList;
 #[cfg(all(feature = "profiling", test))]
 use crate::profiling::NoopProfiler;
@@ -10,7 +12,7 @@ use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
     ControlMessage, FilterOversampling, FilterType, LANES, LfoWaveform, ModDestination, ParamId,
-    VOICE_PACKS, VoiceBlock, Waveform,
+    Patch, VOICE_PACKS, VoiceBlock, Waveform,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -117,6 +119,27 @@ impl<const PACKS: usize> Voices<PACKS> {
             next_pan_side: -1.0,
             performance: PerformanceModulation::default(),
             last_effect_modulation: EffectModulation::default(),
+        }
+    }
+
+    pub(crate) fn apply_patch(&mut self, patch: &Patch) {
+        for block in &mut self.blocks {
+            block.begin_patch_update();
+        }
+        patch.for_each_param(|id, value| self.set_param(id, value));
+        patch.for_each_modulation(|route, slot| {
+            for block in &mut self.blocks {
+                block.set_mod_route(
+                    route,
+                    slot.enabled,
+                    slot.source,
+                    slot.destination,
+                    slot.amount,
+                );
+            }
+        });
+        for block in &mut self.blocks {
+            block.finish_patch_update();
         }
     }
 
@@ -443,7 +466,8 @@ impl<const PACKS: usize> Voices<PACKS> {
 }
 
 fn midi_filter_cutoff_hz(value: f32) -> f32 {
-    MIN_CUTOFF_HZ * crate::math::powf(MAX_CUTOFF_HZ / MIN_CUTOFF_HZ, value)
+    const CUTOFF_RANGE_OCTAVES: f32 = 9.813_781;
+    MIN_CUTOFF_HZ * crate::math::exp2(CUTOFF_RANGE_OCTAVES * value)
 }
 
 fn int_to_waveform(value: i32) -> Waveform {
@@ -498,9 +522,11 @@ impl<const PACKS: usize> Voices<PACKS> {
             }
             block.age_active_lanes();
             #[cfg(feature = "profiling")]
-            let (block_left, block_right) = block.next_profiled(self.performance, profiler);
+            let (block_left, block_right) =
+                block.next_profiled(self.performance, block_voice_count, profiler);
             #[cfg(not(feature = "profiling"))]
-            let (block_left, block_right) = block.next(self.performance);
+            let (block_left, block_right) =
+                block.next_with_active_lane_count(self.performance, block_voice_count);
             left += block_left;
             right += block_right;
             effects.add(block.last_effect_modulation);

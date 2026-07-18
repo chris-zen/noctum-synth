@@ -1,20 +1,29 @@
 //! Heapless runtime-selectable low-pass filter models.
 
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 mod cascaded_tpt_svf;
 mod coefficient_math;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 mod distributed_newton_tpt;
 mod gain_limited_tpt;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 mod huovilainen_ladder;
 #[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
 mod prewarp_table;
+mod resonance_math;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 mod scalar_feedback_tpt;
 
 use crate::f32x4;
 
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 use cascaded_tpt_svf::CascadedTptSvf;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 use distributed_newton_tpt::DistributedNewtonTpt;
 use gain_limited_tpt::GainLimitedTpt;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 use huovilainen_ladder::HuovilainenLadder;
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 use scalar_feedback_tpt::ScalarFeedbackTpt;
 
 /// Lowest cutoff accepted by every filter model.
@@ -28,6 +37,7 @@ const AUDIO_MOD_DEPTH_SEMITONES: f32 = 48.0;
 /// MIDI note that produces zero semitones of filter keyboard tracking.
 const KEY_TRACK_REFERENCE_NOTE: f32 = 36.0;
 /// Exponent applied to the public resonance control before model calibration.
+#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
 const RESONANCE_CONTROL_EXPONENT: f32 = 1.75;
 
 /// Public resonance value where 4-pole nonlinear self-oscillation begins.
@@ -136,6 +146,7 @@ pub(crate) trait FilterAlgorithm {
     fn process(&mut self, frame: FilterFrame) -> f32x4;
 }
 
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 enum FilterAlgorithmState {
     DistributedNewtonTpt(DistributedNewtonTpt),
     ScalarFeedbackTpt(ScalarFeedbackTpt),
@@ -144,6 +155,33 @@ enum FilterAlgorithmState {
     CascadedTptSvf(CascadedTptSvf),
 }
 
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+macro_rules! with_filter_algorithm_mut {
+    ($state:expr, $algorithm:ident => $body:expr) => {
+        match $state {
+            FilterAlgorithmState::DistributedNewtonTpt($algorithm) => $body,
+            FilterAlgorithmState::ScalarFeedbackTpt($algorithm) => $body,
+            FilterAlgorithmState::GainLimitedTpt($algorithm) => $body,
+            FilterAlgorithmState::HuovilainenLadder($algorithm) => $body,
+            FilterAlgorithmState::CascadedTptSvf($algorithm) => $body,
+        }
+    };
+}
+
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+macro_rules! with_filter_algorithm {
+    ($state:expr, $algorithm:ident => $body:expr) => {
+        match $state {
+            FilterAlgorithmState::DistributedNewtonTpt($algorithm) => $body,
+            FilterAlgorithmState::ScalarFeedbackTpt($algorithm) => $body,
+            FilterAlgorithmState::GainLimitedTpt($algorithm) => $body,
+            FilterAlgorithmState::HuovilainenLadder($algorithm) => $body,
+            FilterAlgorithmState::CascadedTptSvf($algorithm) => $body,
+        }
+    };
+}
+
+#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
 impl FilterAlgorithmState {
     fn new(filter_type: FilterType) -> Self {
         match filter_type {
@@ -157,24 +195,74 @@ impl FilterAlgorithmState {
         }
     }
 
-    fn algorithm_mut(&mut self) -> &mut dyn FilterAlgorithm {
-        match self {
-            Self::DistributedNewtonTpt(algorithm) => algorithm,
-            Self::ScalarFeedbackTpt(algorithm) => algorithm,
-            Self::GainLimitedTpt(algorithm) => algorithm,
-            Self::HuovilainenLadder(algorithm) => algorithm,
-            Self::CascadedTptSvf(algorithm) => algorithm,
-        }
+    fn reset(&mut self) {
+        with_filter_algorithm_mut!(self, algorithm => algorithm.reset())
     }
 
-    fn algorithm(&self) -> &dyn FilterAlgorithm {
-        match self {
-            Self::DistributedNewtonTpt(algorithm) => algorithm,
-            Self::ScalarFeedbackTpt(algorithm) => algorithm,
-            Self::GainLimitedTpt(algorithm) => algorithm,
-            Self::HuovilainenLadder(algorithm) => algorithm,
-            Self::CascadedTptSvf(algorithm) => algorithm,
-        }
+    fn reset_lane(&mut self, lane: usize) {
+        with_filter_algorithm_mut!(self, algorithm => algorithm.reset_lane(lane))
+    }
+
+    fn invalidate_coefficients(&mut self) {
+        with_filter_algorithm_mut!(self, algorithm => algorithm.invalidate_coefficients())
+    }
+
+    fn clear_oversampling_state(&mut self) {
+        with_filter_algorithm_mut!(self, algorithm => algorithm.clear_oversampling_state())
+    }
+
+    fn set_self_osc_pitch_tuning_cents(&mut self, cents: f32) {
+        with_filter_algorithm_mut!(self, algorithm => algorithm.set_self_osc_pitch_tuning_cents(cents))
+    }
+
+    fn self_osc_pitch_tuning_cents(&self) -> f32 {
+        with_filter_algorithm!(self, algorithm => algorithm.self_osc_pitch_tuning_cents())
+    }
+
+    #[inline(always)]
+    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+        with_filter_algorithm_mut!(self, algorithm => algorithm.process(frame))
+    }
+}
+
+/// Daisy production filter bank. The public control surface is retained, but
+/// the hot path contains only the firmware's selected Gain-Limited TPT model.
+#[cfg(all(feature = "embedded-math", target_os = "none"))]
+struct FilterAlgorithmState(GainLimitedTpt);
+
+#[cfg(all(feature = "embedded-math", target_os = "none"))]
+impl FilterAlgorithmState {
+    fn new(_filter_type: FilterType) -> Self {
+        Self(GainLimitedTpt::default())
+    }
+
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+
+    fn reset_lane(&mut self, lane: usize) {
+        self.0.reset_lane(lane);
+    }
+
+    fn invalidate_coefficients(&mut self) {
+        self.0.invalidate_coefficients();
+    }
+
+    fn clear_oversampling_state(&mut self) {
+        self.0.clear_oversampling_state();
+    }
+
+    fn set_self_osc_pitch_tuning_cents(&mut self, cents: f32) {
+        self.0.set_self_osc_pitch_tuning_cents(cents);
+    }
+
+    fn self_osc_pitch_tuning_cents(&self) -> f32 {
+        self.0.self_osc_pitch_tuning_cents()
+    }
+
+    #[inline(always)]
+    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+        self.0.process(frame)
     }
 }
 
@@ -235,7 +323,7 @@ impl Filter {
 
     pub fn set_cutoff(&mut self, cutoff: f32) {
         self.cutoff = cutoff.clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ);
-        self.algorithm.algorithm_mut().invalidate_coefficients();
+        self.algorithm.invalidate_coefficients();
     }
 
     pub const fn cutoff(&self) -> f32 {
@@ -274,7 +362,7 @@ impl Filter {
     pub fn set_oversampling(&mut self, oversampling: FilterOversampling) {
         if self.oversampling != oversampling {
             self.oversampling = oversampling;
-            self.algorithm.algorithm_mut().clear_oversampling_state();
+            self.algorithm.clear_oversampling_state();
         }
     }
 
@@ -289,21 +377,19 @@ impl Filter {
     }
 
     pub fn set_self_osc_pitch_tuning_cents(&mut self, cents: f32) {
-        self.algorithm
-            .algorithm_mut()
-            .set_self_osc_pitch_tuning_cents(cents);
+        self.algorithm.set_self_osc_pitch_tuning_cents(cents);
     }
 
     pub fn self_osc_pitch_tuning_cents(&self) -> f32 {
-        self.algorithm.algorithm().self_osc_pitch_tuning_cents()
+        self.algorithm.self_osc_pitch_tuning_cents()
     }
 
     pub fn reset(&mut self) {
-        self.algorithm.algorithm_mut().reset();
+        self.algorithm.reset();
     }
 
     pub fn reset_lane(&mut self, lane: usize) {
-        self.algorithm.algorithm_mut().reset_lane(lane);
+        self.algorithm.reset_lane(lane);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -410,7 +496,7 @@ impl Filter {
             && all_lanes_near_zero(resonance_mod)
             && all_lanes_near_zero(audio_mod);
 
-        self.algorithm.algorithm_mut().process(FilterFrame {
+        self.algorithm.process(FilterFrame {
             input,
             cutoff_hz: self.cutoff,
             cutoff_mod_semitones,
@@ -438,7 +524,7 @@ fn shape_resonance_control(value: f32x4) -> f32x4 {
 }
 
 fn shape_resonance_scalar(value: f32) -> f32 {
-    crate::math::powf(value.clamp(0.0, 1.0), RESONANCE_CONTROL_EXPONENT)
+    resonance_math::shape(value.clamp(0.0, 1.0))
 }
 
 fn all_lanes_near_zero(value: f32x4) -> bool {

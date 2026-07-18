@@ -7,6 +7,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RenderStage {
+    /// Firmware control messages applied before rendering a block.
+    ControlDrain,
     EnvelopesAndModulation,
     /// Envelope generation within the modulation parent stage.
     EnvelopeAdvance,
@@ -16,6 +18,10 @@ pub enum RenderStage {
     LfoGeneration,
     /// Routes applied to audio destinations using current LFO outputs.
     AudioModulationRouting,
+    /// Routes evaluated at the embedded control rate.
+    ControlRateRouting,
+    /// Per-sample interpolation of control-rate modulation values.
+    ControlRateInterpolation,
     /// Complete oscillator section, including the nested stages below.
     Oscillators,
     /// Frequency and shape modulation updates.
@@ -27,17 +33,30 @@ pub enum RenderStage {
     Filter,
     AmplifierAndPan,
     Effects,
+    /// Effect parameter preparation and selected-kernel dispatch.
+    EffectsPreparation,
+    /// Parallel comb portion of the reverb network.
+    ReverbCombs,
+    /// Serial allpass diffusion portion of the reverb network.
+    ReverbAllpasses,
+    /// Effect wet/dry mix and output limiting.
+    EffectsMix,
     MasterOutput,
+    /// Firmware copy from interleaved engine output into the DMA block.
+    OutputCopy,
 }
 
 impl RenderStage {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 21;
     pub const ALL: [Self; Self::COUNT] = [
+        Self::ControlDrain,
         Self::EnvelopesAndModulation,
         Self::EnvelopeAdvance,
         Self::LfoControlRouting,
         Self::LfoGeneration,
         Self::AudioModulationRouting,
+        Self::ControlRateRouting,
+        Self::ControlRateInterpolation,
         Self::Oscillators,
         Self::OscillatorControl,
         Self::OscillatorWaveform,
@@ -45,7 +64,12 @@ impl RenderStage {
         Self::Filter,
         Self::AmplifierAndPan,
         Self::Effects,
+        Self::EffectsPreparation,
+        Self::ReverbCombs,
+        Self::ReverbAllpasses,
+        Self::EffectsMix,
         Self::MasterOutput,
+        Self::OutputCopy,
     ];
 
     pub const fn index(self) -> usize {

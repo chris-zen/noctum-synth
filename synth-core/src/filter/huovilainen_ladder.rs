@@ -186,7 +186,7 @@ impl HuovilainenLadder {
         }
 
         let max_cutoff = (processing_rate * 0.45).min(MAX_CUTOFF_HZ);
-        let cutoff = (frame.cutoff_hz * crate::math::powf(2.0, pitch_cents / 1200.0))
+        let cutoff = (frame.cutoff_hz * crate::math::exp2(pitch_cents / 1200.0))
             .clamp(MIN_CUTOFF_HZ, max_cutoff);
         // The published correction polynomials use cutoff / sample rate.
         // Only the exponential contains the full 2*pi factor.

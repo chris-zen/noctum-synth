@@ -446,7 +446,7 @@ impl DistributedNewtonTpt {
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
         let hz = if uses_pitch_tuning {
-            let scale = crate::math::powf(2.0, self_osc_cents / 1200.0);
+            let scale = crate::math::exp2(self_osc_cents / 1200.0);
             frame.cutoff_hz * scale
         } else {
             frame.cutoff_hz

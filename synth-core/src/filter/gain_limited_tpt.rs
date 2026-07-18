@@ -105,7 +105,7 @@ impl GainLimitedTpt {
         let mut output = f32x4::splat(0.0);
         for _ in 0..factor {
             output = self.process_subsample(frame, g);
-            output = self.decimate(output, frame.sample_rate, oversampled_rate);
+            output = self.decimate(output, factor);
         }
         output
     }
@@ -205,7 +205,7 @@ impl GainLimitedTpt {
         (g4, g3 * s0 + g2 * s1 + g * s2 + s3)
     }
 
-    fn decimate(&mut self, output: f32x4, sample_rate: f32, oversampled_rate: f32) -> f32x4 {
+    fn decimate(&mut self, output: f32x4, factor: usize) -> f32x4 {
         let mut state = self.oversample_decimator_z.to_array();
         let output_values = output.to_array();
         for lane in 0..state.len() {
@@ -214,9 +214,7 @@ impl GainLimitedTpt {
             }
         }
         self.oversample_decimator_z = f32x4::new(state);
-        let cutoff = sample_rate * 0.45;
-        let raw = crate::math::tan(core::f32::consts::PI * cutoff / oversampled_rate);
-        let g = f32x4::splat(raw / (1.0 + raw));
+        let g = f32x4::splat(decimator_coefficient(factor));
         tpt_one_pole(output, &mut self.oversample_decimator_z, g)
     }
 
@@ -272,12 +270,37 @@ impl GainLimitedTpt {
         }
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
-        let cutoff = (frame.cutoff_hz * crate::math::powf(2.0, pitch_cents / 1200.0))
+        let cutoff = (frame.cutoff_hz * crate::math::exp2(pitch_cents / 1200.0))
             .clamp(MIN_CUTOFF_HZ, max_cutoff);
         let raw = crate::math::tan(core::f32::consts::PI * cutoff / sample_rate);
         let value = raw / (1.0 + raw);
         self.static_coefficient_cache = StaticCoefficientCache { key, value };
         value
+    }
+}
+
+#[inline(always)]
+fn decimator_coefficient(factor: usize) -> f32 {
+    decimator_math::coefficient(factor)
+}
+
+mod decimator_math {
+    #[cfg(all(feature = "embedded-math", target_os = "none"))]
+    #[inline(always)]
+    pub(super) fn coefficient(factor: usize) -> f32 {
+        match factor {
+            2 => 0.460_649_16,
+            4 => 0.269_496_83,
+            _ => 1.0,
+        }
+    }
+
+    #[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+    #[inline(always)]
+    pub(super) fn coefficient(factor: usize) -> f32 {
+        let angle = core::f32::consts::PI * 0.45 / factor as f32;
+        let raw = crate::math::tan(angle);
+        raw / (1.0 + raw)
     }
 }
 
