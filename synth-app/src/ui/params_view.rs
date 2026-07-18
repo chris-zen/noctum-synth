@@ -4,7 +4,8 @@ use eframe::egui;
 
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
-    KNOB_SIZE, master_volume, param_knob_bipolar, param_knob_f32, param_knob_log_hz, param_toggle,
+    KNOB_SIZE, framed_selectable, framed_selectable_sized, master_volume, param_knob_bipolar,
+    param_knob_f32, param_knob_log_hz, param_toggle, param_toggle_sized,
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
@@ -13,20 +14,26 @@ use synth_core::{
     ModulationParam, OscillatorPatch, ParamId, Patch,
 };
 
-const WIDE_LAYOUT_MIN_WIDTH: f32 = 900.0;
+const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
 const OSC_GRID_WIDTH: f32 = 700.0;
-const LFO_PANEL_WIDTH: f32 = 560.0;
+const LFO_PANEL_WIDTH: f32 = 400.0;
 const MOD_MATRIX_PANEL_WIDTH: f32 = 760.0;
 const EFFECTS_PANEL_WIDTH: f32 = 560.0;
-const FILTER_GRID_WIDTH: f32 = 540.0;
+const FILTER_GRID_WIDTH: f32 = 360.0;
 const AMP_GRID_WIDTH: f32 = 320.0;
-const AUX_GRID_WIDTH: f32 = 380.0;
+const AUX_GRID_WIDTH: f32 = 360.0;
 const CONTROL_CELL_W: f32 = 46.0;
 const CONTROL_CELL_H: f32 = 64.0;
 const DEST_CELL_W: f32 = 112.0;
 const TOGGLE_CELL_W: f32 = 82.0;
 const TOGGLE_CELL_H: f32 = 64.0;
 const WAVE_CELL_W: f32 = 112.0;
+const WAVE_BUTTON_SIZE: egui::Vec2 = egui::vec2(54.0, 22.0);
+const LFO_SHAPE_BUTTON_SIZE: egui::Vec2 = egui::vec2(78.0, 22.0);
+const LFO_SYNC_BUTTON_SIZE: egui::Vec2 = egui::vec2(72.0, 22.0);
+const LFO_INDEX_BUTTON_SIZE: egui::Vec2 = egui::vec2(34.0, 28.0);
+const OSC_TOGGLE_BUTTON_SIZE: egui::Vec2 = egui::vec2(82.0, 20.0);
+const MOD_SLOT_BUTTON_SIZE: egui::Vec2 = egui::vec2(28.0, 26.0);
 const EFFECT_TYPE_COUNT: usize = 13;
 
 #[derive(Clone, Copy)]
@@ -120,6 +127,8 @@ pub struct UiState {
     pub effect_param2: f32,
     effect_runtime_params: [EffectRuntimeParams; EFFECT_TYPE_COUNT],
     pub master_volume: f32,
+    pub play_pitch_class: u8,
+    pub play_octave: i8,
 }
 
 impl Default for UiState {
@@ -194,6 +203,8 @@ impl Default for UiState {
             effect_param2: 0.25,
             effect_runtime_params: [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT],
             master_volume: 0.8,
+            play_pitch_class: 0,
+            play_octave: 4,
         }
     }
 }
@@ -272,6 +283,9 @@ impl UiState {
         self.effect_type = patch.effects.effect_type.index();
         self.effect_mix = patch.effects.mix;
         self.effect_clock_sync = patch.effects.clock_sync;
+        if !EffectType::from_index(self.effect_type).is_delay() {
+            self.effect_clock_sync = false;
+        }
         self.effect_param1 = patch.effects.param1;
         self.effect_param2 = patch.effects.param2;
         self.effect_runtime_params = [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT];
@@ -592,7 +606,10 @@ pub fn show(
     patch_mgr: &mut PatchManager,
     filter_type: &mut FilterType,
     midi_output_port: Option<&str>,
+    muted: &mut bool,
 ) {
+    let patch_before = Patch::from(&*state);
+
     command_row(
         ui,
         control,
@@ -600,6 +617,7 @@ pub fn show(
         state,
         patch_mgr,
         midi_output_port,
+        muted,
     );
 
     ui.add_space(6.0);
@@ -613,17 +631,23 @@ pub fn show(
 
         if ui.available_width() >= WIDE_LAYOUT_MIN_WIDTH {
             ui.columns(2, |columns| {
-                module_panel(&mut columns[0], "Low-Pass Filter", |ui| {
-                    filter_module(ui, state, control, filter_type);
-                });
+                module_panel_with_header(
+                    &mut columns[0],
+                    "Low-Pass Filter",
+                    |ui| filter_model_combo(ui, filter_type, control),
+                    |ui| filter_module(ui, state, control),
+                );
                 module_panel(&mut columns[1], "Amplifier", |ui| {
                     amplifier_module(ui, state, control);
                 });
             });
         } else {
-            module_panel(ui, "Low-Pass Filter", |ui| {
-                filter_module(ui, state, control, filter_type);
-            });
+            module_panel_with_header(
+                ui,
+                "Low-Pass Filter",
+                |ui| filter_model_combo(ui, filter_type, control),
+                |ui| filter_module(ui, state, control),
+            );
             ui.add_space(8.0);
             module_panel(ui, "Amplifier", |ui| {
                 amplifier_module(ui, state, control);
@@ -654,6 +678,30 @@ pub fn show(
             effects_module(ui, state, control);
         });
     });
+
+    let finalized = patch_mgr.finalize_loaded_patch(state);
+    if !finalized && user_edited_patch(ui, &patch_before, &Patch::from(&*state)) {
+        patch_mgr.mark_user_modified();
+    }
+    let name_focused = ui.memory(|memory| memory.has_focus(egui::Id::new(PATCH_NAME_FIELD_ID)));
+    patch_mgr.sync_display_name(name_focused);
+}
+
+const MODIFIED_SUFFIX: &str = " (modified)";
+const PATCH_NAME_FIELD_ID: &str = "patch_name_field";
+
+fn load_patch_by_name(
+    patch_mgr: &mut PatchManager,
+    control: &SynthEngineControl,
+    state: &mut UiState,
+    name: &str,
+    muted: bool,
+) {
+    if let Some(patch) = patch_mgr.load_patch(name) {
+        state.apply_from_patch(&patch);
+        control.load_patch_respecting_mute(&patch, muted);
+        patch_mgr.begin_loaded_patch(name);
+    }
 }
 
 fn command_row(
@@ -663,87 +711,198 @@ fn command_row(
     state: &mut UiState,
     patch_mgr: &mut PatchManager,
     midi_output_port: Option<&str>,
+    muted: &mut bool,
 ) {
     ui.horizontal(|ui| {
-        if ui.button("Play C4").clicked() {
-            control.note_on(60, 0.8);
-        }
-        if ui.button("Play A3").clicked() {
-            control.note_on(57, 0.8);
-        }
-        if ui.button("Stop all").clicked() {
-            control.all_notes_off();
-        }
-        ui.separator();
-        if ui.button("Analysis").clicked() {
-            *analysis_open = !*analysis_open;
-        }
-        let input_enabled = control.input_enabled();
-        if ui
-            .selectable_label(input_enabled, "Audio In")
-            .on_hover_text("Toggle mixing the audio input into the output")
-            .clicked()
-        {
-            control.set_input_enabled(!input_enabled);
-        }
-
-        ui.separator();
-
-        ui.label("Patch:");
-        ui.add_sized(
-            [160.0, 20.0],
-            egui::TextEdit::singleline(&mut patch_mgr.save_name),
-        );
-        let load_clicked = egui::ComboBox::from_id_salt("patch_load")
-            .selected_text("Load")
-            .width(56.0)
-            .show_ui(ui, |ui| {
-                patch_mgr.refresh();
-                if patch_mgr.patch_names.is_empty() {
-                    ui.label("No saved patches yet.");
-                } else {
-                    for name in &patch_mgr.patch_names {
-                        if ui.button(name.as_str()).clicked() {
-                            ui.close();
-                            if let Some(patch) = patch_mgr.load_patch(name) {
-                                control.load_patch(&patch);
-                                state.apply_from_patch(&patch);
-                                patch_mgr.save_name.clone_from(name);
-                            }
-                        }
+        let left = ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Patch:");
+                let has_patches = !patch_mgr.patch_names.is_empty();
+                let prev = ui.add_enabled(has_patches, egui::Button::new("◀"));
+                if prev.clicked() {
+                    patch_mgr.refresh();
+                    if let Some(name) = patch_mgr.adjacent_patch_name(-1).map(str::to_string) {
+                        load_patch_by_name(patch_mgr, control, state, &name, *muted);
                     }
                 }
+                prev.on_hover_text("Previous patch");
+                egui::Frame::NONE
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .inner_margin(egui::Margin::symmetric(4, 2))
+                    .corner_radius(2.0)
+                    .show(ui, |ui| {
+                        ui.add_sized(
+                            [240.0, 18.0],
+                            egui::TextEdit::singleline(&mut patch_mgr.save_name)
+                                .id_salt(PATCH_NAME_FIELD_ID)
+                                .frame(egui::Frame::NONE),
+                        );
+                    });
+                let next = ui.add_enabled(has_patches, egui::Button::new("▶"));
+                if next.clicked() {
+                    patch_mgr.refresh();
+                    if let Some(name) = patch_mgr.adjacent_patch_name(1).map(str::to_string) {
+                        load_patch_by_name(patch_mgr, control, state, &name, *muted);
+                    }
+                }
+                next.on_hover_text("Next patch");
+                let load_clicked = egui::ComboBox::from_id_salt("patch_load")
+                    .selected_text("Load")
+                    .width(56.0)
+                    .show_ui(ui, |ui| {
+                        patch_mgr.refresh();
+                        if patch_mgr.patch_names.is_empty() {
+                            ui.label("No saved patches yet.");
+                        } else {
+                            for name in patch_mgr.patch_names.clone() {
+                                if ui.button(name.as_str()).clicked() {
+                                    ui.close();
+                                    load_patch_by_name(patch_mgr, control, state, &name, *muted);
+                                }
+                            }
+                        }
+                    });
+                if ui.button("Save").clicked() {
+                    let name = patch_mgr.canonical_save_name();
+                    if !name.is_empty() {
+                        let patch = Patch::from(&*state);
+                        patch_mgr.save_patch(&name, &patch);
+                        patch_mgr.begin_loaded_patch(&name);
+                        patch_mgr.refresh();
+                    }
+                }
+                let send = ui.add_enabled(midi_output_port.is_some(), egui::Button::new("Send"));
+                if send.clicked() {
+                    let patch = Patch::from(&*state);
+                    let sent = control.send_midi_patch(&patch)
+                        || (control.set_midi_output_port(midi_output_port)
+                            && control.send_midi_patch(&patch));
+                    if !sent {
+                        eprintln!("Failed to send Rev2 Program Edit Buffer");
+                    }
+                }
+                send.on_hover_text(if midi_output_port.is_some() {
+                    "Send the current program to the MIDI output as a Rev2 Program Edit Buffer"
+                } else {
+                    "Select a MIDI output device in Settings"
+                });
+                let _ = load_clicked;
             });
-        if ui.button("Save").clicked() {
-            let name = patch_mgr.save_name.trim().to_string();
-            if !name.is_empty() {
-                patch_mgr.save_patch(&name, &Patch::from(&*state));
-                patch_mgr.refresh();
-            }
-        }
-        let send = ui.add_enabled(midi_output_port.is_some(), egui::Button::new("Send"));
-        if send.clicked() {
-            let patch = Patch::from(&*state);
-            let sent = control.send_midi_patch(&patch)
-                || (control.set_midi_output_port(midi_output_port)
-                    && control.send_midi_patch(&patch));
-            if !sent {
-                eprintln!("Failed to send Rev2 Program Edit Buffer");
-            }
-        }
-        send.on_hover_text(if midi_output_port.is_some() {
-            "Send the current program to the MIDI output as a Rev2 Program Edit Buffer"
-        } else {
-            "Select a MIDI output device in Settings"
-        });
-        let _ = load_clicked;
 
-        ui.separator();
-        master_volume(ui, &mut state.master_volume, control);
+            ui.add_space(8.0);
+
+            ui.horizontal(|ui| {
+                if ui.button("Analysis").clicked() {
+                    *analysis_open = !*analysis_open;
+                }
+
+                ui.separator();
+
+                let input_enabled = control.input_enabled();
+                if framed_selectable(ui, input_enabled, "Audio In")
+                    .on_hover_text("Toggle mixing the audio input into the output")
+                    .clicked()
+                {
+                    control.set_input_enabled(!input_enabled);
+                }
+
+                ui.separator();
+
+                egui::ComboBox::from_id_salt("play_pitch_class")
+                    .selected_text(PLAY_PITCH_CLASSES[state.play_pitch_class as usize])
+                    .width(40.0)
+                    .show_ui(ui, |ui| {
+                        for (index, label) in PLAY_PITCH_CLASSES.iter().enumerate() {
+                            if ui
+                                .selectable_label(state.play_pitch_class as usize == index, *label)
+                                .clicked()
+                            {
+                                state.play_pitch_class = index as u8;
+                                ui.close();
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt("play_octave")
+                    .selected_text(state.play_octave.to_string())
+                    .width(36.0)
+                    .show_ui(ui, |ui| {
+                        for octave in PLAY_OCTAVE_MIN..=PLAY_OCTAVE_MAX {
+                            if ui
+                                .selectable_label(state.play_octave == octave, octave.to_string())
+                                .clicked()
+                            {
+                                state.play_octave = octave;
+                                ui.close();
+                            }
+                        }
+                    });
+                if ui.button("Play").clicked() {
+                    control.note_on(play_midi_note(state.play_pitch_class, state.play_octave), 0.8);
+                }
+
+                ui.separator();
+
+                if ui.button("Stop All").clicked() {
+                    control.all_notes_off();
+                }
+            });
+        });
+
+        let height = left.response.rect.height();
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), height),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let row_width = 200.0;
+                ui.add_space((ui.available_width() - row_width).max(0.0));
+
+                let mut displayed_volume = state.master_volume;
+                let volume_before_edit = displayed_volume;
+                master_volume(ui, &mut displayed_volume, control, !*muted);
+                if *muted {
+                    if (displayed_volume - volume_before_edit).abs() > f32::EPSILON {
+                        state.master_volume = displayed_volume;
+                        control.set_param_audio_only(ParamId::MasterVolume, 0.0);
+                    }
+                } else {
+                    state.master_volume = displayed_volume;
+                }
+
+                if framed_selectable(ui, *muted, "Mute").clicked() {
+                    *muted = !*muted;
+                    if *muted {
+                        control.set_param_audio_only(ParamId::MasterVolume, 0.0);
+                    } else {
+                        control.set_param_audio_only(ParamId::MasterVolume, state.master_volume);
+                    }
+                }
+            },
+        );
     });
 }
 
+const PLAY_PITCH_CLASSES: &[&str] = &[
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
+const PLAY_OCTAVE_MIN: i8 = 0;
+const PLAY_OCTAVE_MAX: i8 = 8;
+
+fn play_midi_note(pitch_class: u8, octave: i8) -> u8 {
+    let note = i32::from(octave + 1) * 12 + i32::from(pitch_class);
+    note.clamp(0, 127) as u8
+}
+
 fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    module_panel_with_header(ui, title, |_| {}, add_contents);
+}
+
+fn module_panel_with_header(
+    ui: &mut egui::Ui,
+    title: &str,
+    add_header_right: impl FnOnce(&mut egui::Ui),
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
     let horizontal_margin = 10;
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin {
@@ -753,7 +912,12 @@ fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut e
             bottom: 8,
         })
         .show(ui, |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(title).strong()));
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(egui::RichText::new(title).strong()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    add_header_right(ui);
+                });
+            });
             ui.add_space(4.0);
             ui.add(
                 egui::Separator::default()
@@ -809,13 +973,18 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     egui::vec2(32.0, CONTROL_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        ui.add_space(18.0);
-                        param_toggle(
-                            ui,
-                            "On",
-                            &mut state.osc1_enabled,
-                            ParamId::Osc1Enabled,
-                            control,
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), KNOB_SIZE),
+                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                param_toggle(
+                                    ui,
+                                    "On",
+                                    &mut state.osc1_enabled,
+                                    ParamId::Osc1Enabled,
+                                    control,
+                                );
+                            },
                         );
                     },
                 );
@@ -855,23 +1024,32 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     |ui| {
                         ui.add_space(6.0);
                         ui.vertical(|ui| {
-                            param_toggle(
+                            param_toggle_sized(
                                 ui,
+                                OSC_TOGGLE_BUTTON_SIZE,
                                 "Osc1 Reset",
                                 &mut state.osc1_note_reset,
                                 ParamId::Osc1NoteReset,
                                 control,
                             );
                             ui.add_space(3.0);
-                            param_toggle(
+                            param_toggle_sized(
                                 ui,
+                                OSC_TOGGLE_BUTTON_SIZE,
                                 "Osc2 Reset",
                                 &mut state.osc2_note_reset,
                                 ParamId::Osc2NoteReset,
                                 control,
                             );
                             ui.add_space(3.0);
-                            param_toggle(ui, "Sync", &mut state.sync, ParamId::HardSync, control);
+                            param_toggle_sized(
+                                ui,
+                                OSC_TOGGLE_BUTTON_SIZE,
+                                "Sync",
+                                &mut state.sync,
+                                ParamId::HardSync,
+                                control,
+                            );
                         });
                     },
                 );
@@ -915,13 +1093,18 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     egui::vec2(32.0, CONTROL_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        ui.add_space(18.0);
-                        param_toggle(
-                            ui,
-                            "On",
-                            &mut state.osc2_enabled,
-                            ParamId::Osc2Enabled,
-                            control,
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), KNOB_SIZE),
+                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                param_toggle(
+                                    ui,
+                                    "On",
+                                    &mut state.osc2_enabled,
+                                    ParamId::Osc2Enabled,
+                                    control,
+                                );
+                            },
                         );
                     },
                 );
@@ -969,8 +1152,9 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                     let selected = state.selected_lfo == index;
                     if ui
                         .add_sized(
-                            [34.0, 28.0],
-                            egui::Button::selectable(selected, format!("{}", index + 1)),
+                            LFO_INDEX_BUTTON_SIZE,
+                            egui::Button::selectable(selected, format!("{}", index + 1))
+                                .frame_when_inactive(true),
                         )
                         .clicked()
                     {
@@ -1021,15 +1205,17 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
             ui.vertical(|ui| {
                 lfo_destination_selector(ui, state, control);
                 ui.add_space(8.0);
-                param_toggle(
+                param_toggle_sized(
                     ui,
+                    LFO_SYNC_BUTTON_SIZE,
                     "Clk Sync",
                     &mut state.lfo_clock_sync[index],
                     lfo_clock_sync_param(index),
                     control,
                 );
-                param_toggle(
+                param_toggle_sized(
                     ui,
+                    LFO_SYNC_BUTTON_SIZE,
                     "Key Sync",
                     &mut state.lfo_key_sync[index],
                     lfo_key_sync_param(index),
@@ -1049,9 +1235,13 @@ fn lfo_shape_selector(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
             .iter()
             .enumerate()
         {
-            if ui
-                .selectable_label(state.lfo_waveforms[index] == waveform, *name)
-                .clicked()
+            if framed_selectable_sized(
+                ui,
+                LFO_SHAPE_BUTTON_SIZE,
+                state.lfo_waveforms[index] == waveform,
+                *name,
+            )
+            .clicked()
             {
                 state.lfo_waveforms[index] = waveform;
                 control.set_param(lfo_waveform_param(index), waveform as f32);
@@ -1113,13 +1303,24 @@ fn modulation_matrix_module(ui: &mut egui::Ui, state: &mut UiState, control: &Sy
 }
 
 fn mod_route_button(ui: &mut egui::Ui, state: &mut UiState, route_index: usize, label: &str) {
-    if ui
-        .add_sized(
-            [48.0, 26.0],
-            egui::Button::selectable(state.selected_mod_route == route_index, label),
-        )
-        .clicked()
-    {
+    let selected = state.selected_mod_route == route_index;
+    let enabled = if route_index < 8 {
+        state.mod_enabled[route_index]
+    } else {
+        state.dedicated_mod_enabled[route_index - 8]
+    };
+
+    let mut button = egui::Button::selectable(selected, label).frame_when_inactive(true);
+    if enabled && !selected {
+        button = button.fill(egui::Color32::from_rgb(0, 55, 90));
+    }
+
+    let response = if route_index < 8 {
+        ui.add_sized(MOD_SLOT_BUTTON_SIZE, button)
+    } else {
+        ui.add(button.min_size(egui::vec2(0.0, MOD_SLOT_BUTTON_SIZE.y)))
+    };
+    if response.clicked() {
         state.selected_mod_route = route_index;
     }
 }
@@ -1131,9 +1332,10 @@ fn free_mod_route_row(
     index: usize,
 ) {
     let mut changed = false;
-    changed |= ui
-        .toggle_value(&mut state.mod_enabled[index], "Enabled")
-        .changed();
+    if framed_selectable(ui, state.mod_enabled[index], "Enabled").clicked() {
+        state.mod_enabled[index] = !state.mod_enabled[index];
+        changed = true;
+    }
 
     ui.add_space(8.0);
     changed |= mod_source_combo(
@@ -1163,9 +1365,10 @@ fn dedicated_mod_route_row(
     index: usize,
 ) {
     let mut changed = false;
-    changed |= ui
-        .toggle_value(&mut state.dedicated_mod_enabled[index], "Enabled")
-        .changed();
+    if framed_selectable(ui, state.dedicated_mod_enabled[index], "Enabled").clicked() {
+        state.dedicated_mod_enabled[index] = !state.dedicated_mod_enabled[index];
+        changed = true;
+    }
 
     ui.add_space(8.0);
     fixed_mod_source_field(ui, DedicatedModSource::ALL[index].name());
@@ -1421,36 +1624,32 @@ fn effect_param_labels(effect: EffectType) -> (&'static str, &'static str) {
     }
 }
 
-fn filter_module(
+fn filter_model_combo(
     ui: &mut egui::Ui,
-    state: &mut UiState,
-    control: &SynthEngineControl,
     filter_type: &mut FilterType,
+    control: &SynthEngineControl,
 ) {
-    fixed_panel_scroll(ui, "filter_grid_scroll", FILTER_GRID_WIDTH, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Model:");
-            egui::ComboBox::from_id_salt("filter_model")
-                .selected_text(filter_type.name())
-                .show_ui(ui, |ui| {
-                    for candidate in FilterType::ALL {
-                        let response = ui
-                            .add_enabled(
-                                candidate.is_implemented(),
-                                egui::Button::selectable(
-                                    *filter_type == candidate,
-                                    candidate.name(),
-                                ),
-                            )
-                            .on_disabled_hover_text("Implemented in a later experiment phase");
-                        if response.clicked() {
-                            *filter_type = candidate;
-                            control.set_filter_type(candidate);
-                        }
-                    }
-                });
+    egui::ComboBox::from_id_salt("filter_model")
+        .selected_text(filter_type.name())
+        .show_ui(ui, |ui| {
+            for candidate in FilterType::ALL {
+                let response = ui
+                    .add_enabled(
+                        candidate.is_implemented(),
+                        egui::Button::selectable(*filter_type == candidate, candidate.name())
+                            .frame_when_inactive(true),
+                    )
+                    .on_disabled_hover_text("Implemented in a later experiment phase");
+                if response.clicked() {
+                    *filter_type = candidate;
+                    control.set_filter_type(candidate);
+                }
+            }
         });
-        ui.add_space(8.0);
+}
+
+fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    fixed_panel_scroll(ui, "filter_grid_scroll", FILTER_GRID_WIDTH, |ui| {
         egui::Grid::new("filter_grid")
             .num_columns(6)
             .spacing(egui::vec2(12.0, 12.0))
@@ -1696,10 +1895,9 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
 fn auxiliary_envelope_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
     fixed_panel_scroll(ui, "aux_envelope_grid_scroll", AUX_GRID_WIDTH, |ui| {
         egui::Grid::new("aux_envelope_grid")
-            .num_columns(4)
+            .num_columns(5)
             .spacing(egui::vec2(12.0, 12.0))
             .show(ui, |ui| {
-                aux_destination_cell(ui, state, control);
                 control_cell(ui, |ui| {
                     param_knob_bipolar(
                         ui,
@@ -1732,6 +1930,38 @@ fn auxiliary_envelope_module(ui: &mut egui::Ui, state: &mut UiState, control: &S
                         control,
                     );
                 });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(CONTROL_CELL_W, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), KNOB_SIZE),
+                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                let font_size =
+                                    ui.style().text_styles[&egui::TextStyle::Button].size - 1.0;
+                                if ui
+                                    .add(
+                                        egui::Button::selectable(
+                                            state.aux_repeat,
+                                            egui::RichText::new("Repeat").size(font_size),
+                                        )
+                                        .frame_when_inactive(true)
+                                        .truncate(),
+                                    )
+                                    .clicked()
+                                {
+                                    state.aux_repeat = !state.aux_repeat;
+                                    control.set_param(
+                                        ParamId::AuxEgLoop,
+                                        if state.aux_repeat { 1.0 } else { 0.0 },
+                                    );
+                                }
+                            },
+                        );
+                    },
+                );
+                aux_destination_cell(ui, state, control);
                 ui.end_row();
 
                 control_cell(ui, |ui| {
@@ -1786,9 +2016,9 @@ fn auxiliary_envelope_module(ui: &mut egui::Ui, state: &mut UiState, control: &S
 fn aux_destination_cell(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
     ui.allocate_ui_with_layout(
         egui::vec2(DEST_CELL_W, CONTROL_CELL_H),
-        egui::Layout::top_down(egui::Align::Center),
+        egui::Layout::top_down(egui::Align::LEFT),
         |ui| {
-            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Destination").strong());
             let current = ModDestination::from_index(state.aux_destination);
             egui::ComboBox::from_id_salt("aux_destination")
                 .width(104.0)
@@ -1809,22 +2039,12 @@ fn aux_destination_cell(ui: &mut egui::Ui, state: &mut UiState, control: &SynthE
                         }
                     }
                 });
-            ui.add_space(4.0);
-            ui.label("Destination");
-            ui.add_space(4.0);
-            param_toggle(
-                ui,
-                "Repeat",
-                &mut state.aux_repeat,
-                ParamId::AuxEgLoop,
-                control,
-            );
         },
     );
 }
 
 fn pole_toggle(ui: &mut egui::Ui, filter_poles: &mut usize, control: &SynthEngineControl) {
-    if ui.selectable_label(*filter_poles == 1, "4 Pole").clicked() {
+    if framed_selectable(ui, *filter_poles == 1, "4 Pole").clicked() {
         *filter_poles = if *filter_poles == 1 { 0 } else { 1 };
         control.set_param(ParamId::FilterPoles, *filter_poles as f32);
     }
@@ -1881,14 +2101,25 @@ fn wave_selector_cell(
         egui::vec2(WAVE_CELL_W, CONTROL_CELL_H),
         egui::Layout::top_down(egui::Align::LEFT),
         |ui| {
-            for (index, name) in ["Saw", "Saw+Tri", "Triangle", "Pulse"].iter().enumerate() {
-                if ui.selectable_label(*waveform == index, *name).clicked() {
-                    *waveform = index;
-                    *enabled = true;
-                    control.set_param(enabled_param, 1.0);
-                    control.set_param(waveform_param, index as f32);
-                }
-            }
+            egui::Grid::new(ui.id().with("wave_selector"))
+                .num_columns(2)
+                .spacing(egui::vec2(4.0, 2.0))
+                .show(ui, |ui| {
+                    for (index, name) in ["Saw", "Saw+Tri", "Triangle", "Pulse"].iter().enumerate()
+                    {
+                        if framed_selectable_sized(ui, WAVE_BUTTON_SIZE, *waveform == index, *name)
+                            .clicked()
+                        {
+                            *waveform = index;
+                            *enabled = true;
+                            control.set_param(enabled_param, 1.0);
+                            control.set_param(waveform_param, index as f32);
+                        }
+                        if index % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                });
         },
     );
 }
@@ -1947,8 +2178,23 @@ fn lfo_key_sync_param(index: usize) -> ParamId {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AutosaveFile {
+    patch: Patch,
+    #[serde(default)]
+    loaded_name: String,
+    #[serde(default)]
+    baseline: Option<Patch>,
+    #[serde(default)]
+    save_name: String,
+}
+
 pub struct PatchManager {
     pub save_name: String,
+    loaded_name: String,
+    baseline: Option<Patch>,
+    baseline_pending: bool,
+    user_modified: bool,
     pub patch_names: Vec<String>,
     config_dir: PathBuf,
     patches_dir: PathBuf,
@@ -1964,10 +2210,79 @@ impl PatchManager {
         let patch_names = list_patch_files(&patches_dir);
         Self {
             save_name: String::new(),
+            loaded_name: String::new(),
+            baseline: None,
+            baseline_pending: false,
+            user_modified: false,
             patch_names,
             config_dir,
             patches_dir,
         }
+    }
+
+    pub fn restore_autosave_metadata(
+        &mut self,
+        loaded_name: String,
+        baseline: Option<Patch>,
+        save_name: String,
+        restored_patch: &Patch,
+    ) {
+        self.loaded_name = loaded_name;
+        self.baseline = baseline;
+        self.baseline_pending = false;
+        if !save_name.is_empty() {
+            self.save_name = save_name;
+        } else if !self.loaded_name.is_empty() {
+            self.save_name = self.loaded_name.clone();
+        }
+
+        let was_modified = self
+            .baseline
+            .as_ref()
+            .is_some_and(|baseline| !patches_equal(baseline, restored_patch));
+        self.user_modified = was_modified;
+        if !was_modified && !self.loaded_name.is_empty() {
+            self.baseline = None;
+            self.baseline_pending = true;
+        }
+    }
+
+    pub fn mark_user_modified(&mut self) {
+        if !self.loaded_name.is_empty() {
+            self.user_modified = true;
+        }
+    }
+
+    pub fn begin_loaded_patch(&mut self, name: &str) {
+        self.loaded_name = name.to_string();
+        self.save_name = name.to_string();
+        self.user_modified = false;
+        self.baseline_pending = true;
+    }
+
+    pub fn finalize_loaded_patch(&mut self, state: &UiState) -> bool {
+        if self.baseline_pending {
+            self.baseline = Some(Patch::from(state));
+            self.baseline_pending = false;
+            self.user_modified = false;
+            return true;
+        }
+        false
+    }
+
+    pub fn canonical_save_name(&self) -> String {
+        strip_modified_suffix(self.save_name.trim()).to_string()
+    }
+
+    pub fn sync_display_name(&mut self, name_focused: bool) {
+        if self.loaded_name.is_empty() || name_focused || self.baseline_pending {
+            return;
+        }
+        self.save_name = if self.user_modified {
+            format!("{}{}", self.loaded_name, MODIFIED_SUFFIX)
+        } else {
+            self.loaded_name.clone()
+        };
     }
 
     pub fn save_patch(&self, name: &str, patch: &Patch) {
@@ -1979,33 +2294,50 @@ impl PatchManager {
 
     pub fn save_midi_program(
         &self,
-        program: &synth_core::Rev2ProgramData,
+        program: &synth_core::MidiProgramImport,
     ) -> std::io::Result<PathBuf> {
-        let name = crate::rev2_factory_presets::program_filename(program.bank, program.program)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Rev2 program bank or number is outside the factory library",
-                )
-            })?;
+        let name = match program {
+            synth_core::MidiProgramImport::Rev2(program) => {
+                crate::rev2_factory_presets::program_filename(program.bank, program.program)
+            }
+            synth_core::MidiProgramImport::P08(program) => {
+                crate::p08_factory_presets::program_filename(program.bank, program.program)
+            }
+        }
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "MIDI program bank or number is outside the factory library",
+            )
+        })?;
         let path = self.patches_dir.join(format!("{name}.json"));
-        let json = serde_json::to_string_pretty(&program.patch).map_err(std::io::Error::other)?;
+        let json =
+            serde_json::to_string_pretty(program.patch()).map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
         Ok(path)
     }
 
     pub fn save_autosave(&self, patch: &Patch) {
         let path = self.config_dir.join("patch.json");
-        if let Ok(json) = serde_json::to_string_pretty(patch) {
+        let file = AutosaveFile {
+            patch: patch.clone(),
+            loaded_name: self.loaded_name.clone(),
+            baseline: self.baseline.clone(),
+            save_name: self.save_name.clone(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&file) {
             let _ = std::fs::write(&path, json);
         }
     }
 
-    pub fn load_autosave(&self) -> Option<Patch> {
+    pub fn load_autosave(&self) -> Option<(Patch, String, Option<Patch>, String)> {
         let path = self.config_dir.join("patch.json");
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+        let contents = std::fs::read_to_string(&path).ok()?;
+        if let Ok(file) = serde_json::from_str::<AutosaveFile>(&contents) {
+            return Some((file.patch, file.loaded_name, file.baseline, file.save_name));
+        }
+        let patch = serde_json::from_str(&contents).ok()?;
+        Some((patch, String::new(), None, String::new()))
     }
 
     pub fn load_patch(&self, name: &str) -> Option<Patch> {
@@ -2018,6 +2350,38 @@ impl PatchManager {
     pub fn refresh(&mut self) {
         self.patch_names = list_patch_files(&self.patches_dir);
     }
+
+    pub fn adjacent_patch_name(&self, delta: isize) -> Option<&str> {
+        if self.patch_names.is_empty() {
+            return None;
+        }
+        let current = self.loaded_name.trim();
+        let idx = self
+            .patch_names
+            .iter()
+            .position(|n| n == current)
+            .unwrap_or(0);
+        let len = self.patch_names.len() as isize;
+        let next_idx = (idx as isize + delta).rem_euclid(len) as usize;
+        Some(self.patch_names[next_idx].as_str())
+    }
+}
+
+fn user_edited_patch(ui: &egui::Ui, before: &Patch, after: &Patch) -> bool {
+    if patches_equal(before, after) {
+        return false;
+    }
+    ui.input(|input| {
+        input.pointer.is_decidedly_dragging() || input.pointer.any_click()
+    })
+}
+
+fn strip_modified_suffix(name: &str) -> &str {
+    name.strip_suffix(MODIFIED_SUFFIX).unwrap_or(name)
+}
+
+fn patches_equal(a: &Patch, b: &Patch) -> bool {
+    serde_json::to_string(a).ok() == serde_json::to_string(b).ok()
 }
 
 fn list_patch_files(dir: &std::path::Path) -> Vec<String> {
@@ -2084,6 +2448,155 @@ mod tests {
         assert_eq!(state.mod_amounts[2], -0.5);
     }
 
+    fn test_patch_manager(names: &[&str], loaded_name: &str) -> PatchManager {
+        PatchManager {
+            save_name: loaded_name.to_string(),
+            loaded_name: loaded_name.to_string(),
+            baseline: None,
+            baseline_pending: false,
+            user_modified: false,
+            patch_names: names.iter().map(|name| (*name).to_string()).collect(),
+            config_dir: PathBuf::new(),
+            patches_dir: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn adjacent_patch_name_empty_list() {
+        let mgr = test_patch_manager(&[], "foo");
+        assert_eq!(mgr.adjacent_patch_name(-1), None);
+        assert_eq!(mgr.adjacent_patch_name(1), None);
+    }
+
+    #[test]
+    fn adjacent_patch_name_single_patch() {
+        let mgr = test_patch_manager(&["only"], "only");
+        assert_eq!(mgr.adjacent_patch_name(-1), Some("only"));
+        assert_eq!(mgr.adjacent_patch_name(1), Some("only"));
+    }
+
+    #[test]
+    fn adjacent_patch_name_multi_patch() {
+        let mgr = test_patch_manager(&["a", "b", "c"], "b");
+        assert_eq!(mgr.adjacent_patch_name(-1), Some("a"));
+        assert_eq!(mgr.adjacent_patch_name(1), Some("c"));
+    }
+
+    #[test]
+    fn adjacent_patch_name_wraps() {
+        let mut mgr = test_patch_manager(&["a", "b", "c"], "a");
+        assert_eq!(mgr.adjacent_patch_name(-1), Some("c"));
+        mgr.loaded_name = "c".to_string();
+        assert_eq!(mgr.adjacent_patch_name(1), Some("a"));
+    }
+
+    #[test]
+    fn adjacent_patch_name_unknown_save_name() {
+        let mgr = test_patch_manager(&["a", "b", "c"], "unknown");
+        assert_eq!(mgr.adjacent_patch_name(-1), Some("c"));
+        assert_eq!(mgr.adjacent_patch_name(1), Some("b"));
+    }
+
+    #[test]
+    fn sync_display_name_appends_modified_suffix() {
+        let mut mgr = test_patch_manager(&["a"], "a");
+        let state = UiState::default();
+        mgr.begin_loaded_patch("a");
+        mgr.finalize_loaded_patch(&state);
+        mgr.sync_display_name(false);
+        assert_eq!(mgr.save_name, "a");
+
+        mgr.mark_user_modified();
+        mgr.sync_display_name(false);
+        assert_eq!(mgr.save_name, "a (modified)");
+    }
+
+    #[test]
+    fn loaded_patch_baseline_survives_effect_ui_normalization() {
+        let mut state = UiState::default();
+        let mut patch = Patch::default();
+        patch.effects.enabled = true;
+        patch.effects.effect_type = EffectType::Chorus;
+        patch.effects.clock_sync = true;
+        state.apply_from_patch(&patch);
+
+        let mut mgr = test_patch_manager(&["a"], "a");
+        mgr.begin_loaded_patch("a");
+        mgr.finalize_loaded_patch(&state);
+        mgr.sync_display_name(false);
+        assert_eq!(mgr.save_name, "a");
+    }
+
+    #[test]
+    fn canonical_save_name_strips_modified_suffix() {
+        let mgr = test_patch_manager(&[], "My Patch (modified)");
+        assert_eq!(mgr.canonical_save_name(), "My Patch");
+    }
+
+    #[test]
+    fn loaded_patch_not_modified_after_finalize() {
+        let mut state = UiState::default();
+        let mut patch = Patch::default();
+        patch.filter.cutoff = 4_500.0;
+        patch.effects.enabled = true;
+        patch.effects.effect_type = EffectType::Chorus;
+        patch.effects.clock_sync = true;
+        state.apply_from_patch(&patch);
+
+        let mut mgr = test_patch_manager(&["a"], "a");
+        mgr.begin_loaded_patch("a");
+        mgr.finalize_loaded_patch(&state);
+        mgr.sync_display_name(false);
+        assert_eq!(mgr.save_name, "a");
+    }
+
+    #[test]
+    fn restore_unmodified_autosave_refreshes_baseline() {
+        let mut state = UiState::default();
+        let mut patch = Patch::default();
+        patch.filter.cutoff = 4_500.0;
+        state.apply_from_patch(&patch);
+        let snapshot = Patch::from(&state);
+
+        let mut mgr = test_patch_manager(&["a"], "a");
+        mgr.restore_autosave_metadata(
+            "a".to_string(),
+            Some(snapshot.clone()),
+            "a".to_string(),
+            &snapshot,
+        );
+        assert!(mgr.baseline_pending);
+        mgr.finalize_loaded_patch(&state);
+        mgr.sync_display_name(false);
+        assert_eq!(mgr.save_name, "a");
+    }
+
+    #[test]
+    fn autosave_roundtrip_preserves_patch_name_and_metadata() {
+        let root =
+            std::env::temp_dir().join(format!("analog-synth-autosave-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let manager = PatchManager {
+            save_name: "preset (modified)".to_string(),
+            loaded_name: "preset".to_string(),
+            baseline: Some(Patch::default()),
+            baseline_pending: false,
+            user_modified: false,
+            patch_names: Vec::new(),
+            config_dir: root.clone(),
+            patches_dir: root.join("patches"),
+        };
+        let mut patch = Patch::default();
+        patch.master_volume = 0.25;
+        manager.save_autosave(&patch);
+        let (loaded_patch, loaded_name, baseline, save_name) = manager.load_autosave().unwrap();
+        assert_eq!(loaded_name, "preset");
+        assert_eq!(save_name, "preset (modified)");
+        assert_eq!(loaded_patch.master_volume, 0.25);
+        assert!(baseline.is_some());
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn midi_program_save_uses_deterministic_overwriteable_json() {
         let root =
@@ -2092,21 +2605,27 @@ mod tests {
         std::fs::create_dir_all(&patches_dir).unwrap();
         let manager = PatchManager {
             save_name: String::new(),
+            loaded_name: String::new(),
+            baseline: None,
+            baseline_pending: false,
+            user_modified: false,
             patch_names: Vec::new(),
             config_dir: root.clone(),
             patches_dir,
         };
-        let mut program = synth_core::Rev2ProgramData {
+        let mut program = synth_core::MidiProgramImport::Rev2(synth_core::Rev2ProgramData {
             bank: 4,
             program: 0,
             patch: Patch::default(),
-        };
+        });
         let path = manager.save_midi_program(&program).unwrap();
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("F1-001-LosVangelis2041.json")
+            Some("U1-001-LosVangelis2041.json")
         );
-        program.patch.master_volume = 0.25;
+        if let synth_core::MidiProgramImport::Rev2(program) = &mut program {
+            program.patch.master_volume = 0.25;
+        }
         manager.save_midi_program(&program).unwrap();
         let decoded: Patch =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

@@ -5,11 +5,10 @@ use rtrb::RingBuffer;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
 
 use synth_core::{
-    ControlMessage, FilterOversampling, FilterType, ModDestination, ModRoute, ModSource,
-    ModulationParam, ParamId, Patch, Rev2ProgramData,
+    ControlMessage, FilterOversampling, FilterType, MidiProgramImport, ModDestination, ModRoute,
+    ModSource, ModulationParam, ParamId, Patch,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -38,6 +37,8 @@ impl Default for AudioBlock {
 }
 
 const MAX_PENDING_BLOCKS: usize = 32;
+const CONTROL_QUEUE_CAPACITY: usize = 256;
+const FEEDBACK_QUEUE_CAPACITY: usize = 64;
 const MIDI_UI_QUEUE_CAPACITY: usize = 1024;
 const MIDI_PROGRAM_IMPORT_QUEUE_CAPACITY: usize = 1024;
 
@@ -94,8 +95,9 @@ pub struct SynthEngineView {
     active_voices: Arc<AtomicUsize>,
     audio_blocks: Arc<RwLock<VecDeque<AudioBlock>>>,
     metrics: Arc<RwLock<Option<AudioMetrics>>>,
+    feedback_receiver: Arc<Mutex<rtrb::Consumer<FeedbackMessage>>>,
     midi_ui_receiver: Arc<Mutex<rtrb::Consumer<MidiUiUpdate>>>,
-    midi_program_receiver: Arc<Mutex<rtrb::Consumer<Box<Rev2ProgramData>>>>,
+    midi_program_receiver: Arc<Mutex<rtrb::Consumer<Box<MidiProgramImport>>>>,
     total_voices: usize,
 }
 
@@ -112,6 +114,24 @@ impl SynthEngineView {
         *self.metrics.read()
     }
 
+    pub fn drain_feedback(&self) {
+        let mut receiver = self.feedback_receiver.lock();
+        while let Ok(message) = receiver.pop() {
+            match message {
+                FeedbackMessage::Audio(block) => {
+                    let mut blocks = self.audio_blocks.write();
+                    if blocks.len() >= MAX_PENDING_BLOCKS {
+                        blocks.pop_front();
+                    }
+                    blocks.push_back(block);
+                }
+                FeedbackMessage::Metrics(m) => {
+                    *self.metrics.write() = Some(m);
+                }
+            }
+        }
+    }
+
     pub fn drain_audio_blocks(&self) -> VecDeque<AudioBlock> {
         std::mem::take(&mut *self.audio_blocks.write())
     }
@@ -123,7 +143,7 @@ impl SynthEngineView {
         }
     }
 
-    pub fn drain_midi_program_imports(&self, mut handler: impl FnMut(Rev2ProgramData)) {
+    pub fn drain_midi_program_imports(&self, mut handler: impl FnMut(MidiProgramImport)) {
         let mut receiver = self.midi_program_receiver.lock();
         while let Ok(program) = receiver.pop() {
             handler(*program);
@@ -139,7 +159,7 @@ type ControlConsumer = rtrb::Consumer<ControlMessage>;
 pub struct SynthEngineControl {
     sender: Arc<Mutex<ControlProducer>>,
     midi_ui_sender: Arc<Mutex<rtrb::Producer<MidiUiUpdate>>>,
-    midi_program_sender: Arc<Mutex<rtrb::Producer<Box<Rev2ProgramData>>>>,
+    midi_program_sender: Arc<Mutex<rtrb::Producer<Box<MidiProgramImport>>>>,
     midi_output: MidiOutputHandle,
     input_enabled: Arc<AtomicBool>,
 }
@@ -167,6 +187,10 @@ impl SynthEngineControl {
     pub fn set_param(&self, param: ParamId, value: f32) {
         self.send(ControlMessage::SetParam(param, value));
         self.midi_output.send_param(param, value);
+    }
+
+    pub fn set_param_audio_only(&self, param: ParamId, value: f32) {
+        self.send(ControlMessage::SetParam(param, value));
     }
 
     /// Sends a MIDI-originated parameter change to audio and mirrors it to UI.
@@ -225,6 +249,10 @@ impl SynthEngineControl {
         self.midi_output.connect(port_name)
     }
 
+    pub fn midi_output(&self) -> MidiOutputHandle {
+        self.midi_output.clone()
+    }
+
     pub fn midi_output_connected(&self) -> bool {
         self.midi_output.is_connected()
     }
@@ -246,6 +274,13 @@ impl SynthEngineControl {
             });
         });
         let _ = self.midi_output.send_patch(patch);
+    }
+
+    pub fn load_patch_respecting_mute(&self, patch: &Patch, muted: bool) {
+        self.load_patch(patch);
+        if muted {
+            self.set_param_audio_only(ParamId::MasterVolume, 0.0);
+        }
     }
 
     /// Sends a complete patch to the selected MIDI output without changing local state.
@@ -279,7 +314,7 @@ impl SynthEngineControl {
         });
     }
 
-    pub fn queue_midi_program(&self, program: Rev2ProgramData) -> bool {
+    pub fn queue_midi_program(&self, program: MidiProgramImport) -> bool {
         self.midi_program_sender
             .lock()
             .push(Box::new(program))
@@ -325,10 +360,10 @@ pub struct SynthEngineAudio {
     pub input_enabled: Arc<AtomicBool>,
 }
 
-/// Creates the control ring buffer and spawns the UI feedback thread.
+/// Creates the control ring buffer and UI-facing engine bridge.
 pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, SynthEngineBridge) {
-    let (feedback_sender, feedback_receiver) = RingBuffer::new(64);
-    let (control_sender, control_receiver) = RingBuffer::new(256);
+    let (feedback_sender, feedback_receiver) = RingBuffer::new(FEEDBACK_QUEUE_CAPACITY);
+    let (control_sender, control_receiver) = RingBuffer::new(CONTROL_QUEUE_CAPACITY);
     let (midi_ui_sender, midi_ui_receiver) = RingBuffer::new(MIDI_UI_QUEUE_CAPACITY);
     let (midi_program_sender, midi_program_receiver) =
         RingBuffer::new(MIDI_PROGRAM_IMPORT_QUEUE_CAPACITY);
@@ -336,7 +371,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
     let audio_blocks = Arc::new(RwLock::new(VecDeque::new()));
     let metrics = Arc::new(RwLock::new(None));
     let input_enabled = Arc::new(AtomicBool::new(true));
-    spawn_view_thread(feedback_receiver, audio_blocks.clone(), metrics.clone());
+    let feedback_receiver = Arc::new(Mutex::new(feedback_receiver));
 
     let bridge = SynthEngineBridge {
         control: SynthEngineControl {
@@ -350,6 +385,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             active_voices: active_voices.clone(),
             audio_blocks,
             metrics,
+            feedback_receiver,
             midi_ui_receiver: Arc::new(Mutex::new(midi_ui_receiver)),
             midi_program_receiver: Arc::new(Mutex::new(midi_program_receiver)),
             total_voices,
@@ -366,31 +402,19 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
     (audio, bridge)
 }
 
-fn spawn_view_thread(
-    mut receiver: rtrb::Consumer<FeedbackMessage>,
-    audio_blocks: Arc<RwLock<VecDeque<AudioBlock>>>,
-    metrics: Arc<RwLock<Option<AudioMetrics>>>,
-) {
-    std::thread::spawn(move || {
-        loop {
-            while let Ok(message) = receiver.pop() {
-                match message {
-                    FeedbackMessage::Audio(block) => {
-                        let mut blocks = audio_blocks.write();
-                        if blocks.len() >= MAX_PENDING_BLOCKS {
-                            blocks.pop_front();
-                        }
-                        blocks.push_back(block);
-                    }
-                    FeedbackMessage::Metrics(m) => {
-                        *metrics.write() = Some(m);
-                    }
-                }
-            }
-            if receiver.is_abandoned() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    });
+/// Allocates fresh control and feedback ring buffers and rebinds the UI/view
+/// ends. Returns the audio-thread ends for a new CPAL session.
+pub fn rebind_audio_channels(bridge: &SynthEngineBridge) -> SynthEngineAudio {
+    let (control_sender, control_receiver) = RingBuffer::new(CONTROL_QUEUE_CAPACITY);
+    let (feedback_sender, feedback_receiver) = RingBuffer::new(FEEDBACK_QUEUE_CAPACITY);
+    *bridge.control.sender.lock() = control_sender;
+    *bridge.view.feedback_receiver.lock() = feedback_receiver;
+    SynthEngineAudio {
+        control: SynthEngineControlReceiver(control_receiver),
+        feedback: SynthEngineFeedback {
+            active_voices: bridge.view.active_voices.clone(),
+            sender: feedback_sender,
+        },
+        input_enabled: bridge.control.input_enabled.clone(),
+    }
 }

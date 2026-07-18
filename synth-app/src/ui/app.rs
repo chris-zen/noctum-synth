@@ -1,17 +1,17 @@
 use eframe::egui;
-use midir::MidiInputConnection;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use synth_core::{FilterType, Patch};
+use synth_core::{FilterType, ParamId, Patch};
 
+use crate::audio::AudioManager;
 use crate::config::Config;
 use crate::engine::{AudioMetrics, SynthEngineBridge};
-use crate::midi;
+use crate::midi::MidiInputManager;
 use crate::ui::analysis::{self, AnalysisState, config::AnalysisConfig};
 use crate::ui::params_view::{PatchManager, UiState};
-use crate::ui::settings_view::AudioBaseline;
+use crate::ui::settings_view::{AudioBaseline, MidiInputEntry};
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
 
@@ -33,20 +33,24 @@ pub struct App {
     pub analysis_viewport: DeferredViewport,
     pub main_viewport: RootViewport,
     pub ui_state: UiState,
-    pub midi_conn: Option<MidiInputConnection<()>>,
+    pub midi_inputs: MidiInputManager,
     pub patch_mgr: PatchManager,
     filter_type: Arc<Mutex<FilterType>>,
     config: Config,
+    audio_manager: AudioManager,
     audio_baseline: AudioBaseline,
+    applied_audio_generation: u64,
     last_autosave: Instant,
+    muted: bool,
 }
 
 impl App {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         engine: SynthEngineBridge,
+        audio_manager: AudioManager,
         midi_port: Option<String>,
-        config: Config,
+        mut config: Config,
     ) -> Self {
         let theme_dark = config.settings.dark_theme;
 
@@ -57,23 +61,44 @@ impl App {
         });
 
         let audio_baseline = AudioBaseline::from_settings(&config.settings);
+        let applied_audio_generation = audio_manager.applied().generation;
         let filter_type = Arc::new(Mutex::new(config.filter_type));
 
-        let port_name = midi_port.or_else(|| config.settings.midi_port.clone());
-        let midi_conn = midi::start_midi(port_name.as_deref(), engine.control.clone());
+        let mut midi_inputs =
+            MidiInputManager::new(engine.control.clone(), engine.control.midi_output());
+        if let Some(port) = midi_port {
+            if !config
+                .settings
+                .midi_inputs
+                .iter()
+                .any(|entry| entry.port == port)
+            {
+                config.settings.midi_inputs.push(MidiInputEntry::new(port));
+            }
+        }
+        config.settings.migrate_legacy_midi_port();
+        midi_inputs.sync(&config.settings.midi_inputs);
         engine
             .control
             .set_midi_output_port(config.settings.midi_output_port.as_deref());
 
         let mut analysis = AnalysisState::default();
         config.analysis.apply_to(&mut analysis);
-
-        let patch_mgr = PatchManager::new();
-        let mut ui_state = UiState::default();
-        if let Some(patch) = patch_mgr.load_autosave() {
-            ui_state.apply_from_patch(&patch);
+        let applied = audio_manager.applied();
+        if applied.sample_rate > 0 {
+            analysis.real_time.sample_rate = applied.sample_rate as f32;
         }
-        engine.control.load_patch(&Patch::from(&ui_state));
+
+        let mut patch_mgr = PatchManager::new();
+        let mut ui_state = UiState::default();
+        if let Some((patch, loaded_name, baseline, save_name)) = patch_mgr.load_autosave() {
+            ui_state.apply_from_patch(&patch);
+            patch_mgr.restore_autosave_metadata(loaded_name, baseline, save_name, &patch);
+        }
+        let muted = config.muted;
+        engine
+            .control
+            .load_patch_respecting_mute(&Patch::from(&ui_state), muted);
 
         Self {
             engine,
@@ -91,10 +116,39 @@ impl App {
             ui_state,
             patch_mgr,
             filter_type,
-            midi_conn,
+            midi_inputs,
             config,
+            audio_manager,
             audio_baseline,
+            applied_audio_generation,
             last_autosave: Instant::now(),
+            muted,
+        }
+    }
+
+    fn sync_applied_audio(&mut self) {
+        let applied = self.audio_manager.applied();
+        if applied.generation == self.applied_audio_generation {
+            return;
+        }
+        self.applied_audio_generation = applied.generation;
+        if applied.sample_rate > 0 {
+            self.analysis.lock().real_time.sample_rate = applied.sample_rate as f32;
+        }
+        if applied.error.is_none() {
+            self.config.settings.sample_rate = applied.sample_rate_setting;
+            self.audio_baseline = AudioBaseline::from_settings(&self.config.settings);
+            let patch = Patch::from(&self.ui_state);
+            self.engine.control.all_notes_off();
+            self.engine
+                .control
+                .load_patch_respecting_mute(&patch, self.muted);
+            self.engine
+                .control
+                .set_filter_oversampling(self.config.settings.filter_oversampling);
+            self.engine
+                .control
+                .set_filter_type(*self.filter_type.lock());
         }
     }
 
@@ -105,6 +159,7 @@ impl App {
         self.config.analysis_viewport = self.analysis_viewport.geometry();
         self.config.analysis = AnalysisConfig::from_state(&self.analysis.lock());
         self.config.filter_type = *self.filter_type.lock();
+        self.config.muted = self.muted;
         self.config.save();
         self.patch_mgr.save_autosave(&Patch::from(&self.ui_state));
     }
@@ -116,11 +171,16 @@ impl eframe::App for App {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_applied_audio();
+        self.engine.view.drain_feedback();
         self.main_viewport.drive(ctx);
 
         self.engine
             .view
-            .drain_midi_ui_updates(|update| self.ui_state.apply_midi_update(update));
+            .drain_midi_ui_updates(|update| {
+                self.ui_state.apply_midi_update(update);
+                self.patch_mgr.mark_user_modified();
+            });
 
         let mut imports = Vec::new();
         self.engine
@@ -131,11 +191,12 @@ impl eframe::App for App {
             match self.patch_mgr.save_midi_program(&program) {
                 Ok(path) => {
                     saved_any = true;
-                    eprintln!("Imported Rev2 program to {}", path.display());
+                    eprintln!("Imported {:?} program to {}", program.source(), path.display());
                 }
                 Err(err) => eprintln!(
-                    "Failed to import Rev2 bank {} program {}: {err}",
-                    program.bank, program.program
+                    "Failed to import bank {} program {}: {err}",
+                    program.bank(),
+                    program.program()
                 ),
             }
         }
@@ -143,10 +204,19 @@ impl eframe::App for App {
             self.patch_mgr.refresh();
         }
 
+        if self.muted {
+            self.engine
+                .control
+                .set_param_audio_only(ParamId::MasterVolume, 0.0);
+        }
+
         if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
             self.persist();
             self.last_autosave = Instant::now();
         }
+
+        self.midi_inputs.tick();
+        self.engine.control.midi_output().tick();
 
         let engine_view = self.engine.view.clone();
         let analysis = self.analysis.clone();
@@ -202,17 +272,24 @@ impl eframe::App for App {
                     &mut self.patch_mgr,
                     &mut filter_type,
                     self.config.settings.midi_output_port.as_deref(),
+                    &mut self.muted,
                 );
             }
             Tab::Settings => {
                 let current_patch = Patch::from(&self.ui_state);
+                let applied = self.audio_manager.applied();
+                let filter_type = *self.filter_type.lock();
                 settings_view::show(
                     ui,
                     &mut self.config.settings,
                     &self.audio_baseline,
+                    &applied,
+                    &self.audio_manager,
+                    filter_type,
                     &self.engine.control,
-                    &mut self.midi_conn,
+                    &mut self.midi_inputs,
                     &current_patch,
+                    self.muted,
                 );
                 if self.config.settings.dark_theme != self.theme_dark {
                     self.theme_dark = self.config.settings.dark_theme;

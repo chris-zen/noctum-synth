@@ -16,6 +16,7 @@ const OUTPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 205, 255);
 const OUTPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 125, 255);
 
 pub struct RealTimeState {
+    pub sample_rate: f32,
     pub osc: OscilloscopeState,
     pub fft: FftState,
 }
@@ -23,6 +24,7 @@ pub struct RealTimeState {
 impl Default for RealTimeState {
     fn default() -> Self {
         Self {
+            sample_rate: 44100.0,
             osc: OscilloscopeState::default(),
             fft: FftState::default(),
         }
@@ -255,13 +257,13 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
     ui.allocate_ui(egui::vec2(available.x, osc_h), |ui| {
         ui.strong("Oscilloscope");
         ui.add_space(6.0);
-        draw_oscilloscope(ui, &mut state.osc);
+        draw_oscilloscope(ui, &mut state.osc, state.sample_rate);
     });
     ui.add_space(gap);
     ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
         ui.strong("Spectrum Analyzer");
         ui.add_space(6.0);
-        draw_fft(ui, &mut state.fft, state.osc.frozen);
+        draw_fft(ui, &mut state.fft, state.osc.frozen, state.sample_rate);
     });
 }
 
@@ -363,7 +365,7 @@ fn source_selector(ui: &mut egui::Ui, source: &mut SignalSource) -> bool {
     before != *source
 }
 
-fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
+fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState, sample_rate: f32) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Timebase:");
         ui.add(
@@ -524,7 +526,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState) {
             }
         };
         let trig_idx = trig_f32 as usize;
-        let samples_to_show = (state.timebase_ms / 1000.0 * 44100.0) as usize;
+        let samples_to_show = (state.timebase_ms / 1000.0 * sample_rate) as usize;
         let samples_to_show = samples_to_show.min(len.saturating_sub(trig_idx)).max(2);
         let start = trig_idx;
         let end = (start + samples_to_show).min(len);
@@ -813,7 +815,7 @@ fn process_fft_trace(
     }
 }
 
-fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
+fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool, sample_rate: f32) {
     let fft_size = state.fft_size;
     if !frozen && state.frame_count % 4 == 0 {
         if state.complex_buf.len() != fft_size || state.fft.is_none() {
@@ -943,7 +945,7 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
 
     let config = SpectrumConfig {
         fft_size: state.fft_size,
-        sample_rate: 44100.0,
+        sample_rate,
         db_floor: state.db_floor,
         db_top: state.db_top,
         log_scale: state.log_scale,
@@ -986,14 +988,14 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool) {
         .pointer_hover_pos()
         .filter(|pos| plot_rect.contains(*pos))
         .map(|pos| {
-            let max_freq = 22050.0;
+            let max_freq = sample_rate * 0.5;
             let x_frac = ((pos.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
             let freq = if state.log_scale {
                 20.0_f32 * (max_freq / 20.0_f32).powf(x_frac)
             } else {
                 max_freq * x_frac
             };
-            let bin_hz = 44100.0 / state.fft_size as f32;
+            let bin_hz = sample_rate / state.fft_size as f32;
             let bin = ((freq / bin_hz).floor() as usize).clamp(0, num_bins.saturating_sub(1));
             let input_level = input_db[bin];
             let output_level = output_db[bin];

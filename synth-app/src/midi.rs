@@ -1,106 +1,309 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use parking_lot::Mutex;
 use synth_core::{
-    ModDestination, ModRoute, ModSource, ParamId, Patch, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate,
+    MidiProgramImport, ModDestination, ModRoute, ModSource, P08MidiDecoder, ParamId, Patch,
+    REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate,
 };
 use wmidi::MidiMessage;
 
 use crate::engine::SynthEngineControl;
+use crate::ui::settings_view::MidiInputEntry;
 
-pub fn start_midi(
-    port_name: Option<&str>,
+const RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortConnectionState {
+    Connected,
+    Unavailable,
+    Failed,
+}
+
+pub struct MidiInputFlags {
+    control: AtomicBool,
+    patches: AtomicBool,
+    forward: AtomicBool,
+}
+
+impl MidiInputFlags {
+    fn from_entry(entry: &MidiInputEntry) -> Arc<Self> {
+        Arc::new(Self {
+            control: AtomicBool::new(entry.control),
+            patches: AtomicBool::new(entry.patches),
+            forward: AtomicBool::new(entry.forward),
+        })
+    }
+
+    fn sync(&self, entry: &MidiInputEntry) {
+        self.control.store(entry.control, Ordering::Relaxed);
+        self.patches.store(entry.patches, Ordering::Relaxed);
+        self.forward.store(entry.forward, Ordering::Relaxed);
+    }
+}
+
+struct ManagedInput {
+    #[allow(dead_code)]
+    connection: MidiInputConnection<()>,
+    flags: Arc<MidiInputFlags>,
+}
+
+pub struct MidiInputManager {
     control: SynthEngineControl,
-) -> Option<MidiInputConnection<()>> {
-    let Some(filter) = port_name else {
-        eprintln!("No MIDI port selected; MIDI input disabled.");
-        return None;
-    };
+    output: MidiOutputHandle,
+    connections: HashMap<String, ManagedInput>,
+    pending: HashMap<String, Arc<MidiInputFlags>>,
+    available_ports: Vec<String>,
+    last_tick: Instant,
+}
 
+impl MidiInputManager {
+    pub fn new(control: SynthEngineControl, output: MidiOutputHandle) -> Self {
+        let available_ports = list_input_ports();
+        Self {
+            control,
+            output,
+            connections: HashMap::new(),
+            pending: HashMap::new(),
+            available_ports,
+            last_tick: Instant::now(),
+        }
+    }
+
+    pub fn sync(&mut self, entries: &[MidiInputEntry]) {
+        let configured: HashSet<&str> = entries.iter().map(|entry| entry.port.as_str()).collect();
+
+        self.connections
+            .retain(|port, managed| {
+                if configured.contains(port.as_str()) {
+                    true
+                } else {
+                    self.pending.remove(port);
+                    let _ = managed;
+                    false
+                }
+            });
+
+        for entry in entries {
+            if let Some(managed) = self.connections.get(&entry.port) {
+                managed.flags.sync(entry);
+                self.pending.insert(entry.port.clone(), managed.flags.clone());
+                continue;
+            }
+
+            let flags = self
+                .pending
+                .get(&entry.port)
+                .cloned()
+                .unwrap_or_else(|| MidiInputFlags::from_entry(entry));
+            flags.sync(entry);
+            self.pending.insert(entry.port.clone(), flags.clone());
+
+            if let Some(connection) = connect_input_port(
+                &entry.port,
+                self.control.clone(),
+                self.output.clone(),
+                flags.clone(),
+            ) {
+                eprintln!("MIDI connected: {}", entry.port);
+                self.connections.insert(
+                    entry.port.clone(),
+                    ManagedInput {
+                        connection,
+                        flags,
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn tick(&mut self) {
+        if self.last_tick.elapsed() < RECONNECT_INTERVAL {
+            return;
+        }
+        self.last_tick = Instant::now();
+        self.available_ports = list_input_ports();
+
+        self.connections.retain(|port, _| port_is_available(port, &self.available_ports));
+
+        let entries: Vec<(String, Arc<MidiInputFlags>)> = self
+            .pending
+            .iter()
+            .map(|(port, flags)| (port.clone(), flags.clone()))
+            .collect();
+        for (port, flags) in entries {
+            if self.connections.contains_key(&port) {
+                continue;
+            }
+            if !port_is_available(&port, &self.available_ports) {
+                continue;
+            }
+            if let Some(connection) =
+                connect_input_port(&port, self.control.clone(), self.output.clone(), flags.clone())
+            {
+                eprintln!("MIDI reconnected: {port}");
+                self.connections.insert(port, ManagedInput { connection, flags });
+            }
+        }
+    }
+
+    pub fn connection_state(&self, port: &str) -> PortConnectionState {
+        if !port_is_available(port, &self.available_ports) {
+            return PortConnectionState::Unavailable;
+        }
+        if self.connections.contains_key(port) {
+            PortConnectionState::Connected
+        } else if self.pending.contains_key(port) {
+            PortConnectionState::Failed
+        } else {
+            PortConnectionState::Unavailable
+        }
+    }
+
+    pub fn refresh_available_ports(&mut self) {
+        self.available_ports = list_input_ports();
+    }
+}
+
+fn connect_input_port(
+    port_name: &str,
+    control: SynthEngineControl,
+    output: MidiOutputHandle,
+    flags: Arc<MidiInputFlags>,
+) -> Option<MidiInputConnection<()>> {
     let mut midi_in = MidiInput::new("analog-synth").ok()?;
     midi_in.ignore(Ignore::None);
     let ports = midi_in.ports();
-
-    let filter_lower = filter.to_lowercase();
+    let filter_lower = port_name.to_lowercase();
     let port = ports.iter().find(|port| {
         midi_in
             .port_name(port)
             .map(|name| name.to_lowercase().contains(&filter_lower))
             .unwrap_or(false)
-    });
-    let Some(port) = port else {
-        eprintln!("No MIDI port matching \"{filter}\"; MIDI input disabled.");
-        return None;
-    };
-    eprintln!(
-        "MIDI connected: {}",
-        midi_in.port_name(port).unwrap_or_default()
-    );
-
+    })?;
     let mut decoder = Rev2MidiDecoder::default();
     midi_in
         .connect(
-            port,
-            "midi-in",
+            &port,
+            &format!("midi-in-{port_name}"),
             move |_timestamp, message, _| {
-                handle_midi(message, &control, &mut decoder);
+                handle_midi_with_flags(message, &control, &mut decoder, &output, &flags);
             },
             (),
         )
         .ok()
 }
 
-fn handle_midi(message: &[u8], control: &SynthEngineControl, decoder: &mut Rev2MidiDecoder) {
-    if message.first() == Some(&0xf0) {
-        let mut remaining = message;
-        while let Some(start) = remaining.iter().position(|byte| *byte == 0xf0) {
-            remaining = &remaining[start..];
-            let Some(end) = remaining.iter().position(|byte| *byte == 0xf7) else {
-                eprintln!(
-                    "Incomplete SysEx frame received ({} bytes)",
-                    remaining.len()
-                );
-                return;
-            };
-            handle_midi_message(&remaining[..=end], control, decoder);
-            remaining = &remaining[end + 1..];
-        }
-        return;
-    }
-    handle_midi_message(message, control, decoder);
+fn port_is_available(port: &str, available_ports: &[String]) -> bool {
+    let port_lower = port.to_lowercase();
+    available_ports
+        .iter()
+        .any(|name| name.to_lowercase().contains(&port_lower) || port_lower.contains(&name.to_lowercase()))
 }
 
-fn handle_midi_message(
+pub fn merged_port_list(available: &[String], configured: &[String]) -> Vec<String> {
+    let mut merged = configured.to_vec();
+    for port in available {
+        if !merged.iter().any(|existing| existing == port) {
+            merged.push(port.clone());
+        }
+    }
+    merged
+}
+
+fn handle_midi_with_flags(
     message: &[u8],
     control: &SynthEngineControl,
     decoder: &mut Rev2MidiDecoder,
+    output: &MidiOutputHandle,
+    flags: &MidiInputFlags,
 ) {
+    if flags.forward.load(Ordering::Relaxed) {
+        output.send_raw(message);
+    }
+
     if message.first() == Some(&0xf0) {
-        match message.get(3) {
-            Some(0x02) => match Rev2MidiDecoder::program_data(message) {
-                Ok(program) => {
-                    if !control.queue_midi_program(program) {
-                        eprintln!("Rev2 program import queue is full");
-                    }
-                }
-                Err(err) => eprintln!(
-                    "Invalid Rev2 Program Data message: {err:?} ({} bytes)",
-                    message.len()
-                ),
-            },
-            Some(0x03) => match Rev2MidiDecoder::program_edit_buffer(message) {
-                Ok(patch) => control.load_midi_patch(&patch),
-                Err(err) => eprintln!(
-                    "Invalid Rev2 Program Edit Buffer message: {err:?} ({} bytes)",
-                    message.len()
-                ),
-            },
-            _ => eprintln!("Unsupported Rev2 SysEx message"),
+        if flags.patches.load(Ordering::Relaxed) {
+            handle_midi_sysex(message, control, decoder);
         }
         return;
     }
+
+    if flags.control.load(Ordering::Relaxed) {
+        handle_midi_control(message, control, decoder);
+    }
+}
+
+fn handle_midi_sysex(message: &[u8], control: &SynthEngineControl, _decoder: &mut Rev2MidiDecoder) {
+    let mut remaining = message;
+    while let Some(start) = remaining.iter().position(|byte| *byte == 0xf0) {
+        remaining = &remaining[start..];
+        let Some(end) = remaining.iter().position(|byte| *byte == 0xf7) else {
+            eprintln!(
+                "Incomplete SysEx frame received ({} bytes)",
+                remaining.len()
+            );
+            return;
+        };
+        handle_midi_sysex_message(&remaining[..=end], control);
+        remaining = &remaining[end + 1..];
+    }
+}
+
+fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
+    let Some(model) = message.get(2) else {
+        eprintln!("Unsupported SysEx message");
+        return;
+    };
+    let Some(command) = message.get(3) else {
+        eprintln!("Unsupported SysEx message");
+        return;
+    };
+    match (*model, *command) {
+        (0x2f, 0x02) => match Rev2MidiDecoder::program_data(message) {
+            Ok(program) => {
+                if !control.queue_midi_program(MidiProgramImport::Rev2(program)) {
+                    eprintln!("MIDI program import queue is full");
+                }
+            }
+            Err(err) => eprintln!(
+                "Invalid Rev2 Program Data message: {err:?} ({} bytes)",
+                message.len()
+            ),
+        },
+        (0x2f, 0x03) => match Rev2MidiDecoder::program_edit_buffer(message) {
+            Ok(patch) => control.load_midi_patch(&patch),
+            Err(err) => eprintln!(
+                "Invalid Rev2 Program Edit Buffer message: {err:?} ({} bytes)",
+                message.len()
+            ),
+        },
+        (0x23, 0x02) => match P08MidiDecoder::program_data(message) {
+            Ok(program) => {
+                if !control.queue_midi_program(MidiProgramImport::P08(program)) {
+                    eprintln!("MIDI program import queue is full");
+                }
+            }
+            Err(err) => eprintln!(
+                "Invalid Prophet '08 Program Data message: {err:?} ({} bytes)",
+                message.len()
+            ),
+        },
+        (0x23, 0x03) => match P08MidiDecoder::program_edit_buffer(message) {
+            Ok(patch) => control.load_midi_patch(&patch),
+            Err(err) => eprintln!(
+                "Invalid Prophet '08 Program Edit Buffer message: {err:?} ({} bytes)",
+                message.len()
+            ),
+        },
+        _ => eprintln!("Unsupported SysEx message"),
+    }
+}
+
+fn handle_midi_control(message: &[u8], control: &SynthEngineControl, decoder: &mut Rev2MidiDecoder) {
     let msg = match MidiMessage::try_from(message) {
         Ok(msg) => msg,
         Err(err) => {
@@ -145,6 +348,15 @@ fn handle_midi_message(
     }
 }
 
+#[cfg(test)]
+fn handle_midi(message: &[u8], control: &SynthEngineControl, decoder: &mut Rev2MidiDecoder) {
+    if message.first() == Some(&0xf0) {
+        handle_midi_sysex(message, control, decoder);
+        return;
+    }
+    handle_midi_control(message, control, decoder);
+}
+
 fn dispatch_inbound_update(control: &SynthEngineControl, update: Rev2MidiUpdate) {
     match update {
         Rev2MidiUpdate::Param(param, value) => control.set_midi_param(param, value),
@@ -158,6 +370,9 @@ struct MidiOutputState {
     connection: Option<MidiOutputConnection>,
     encoder: Rev2MidiEncoder,
     last_nrpn_values: [Option<u16>; REV2_NRPN_PARAMETER_COUNT],
+    configured_port: Option<String>,
+    available_ports: Vec<String>,
+    last_tick: Instant,
 }
 
 const REV2_NRPN_PARAMETER_COUNT: usize = 159;
@@ -175,6 +390,9 @@ impl Default for MidiOutputHandle {
                 connection: None,
                 encoder: Rev2MidiEncoder::default(),
                 last_nrpn_values: [None; REV2_NRPN_PARAMETER_COUNT],
+                configured_port: None,
+                available_ports: Vec::new(),
+                last_tick: Instant::now(),
             })),
         }
     }
@@ -182,29 +400,35 @@ impl Default for MidiOutputHandle {
 
 impl MidiOutputHandle {
     pub fn connect(&self, port_name: Option<&str>) -> bool {
-        let Some(filter) = port_name else {
-            clear_midi_output(&mut self.state.lock());
+        let mut state = self.state.lock();
+        state.configured_port = port_name.map(str::to_owned);
+        Self::connect_locked(&mut state)
+    }
+
+    fn connect_locked(state: &mut MidiOutputState) -> bool {
+        let Some(filter) = state.configured_port.as_deref() else {
+            clear_midi_output(state);
             return true;
         };
         let Ok(midi_out) = MidiOutput::new("analog-synth-output") else {
-            clear_midi_output(&mut self.state.lock());
+            clear_midi_output(state);
             return false;
         };
+        let ports = midi_out.ports();
         let filter_lower = filter.to_lowercase();
-        let Some(port) = midi_out.ports().into_iter().find(|port| {
+        let Some(port) = ports.iter().find(|port| {
             midi_out
                 .port_name(port)
                 .map(|name| name.to_lowercase().contains(&filter_lower))
                 .unwrap_or(false)
         }) else {
-            clear_midi_output(&mut self.state.lock());
+            clear_midi_output(state);
             return false;
         };
         let Ok(connection) = midi_out.connect(&port, "analog-synth-midi-output") else {
-            clear_midi_output(&mut self.state.lock());
+            clear_midi_output(state);
             return false;
         };
-        let mut state = self.state.lock();
         state.connection = Some(connection);
         state.last_nrpn_values.fill(None);
         true
@@ -212,6 +436,53 @@ impl MidiOutputHandle {
 
     pub fn is_connected(&self) -> bool {
         self.state.lock().connection.is_some()
+    }
+
+    pub fn connection_state(&self) -> PortConnectionState {
+        let state = self.state.lock();
+        let Some(port) = state.configured_port.as_deref() else {
+            return PortConnectionState::Unavailable;
+        };
+        if !port_is_available(port, &state.available_ports) {
+            return PortConnectionState::Unavailable;
+        }
+        if state.connection.is_some() {
+            PortConnectionState::Connected
+        } else {
+            PortConnectionState::Failed
+        }
+    }
+
+    pub fn tick(&self) {
+        let mut state = self.state.lock();
+        if state.last_tick.elapsed() < RECONNECT_INTERVAL {
+            return;
+        }
+        state.last_tick = Instant::now();
+        state.available_ports = list_output_ports();
+        if let Some(port) = state.configured_port.as_deref() {
+            if !port_is_available(port, &state.available_ports) {
+                clear_midi_output(&mut state);
+                return;
+            }
+            if state.connection.is_none() {
+                let _ = Self::connect_locked(&mut state);
+            }
+        }
+    }
+
+    pub fn refresh_available_ports(&self) {
+        self.state.lock().available_ports = list_output_ports();
+    }
+
+    pub fn send_raw(&self, message: &[u8]) {
+        let mut state = self.state.lock();
+        let Some(connection) = state.connection.as_mut() else {
+            return;
+        };
+        if connection.send(message).is_err() {
+            clear_midi_output(&mut state);
+        }
     }
 
     pub fn send_param(&self, param: ParamId, value: f32) {
@@ -308,7 +579,7 @@ fn send_changed_nrpn_messages(
         debug_assert_eq!(sequence[3][1], 38);
 
         let number = usize::from(sequence[0][2]) * 128 + usize::from(sequence[1][2]);
-        let value = u16::from(sequence[2][2]) * 128 + u16::from(sequence[3][2]);
+        let value = u16::from(sequence[2][2]) * 128 + usize::from(sequence[3][2]) as u16;
         let Some(previous) = last_values.get_mut(number) else {
             debug_assert!(false, "Rev2 NRPN number is outside the cache");
             return false;
@@ -325,7 +596,7 @@ fn send_changed_nrpn_messages(
 }
 
 pub fn list_input_ports() -> Vec<String> {
-    let Ok(midi_in) = MidiInput::new("analog-synth") else {
+    let Ok(midi_in) = MidiInput::new("analog-synth-list") else {
         return Vec::new();
     };
     midi_in
@@ -364,6 +635,14 @@ mod tests {
         message[6..payload_end].copy_from_slice(&edit[4..edit.len() - 1]);
         message[payload_end] = 0xf7;
         message
+    }
+
+    fn all_flags() -> Arc<MidiInputFlags> {
+        Arc::new(MidiInputFlags {
+            control: AtomicBool::new(true),
+            patches: AtomicBool::new(true),
+            forward: AtomicBool::new(false),
+        })
     }
 
     #[test]
@@ -462,7 +741,7 @@ mod tests {
             .view
             .drain_midi_program_imports(|program| imported = Some(program));
         let imported = imported.unwrap();
-        assert_eq!((imported.bank, imported.program), (4, 0));
+        assert_eq!((imported.bank(), imported.program()), (4, 0));
         let mut ui_updates = 0;
         bridge.view.drain_midi_ui_updates(|_| ui_updates += 1);
         assert_eq!(ui_updates, 0);
@@ -483,7 +762,59 @@ mod tests {
         let mut locations = Vec::new();
         bridge
             .view
-            .drain_midi_program_imports(|program| locations.push((program.bank, program.program)));
+            .drain_midi_program_imports(|program| locations.push((program.bank(), program.program())));
         assert_eq!(locations, [(4, 0), (4, 1)]);
+    }
+
+    #[test]
+    fn control_flag_gates_note_messages() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let mut decoder = Rev2MidiDecoder::default();
+        let flags = Arc::new(MidiInputFlags {
+            control: AtomicBool::new(false),
+            patches: AtomicBool::new(true),
+            forward: AtomicBool::new(false),
+        });
+        handle_midi_with_flags(&[0x90, 60, 100], &bridge.control, &mut decoder, &MidiOutputHandle::default(), &flags);
+        assert!(audio.control.0.pop().is_err());
+    }
+
+    #[test]
+    fn patches_flag_gates_sysex_messages() {
+        let (_audio, bridge) = create_synth_engine_bridge(16);
+        let mut decoder = Rev2MidiDecoder::default();
+        let flags = Arc::new(MidiInputFlags {
+            control: AtomicBool::new(true),
+            patches: AtomicBool::new(false),
+            forward: AtomicBool::new(false),
+        });
+        let message = stored_program_message(4, 0);
+        handle_midi_with_flags(&message, &bridge.control, &mut decoder, &MidiOutputHandle::default(), &flags);
+
+        let mut imported = None;
+        bridge
+            .view
+            .drain_midi_program_imports(|program| imported = Some(program));
+        assert!(imported.is_none());
+    }
+
+    #[test]
+    fn merged_port_list_includes_missing_configured_ports() {
+        let available = vec!["Port A".to_string()];
+        let configured = vec!["Port B".to_string()];
+        let merged = merged_port_list(&available, &configured);
+        assert_eq!(merged, vec!["Port B".to_string(), "Port A".to_string()]);
+    }
+
+    #[test]
+    fn all_flags_process_control_and_sysex() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let mut decoder = Rev2MidiDecoder::default();
+        let output = MidiOutputHandle::default();
+        handle_midi_with_flags(&[0x90, 60, 100], &bridge.control, &mut decoder, &output, &all_flags());
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(ControlMessage::NoteOn { note: 60, .. })
+        ));
     }
 }

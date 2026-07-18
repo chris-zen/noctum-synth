@@ -4,9 +4,11 @@ mod audio;
 mod config;
 mod engine;
 mod midi;
+mod p08_factory_presets;
 mod rev2_factory_presets;
 mod ui;
 
+use crate::audio::{AudioConfig, AudioManager};
 use crate::engine::create_synth_engine_bridge;
 use crate::ui::app::APP_TITLE;
 
@@ -32,14 +34,14 @@ fn main() -> eframe::Result {
     let filter_oversampling = config.settings.filter_oversampling;
     let filter_type = config.filter_type;
 
-    audio::start_audio(
-        engine_audio,
-        audio_device,
-        audio_input,
+    let audio_config = AudioConfig {
+        output_device: audio_device,
+        input_device: audio_input,
         sample_rate,
         filter_oversampling,
         filter_type,
-    );
+    };
+    let audio_manager = AudioManager::start(engine_bridge.clone(), engine_audio, audio_config);
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("app icon png is valid");
@@ -56,6 +58,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(ui::app::App::new(
                 cc,
                 engine_bridge,
+                audio_manager,
                 midi_port,
                 config,
             )))

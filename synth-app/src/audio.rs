@@ -11,9 +11,12 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, SupportedStreamConfig};
+use parking_lot::RwLock;
 use rtrb::RingBuffer;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use synth_core::{ControlMessage, FilterOversampling, FilterType, SynthEngine, VOICE_PACKS};
@@ -22,72 +25,398 @@ use synth_core::{ControlMessage, FilterOversampling, FilterType, SynthEngine, VO
 /// stream. CoreAudio rate changes can take longer than the default, so give
 /// them generous headroom before treating the build as failed.
 const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(5);
+/// Pause after stopping streams or switching the output rate so CoreAudio can
+/// settle before input devices (e.g. BlackHole) are opened or started.
+const DEVICE_SETTLE_DELAY: Duration = Duration::from_millis(200);
 
-use crate::engine::{self, AudioBlock, AudioMetrics, SynthEngineAudio};
+fn log_audio(message: impl AsRef<str>) {
+    eprintln!("[audio] {}", message.as_ref());
+}
+
+fn wait_for_device_settle() {
+    thread::sleep(DEVICE_SETTLE_DELAY);
+}
+
+fn describe_config(config: &AudioConfig) -> String {
+    let rate = config
+        .sample_rate
+        .map(|rate| format!("{rate} Hz"))
+        .unwrap_or_else(|| "device default".to_string());
+    let output = config
+        .output_device
+        .as_deref()
+        .unwrap_or("system default");
+    let input = config
+        .input_device
+        .as_deref()
+        .unwrap_or("none");
+    format!("output={output}, input={input}, rate={rate}")
+}
+
+use crate::engine::{
+    self, rebind_audio_channels, AudioBlock, AudioMetrics, SynthEngineAudio, SynthEngineBridge,
+};
+
+// ============================================================================
+// Audio manager
+// ============================================================================
+
+#[derive(Clone)]
+pub struct AudioConfig {
+    pub output_device: Option<String>,
+    pub input_device: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub filter_oversampling: FilterOversampling,
+    pub filter_type: FilterType,
+}
+
+#[derive(Clone)]
+pub struct AppliedAudioConfig {
+    pub sample_rate: u32,
+    pub sample_rate_setting: Option<u32>,
+    pub applying: bool,
+    pub error: Option<String>,
+    pub generation: u64,
+}
+
+impl Default for AppliedAudioConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: 0,
+            sample_rate_setting: None,
+            applying: false,
+            error: None,
+            generation: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AudioManager {
+    request_tx: mpsc::Sender<AudioConfig>,
+    applied: Arc<RwLock<AppliedAudioConfig>>,
+}
+
+impl AudioManager {
+    pub fn start(
+        bridge: SynthEngineBridge,
+        engine_audio: SynthEngineAudio,
+        initial: AudioConfig,
+    ) -> Self {
+        let (request_tx, request_rx) = mpsc::channel();
+        let applied = Arc::new(RwLock::new(AppliedAudioConfig::default()));
+        let applied_thread = applied.clone();
+        std::thread::spawn(move || {
+            run_audio_thread(bridge, engine_audio, initial, request_rx, applied_thread);
+        });
+        Self {
+            request_tx,
+            applied,
+        }
+    }
+
+    pub fn apply(&self, config: AudioConfig) {
+        {
+            let mut applied = self.applied.write();
+            applied.applying = true;
+            applied.error = None;
+        }
+        let _ = self.request_tx.send(config);
+    }
+
+    pub fn applied(&self) -> AppliedAudioConfig {
+        self.applied.read().clone()
+    }
+}
+
+#[allow(dead_code)]
+struct AudioSession(Option<cpal::Stream>, cpal::Stream);
+
+fn run_audio_thread(
+    bridge: SynthEngineBridge,
+    mut engine_audio: SynthEngineAudio,
+    initial: AudioConfig,
+    request_rx: mpsc::Receiver<AudioConfig>,
+    applied: Arc<RwLock<AppliedAudioConfig>>,
+) {
+    let host = cpal::default_host();
+    let mut session: Option<AudioSession> = None;
+    let mut generation: u64 = 0;
+    let mut last_good_config = initial.clone();
+
+    log_audio("Starting audio engine");
+    log_available_outputs(&host);
+
+    match start_session(&host, engine_audio, &initial, SessionMode::Initial) {
+        Ok((new_session, info)) => {
+            generation += 1;
+            let mut applied_state = applied_audio_config(&info, None);
+            applied_state.generation = generation;
+            *applied.write() = applied_state;
+            session = Some(new_session);
+            last_good_config = effective_config(&initial, &info);
+        }
+        Err(err) => {
+            log_audio(&format!("Failed to start audio: {err}"));
+            *applied.write() = AppliedAudioConfig {
+                applying: false,
+                error: Some(err),
+                generation,
+                ..AppliedAudioConfig::default()
+            };
+        }
+    }
+
+    while let Ok(config) = request_rx.recv() {
+        log_audio(&format!("Restarting audio ({})...", describe_config(&config)));
+        drop(session.take());
+        log_audio("Stopped previous audio session");
+        wait_for_device_settle();
+        engine_audio = rebind_audio_channels(&bridge);
+
+        match probe_session(&host, &config) {
+            Ok(probed) => match build_session(
+                &host,
+                engine_audio,
+                &config,
+                &probed,
+                SessionMode::Restart,
+            ) {
+                Ok(new_session) => {
+                    let info = session_info(&config, &probed);
+                    generation += 1;
+                    let mut applied_state = applied_audio_config(&info, None);
+                    applied_state.generation = generation;
+                    *applied.write() = applied_state;
+                    session = Some(new_session);
+                    last_good_config = effective_config(&config, &info);
+                }
+                Err(err) => {
+                    log_audio(&format!("Failed to apply audio config: {err}"));
+                    engine_audio = rebind_audio_channels(&bridge);
+                    match start_session(&host, engine_audio, &last_good_config, SessionMode::Recovery) {
+                        Ok((recovered, info)) => {
+                            generation += 1;
+                            let mut applied_state = applied_audio_config(
+                                &info,
+                                Some(format!("{err} (reverted to previous settings)")),
+                            );
+                            applied_state.generation = generation;
+                            *applied.write() = applied_state;
+                            session = Some(recovered);
+                        }
+                        Err(recover_err) => {
+                            *applied.write() = AppliedAudioConfig {
+                                applying: false,
+                                error: Some(format!("{err}; recovery failed: {recover_err}")),
+                                generation,
+                                ..applied.read().clone()
+                            };
+                        }
+                    }
+                }
+            },
+            Err(err) => {
+                log_audio(&format!("Audio config probe failed: {err}"));
+                match start_session(&host, engine_audio, &last_good_config, SessionMode::Recovery) {
+                    Ok((recovered, info)) => {
+                        generation += 1;
+                        let mut applied_state = applied_audio_config(
+                            &info,
+                            Some(format!("{err} (kept previous settings)")),
+                        );
+                        applied_state.generation = generation;
+                        *applied.write() = applied_state;
+                        session = Some(recovered);
+                    }
+                    Err(recover_err) => {
+                        *applied.write() = AppliedAudioConfig {
+                            applying: false,
+                            error: Some(format!("{err}; recovery failed: {recover_err}")),
+                            generation,
+                            ..applied.read().clone()
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SessionInfo {
+    sample_rate: u32,
+    sample_rate_setting: Option<u32>,
+}
+
+fn session_info(_config: &AudioConfig, probed: &ProbedSession) -> SessionInfo {
+    SessionInfo {
+        sample_rate: probed.sample_rate,
+        sample_rate_setting: probed.output.sample_rate_setting,
+    }
+}
+
+fn applied_audio_config(info: &SessionInfo, error: Option<String>) -> AppliedAudioConfig {
+    AppliedAudioConfig {
+        sample_rate: info.sample_rate,
+        sample_rate_setting: info.sample_rate_setting,
+        applying: false,
+        error,
+        generation: 0,
+    }
+}
+
+fn effective_config(config: &AudioConfig, info: &SessionInfo) -> AudioConfig {
+    AudioConfig {
+        output_device: config.output_device.clone(),
+        input_device: config.input_device.clone(),
+        sample_rate: info.sample_rate_setting,
+        filter_oversampling: config.filter_oversampling,
+        filter_type: config.filter_type,
+    }
+}
+
+struct ProbedOutput {
+    output: Output,
+}
+
+struct ProbedSession {
+    output: Output,
+    sample_rate: u32,
+}
+
+#[derive(Clone, Copy)]
+enum SessionMode {
+    Initial,
+    Restart,
+    Recovery,
+}
+
+fn probe_session(host: &cpal::Host, config: &AudioConfig) -> Result<ProbedSession, String> {
+    let ProbedOutput { output } =
+        probe_output(host, config.output_device.as_deref(), config.sample_rate)?;
+    let sample_rate = output.sample_rate as u32;
+
+    if let Some(filter) = config.input_device.as_deref() {
+        let devices: Vec<cpal::Device> = host
+            .input_devices()
+            .map(|devices| devices.collect())
+            .unwrap_or_default();
+        let Some(device) = find_device(&devices, filter) else {
+            return Err(format!("No audio input matching \"{filter}\"."));
+        };
+        if choose_input_config(&device, sample_rate).is_none() {
+            return Err(format!(
+                "Input \"{}\" cannot run at {sample_rate}Hz (must match output rate).",
+                device_name(&device)
+            ));
+        }
+    }
+
+    Ok(ProbedSession {
+        output,
+        sample_rate,
+    })
+}
+
+fn probe_output(
+    host: &cpal::Host,
+    filter: Option<&str>,
+    desired_rate: Option<u32>,
+) -> Result<ProbedOutput, String> {
+    open_output(host, filter, desired_rate, false)
+        .map(|output| ProbedOutput { output })
+        .ok_or_else(|| "No audio output device available.".to_string())
+}
+
+fn start_session(
+    host: &cpal::Host,
+    engine_audio: SynthEngineAudio,
+    config: &AudioConfig,
+    mode: SessionMode,
+) -> Result<(AudioSession, SessionInfo), String> {
+    let probed = probe_session(host, config)?;
+    let session = build_session(host, engine_audio, config, &probed, mode)?;
+    Ok((
+        session,
+        session_info(config, &probed),
+    ))
+}
+
+fn build_session(
+    host: &cpal::Host,
+    engine_audio: SynthEngineAudio,
+    config: &AudioConfig,
+    probed: &ProbedSession,
+    mode: SessionMode,
+) -> Result<AudioSession, String> {
+    let output = &probed.output;
+    let output_name = device_name(&output.device);
+
+    log_audio(&format!(
+        "Configuring output \"{output_name}\" at {} Hz",
+        probed.sample_rate
+    ));
+    if !stream_builds(&output.device, &output.config) {
+        return Err(format!(
+            "Output \"{output_name}\" refused {} Hz",
+            probed.sample_rate
+        ));
+    }
+    wait_for_device_settle();
+
+    let (input_stream, input_consumer) = if let Some(filter) = config.input_device.as_deref() {
+        log_audio(&format!("Opening input \"{filter}\" at {} Hz", probed.sample_rate));
+        let input = open_input(host, filter, probed.sample_rate, output.channels).ok_or_else(|| {
+            format!("Failed to open audio input \"{filter}\".")
+        })?;
+        (Some(input.stream), Some(input.consumer))
+    } else {
+        (None, None)
+    };
+
+    let renderer = Renderer::new(
+        engine_audio,
+        output.sample_rate,
+        output.channels,
+        input_consumer,
+        config.filter_oversampling,
+        config.filter_type,
+    );
+    let output_stream = build_output_stream(&output.device, output.config.clone(), renderer)
+        .ok_or_else(|| "Failed to build audio output stream.".to_string())?;
+
+    log_audio("Starting output stream");
+    output_stream
+        .play()
+        .map_err(|err| format!("Failed to start audio output stream: {err}"))?;
+
+    if input_stream.is_some() {
+        log_audio("Waiting for output clock to settle before starting input");
+        wait_for_device_settle();
+        if let Some(ref stream) = input_stream {
+            log_audio("Starting input stream");
+            stream
+                .play()
+                .map_err(|err| format!("Failed to start audio input stream: {err}"))?;
+        }
+    }
+
+    match mode {
+        SessionMode::Initial => log_audio(&format!("Audio session ready at {} Hz", probed.sample_rate)),
+        SessionMode::Restart => {
+            log_audio(&format!("Audio restart complete at {} Hz", probed.sample_rate))
+        }
+        SessionMode::Recovery => {
+            log_audio(&format!("Audio recovered at {} Hz", probed.sample_rate))
+        }
+    }
+
+    Ok(AudioSession(input_stream, output_stream))
+}
 
 // ============================================================================
 // Stream setup
 // ============================================================================
-
-/// Spawns the audio thread: configures the output and optional input streams,
-/// then starts them together and keeps them alive for the process lifetime.
-pub fn start_audio(
-    engine_audio: SynthEngineAudio,
-    output_filter: Option<String>,
-    input_filter: Option<String>,
-    desired_rate: Option<u32>,
-    filter_oversampling: FilterOversampling,
-    filter_type: FilterType,
-) {
-    std::thread::spawn(move || {
-        let host = cpal::default_host();
-
-        let Some(output) = open_output(&host, output_filter.as_deref(), desired_rate) else {
-            eprintln!("No audio output device available; audio disabled.");
-            return;
-        };
-
-        // Configure the optional input at the output's sample rate so the two
-        // streams match and the input can be summed in directly.
-        let input = input_filter.as_deref().and_then(|filter| {
-            open_input(&host, filter, output.sample_rate as u32, output.channels)
-        });
-        let (input_stream, input_consumer) = match input {
-            Some(input) => (Some(input.stream), Some(input.consumer)),
-            None => (None, None),
-        };
-
-        // Build the output stream (but don't start it yet).
-        let renderer = Renderer::new(
-            engine_audio,
-            output.sample_rate,
-            output.channels,
-            input_consumer,
-            filter_oversampling,
-            filter_type,
-        );
-        let Some(output_stream) = build_output_stream(&output.device, output.config, renderer)
-        else {
-            eprintln!("Failed to build audio output stream; audio disabled.");
-            return;
-        };
-
-        // Everything is configured: start both streams together.
-        if let Some(ref stream) = input_stream {
-            if let Err(err) = stream.play() {
-                eprintln!("Failed to start audio input stream: {err}");
-            }
-        }
-        if let Err(err) = output_stream.play() {
-            eprintln!("Failed to start audio output stream: {err}");
-            return;
-        }
-
-        // Park forever, keeping both streams (and their callbacks) alive.
-        std::thread::park();
-        drop((input_stream, output_stream));
-    });
-}
 
 // --- output ---------------------------------------------------------------
 
@@ -97,6 +426,15 @@ struct Output {
     config: SupportedStreamConfig,
     sample_rate: f32,
     channels: usize,
+    sample_rate_setting: Option<u32>,
+}
+
+fn sample_rate_setting_for_ui(requested: Option<u32>, actual_hz: u32) -> Option<u32> {
+    match requested {
+        None => None,
+        Some(requested_hz) if requested_hz == actual_hz => Some(requested_hz),
+        Some(_) => Some(actual_hz),
+    }
 }
 
 /// Resolves the output device (by name filter, else default) and its config.
@@ -104,46 +442,47 @@ fn open_output(
     host: &cpal::Host,
     filter: Option<&str>,
     desired_rate: Option<u32>,
+    verify_build: bool,
 ) -> Option<Output> {
     let devices: Vec<cpal::Device> = host
         .output_devices()
         .map(|devices| devices.collect())
         .unwrap_or_default();
 
-    eprintln!("Available audio outputs:");
-    for (index, device) in devices.iter().enumerate() {
-        eprintln!("  [{index}] {}", device_name(device));
-    }
-
     let device = match filter {
         Some(filter) => find_device(&devices, filter).or_else(|| {
-            eprintln!(
-                "No audio output matching \"{filter}\"; it may be busy, unplugged, or \
-                 claimed by an aggregate device. Falling back to the system default."
-            );
+            log_audio(&format!(
+                "No audio output matching \"{filter}\"; falling back to system default"
+            ));
             host.default_output_device()
         }),
         None => host.default_output_device(),
     }?;
-    eprintln!("Using output: {}", device_name(&device));
 
-    let config = choose_output_config(&device, desired_rate)?;
+    let config = choose_output_config(&device, desired_rate, verify_build)?;
     let sample_rate = config.sample_rate() as f32;
+    let actual_hz = sample_rate as u32;
     let channels = config.channels() as usize;
-    eprintln!(
-        "Audio: {}Hz, {}ch, {:?}, buffer {:?}",
-        sample_rate as u32,
-        channels,
-        config.sample_format(),
-        config.buffer_size(),
-    );
+    let sample_rate_setting = sample_rate_setting_for_ui(desired_rate, actual_hz);
 
     Some(Output {
         device,
         config,
         sample_rate,
         channels,
+        sample_rate_setting,
     })
+}
+
+fn log_available_outputs(host: &cpal::Host) {
+    let devices: Vec<cpal::Device> = host
+        .output_devices()
+        .map(|devices| devices.collect())
+        .unwrap_or_default();
+    log_audio("Available audio outputs:");
+    for (index, device) in devices.iter().enumerate() {
+        log_audio(&format!("  [{index}] {}", device_name(device)));
+    }
 }
 
 /// Picks a stereo F32 output config, preferring `desired_rate` when supported
@@ -151,6 +490,7 @@ fn open_output(
 fn choose_output_config(
     device: &cpal::Device,
     desired_rate: Option<u32>,
+    verify_build: bool,
 ) -> Option<SupportedStreamConfig> {
     let default = device.default_output_config().ok()?;
 
@@ -176,16 +516,15 @@ fn choose_output_config(
         // reports this only when the stream is built, so verify buildability
         // here and fall back to the device default when the switch is rejected.
         if let Some(config) = at_rate {
-            if stream_builds(device, &config) {
+            if !verify_build || stream_builds(device, &config) {
                 return Some(config);
             }
-            eprintln!(
-                "Device advertises {rate}Hz but refused to switch to it \
-                 (likely clock-locked by an aggregate device or external clock); \
-                 using device default."
-            );
+            log_audio(&format!(
+                "Device advertises {rate} Hz but refused to switch to it \
+                 (likely clock-locked); using device default"
+            ));
         } else {
-            eprintln!("Requested sample rate {rate}Hz unsupported; using device default.");
+            log_audio(&format!("Requested sample rate {rate} Hz unsupported; using device default"));
         }
     }
 
@@ -238,7 +577,7 @@ fn build_output_stream(
         .build_output_stream(
             config.into(),
             move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| renderer.render(data),
-            |err| eprintln!("audio output error: {err}"),
+            |err| log_audio(&format!("output stream error: {err}")),
             Some(STREAM_BUILD_TIMEOUT),
         )
         .map_err(|err| eprintln!("build_output_stream error: {err}"))
@@ -268,16 +607,15 @@ fn open_input(
         .unwrap_or_default();
 
     let Some(device) = find_device(&devices, filter) else {
-        eprintln!("No audio input matching \"{filter}\"; input disabled.");
+        log_audio(&format!("No audio input matching \"{filter}\"; input disabled"));
         return None;
     };
 
     let Some(config) = choose_input_config(&device, sample_rate) else {
-        eprintln!(
-            "Input \"{}\" cannot run at {}Hz (must match output rate); input disabled.",
-            device_name(&device),
-            sample_rate
-        );
+        log_audio(&format!(
+            "Input \"{}\" cannot run at {sample_rate} Hz (must match output rate); input disabled",
+            device_name(&device)
+        ));
         log_supported_input_configs(&device);
         return None;
     };
@@ -292,12 +630,11 @@ fn open_input(
     };
     let stream = build_input_stream(&device, config, capture)?;
 
-    eprintln!(
-        "Using input: {} at {}Hz, {}ch",
+    log_audio(&format!(
+        "Input \"{}\" configured at {sample_rate} Hz, {}ch",
         device_name(&device),
-        sample_rate,
         in_channels
-    );
+    ));
     Some(Input { stream, consumer })
 }
 
@@ -323,7 +660,7 @@ fn build_input_stream(
         .build_input_stream(
             config.into(),
             move |data: &[f32], _info: &cpal::InputCallbackInfo| capture.capture(data),
-            |err| eprintln!("audio input error: {err}"),
+            |err| log_audio(&format!("input stream error: {err}")),
             Some(STREAM_BUILD_TIMEOUT),
         )
         .map_err(|err| eprintln!("build_input_stream error: {err}"))
@@ -338,7 +675,7 @@ fn log_supported_input_configs(device: &cpal::Device) {
     eprintln!("  supported input configs:");
     for config in configs {
         eprintln!(
-            "    {}ch {:?} {}-{}Hz",
+            "    {}ch {:?} {}-{} Hz",
             config.channels(),
             config.sample_format(),
             config.min_sample_rate(),
@@ -420,11 +757,11 @@ impl Renderer {
         let mut engine = SynthEngine::<VOICE_PACKS>::new(sample_rate);
         engine.set_filter_oversampling(filter_oversampling);
         engine.set_filter_type(filter_type);
-        eprintln!(
+        log_audio(&format!(
             "Filter oversampling: {:?} ({}x)",
             filter_oversampling,
             filter_oversampling.factor(sample_rate)
-        );
+        ));
         Self {
             engine_audio,
             engine,

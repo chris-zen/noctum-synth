@@ -45,6 +45,8 @@ pub struct Config {
     pub analysis_viewport: Option<WindowGeometry>,
     #[serde(default)]
     pub analysis: AnalysisConfig,
+    #[serde(default)]
+    pub muted: bool,
     #[serde(default, skip_serializing, rename = "analysis_tab")]
     analysis_tab_legacy: Option<AnalysisTab>,
 }
@@ -63,6 +65,7 @@ impl Config {
         if let Some(tab) = config.analysis_tab_legacy.take() {
             config.analysis.active_tab = tab;
         }
+        config.settings.migrate_legacy_midi_port();
         Ok(config)
     }
 

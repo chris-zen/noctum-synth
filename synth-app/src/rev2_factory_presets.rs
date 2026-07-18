@@ -537,8 +537,11 @@ pub fn program_filename(bank: u8, program: u8) -> Option<String> {
     if bank > 7 || program > 127 {
         return None;
     }
-    let bank_kind = if bank < 4 { 'U' } else { 'F' };
-    let bank_number = bank % 4 + 1;
+    let (bank_kind, bank_number) = if bank < 4 {
+        ('F', bank + 1)
+    } else {
+        ('U', bank - 3)
+    };
     let name = sanitize_filename(factory_preset_name(bank, program)?);
     Some(format!(
         "{bank_kind}{bank_number}-{:03}-{name}",
@@ -586,22 +589,22 @@ mod tests {
     fn filenames_map_all_banks_and_sanitize_names() {
         assert_eq!(
             program_filename(0, 0).as_deref(),
-            Some("U1-001-LosVangelis2041")
+            Some("F1-001-LosVangelis2041")
         );
-        assert_eq!(program_filename(5, 127).as_deref(), Some("F2-128-Mosquito"));
+        assert_eq!(program_filename(5, 127).as_deref(), Some("U2-128-Mosquito"));
         assert_eq!(
             program_filename(6, 127).as_deref(),
-            Some("F3-128-support_dsi_com")
+            Some("U3-128-support_dsi_com")
         );
         for (bank, prefix) in [
-            (0, "U1"),
-            (1, "U2"),
-            (2, "U3"),
-            (3, "U4"),
-            (4, "F1"),
-            (5, "F2"),
-            (6, "F3"),
-            (7, "F4"),
+            (0, "F1"),
+            (1, "F2"),
+            (2, "F3"),
+            (3, "F4"),
+            (4, "U1"),
+            (5, "U2"),
+            (6, "U3"),
+            (7, "U4"),
         ] {
             assert!(program_filename(bank, 0).unwrap().starts_with(prefix));
             assert!(program_filename(bank, 127).unwrap().contains("-128-"));

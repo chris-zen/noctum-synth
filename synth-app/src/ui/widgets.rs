@@ -190,92 +190,126 @@ pub fn param_toggle(
     param: ParamId,
     control: &SynthEngineControl,
 ) {
-    if ui.toggle_value(value, label).changed() {
+    if framed_selectable(ui, *value, label).clicked() {
+        *value = !*value;
         control.set_param(param, if *value { 1.0 } else { 0.0 });
     }
 }
 
-pub fn master_volume(ui: &mut egui::Ui, value: &mut f32, control: &SynthEngineControl) {
+pub fn param_toggle_sized(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    label: &str,
+    value: &mut bool,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
+    if framed_selectable_sized(ui, size, *value, label).clicked() {
+        *value = !*value;
+        control.set_param(param, if *value { 1.0 } else { 0.0 });
+    }
+}
+
+pub fn framed_selectable<'a>(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    ui.add(egui::Button::selectable(selected, label).frame_when_inactive(true))
+}
+
+pub fn framed_selectable_sized<'a>(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    selected: bool,
+    label: impl egui::IntoAtoms<'a>,
+) -> egui::Response {
+    ui.add_sized(
+        size,
+        egui::Button::selectable(selected, label).frame_when_inactive(true),
+    )
+}
+
+pub fn master_volume(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    control: &SynthEngineControl,
+    echo_midi: bool,
+) {
     let previous = *value;
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
     let font_id = egui::FontId::proportional(MASTER_FONT_SIZE);
 
-    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.spacing_mut().item_spacing.x = 4.0;
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+    ui.label(
+        egui::RichText::new("Master")
+            .font(font_id.clone())
+            .color(text_color),
+    );
 
-        ui.label(
-            egui::RichText::new("Master")
-                .font(font_id.clone())
-                .color(text_color),
-        );
+    ui.add_sized(
+        [MASTER_KNOB_SIZE, MASTER_KNOB_SIZE],
+        Knob::new(value, 0.0, 1.0, KnobStyle::Wiper)
+            .with_size(MASTER_KNOB_SIZE)
+            .with_stroke_width(1.5)
+            .with_colors(knob_color, accent, text_color)
+            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+            .with_double_click_reset(1.0)
+            .with_background_arc(false)
+            .with_show_filled_segments(false),
+    );
 
-        ui.add_sized(
-            [MASTER_KNOB_SIZE, MASTER_KNOB_SIZE],
-            Knob::new(value, 0.0, 1.0, KnobStyle::Wiper)
-                .with_size(MASTER_KNOB_SIZE)
-                .with_stroke_width(1.5)
-                .with_colors(knob_color, accent, text_color)
-                .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
-                .with_double_click_reset(1.0)
-                .with_background_arc(false)
-                .with_show_filled_segments(false),
-        );
+    let edit_id = egui::Id::new("knob_txt_master_volume");
 
-        let edit_id = egui::Id::new("knob_txt_master_volume");
+    let mut edit_text = ui
+        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+        .unwrap_or_default();
 
-        let mut edit_text = ui
-            .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
-            .unwrap_or_default();
+    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+    let changed = *value != previous;
 
-        let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
-        let changed = *value != previous;
+    if !edit_has_focus {
+        edit_text = format!("{:.2}", *value);
+    }
 
-        // Patch and MIDI loads update `value` before this widget is rendered,
-        // so comparing it with the value captured at the start of this frame
-        // cannot detect those external changes. Keep the inactive text editor
-        // synchronized with the authoritative value on every frame.
-        if !edit_has_focus {
-            edit_text = format!("{:.2}", *value);
-        }
+    if edit_text.is_empty() {
+        edit_text = format!("{:.2}", *value);
+    }
 
-        if edit_text.is_empty() {
-            edit_text = format!("{:.2}", *value);
-        }
+    let edit_response = ui.add_sized(
+        [38.0, MASTER_KNOB_SIZE],
+        egui::TextEdit::singleline(&mut edit_text)
+            .id(edit_id)
+            .font(font_id)
+            .horizontal_align(egui::Align::Center)
+            .frame(egui::Frame::NONE)
+            .text_color(text_color),
+    );
 
-        let edit_response = ui.add_sized(
-            [38.0, MASTER_KNOB_SIZE],
-            egui::TextEdit::singleline(&mut edit_text)
-                .id(edit_id)
-                .font(font_id)
-                .horizontal_align(egui::Align::Center)
-                .frame(egui::Frame::NONE)
-                .text_color(text_color),
-        );
-
-        let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
-        if apply {
-            if let Ok(new_val) = edit_text.trim().parse::<f32>() {
-                let clamped = new_val.clamp(0.0, 1.0);
-                if (*value - clamped).abs() > f32::EPSILON {
-                    *value = clamped;
+    let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
+    if apply {
+        if let Ok(new_val) = edit_text.trim().parse::<f32>() {
+            let clamped = new_val.clamp(0.0, 1.0);
+            if (*value - clamped).abs() > f32::EPSILON {
+                *value = clamped;
+                if echo_midi {
                     control.set_param(ParamId::MasterVolume, *value);
                 }
-                edit_text = format!("{:.2}", *value);
-            } else {
-                edit_text = format!("{:.2}", *value);
             }
+            edit_text = format!("{:.2}", *value);
+        } else {
+            edit_text = format!("{:.2}", *value);
         }
+    }
 
-        ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
 
-        if changed {
-            control.set_param(ParamId::MasterVolume, *value);
-        }
-    });
+    if changed && echo_midi {
+        control.set_param(ParamId::MasterVolume, *value);
+    }
 }
 
 fn format_hz(value: f32) -> String {
