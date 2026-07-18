@@ -72,25 +72,18 @@ pub fn message_to_controls(
     }
 }
 
-pub fn patch_to_controls(patch: &Patch, mut emit: impl FnMut(ControlMessage)) {
-    patch.for_each_param(|param, value| emit(ControlMessage::SetParam(param, value)));
-    patch.for_each_modulation(|route, slot| {
-        emit(ControlMessage::SetModulation {
-            route,
-            enabled: slot.enabled,
-            source: slot.source,
-            destination: slot.destination,
-            amount: slot.amount,
-        });
-    });
-}
-
-pub struct SynthMidiHandler<'a, const N: usize> {
-    sender: embassy_sync::channel::Sender<
+pub struct SynthMidiHandler<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize> {
+    controls: embassy_sync::channel::Sender<
         'a,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
         ControlMessage,
-        N,
+        CONTROL_CAPACITY,
+    >,
+    patches: embassy_sync::channel::Sender<
+        'a,
+        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+        Patch,
+        PATCH_CAPACITY,
     >,
     indicator: crate::indicator::Sender<'a>,
     decoder: Rev2MidiDecoder,
@@ -98,18 +91,27 @@ pub struct SynthMidiHandler<'a, const N: usize> {
     nrpn_monitor: NrpnMonitor,
 }
 
-impl<'a, const N: usize> SynthMidiHandler<'a, N> {
+impl<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize>
+    SynthMidiHandler<'a, CONTROL_CAPACITY, PATCH_CAPACITY>
+{
     pub fn new(
-        sender: embassy_sync::channel::Sender<
+        controls: embassy_sync::channel::Sender<
             'a,
             embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
             ControlMessage,
-            N,
+            CONTROL_CAPACITY,
+        >,
+        patches: embassy_sync::channel::Sender<
+            'a,
+            embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
+            Patch,
+            PATCH_CAPACITY,
         >,
         indicator: crate::indicator::Sender<'a>,
     ) -> Self {
         Self {
-            sender,
+            controls,
+            patches,
             indicator,
             decoder: Rev2MidiDecoder::default(),
             #[cfg(feature = "diagnostics")]
@@ -118,7 +120,9 @@ impl<'a, const N: usize> SynthMidiHandler<'a, N> {
     }
 }
 
-impl<const N: usize> crate::midi::MidiMessageHandler for SynthMidiHandler<'_, N> {
+impl<const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize> crate::midi::MidiMessageHandler
+    for SynthMidiHandler<'_, CONTROL_CAPACITY, PATCH_CAPACITY>
+{
     fn handle(&mut self, _cable: u8, message: MidiMessage<'_>) {
         self.indicator.notify_midi();
 
@@ -132,7 +136,7 @@ impl<const N: usize> crate::midi::MidiMessageHandler for SynthMidiHandler<'_, N>
             None
         };
 
-        let sender = self.sender;
+        let sender = self.controls;
         message_to_controls(message, &mut self.decoder, |command| {
             if sender.try_send(command).is_err() {
                 crate::diagnostics::emit(crate::diagnostics::Event::ControlQueueFull);
@@ -149,22 +153,65 @@ impl<const N: usize> crate::midi::MidiMessageHandler for SynthMidiHandler<'_, N>
         }
     }
 
-    fn decode_error(&mut self, cable: u8, _error: crate::midi::DecodeError) {
-        crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi { cable });
+    fn decode_error(&mut self, cable: u8, error: crate::midi::DecodeError) {
+        use crate::diagnostics::InvalidMidiReason;
+
+        let reason = match error {
+            crate::midi::DecodeError::UnsupportedCable(_) => InvalidMidiReason::UnsupportedCable,
+            crate::midi::DecodeError::UnsupportedCodeIndex(_) => {
+                InvalidMidiReason::UnsupportedCodeIndex
+            }
+            crate::midi::DecodeError::UnexpectedSysExContinuation => {
+                InvalidMidiReason::UnexpectedSysExContinuation
+            }
+            crate::midi::DecodeError::NestedSysExStart => InvalidMidiReason::NestedSysExStart,
+            crate::midi::DecodeError::SysExTooLong => InvalidMidiReason::SysExTooLong,
+            crate::midi::DecodeError::InvalidMessage(_) => InvalidMidiReason::InvalidMessage,
+        };
+        crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
+            cable,
+            reason,
+            length: 0,
+        });
     }
 
     fn handle_sysex(&mut self, cable: u8, message: &[u8]) {
         self.indicator.notify_midi();
-        let Ok(patch) = Rev2MidiDecoder::program_edit_buffer(message) else {
-            crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi { cable });
+        if message.len() < 4 || message[..3] != [0xf0, 0x01, 0x2f] {
             return;
-        };
-        let sender = self.sender;
-        patch_to_controls(&patch, |command| {
-            if sender.try_send(command).is_err() {
-                crate::diagnostics::emit(crate::diagnostics::Event::ControlQueueFull);
+        }
+        let patch = match Rev2MidiDecoder::program_edit_buffer(message) {
+            Ok(patch) => patch,
+            Err(error) => {
+                use crate::diagnostics::InvalidMidiReason;
+                use synth_core::Rev2SysexError;
+
+                let reason = match error {
+                    Rev2SysexError::InvalidLength => InvalidMidiReason::InvalidSysExLength,
+                    Rev2SysexError::InvalidFraming => InvalidMidiReason::InvalidSysExFraming,
+                    Rev2SysexError::InvalidManufacturer => {
+                        InvalidMidiReason::InvalidSysExManufacturer
+                    }
+                    Rev2SysexError::InvalidModel => InvalidMidiReason::InvalidSysExModel,
+                    Rev2SysexError::UnsupportedCommand => {
+                        InvalidMidiReason::UnsupportedSysExCommand
+                    }
+                    Rev2SysexError::InvalidBank => InvalidMidiReason::InvalidSysExBank,
+                    Rev2SysexError::NonSevenBitData => InvalidMidiReason::NonSevenBitSysExData,
+                    Rev2SysexError::OutputTooSmall => InvalidMidiReason::SysExOutputTooSmall,
+                };
+                crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
+                    cable,
+                    reason,
+                    length: message.len() as u16,
+                });
+                return;
             }
-        });
+        };
+        crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
+        if self.patches.try_send(patch).is_err() {
+            crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
+        }
     }
 }
 

@@ -9,7 +9,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 use synth_core::{FilterOversampling, FilterType};
 
-use analog_synth_daisy_firmware::audio::{ControlQueue, HardwareSynth};
+use analog_synth_daisy_firmware::audio::{ControlQueue, HardwareSynth, PatchQueue};
 use analog_synth_daisy_firmware::synth::SynthMidiHandler;
 use analog_synth_daisy_firmware::{audio, diagnostics, indicator, midi};
 
@@ -20,6 +20,7 @@ const FIRMWARE_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off
 
 static ENGINE: StaticCell<HardwareSynth> = StaticCell::new();
 static CONTROLS: ControlQueue = Channel::new();
+static PATCHES: PatchQueue = Channel::new();
 static INDICATOR: indicator::Indicator = indicator::Indicator::new();
 
 #[embassy_executor::main]
@@ -66,13 +67,14 @@ async fn main(spawner: embassy_executor::Spawner) {
     #[cfg(feature = "diagnostics")]
     spawner.spawn(diagnostics::run_task().expect("failed to spawn diagnostics reporter"));
 
-    let midi_handler = SynthMidiHandler::new(CONTROLS.sender(), indicator_tx);
+    let midi_handler = SynthMidiHandler::new(CONTROLS.sender(), PATCHES.sender(), indicator_tx);
 
     // Any interrupt preempts thread mode. P1 leaves the DMA/USB handlers at
     // their default P0 while guaranteeing that blocking diagnostics cannot
     // delay audio rendering or SAI servicing.
     interrupt::I2C4_EV.set_priority(Priority::P1);
-    audio::spawn(parts.audio, engine, &CONTROLS, indicator_tx).expect("failed to spawn audio task");
+    audio::spawn(parts.audio, engine, &CONTROLS, &PATCHES, indicator_tx)
+        .expect("failed to spawn audio task");
 
     midi::run(parts.usb, midi_handler).await;
 }

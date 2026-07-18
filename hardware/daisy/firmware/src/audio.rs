@@ -9,13 +9,17 @@ use embassy_futures::yield_now;
 use embassy_stm32::interrupt;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use synth_core::{ControlMessage, SynthEngineWithMemory};
+use synth_core::{ControlMessage, Patch, SynthEngineWithMemory};
 
+use crate::patch_transition::PatchTransition;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
 use crate::{diagnostics, indicator};
+#[cfg(feature = "audio-profiling")]
+use synth_core::{RenderProfiler, RenderStage};
 
 pub const CONTROL_QUEUE_CAPACITY: usize = 256;
+pub const PATCH_QUEUE_CAPACITY: usize = 2;
 // Bound non-audio work between DMA transfers. Four commands per block still
 // sustains 6,000 parameter updates/second at 48 kHz with 32-frame blocks.
 const MAX_CONTROLS_PER_BLOCK: usize = 4;
@@ -28,16 +32,18 @@ static UNDERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
 pub type ControlQueue = Channel<CriticalSectionRawMutex, ControlMessage, CONTROL_QUEUE_CAPACITY>;
+pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
 
 pub fn spawn(
     resources: AudioResources,
     engine: &'static mut HardwareSynth,
     controls: &'static ControlQueue,
+    patches: &'static PatchQueue,
     indicator: indicator::Sender<'static>,
 ) -> Result<(), embassy_executor::SpawnError> {
     EXECUTOR
         .start(interrupt::I2C4_EV)
-        .spawn(run_task(resources, engine, controls, indicator)?);
+        .spawn(run_task(resources, engine, controls, patches, indicator)?);
     Ok(())
 }
 
@@ -46,6 +52,7 @@ pub async fn run_task(
     resources: AudioResources,
     engine: &'static mut HardwareSynth,
     controls: &'static ControlQueue,
+    patches: &'static PatchQueue,
     indicator: indicator::Sender<'static>,
 ) -> ! {
     let mut audio = Audio::output(resources).expect("WM8731/SAI initialization failed");
@@ -56,6 +63,7 @@ pub async fn run_task(
     #[cfg(feature = "audio-profiling")]
     let mut profiler = profiling::AudioProfiler::new(BLOCK_CYCLE_BUDGET);
     let mut perf_monitor = diagnostics::PerfMonitor::new(BLOCK_CYCLE_BUDGET);
+    let mut patch_transition = PatchTransition::default();
 
     // Render before starting the receive clock. The SAI input ring cannot
     // overrun while the first, comparatively expensive DSP block is prepared.
@@ -102,6 +110,18 @@ pub async fn run_task(
 
         let work_started = DWT::cycle_count();
 
+        #[cfg(feature = "audio-profiling")]
+        {
+            profiler.begin_block();
+            profiler.begin(RenderStage::ControlDrain);
+        }
+        if let Ok(patch) = patches.try_receive() {
+            patch_transition.enqueue(patch);
+        }
+        let transition_action = patch_transition.begin_block();
+        if let Some(patch) = transition_action.patch {
+            engine.apply_patch(&patch);
+        }
         for _ in 0..MAX_CONTROLS_PER_BLOCK {
             let Ok(command) = controls.try_receive() else {
                 break;
@@ -109,16 +129,25 @@ pub async fn run_task(
             queue_midi_parameter_applied(&command);
             engine.handle_control(command);
         }
+        #[cfg(feature = "audio-profiling")]
+        profiler.end(RenderStage::ControlDrain);
+
+        if transition_action.render {
+            #[cfg(feature = "audio-profiling")]
+            engine.process_interleaved_profiled(&mut interleaved, 2, &mut profiler);
+            #[cfg(not(feature = "audio-profiling"))]
+            engine.process_interleaved(&mut interleaved, 2);
+        }
+        patch_transition.finish_block(&mut interleaved, transition_action.render);
 
         #[cfg(feature = "audio-profiling")]
+        profiler.begin(RenderStage::OutputCopy);
+        copy_output(&interleaved, &mut output);
+        #[cfg(feature = "audio-profiling")]
         {
-            profiler.begin_block();
-            engine.process_interleaved_profiled(&mut interleaved, 2, &mut profiler);
+            profiler.end(RenderStage::OutputCopy);
             profiler.end_block();
         }
-        #[cfg(not(feature = "audio-profiling"))]
-        engine.process_interleaved(&mut interleaved, 2);
-        copy_output(&interleaved, &mut output);
 
         let work_cycles = DWT::cycle_count().wrapping_sub(work_started);
         if let Some(event) = perf_monitor.observe(work_cycles) {
@@ -188,12 +217,12 @@ fn queue_profile(snapshot: profiling::Snapshot) {
         maximum_cycles: snapshot.block_max,
     });
     diagnostics::emit(diagnostics::Event::PerfStages {
-        maximum: false,
+        worst_block: false,
         cycles: snapshot.stage_average,
     });
     diagnostics::emit(diagnostics::Event::PerfStages {
-        maximum: true,
-        cycles: snapshot.stage_max,
+        worst_block: true,
+        cycles: snapshot.stage_worst_block,
     });
 }
 

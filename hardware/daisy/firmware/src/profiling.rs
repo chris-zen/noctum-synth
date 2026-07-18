@@ -9,7 +9,8 @@ pub struct Snapshot {
     pub block_average: u32,
     pub block_max: u32,
     pub stage_average: [u32; RenderStage::COUNT],
-    pub stage_max: [u32; RenderStage::COUNT],
+    /// Stage attribution captured from the same block as `block_max`.
+    pub stage_worst_block: [u32; RenderStage::COUNT],
 }
 
 pub struct AudioProfiler {
@@ -22,7 +23,7 @@ pub struct AudioProfiler {
     stage_started: [u32; RenderStage::COUNT],
     current_stage_cycles: [u32; RenderStage::COUNT],
     stage_cycles: [u32; RenderStage::COUNT],
-    stage_max: [u32; RenderStage::COUNT],
+    stage_worst_block: [u32; RenderStage::COUNT],
 }
 
 impl AudioProfiler {
@@ -37,7 +38,7 @@ impl AudioProfiler {
             stage_started: [0; RenderStage::COUNT],
             current_stage_cycles: [0; RenderStage::COUNT],
             stage_cycles: [0; RenderStage::COUNT],
-            stage_max: [0; RenderStage::COUNT],
+            stage_worst_block: [0; RenderStage::COUNT],
         }
     }
 
@@ -53,14 +54,14 @@ impl AudioProfiler {
             block_average: self.block_cycles / divisor,
             block_max: self.block_max,
             stage_average: self.stage_cycles.map(|cycles| cycles / divisor),
-            stage_max: self.stage_max,
+            stage_worst_block: self.stage_worst_block,
         };
         self.blocks = 0;
         self.overruns = 0;
         self.block_cycles = 0;
         self.block_max = 0;
         self.stage_cycles = [0; RenderStage::COUNT];
-        self.stage_max = [0; RenderStage::COUNT];
+        self.stage_worst_block = [0; RenderStage::COUNT];
         snapshot
     }
 
@@ -75,13 +76,12 @@ impl AudioProfiler {
         let cycles = DWT::cycle_count().wrapping_sub(self.block_started);
         self.blocks += 1;
         self.block_cycles = self.block_cycles.wrapping_add(cycles);
-        self.block_max = self.block_max.max(cycles);
+        if cycles > self.block_max {
+            self.block_max = cycles;
+            self.stage_worst_block = self.current_stage_cycles;
+        }
         if cycles > self.block_cycle_budget {
             self.overruns += 1;
-        }
-        for stage in RenderStage::ALL {
-            let index = stage.index();
-            self.stage_max[index] = self.stage_max[index].max(self.current_stage_cycles[index]);
         }
     }
 }

@@ -4,6 +4,28 @@
 use synth_core::RenderStage;
 use synth_core::{ModRoute, ModulationParam, ParamId};
 
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    all(feature = "diagnostics", target_arch = "arm"),
+    derive(defmt::Format)
+)]
+pub enum InvalidMidiReason {
+    UnsupportedCable,
+    UnsupportedCodeIndex,
+    UnexpectedSysExContinuation,
+    NestedSysExStart,
+    SysExTooLong,
+    InvalidMessage,
+    InvalidSysExLength,
+    InvalidSysExFraming,
+    InvalidSysExManufacturer,
+    InvalidSysExModel,
+    UnsupportedSysExCommand,
+    InvalidSysExBank,
+    NonSevenBitSysExData,
+    SysExOutputTooSmall,
+}
+
 #[cfg(feature = "diagnostics")]
 pub use enabled::{PerfMonitor, emit, emit_xrun, init, run_task};
 
@@ -29,12 +51,14 @@ pub enum Event {
         blocks: u32,
         over_budget_blocks: u32,
         average_cycles: u32,
+        p95_cycles: u32,
+        p99_cycles: u32,
         maximum_cycles: u32,
         budget_cycles: u32,
     },
     #[cfg(feature = "audio-profiling")]
     PerfStages {
-        maximum: bool,
+        worst_block: bool,
         cycles: [u32; RenderStage::COUNT],
     },
     ProfileBlock {
@@ -49,8 +73,12 @@ pub enum Event {
         value: u16,
     },
     ControlQueueFull,
+    PatchQueueFull,
+    ProgramEditBufferReceived,
     InvalidMidi {
         cable: u8,
+        reason: InvalidMidiReason,
+        length: u16,
     },
     UsbMidiConnected,
     UsbMidiDisconnected,
@@ -74,7 +102,9 @@ mod enabled {
 
     const QUEUE_CAPACITY: usize = 32;
     const PERF_REPORT_INTERVAL_BLOCKS: u32 = 1_500;
-    const PERF_WARNING_THRESHOLD_PERMILLE: u32 = 900;
+    const PERF_WARNING_THRESHOLD_PERMILLE: u32 = 850;
+    const PERF_HISTOGRAM_BINS: usize = 128;
+    const PERF_HISTOGRAM_RANGE_PERMILLE: u32 = 1_250;
 
     static EVENTS: Channel<CriticalSectionRawMutex, Event, QUEUE_CAPACITY> = Channel::new();
     static DROPPED_EVENTS: AtomicU32 = AtomicU32::new(0);
@@ -88,6 +118,7 @@ mod enabled {
         over_budget_blocks: u32,
         total_cycles: u64,
         maximum_cycles: u32,
+        histogram: [u16; PERF_HISTOGRAM_BINS],
     }
 
     impl PerfMonitor {
@@ -98,6 +129,7 @@ mod enabled {
                 over_budget_blocks: 0,
                 total_cycles: 0,
                 maximum_cycles: 0,
+                histogram: [0; PERF_HISTOGRAM_BINS],
             }
         }
 
@@ -109,6 +141,11 @@ mod enabled {
             self.over_budget_blocks += u32::from(cycles > self.budget_cycles);
             self.total_cycles += u64::from(cycles);
             self.maximum_cycles = self.maximum_cycles.max(cycles);
+            let range = histogram_range(self.budget_cycles);
+            let bin = ((u64::from(cycles.min(range)) * PERF_HISTOGRAM_BINS as u64)
+                / u64::from(range.max(1)))
+            .min((PERF_HISTOGRAM_BINS - 1) as u64) as usize;
+            self.histogram[bin] = self.histogram[bin].saturating_add(1);
 
             if self.blocks < PERF_REPORT_INTERVAL_BLOCKS {
                 return None;
@@ -117,11 +154,14 @@ mod enabled {
             let blocks = self.blocks;
             let over_budget_blocks = self.over_budget_blocks;
             let average_cycles = (self.total_cycles / u64::from(blocks)) as u32;
+            let p95_cycles = histogram_quantile(&self.histogram, blocks, 95, range);
+            let p99_cycles = histogram_quantile(&self.histogram, blocks, 99, range);
             let maximum_cycles = self.maximum_cycles;
             self.blocks = 0;
             self.over_budget_blocks = 0;
             self.total_cycles = 0;
             self.maximum_cycles = 0;
+            self.histogram = [0; PERF_HISTOGRAM_BINS];
 
             let near_budget = u64::from(maximum_cycles) * 1_000
                 >= u64::from(self.budget_cycles) * u64::from(PERF_WARNING_THRESHOLD_PERMILLE);
@@ -129,10 +169,34 @@ mod enabled {
                 blocks,
                 over_budget_blocks,
                 average_cycles,
+                p95_cycles,
+                p99_cycles,
                 maximum_cycles,
                 budget_cycles: self.budget_cycles,
             })
         }
+    }
+
+    fn histogram_range(budget_cycles: u32) -> u32 {
+        (u64::from(budget_cycles) * u64::from(PERF_HISTOGRAM_RANGE_PERMILLE) / 1_000)
+            .min(u64::from(u32::MAX)) as u32
+    }
+
+    fn histogram_quantile(
+        histogram: &[u16; PERF_HISTOGRAM_BINS],
+        blocks: u32,
+        percentile: u32,
+        range: u32,
+    ) -> u32 {
+        let target = (u64::from(blocks) * u64::from(percentile) + 99) / 100;
+        let mut cumulative = 0u64;
+        for (index, count) in histogram.iter().enumerate() {
+            cumulative += u64::from(*count);
+            if cumulative >= target {
+                return ((index as u64 + 1) * u64::from(range) / PERF_HISTOGRAM_BINS as u64) as u32;
+            }
+        }
+        range
     }
 
     /// Attempt to enqueue a diagnostic without ever waiting for the reporter.
@@ -215,44 +279,63 @@ mod enabled {
                     blocks,
                     over_budget_blocks,
                     average_cycles,
+                    p95_cycles,
+                    p99_cycles,
                     maximum_cycles,
                     budget_cycles,
                 } => defmt::warn!(
-                    "PERF: blocks={} over_budget={} avg_cycles={} avg_permille={} max_cycles={} max_permille={} budget={}",
+                    "PERF: blocks={} over_budget={} avg={} p95={} p99={} max={} max_permille={} headroom={} budget={}",
                     blocks,
                     over_budget_blocks,
                     average_cycles,
-                    budget_permille(average_cycles, budget_cycles),
+                    p95_cycles,
+                    p99_cycles,
                     maximum_cycles,
                     budget_permille(maximum_cycles, budget_cycles),
+                    budget_cycles.saturating_sub(maximum_cycles),
                     budget_cycles
                 ),
                 #[cfg(feature = "audio-profiling")]
-                Event::PerfStages { maximum, cycles } => {
+                Event::PerfStages {
+                    worst_block,
+                    cycles,
+                } => {
                     defmt::info!(
-                        "PERF stages maximum={} env_mod={} osc={} filter={} amp_pan={} effects={} output={}",
-                        maximum,
+                        "PERF stages worst={} controls={} env_mod={} osc={} filter={} amp_pan={} effects={} output={} copy={}",
+                        worst_block,
+                        cycles[RenderStage::ControlDrain.index()],
                         cycles[RenderStage::EnvelopesAndModulation.index()],
                         cycles[RenderStage::Oscillators.index()],
                         cycles[RenderStage::Filter.index()],
                         cycles[RenderStage::AmplifierAndPan.index()],
                         cycles[RenderStage::Effects.index()],
-                        cycles[RenderStage::MasterOutput.index()]
+                        cycles[RenderStage::MasterOutput.index()],
+                        cycles[RenderStage::OutputCopy.index()]
                     );
                     defmt::info!(
-                        "PERF modulation maximum={} envelopes={} lfo_control={} lfo_generation={} audio_routes={}",
-                        maximum,
+                        "PERF modulation worst={} envelopes={} lfo_control={} lfo_generation={} audio_routes={} control_routes={} interpolation={}",
+                        worst_block,
                         cycles[RenderStage::EnvelopeAdvance.index()],
                         cycles[RenderStage::LfoControlRouting.index()],
                         cycles[RenderStage::LfoGeneration.index()],
-                        cycles[RenderStage::AudioModulationRouting.index()]
+                        cycles[RenderStage::AudioModulationRouting.index()],
+                        cycles[RenderStage::ControlRateRouting.index()],
+                        cycles[RenderStage::ControlRateInterpolation.index()]
                     );
                     defmt::info!(
-                        "PERF oscillators maximum={} control={} waveform={} mix={}",
-                        maximum,
+                        "PERF oscillators worst={} control={} waveform={} mix={}",
+                        worst_block,
                         cycles[RenderStage::OscillatorControl.index()],
                         cycles[RenderStage::OscillatorWaveform.index()],
                         cycles[RenderStage::OscillatorMix.index()]
+                    );
+                    defmt::info!(
+                        "PERF effects worst={} prepare={} reverb_combs={} reverb_allpasses={} mix={}",
+                        worst_block,
+                        cycles[RenderStage::EffectsPreparation.index()],
+                        cycles[RenderStage::ReverbCombs.index()],
+                        cycles[RenderStage::ReverbAllpasses.index()],
+                        cycles[RenderStage::EffectsMix.index()]
                     );
                 }
                 Event::ProfileBlock {
@@ -275,8 +358,23 @@ mod enabled {
                 Event::ControlQueueFull => {
                     defmt::warn!("synth control queue full; dropping newest MIDI command")
                 }
-                Event::InvalidMidi { cable } => {
-                    defmt::warn!("invalid MIDI message on cable {}", cable)
+                Event::PatchQueueFull => {
+                    defmt::warn!("synth patch queue full; dropping newest patch")
+                }
+                Event::ProgramEditBufferReceived => {
+                    defmt::info!("received Rev2 Program Edit Buffer")
+                }
+                Event::InvalidMidi {
+                    cable,
+                    reason,
+                    length,
+                } => {
+                    defmt::warn!(
+                        "invalid MIDI message on cable {}: {:?}, length={}",
+                        cable,
+                        reason,
+                        length
+                    )
                 }
                 Event::UsbMidiConnected => defmt::info!("USB MIDI connected"),
                 Event::UsbMidiDisconnected => defmt::info!("USB MIDI disconnected"),

@@ -31,10 +31,9 @@ embedded-test = { version = "0.7", default-features = true }
 debug = 2
 lto = "fat"
 codegen-units = 1
-# Keep support code compact within the Daisy bootloader's 480 KiB BOOT_SRAM
-# execution window while allowing synth-core's real-time DSP to optimize for
-# throughput below.
-opt-level = "s"
+# The firmware's control and effects glue also runs in the audio deadline. The
+# complete image remains within the Daisy bootloader's 480 KiB BOOT_SRAM window.
+opt-level = 3
 
 [profile.release.package.synth-core]
 opt-level = 3

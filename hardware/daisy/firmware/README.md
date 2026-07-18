@@ -38,9 +38,9 @@ shareable memory.
 
 The firmware currently enumerates as a bidirectional USB-MIDI device and
 decodes USB event packets with the no-std `wmidi` crate. The decoder honors
-each packet's code-index-number length and
-reassembles SysEx into a fixed buffer sized for a complete Rev2 Program Edit
-Buffer dump without allocation. It uses
+each packet's code-index-number length and reassembles SysEx into a fixed
+buffer sized for the larger Rev2 stored-program envelope without allocation.
+It uses
 temporary VID/PID
 `0xC0DE:0xCAFE` for local development only. Do not distribute firmware or
 hardware using this identity.
@@ -56,7 +56,10 @@ Allocation requirements: <https://pid.codes/howto/>.
 The MIDI component terminates at a synchronous typed-message handler. The
 firmware maps performance messages into `synth_core::ControlMessage`, enqueues
 up to 256 commands without blocking, and drains them immediately before
-rendering each audio block. Effects and table BLEP are always enabled.
+rendering each audio block. Program Edit Buffer dumps instead cross the
+real-time boundary as one `Patch` through a dedicated two-slot queue; the audio
+task passes that patch directly to `SynthEngineWithMemory::apply_patch`.
+Effects and table BLEP are always enabled.
 `synth-core` only receives a caller-provided mutable slice and remains
 unaware that the firmware backs that storage with external SDRAM.
 
@@ -112,6 +115,62 @@ oversampling disabled; filter-comparison cases override that model explicitly.
 cargo run --release -p analog-synth-daisy-firmware \
   --features audio-profiling --bin dsp-benchmark
 ```
+
+### Factory-preset benchmark
+
+`factory-preset-benchmark` evaluates all 512 Layer A programs from the Prophet
+Rev2 v1.0 factory bank without measuring MIDI transport, QSPI reads, patch
+decoding, logging, or engine initialization. Its timed callback-equivalent path
+does include production queue polling/control draining, engine rendering,
+limiting, patch-transition gain, and output copying. The bank remains in its
+original stored-program SysEx representation and is packaged after the maximum
+BOOT_SRAM application storage window, so its 1.2 MiB payload cannot change
+executable code placement or consume the 480 KiB execution region.
+
+Build the combined bootloader image from the repository's factory bank:
+
+```sh
+firmware/build-factory-preset-image.sh
+```
+
+The resulting image contains the SRAM executable at QSPI `0x90040000`, padding
+through the complete application reservation, and the factory bank beginning at
+QSPI `0x900c0000`. Upload it through the normal Daisy bootloader flow:
+
+```sh
+dfu-util -a 0 -s 0x90040000:leave \
+  -D target/factory-preset-benchmark-with-bank.bin \
+  -d ,0483:df11
+```
+
+The benchmark expects exactly 512 concatenated 2,346-byte messages and verifies
+the complete payload against CRC32 `3df33c23` before measuring anything. It
+reuses one SDRAM allocation but reconstructs the engine for every program, so
+voices, envelopes, limiter state, and effect history cannot leak between
+presets. Each program receives notes C4, E4, G4, and C5 at full velocity. The
+benchmark measures the complete seven-block patch transition, a 128-block
+four-note attack, 512 warmed steady-state blocks, and 128 blocks that each drain
+four expensive parameter updates. Programs at or above the 272,000-cycle target
+receive an additional 256-block profiling pass.
+
+Run it with a debug probe attached:
+
+```sh
+cargo run --release -p analog-synth-daisy-firmware \
+  --features audio-profiling --bin factory-preset-benchmark
+```
+
+Every `FACTORY raw` record contains bank/program/scenario, average, p95, p99,
+maximum, target/deadline headroom, and over-budget block count. Near-budget
+programs also emit `FACTORY profile` attribution. The final summary reports
+failure counts, waveform/filter/effect/route groupings, and the sixteen slowest
+cases. Bank and program numbers are one-based and match the factory-preset list.
+
+On Daisy, the selected uniform quality tier runs the engine at 24 kHz and
+reconstructs its stereo output at the external 48 kHz rate with the fixed
+three-tap half-band interpolator owned by `render_rate`. Desktop builds retain
+the unchanged full-rate path. This preserves four voices, all modulation routes,
+and patch/MIDI/SysEx compatibility while intentionally reducing Daisy bandwidth.
 
 Triangle PolyBLAMP is backend-specialized: Daisy's scalar `embedded-math`
 implementation skips inactive correction windows per lane, while SIMD hosts

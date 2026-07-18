@@ -7,6 +7,11 @@ DEFMT_LOG = "info"
 [target.thumbv7em-none-eabihf]
 runner = "probe-rs run --chip STM32H750IB"
 rustflags = [
+    # `thumbv7em-none-eabihf` selects the hard-float EABI and FPv5-D16;
+    # target-cpu enables Cortex-M7 scheduling and instruction selection.
+    # Rust's stable codegen has no supported `-ffast-math` equivalent, so DSP
+    # approximations stay explicit and testable inside subsystem math modules.
+    "-C", "target-cpu=cortex-m7",
     "-C", "link-arg=-Tlink.x",
     "-C", "link-arg=-Tdefmt.x",
 ]

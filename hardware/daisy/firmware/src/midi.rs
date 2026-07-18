@@ -2,9 +2,12 @@
 
 use wmidi::{FromBytesError, MidiMessage};
 
-use synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN;
+use synth_core::REV2_PROGRAM_DATA_SYSEX_LEN;
 
-const SYSEX_CAPACITY: usize = REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN;
+// Use the larger stored-program envelope even though the firmware currently
+// applies only Program Edit Buffer dumps. This keeps transport assembly
+// independent of the Rev2 command decoded at the application boundary.
+const SYSEX_CAPACITY: usize = REV2_PROGRAM_DATA_SYSEX_LEN;
 
 /// Temporary USB vendor ID used only for local development.
 ///
@@ -112,6 +115,10 @@ impl<H: MidiMessageHandler> WmidiDecoder<H> {
         self.handler
     }
 
+    fn reset_sysex(&mut self) {
+        self.sysex_len = 0;
+    }
+
     fn decode(&mut self, cable: u8, bytes: &[u8]) {
         match MidiMessage::try_from(bytes) {
             Ok(message) => self.handler.handle(cable, message),
@@ -148,7 +155,10 @@ impl<H: MidiMessageHandler> WmidiDecoder<H> {
         self.sysex[self.sysex_len..end].copy_from_slice(bytes);
         self.sysex_len = end;
 
-        if ends_message {
+        // F7, rather than a USB transfer boundary or CIN alone, terminates a
+        // SysEx message. Some CoreMIDI paths deliver that byte as a separate
+        // event, so retain the assembly until the byte actually arrives.
+        if ends_message && self.sysex.get(self.sysex_len.wrapping_sub(1)) == Some(&0xf7) {
             self.handler
                 .handle_sysex(cable, &self.sysex[..self.sysex_len]);
             self.sysex_len = 0;
@@ -181,6 +191,17 @@ impl<H: MidiMessageHandler> MidiEventHandler for WmidiDecoder<H> {
             0x7 => self.append_sysex(cable, &bytes, true),
             0x8..=0xb | 0xe => self.decode(cable, &bytes),
             0xc..=0xd => self.decode(cable, &bytes[..2]),
+            0xf if bytes[0] == 0xf7 => {
+                if self.sysex_len != 0 {
+                    self.append_sysex(cable, &bytes[..1], true);
+                }
+            }
+            // Some CoreMIDI USB paths emit a single 7-bit SysEx data byte
+            // using CIN F. Outside SysEx it is invalid MIDI data; inside an
+            // active assembly it belongs to that message.
+            0xf if self.sysex_len != 0 && bytes[0] < 0x80 => {
+                self.append_sysex(cable, &bytes[..1], false);
+            }
             0xf => self.decode(cable, &bytes[..1]),
             cin => self
                 .handler
@@ -251,6 +272,7 @@ pub async fn run(
         let mut packet = [0u8; 64];
         loop {
             class.wait_connection().await;
+            decoder.reset_sysex();
             crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiConnected);
 
             loop {
@@ -266,10 +288,12 @@ pub async fn run(
                         }
                     }
                     Err(EndpointError::Disabled) => {
+                        decoder.reset_sysex();
                         crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiDisconnected);
                         break;
                     }
                     Err(EndpointError::BufferOverflow) => {
+                        decoder.reset_sysex();
                         crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiBufferOverflow);
                         break;
                     }
@@ -391,6 +415,57 @@ mod tests {
             decoder.handle(MidiEventPacket::new([0x04, chunk[0], chunk[1], chunk[2]]));
         }
         decoder.handle(MidiEventPacket::new([0x05, 0xf7, 0, 0]));
+
+        assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
+        assert!(decoder.handler.errors.is_empty());
+    }
+
+    #[test]
+    fn wmidi_decoder_waits_for_detached_f7_after_usb_end_marker() {
+        let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        synth_core::Rev2MidiEncoder::program_edit_buffer(
+            &synth_core::Patch::default(),
+            &mut message,
+        )
+        .unwrap();
+        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+        let chunks = message[..message.len() - 1].chunks_exact(3);
+        let chunk_count = chunks.len();
+        for (index, chunk) in chunks.enumerate() {
+            let cin = if index + 1 == chunk_count { 0x07 } else { 0x04 };
+            decoder.handle(MidiEventPacket::new([cin, chunk[0], chunk[1], chunk[2]]));
+        }
+
+        assert!(decoder.handler.messages.is_empty());
+        assert!(decoder.handler.errors.is_empty());
+
+        // The detached terminator completes the still-active assembly.
+        decoder.handle(MidiEventPacket::new([0x0f, 0xf7, 0, 0]));
+
+        assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
+        assert!(decoder.handler.errors.is_empty());
+    }
+
+    #[test]
+    fn wmidi_decoder_keeps_single_cin_f_data_byte_in_active_sysex() {
+        let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        synth_core::Rev2MidiEncoder::program_edit_buffer(
+            &synth_core::Patch::default(),
+            &mut message,
+        )
+        .unwrap();
+        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+
+        decoder.handle(MidiEventPacket::new([
+            0x04, message[0], message[1], message[2],
+        ]));
+        decoder.handle(MidiEventPacket::new([0x0f, message[3], 0, 0]));
+        let chunks = message[4..].chunks_exact(3);
+        let chunk_count = chunks.len();
+        for (index, chunk) in chunks.enumerate() {
+            let cin = if index + 1 == chunk_count { 0x07 } else { 0x04 };
+            decoder.handle(MidiEventPacket::new([cin, chunk[0], chunk[1], chunk[2]]));
+        }
 
         assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
         assert!(decoder.handler.errors.is_empty());

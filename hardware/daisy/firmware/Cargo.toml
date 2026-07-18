@@ -11,6 +11,8 @@ default = ["embedded-math"]
 audio-profiling = ["diagnostics", "synth-core/profiling"]
 diagnostics = []
 embedded-math = ["synth-core/embedded-math"]
+daisy-full-rate = ["synth-core/daisy-full-rate"]
+oscillator-polyblep = ["synth-core/oscillator-polyblep"]
 
 [dependencies]
 embassy-sync.workspace = true
@@ -40,6 +42,13 @@ bench = false
 [[bin]]
 name = "dsp-benchmark"
 path = "src/bin/dsp-benchmark.rs"
+required-features = ["audio-profiling"]
+test = false
+bench = false
+
+[[bin]]
+name = "factory-preset-benchmark"
+path = "src/bin/factory-preset-benchmark.rs"
 required-features = ["audio-profiling"]
 test = false
 bench = false
