@@ -250,7 +250,7 @@ fn table_blep_windows(dt: f32x4) -> f32x4 {
 }
 
 #[inline]
-fn table_points_per_side_lane(phase_inc: f32) -> u32 {
+pub(crate) fn table_points_per_side_lane(phase_inc: f32) -> u32 {
     if phase_inc <= 0.125 {
         4
     } else if phase_inc <= 0.25 {

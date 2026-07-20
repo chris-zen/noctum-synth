@@ -7,6 +7,8 @@ use core::marker::PhantomData;
 
 const DELAY_TIME_CROSSFADE_SECONDS: f32 = 0.035;
 const DELAY_TIME_CHANGE_THRESHOLD_SAMPLES: f32 = 8.0;
+/// One-pole time constant that prevents LFO/key-sync steps from splicing effect output.
+const EFFECT_MODULATION_SMOOTHING_SECONDS: f32 = 0.005;
 const MIN_DELAY_SAMPLES: f32 = 1.0;
 const MIN_BUFFER_SAMPLES: usize = 4;
 const REVERB_SEGMENTS: usize = 14;
@@ -43,6 +45,29 @@ impl EffectModulation {
             param1: self.param1 * amount,
             param2: self.param2 * amount,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EffectModulationSmoother {
+    current: EffectModulation,
+    coefficient: f32,
+}
+
+impl EffectModulationSmoother {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            current: EffectModulation::default(),
+            coefficient: (1.0 / (sample_rate.max(1.0) * EFFECT_MODULATION_SMOOTHING_SECONDS))
+                .clamp(0.0, 1.0),
+        }
+    }
+
+    fn next(&mut self, target: EffectModulation) -> EffectModulation {
+        self.current.mix += (target.mix - self.current.mix) * self.coefficient;
+        self.current.param1 += (target.param1 - self.current.param1) * self.coefficient;
+        self.current.param2 += (target.param2 - self.current.param2) * self.coefficient;
+        self.current
     }
 }
 
@@ -149,6 +174,7 @@ pub struct EffectsWithMemory<Memory> {
     tempo_bpm: f32,
     enabled: bool,
     selected: SelectedEffect,
+    modulation_smoother: EffectModulationSmoother,
     buffer: Memory,
     delay_mono: MonoDelay,
     ddl_stereo: StereoDelay,
@@ -184,6 +210,7 @@ impl<const SAMPLES: usize> EffectsWithMemory<[f32; SAMPLES]> {
             tempo_bpm: DEFAULT_TEMPO_BPM,
             enabled: false,
             selected: SelectedEffect::DelayMono,
+            modulation_smoother: EffectModulationSmoother::new(sample_rate),
             buffer: [0.0; SAMPLES],
             delay_mono: MonoDelay::default(),
             ddl_stereo: StereoDelay::default(),
@@ -214,6 +241,7 @@ where
             tempo_bpm: DEFAULT_TEMPO_BPM,
             enabled: false,
             selected: SelectedEffect::DelayMono,
+            modulation_smoother: EffectModulationSmoother::new(sample_rate),
             buffer,
             delay_mono: MonoDelay::default(),
             ddl_stereo: StereoDelay::default(),
@@ -326,6 +354,7 @@ where
         lowest_note: Option<u8>,
         #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
     ) -> (f32, f32) {
+        let modulation = self.modulation_smoother.next(modulation);
         if !self.enabled {
             return (left, right);
         }
@@ -1455,6 +1484,29 @@ mod tests {
             param2: 0.65,
         });
         effects
+    }
+
+    #[test]
+    fn effect_modulation_steps_are_smoothed() {
+        let mut smoother = EffectModulationSmoother::new(48_000.0);
+        let target = EffectModulation {
+            mix: 1.0,
+            param1: -1.0,
+            param2: 0.5,
+        };
+
+        let first = smoother.next(target);
+        assert!(first.mix > 0.0 && first.mix < 0.005);
+        assert!(first.param1 < 0.0 && first.param1 > -0.005);
+        assert!(first.param2 > 0.0 && first.param2 < 0.005);
+
+        let mut after_five_ms = first;
+        for _ in 1..240 {
+            after_five_ms = smoother.next(target);
+        }
+        assert!((0.62..0.64).contains(&after_five_ms.mix));
+        assert!((-0.64..-0.62).contains(&after_five_ms.param1));
+        assert!((0.31..0.32).contains(&after_five_ms.param2));
     }
 
     #[test]

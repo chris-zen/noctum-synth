@@ -1,7 +1,9 @@
 use crate::f32x4;
 
 pub use crate::blep::SawMethod;
-use crate::blep::{PulseBlepState, blep_pulse, blep_pulse_prepared, blep_saw};
+use crate::blep::{
+    PulseBlepState, blep_pulse, blep_pulse_prepared, blep_saw, table_points_per_side_lane,
+};
 #[cfg(feature = "profiling")]
 use crate::profiling::NoopProfiler;
 use crate::rng::DspRng;
@@ -16,6 +18,10 @@ pub(crate) const MAX_PULSE_WIDTH: f32 = 0.99;
 const MAX_SLOP_CENTS: f32 = 14.0;
 const MAX_POLYBLAMP2_PHASE_INC: f32 = 0.25;
 const MIN_POLYBLAMP2_PHASE_INC: f32 = 1.0e-12;
+/// Correction-only crossfade length; requested pitch and phase change immediately.
+const CORRECTION_TRANSITION_SAMPLES: u8 = 24;
+/// Smaller within-tier changes track directly; table-support tier changes always crossfade.
+const CORRECTION_STEP_RELATIVE_THRESHOLD: f32 = 0.01;
 
 /// Selectable oscillator waveform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +34,11 @@ pub enum Waveform {
 
 trait OscillatorKernel {
     fn saw_method(&self) -> SawMethod;
+
+    #[inline(always)]
+    fn supports_correction_transition(&self) -> bool {
+        true
+    }
 
     #[inline(always)]
     fn prepare_sample(&mut self, _phase_inc: f32x4) {}
@@ -72,6 +83,10 @@ impl OscillatorKernel for crate::wavetable::WavetableOscillatorKernel {
     fn saw_method(&self) -> SawMethod {
         // The public SawMethod enum intentionally remains BLEP/PolyBLEP-only.
         SawMethod::Blep
+    }
+
+    fn supports_correction_transition(&self) -> bool {
+        false
     }
 
     fn prepare_sample(&mut self, phase_inc: f32x4) {
@@ -181,11 +196,12 @@ pub struct AnalogOscillator<K = RuntimeOscillatorKernel> {
     waveform: Waveform,
     kernel: K,
     shape: f32,
-    fine_cents: f32,
-    note_offset: f32,
     sample_rate: f32,
     phase: f32x4,
     phase_inc: f32x4,
+    correction_from_phase_inc: f32x4,
+    correction_transition_remaining: [u8; LANES],
+    correction_transition_mask: u8,
     pulse_blep: PulseBlepState,
     intended_frequency_hz: f32x4,
     effective_frequency_hz: f32x4,
@@ -203,11 +219,12 @@ impl Default for AnalogOscillator<RuntimeOscillatorKernel> {
                 method: SawMethod::Blep,
             },
             shape: 0.0,
-            fine_cents: 0.0,
-            note_offset: 0.0,
             sample_rate: DEFAULT_SAMPLE_RATE,
             phase: f32x4::splat(0.0),
             phase_inc: f32x4::splat(0.0),
+            correction_from_phase_inc: f32x4::splat(0.0),
+            correction_transition_remaining: [0; LANES],
+            correction_transition_mask: 0,
             pulse_blep: PulseBlepState::new(f32x4::splat(0.5)),
             intended_frequency_hz: f32x4::splat(0.0),
             effective_frequency_hz: f32x4::splat(0.0),
@@ -231,6 +248,7 @@ impl AnalogOscillator<RuntimeOscillatorKernel> {
     /// Selects the band-limiting method used for saw/pulse edges.
     pub fn set_saw_method(&mut self, saw_method: SawMethod) {
         self.kernel.method = saw_method;
+        self.clear_correction_transition();
         if saw_method == SawMethod::Blep && self.waveform == Waveform::Pulse {
             self.pulse_blep.set_phase_inc(self.phase_inc);
         }
@@ -267,11 +285,12 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
             waveform: Waveform::Saw,
             kernel,
             shape: 0.0,
-            fine_cents: 0.0,
-            note_offset: 0.0,
             sample_rate,
             phase: f32x4::splat(0.0),
             phase_inc: f32x4::splat(0.0),
+            correction_from_phase_inc: f32x4::splat(0.0),
+            correction_transition_remaining: [0; LANES],
+            correction_transition_mask: 0,
             pulse_blep: PulseBlepState::new(f32x4::splat(0.5)),
             intended_frequency_hz: f32x4::splat(0.0),
             effective_frequency_hz: f32x4::splat(0.0),
@@ -285,6 +304,7 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     /// Sets the active waveform.
     pub fn set_waveform(&mut self, waveform: Waveform) {
         self.waveform = waveform;
+        self.clear_correction_transition();
         if waveform == Waveform::Pulse && self.kernel.saw_method() == SawMethod::Blep {
             self.pulse_blep.set_phase_inc(self.phase_inc);
         }
@@ -308,18 +328,6 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     /// Sets a per-lane enable gain mask, clamped to `[0, 1]`.
     pub fn set_enabled_mask(&mut self, enabled_mask: f32x4) {
         self.enabled_mask = enabled_mask.clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-    }
-
-    /// Sets fine tuning in cents (`[-100, 100]`) and recomputes frequency.
-    pub fn set_fine_cents(&mut self, cents: f32, note_frequency_hz: f32x4) {
-        self.fine_cents = cents.clamp(-100.0, 100.0);
-        self.update_frequency_from_note(note_frequency_hz);
-    }
-
-    /// Sets the coarse pitch offset in semitones and recomputes frequency.
-    pub fn set_note_offset(&mut self, offset: f32, note_frequency_hz: f32x4) {
-        self.note_offset = offset;
-        self.update_frequency_from_note(note_frequency_hz);
     }
 
     /// Sets the phase of all lanes, wrapped into `[0, 1)`.
@@ -420,13 +428,6 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         self.refresh_effective_frequency();
     }
 
-    /// Recomputes frequency from a per-lane note pitch, applying note offset
-    /// and fine tuning.
-    pub fn update_frequency_from_note(&mut self, note_frequency_hz: f32x4) {
-        let semitones = self.note_offset + self.fine_cents / 100.0;
-        let ratio = f32x4::splat(crate::math::exp2(semitones / 12.0));
-        self.set_frequency(note_frequency_hz * ratio);
-    }
     /// Advances one sample and returns just the waveform output.
     pub fn next(&mut self) -> f32x4 {
         self.next_step().output
@@ -474,7 +475,14 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         profiler.begin(RenderStage::OscillatorWaveform);
         self.kernel.prepare_sample(self.phase_inc);
         let raw = self.sample_waveform(phi);
-        let output = self.apply_shape_morph(phi, raw);
+        let current_output = self.apply_shape_morph(phi, raw);
+        let output = if let Some((previous_phase_inc, blend)) = self.correction_transition_step() {
+            self.previous_correction_output(phi, previous_phase_inc)
+                .map(|previous| previous + (current_output - previous) * blend)
+                .unwrap_or(current_output)
+        } else {
+            current_output
+        };
         self.last_output = output;
         self.align_triangle_integrator_after_wrap(wrapped);
         self.kernel.finish_sample();
@@ -531,6 +539,95 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         }
     }
 
+    fn previous_correction_output(&self, phi: f32x4, phase_inc: f32x4) -> Option<f32x4> {
+        if !self.kernel.supports_correction_transition() {
+            return None;
+        }
+
+        match self.waveform {
+            Waveform::Saw => {
+                let raw = self.kernel.saw(phi, phase_inc);
+                let shape = self.shape.abs();
+                if shape == 0.0 {
+                    return Some(raw);
+                }
+                let shifted_phi = wrap01(phi + f32x4::splat(self.shape * 0.5));
+                let shifted = self.kernel.saw(shifted_phi, phase_inc);
+                Some(raw + (shifted - raw) * f32x4::splat(shape))
+            }
+            Waveform::Pulse => Some(blep_pulse(
+                phi,
+                phase_inc,
+                self.pulse_blep.width(),
+                self.kernel.saw_method(),
+            )),
+            Waveform::SawTri | Waveform::Triangle => None,
+        }
+    }
+
+    fn correction_transition_step(&mut self) -> Option<(f32x4, f32x4)> {
+        if self.correction_transition_mask == 0 {
+            return None;
+        }
+
+        let previous_phase_inc = self.correction_from_phase_inc;
+        let mut blend = [1.0; LANES];
+        let mut correction_from = self.correction_from_phase_inc.to_array();
+        let current_phase_inc = self.phase_inc.to_array();
+        let denominator = f32::from(CORRECTION_TRANSITION_SAMPLES - 1);
+
+        for lane in 0..LANES {
+            let remaining = self.correction_transition_remaining[lane];
+            if remaining == 0 {
+                continue;
+            }
+            blend[lane] = f32::from(CORRECTION_TRANSITION_SAMPLES - remaining) / denominator;
+            self.correction_transition_remaining[lane] -= 1;
+            if self.correction_transition_remaining[lane] == 0 {
+                correction_from[lane] = current_phase_inc[lane];
+                self.correction_transition_mask &= !(1 << lane);
+            }
+        }
+        self.correction_from_phase_inc = f32x4::new(correction_from);
+
+        Some((previous_phase_inc, f32x4::new(blend)))
+    }
+
+    fn begin_correction_transition(&mut self, previous: f32x4, current: f32x4) {
+        if !self.kernel.supports_correction_transition()
+            || !matches!(self.waveform, Waveform::Saw | Waveform::Pulse)
+        {
+            if self.correction_transition_mask != 0 {
+                self.clear_correction_transition();
+            }
+            return;
+        }
+
+        let previous = previous.to_array();
+        let current = current.to_array();
+        let mut correction_from = self.correction_from_phase_inc.to_array();
+        for lane in 0..LANES {
+            if correction_step_needs_transition(
+                previous[lane],
+                current[lane],
+                self.kernel.saw_method(),
+            ) {
+                correction_from[lane] = previous[lane];
+                self.correction_transition_remaining[lane] = CORRECTION_TRANSITION_SAMPLES;
+                self.correction_transition_mask |= 1 << lane;
+            } else if self.correction_transition_remaining[lane] == 0 {
+                correction_from[lane] = current[lane];
+            }
+        }
+        self.correction_from_phase_inc = f32x4::new(correction_from);
+    }
+
+    fn clear_correction_transition(&mut self) {
+        self.correction_from_phase_inc = self.phase_inc;
+        self.correction_transition_remaining = [0; LANES];
+        self.correction_transition_mask = 0;
+    }
+
     fn align_triangle_integrator_after_wrap(&mut self, wrapped: [bool; LANES]) {
         if !matches!(self.waveform, Waveform::Triangle | Waveform::SawTri)
             || !self.kernel.needs_triangle_wrap_alignment()
@@ -551,14 +648,28 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     /// Recomputes the effective frequency and phase increment from the
     /// intended frequency plus current slop offset.
     fn refresh_effective_frequency(&mut self) {
+        let previous_phase_inc = self.phase_inc;
         let freq = self.intended_frequency_hz * self.slop.frequency_ratio();
         let freq = clamp_frequency(freq, self.sample_rate);
         self.effective_frequency_hz = freq;
         self.phase_inc = freq * f32x4::splat(1.0 / self.sample_rate);
+        self.begin_correction_transition(previous_phase_inc, self.phase_inc);
         if self.waveform == Waveform::Pulse && self.kernel.saw_method() == SawMethod::Blep {
             self.pulse_blep.set_phase_inc(self.phase_inc);
         }
     }
+}
+
+fn correction_step_needs_transition(previous: f32, current: f32, method: SawMethod) -> bool {
+    if previous <= MIN_PHASE_INC || current <= MIN_PHASE_INC {
+        return false;
+    }
+
+    let large_step =
+        (current - previous).abs() >= previous.max(current) * CORRECTION_STEP_RELATIVE_THRESHOLD;
+    large_step
+        || (method == SawMethod::Blep
+            && table_points_per_side_lane(previous) != table_points_per_side_lane(current))
 }
 
 /// Per-lane analog pitch instability ("slop").
@@ -955,6 +1066,93 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn sample_at(method: SawMethod, waveform: Waveform, frequency: f32, phase: f32) -> f32 {
+        let mut oscillator = AnalogOscillator::new(48_000.0);
+        oscillator.set_saw_method(method);
+        oscillator.set_waveform(waveform);
+        oscillator.set_shape(0.383_838_4);
+        oscillator.set_frequency(f32x4::splat(frequency));
+        oscillator.set_phase(f32x4::splat(phase));
+        oscillator.next().to_array()[0]
+    }
+
+    #[test]
+    fn abrupt_frequency_step_crossfades_blep_correction_without_slewing_phase() {
+        const OLD_FREQUENCY: f32 = 7_649.9;
+        const NEW_FREQUENCY: f32 = 5_697.1;
+
+        for method in [SawMethod::Blep, SawMethod::PolyBlep] {
+            for waveform in [Waveform::Saw, Waveform::Pulse] {
+                let (phase, unsmoothed_jump) = (0..4_096)
+                    .map(|index| index as f32 / 4_096.0)
+                    .map(|phase| {
+                        let old = sample_at(method, waveform, OLD_FREQUENCY, phase);
+                        let new = sample_at(method, waveform, NEW_FREQUENCY, phase);
+                        (phase, (new - old).abs())
+                    })
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .unwrap();
+                assert!(
+                    unsmoothed_jump > 0.05,
+                    "test step should expose a {method:?} {waveform:?} correction jump, got {unsmoothed_jump}"
+                );
+
+                let expected_old = sample_at(method, waveform, OLD_FREQUENCY, phase);
+                let mut transitioned = AnalogOscillator::new(48_000.0);
+                transitioned.set_saw_method(method);
+                transitioned.set_waveform(waveform);
+                transitioned.set_shape(0.383_838_4);
+                transitioned.set_frequency(f32x4::splat(OLD_FREQUENCY));
+                transitioned.set_phase(f32x4::splat(phase));
+                transitioned.set_frequency(f32x4::splat(NEW_FREQUENCY));
+
+                let first = transitioned.next().to_array()[0];
+                assert!(
+                    (first - expected_old).abs() <= 2.0e-6,
+                    "first {method:?} {waveform:?} transition sample changed correction: expected {expected_old}, got {first}"
+                );
+                let expected_phase =
+                    wrap01(f32x4::splat(phase + NEW_FREQUENCY / 48_000.0)).to_array()[0];
+                assert!(
+                    (transitioned.phase.to_array()[0] - expected_phase).abs() <= f32::EPSILON,
+                    "pitch phase should advance immediately at the new frequency"
+                );
+                assert_eq!(
+                    transitioned.correction_transition_remaining,
+                    [CORRECTION_TRANSITION_SAMPLES - 1; LANES]
+                );
+
+                for _ in 1..CORRECTION_TRANSITION_SAMPLES {
+                    transitioned.next();
+                }
+                assert_eq!(transitioned.correction_transition_remaining, [0; LANES]);
+            }
+        }
+    }
+
+    #[test]
+    fn table_blep_support_boundary_always_transitions() {
+        let mut oscillator = AnalogOscillator::new(48_000.0);
+        oscillator.set_waveform(Waveform::Pulse);
+        oscillator.set_frequency(f32x4::splat(0.124_9 * 48_000.0));
+        oscillator.set_frequency(f32x4::splat(0.125_1 * 48_000.0));
+
+        assert_eq!(
+            oscillator.correction_transition_remaining,
+            [CORRECTION_TRANSITION_SAMPLES; LANES]
+        );
+    }
+
+    #[test]
+    fn small_frequency_update_within_one_blep_tier_stays_on_fast_path() {
+        let mut oscillator = AnalogOscillator::new(48_000.0);
+        oscillator.set_waveform(Waveform::Pulse);
+        oscillator.set_frequency(f32x4::splat(0.10 * 48_000.0));
+        oscillator.set_frequency(f32x4::splat(0.100_5 * 48_000.0));
+
+        assert_eq!(oscillator.correction_transition_remaining, [0; LANES]);
     }
 
     enum TypedKernel {
