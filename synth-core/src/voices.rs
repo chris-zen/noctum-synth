@@ -11,13 +11,100 @@ use crate::profiling::NoopProfiler;
 use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
-    ControlMessage, FilterOversampling, FilterType, LANES, ParamId, Patch, VOICE_PACKS, VoiceBlock,
-    voice_pan_position,
+    ChordMemory, ControlMessage, FilterOversampling, FilterType, KeyMode, LANES, ParamId, Patch,
+    UnisonMode, VOICE_PACKS, VoiceBlock, voice_pan_position,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
 const MIDI_CC_FILTER_RESONANCE: u8 = 71;
 const MIDI_CC_FILTER_CUTOFF: u8 = 74;
+
+#[derive(Clone)]
+struct PressedKeys {
+    /// Press order packed as `(note << 8) | 7-bit velocity`.
+    order: [u16; 16],
+    len: usize,
+}
+
+impl Default for PressedKeys {
+    fn default() -> Self {
+        Self {
+            order: [0; 16],
+            len: 0,
+        }
+    }
+}
+
+impl PressedKeys {
+    fn press(&mut self, note: u8, velocity: f32) {
+        if note >= 128 {
+            return;
+        }
+        self.release(note);
+        if self.len == self.order.len() {
+            self.order.copy_within(1.., 0);
+            self.len -= 1;
+        }
+        let velocity = (velocity.clamp(0.0, 1.0) * 127.0 + 0.5) as u16;
+        self.order[self.len] = u16::from(note) << 8 | velocity;
+        self.len += 1;
+    }
+
+    fn release(&mut self, note: u8) {
+        let Some(index) = self.order[..self.len]
+            .iter()
+            .position(|held| (*held >> 8) as u8 == note)
+        else {
+            return;
+        };
+        self.order.copy_within(index + 1..self.len, index);
+        self.len -= 1;
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn selected(&self, mode: KeyMode) -> Option<(u8, f32)> {
+        let packed = match mode {
+            KeyMode::Low | KeyMode::LowRetrigger => *self.order[..self.len]
+                .iter()
+                .min_by_key(|held| *held >> 8)?,
+            KeyMode::High | KeyMode::HighRetrigger => *self.order[..self.len]
+                .iter()
+                .max_by_key(|held| *held >> 8)?,
+            KeyMode::Last | KeyMode::LastRetrigger => *self.order[..self.len].last()?,
+        };
+        Some(((packed >> 8) as u8, f32::from(packed & 0x7f) / 127.0))
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (u8, f32)> + '_ {
+        self.order[..self.len]
+            .iter()
+            .copied()
+            .map(|packed| ((packed >> 8) as u8, f32::from(packed & 0x7f) / 127.0))
+    }
+}
+
+fn key_mode_retriggers(mode: KeyMode) -> bool {
+    matches!(
+        mode,
+        KeyMode::LowRetrigger | KeyMode::HighRetrigger | KeyMode::LastRetrigger
+    )
+}
+
+/// Provisional guide-level detune curve, isolated for future Rev2 calibration.
+pub fn unison_detune_cents(voice_index: usize, voice_count: usize, amount: f32) -> f32 {
+    if voice_count <= 1 {
+        return 0.0;
+    }
+    let position = 2.0 * voice_index as f32 / (voice_count - 1) as f32 - 1.0;
+    position * amount.clamp(0.0, 16.0)
+}
 
 /// Snapshot of MIDI notes currently sounding across all voices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +190,12 @@ pub struct Voices<const PACKS: usize = VOICE_PACKS> {
     sustained_voices: [[bool; LANES]; PACKS],
     sustain_pressed: bool,
     next_voice: usize,
+    pressed_keys: PressedKeys,
+    unison_enabled: bool,
+    unison_mode: UnisonMode,
+    unison_detune: f32,
+    unison_chord: ChordMemory,
+    key_mode: KeyMode,
     performance: PerformanceModulation,
     last_effect_modulation: EffectModulation,
 }
@@ -122,6 +215,12 @@ impl<const PACKS: usize> Voices<PACKS> {
             sustained_voices: [[false; LANES]; PACKS],
             sustain_pressed: false,
             next_voice: 0,
+            pressed_keys: PressedKeys::default(),
+            unison_enabled: false,
+            unison_mode: UnisonMode::default(),
+            unison_detune: 0.0,
+            unison_chord: ChordMemory::default(),
+            key_mode: KeyMode::default(),
             performance: PerformanceModulation::default(),
             last_effect_modulation: EffectModulation::default(),
         }
@@ -131,6 +230,12 @@ impl<const PACKS: usize> Voices<PACKS> {
         for block in &mut self.blocks {
             block.apply_patch(patch);
         }
+        self.key_mode = patch.key_mode;
+        self.unison_enabled = patch.unison_enabled;
+        self.unison_mode = patch.unison_mode;
+        self.unison_detune = patch.unison_detune.clamp(0.0, 16.0);
+        self.unison_chord = patch.unison_chord;
+        self.rebuild_sounding_notes();
     }
 
     const VOICE_COUNT: usize = PACKS * LANES;
@@ -139,29 +244,13 @@ impl<const PACKS: usize> Voices<PACKS> {
         match msg {
             ControlMessage::NoteOn { note, velocity } => {
                 if velocity <= 0.0 {
-                    self.note_off(note);
+                    self.handle_note_off(note);
                     return;
                 }
-
-                let reset_key_synced_lfos = self.held_voices.is_empty();
-                let active_voice_idx = self.find_active_voice(note);
-                let voice_idx = active_voice_idx.unwrap_or_else(|| self.allocate_voice());
-                let (block_idx, lane) = self.voice_location(voice_idx);
-                self.sustained_voices[block_idx][lane] = false;
-                let block = &mut self.blocks[block_idx];
-                let velocity = velocity.clamp(0.0, 1.0);
-                if block.is_lane_silent(lane)
-                    || (active_voice_idx.is_some() && !block.has_pending_note(lane))
-                {
-                    block.note_on(lane, note, velocity, reset_key_synced_lfos);
-                } else {
-                    block.schedule_note_on(lane, note, velocity, reset_key_synced_lfos);
-                }
-                self.mark_held_voice(voice_idx);
-                self.next_voice = (voice_idx + 1) % Self::VOICE_COUNT;
+                self.handle_note_on(note, velocity.clamp(0.0, 1.0));
             }
             ControlMessage::NoteOff { note } => {
-                self.note_off(note);
+                self.handle_note_off(note);
             }
             ControlMessage::AllNotesOff => {
                 for block in &mut self.blocks {
@@ -169,6 +258,13 @@ impl<const PACKS: usize> Voices<PACKS> {
                 }
                 self.held_voices.clear();
                 self.sustained_voices = [[false; LANES]; PACKS];
+                self.pressed_keys.clear();
+            }
+            ControlMessage::SetUnisonChord(chord) => {
+                self.unison_chord = chord;
+                if self.unison_enabled && self.unison_mode == UnisonMode::Chord {
+                    self.rebuild_sounding_notes();
+                }
             }
             ControlMessage::SetParam(id, value) => self.set_param(id, value),
             ControlMessage::SetFilterType(filter_type) => self.set_filter_type(filter_type),
@@ -224,7 +320,184 @@ impl<const PACKS: usize> Voices<PACKS> {
         }
     }
 
-    fn note_off(&mut self, note: u8) {
+    fn handle_note_on(&mut self, note: u8, velocity: f32) {
+        if note >= 128 {
+            return;
+        }
+        let first_key = self.pressed_keys.is_empty();
+        self.pressed_keys.press(note, velocity);
+        if first_key {
+            self.reset_key_synced_lfos();
+        }
+        if !self.unison_enabled {
+            self.poly_note_on(note, velocity);
+            return;
+        }
+        let Some((selected, selected_velocity)) = self.pressed_keys.selected(self.key_mode) else {
+            return;
+        };
+        self.update_unison_group(
+            selected,
+            selected_velocity,
+            first_key || key_mode_retriggers(self.key_mode),
+        );
+    }
+
+    fn handle_note_off(&mut self, note: u8) {
+        if note >= 128 {
+            return;
+        }
+        self.pressed_keys.release(note);
+        if !self.unison_enabled {
+            self.poly_note_off(note);
+            return;
+        }
+        if let Some((selected, velocity)) = self.pressed_keys.selected(self.key_mode) {
+            self.update_unison_group(selected, velocity, false);
+        } else if !self.sustain_pressed {
+            self.release_unison_group();
+        }
+    }
+
+    fn poly_note_on(&mut self, note: u8, velocity: f32) {
+        let active_voice_idx = self.find_active_voice(note);
+        let voice_idx = active_voice_idx.unwrap_or_else(|| self.allocate_voice());
+        let (block_idx, lane) = self.voice_location(voice_idx);
+        self.sustained_voices[block_idx][lane] = false;
+        let block = &mut self.blocks[block_idx];
+        block.set_tuning_cents([0.0; LANES]);
+        if block.is_lane_silent(lane)
+            || (active_voice_idx.is_some() && !block.has_pending_note(lane))
+        {
+            block.note_on(lane, note, velocity, false);
+        } else {
+            block.schedule_note_on(lane, note, velocity, false);
+        }
+        self.mark_held_voice(voice_idx);
+        self.next_voice = (voice_idx + 1) % Self::VOICE_COUNT;
+    }
+
+    fn unison_targets(&self, root: u8) -> ([u8; 16], usize) {
+        let mut targets = [root; 16];
+        if let Some(count) = self.unison_mode.voice_count() {
+            return (targets, count.min(Self::VOICE_COUNT).min(targets.len()));
+        }
+
+        let mut len = 0;
+        let intervals = self.unison_chord.intervals();
+        if intervals.is_empty() {
+            targets[0] = root;
+            return (targets, 1);
+        }
+        for interval in intervals.iter().copied() {
+            let Some(note) = root.checked_add(interval) else {
+                continue;
+            };
+            if note < 128 && len < Self::VOICE_COUNT.min(targets.len()) {
+                targets[len] = note;
+                len += 1;
+            }
+        }
+        if len == 0 {
+            targets[0] = root;
+            len = 1;
+        }
+        (targets, len)
+    }
+
+    fn update_unison_group(&mut self, root: u8, velocity: f32, retrigger: bool) {
+        let (targets, target_len) = self.unison_targets(root);
+
+        for voice_idx in target_len..Self::VOICE_COUNT {
+            if !self.held_voices.contains(voice_idx) {
+                continue;
+            }
+            let (block_idx, lane) = self.voice_location(voice_idx);
+            self.blocks[block_idx].note_off_lane(lane);
+            self.held_voices.remove(voice_idx);
+            self.sustained_voices[block_idx][lane] = false;
+        }
+
+        for (voice_idx, note) in targets[..target_len].iter().copied().enumerate() {
+            let (block_idx, lane) = self.voice_location(voice_idx);
+            self.sustained_voices[block_idx][lane] = false;
+            let was_active = self.held_voices.contains(voice_idx)
+                && self.blocks[block_idx].active_note(lane).is_some();
+            let tuning_cents = core::array::from_fn(|block_lane| {
+                let index = block_idx * LANES + block_lane;
+                if index < target_len {
+                    unison_detune_cents(index, target_len, self.unison_detune)
+                } else {
+                    0.0
+                }
+            });
+            let block = &mut self.blocks[block_idx];
+            if !retrigger && was_active {
+                block.retune_lane(lane, note, velocity, tuning_cents);
+            } else if block.is_lane_silent(lane) {
+                block.note_on_tuned(lane, note, velocity, false, tuning_cents);
+            } else {
+                block.schedule_note_on_tuned(lane, note, velocity, false, tuning_cents);
+            }
+            self.mark_held_voice(voice_idx);
+        }
+    }
+
+    fn refresh_unison_detune(&mut self) {
+        let count = (0..Self::VOICE_COUNT)
+            .take_while(|voice_idx| self.held_voices.contains(*voice_idx))
+            .count();
+        for block_idx in 0..PACKS {
+            let tuning_cents = core::array::from_fn(|lane| {
+                let voice_idx = block_idx * LANES + lane;
+                if voice_idx < count {
+                    unison_detune_cents(voice_idx, count, self.unison_detune)
+                } else {
+                    0.0
+                }
+            });
+            self.blocks[block_idx].set_tuning_cents(tuning_cents);
+        }
+    }
+
+    fn release_unison_group(&mut self) {
+        for voice_idx in 0..Self::VOICE_COUNT {
+            if !self.held_voices.contains(voice_idx) {
+                continue;
+            }
+            let (block_idx, lane) = self.voice_location(voice_idx);
+            self.blocks[block_idx].note_off_lane(lane);
+            self.held_voices.remove(voice_idx);
+            self.sustained_voices[block_idx][lane] = false;
+        }
+    }
+
+    fn reset_key_synced_lfos(&mut self) {
+        for block in &mut self.blocks {
+            block.reset_key_synced_lfos();
+        }
+    }
+
+    fn rebuild_sounding_notes(&mut self) {
+        for block in &mut self.blocks {
+            block.all_notes_off();
+        }
+        self.held_voices.clear();
+        self.sustained_voices = [[false; LANES]; PACKS];
+
+        if self.unison_enabled {
+            if let Some((note, velocity)) = self.pressed_keys.selected(self.key_mode) {
+                self.update_unison_group(note, velocity, true);
+            }
+        } else {
+            let pressed = self.pressed_keys.clone();
+            for (note, velocity) in pressed.iter() {
+                self.poly_note_on(note, velocity);
+            }
+        }
+    }
+
+    fn poly_note_off(&mut self, note: u8) {
         while let Some(voice_idx) = self.find_active_voice(note) {
             let (block_idx, lane) = self.voice_location(voice_idx);
             self.held_voices.remove(voice_idx);
@@ -241,6 +514,13 @@ impl<const PACKS: usize> Voices<PACKS> {
     }
 
     fn set_sustain_pedal(&mut self, pressed: bool) {
+        if self.unison_enabled {
+            if self.sustain_pressed && !pressed && self.pressed_keys.is_empty() {
+                self.release_unison_group();
+            }
+            self.sustain_pressed = pressed;
+            return;
+        }
         if self.sustain_pressed && !pressed {
             for (block_idx, sustained) in self.sustained_voices.iter_mut().enumerate() {
                 for (lane, is_sustained) in sustained.iter_mut().enumerate() {
@@ -312,6 +592,43 @@ impl<const PACKS: usize> Voices<PACKS> {
     }
 
     fn set_param(&mut self, id: ParamId, value: f32) {
+        match id {
+            ParamId::UnisonEnabled => {
+                let enabled = value >= 0.5;
+                if enabled != self.unison_enabled {
+                    self.unison_enabled = enabled;
+                    self.rebuild_sounding_notes();
+                }
+                return;
+            }
+            ParamId::UnisonMode => {
+                let mode = UnisonMode::from_index(value as usize);
+                if mode != self.unison_mode {
+                    self.unison_mode = mode;
+                    if self.unison_enabled {
+                        self.rebuild_sounding_notes();
+                    }
+                }
+                return;
+            }
+            ParamId::UnisonDetune => {
+                self.unison_detune = value.clamp(0.0, 16.0);
+                if self.unison_enabled {
+                    self.refresh_unison_detune();
+                }
+                return;
+            }
+            ParamId::KeyMode => {
+                self.key_mode = KeyMode::from_index(value as usize);
+                if self.unison_enabled {
+                    if let Some((note, velocity)) = self.pressed_keys.selected(self.key_mode) {
+                        self.update_unison_group(note, velocity, false);
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
         for block in &mut self.blocks {
             block.set_param(id, value);
         }
@@ -349,6 +666,7 @@ impl<const PACKS: usize> Voices<PACKS> {
         for block in &mut self.blocks {
             let block_voice_count = block.active_lane_count();
             if block_voice_count == 0 {
+                block.advance_idle_lfos(self.performance);
                 continue;
             }
             block.age_active_lanes();
@@ -470,6 +788,232 @@ mod tests {
             }
         }
         None
+    }
+
+    fn enable_unison(voices: &mut Voices, mode: UnisonMode) {
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::UnisonMode,
+            mode.index() as f32,
+        ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 1.0));
+    }
+
+    #[test]
+    fn every_unison_stack_size_uses_the_requested_voice_count() {
+        for (index, mode) in UnisonMode::ALL[..16].iter().copied().enumerate() {
+            let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+            enable_unison(&mut voices, mode);
+            voices.handle_control(ControlMessage::NoteOn {
+                note: 60,
+                velocity: 1.0,
+            });
+            assert_eq!(voices.active_voice_count(), index + 1, "{}", mode.name());
+            assert!(voices.active_notes().iter().all(|note| note == 60));
+        }
+    }
+
+    #[test]
+    fn unison_detune_is_symmetric_and_centered() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 16.0));
+        enable_unison(&mut voices, UnisonMode::V4);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+
+        let tuning: [f32; 4] =
+            core::array::from_fn(|voice| unison_detune_cents(voice, 4, voices.unison_detune));
+        assert_eq!(tuning[0], -16.0);
+        assert!((tuning[1] + 16.0 / 3.0).abs() < 0.001);
+        assert!((tuning[2] - 16.0 / 3.0).abs() < 0.001);
+        assert_eq!(tuning[3], 16.0);
+        assert!((tuning.iter().sum::<f32>()).abs() < 0.001);
+        let frequencies = voices[0].test_osc1_frequency_hz().to_array();
+        let center = crate::midi_to_hz(60);
+        assert!(frequencies[0] < center);
+        assert!(frequencies[3] > center);
+        assert!((frequencies[0] * frequencies[3] - center * center).abs() < 1.0);
+    }
+
+    #[test]
+    fn low_priority_retunes_legato_and_falls_back_on_release() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        enable_unison(&mut voices, UnisonMode::V2);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 8);
+        let age = voices[0].test_age(0);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 0.8,
+        });
+        assert!(voices.active_notes().iter().all(|note| note == 60));
+        assert_eq!(voices[0].test_age(0), age, "legato note must not retrigger");
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 55,
+            velocity: 0.7,
+        });
+        assert!(voices.active_notes().iter().all(|note| note == 55));
+        assert_eq!(voices[0].test_age(0), age);
+        voices.handle_control(ControlMessage::NoteOff { note: 55 });
+        assert!(voices.active_notes().iter().all(|note| note == 60));
+    }
+
+    #[test]
+    fn retrigger_key_modes_restart_through_click_safe_shutdown() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::KeyMode,
+            KeyMode::LowRetrigger.index() as f32,
+        ));
+        enable_unison(&mut voices, UnisonMode::V2);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 8);
+        assert!(voices[0].test_age(0) > 0);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 0.5,
+        });
+        assert!(voices[0].has_pending_note(0));
+        assert!(voices.active_notes().iter().all(|note| note == 60));
+        process_frames(&mut voices, 256);
+        assert!(!voices[0].has_pending_note(0));
+        assert!(voices[0].test_age(0) < 64);
+    }
+
+    #[test]
+    fn repeated_unison_note_waits_for_click_safe_shutdown_and_keeps_detune() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 12.0));
+        enable_unison(&mut voices, UnisonMode::V4);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 8);
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+
+        for lane in 0..4 {
+            assert!(voices[0].has_pending_note(lane));
+        }
+
+        process_frames(&mut voices, 256);
+        for lane in 0..4 {
+            assert!(!voices[0].has_pending_note(lane));
+        }
+        let frequencies = voices[0].test_osc1_frequency_hz().to_array();
+        let center = crate::midi_to_hz(60);
+        assert!(frequencies[0] < center);
+        assert!(frequencies[3] > center);
+    }
+
+    #[test]
+    fn high_and_last_priority_follow_the_documented_selection_rules() {
+        for (mode, expected, fallback) in [(KeyMode::High, 67, 60), (KeyMode::Last, 55, 67)] {
+            let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+            voices.handle_control(ControlMessage::SetParam(
+                ParamId::KeyMode,
+                mode.index() as f32,
+            ));
+            enable_unison(&mut voices, UnisonMode::V2);
+            for note in [60, 67, 55] {
+                voices.handle_control(ControlMessage::NoteOn {
+                    note,
+                    velocity: 1.0,
+                });
+            }
+            assert!(voices.active_notes().iter().all(|note| note == expected));
+            voices.handle_control(ControlMessage::NoteOff { note: expected });
+            assert!(voices.active_notes().iter().all(|note| note == fallback));
+        }
+    }
+
+    #[test]
+    fn live_detune_update_changes_pitch_without_retriggering() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        enable_unison(&mut voices, UnisonMode::V2);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 8);
+        let age = voices[0].test_age(0);
+        let before = voices[0].test_osc1_frequency_hz().to_array();
+        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 12.0));
+        let after = voices[0].test_osc1_frequency_hz().to_array();
+        assert_eq!(voices[0].test_age(0), age);
+        assert!(after[0] < before[0]);
+        assert!(after[1] > before[1]);
+    }
+
+    #[test]
+    fn chord_memory_transposes_voicing_and_omits_overflow() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let chord = ChordMemory::from_notes([60, 64, 67]);
+        voices.handle_control(ControlMessage::SetUnisonChord(chord));
+        enable_unison(&mut voices, UnisonMode::Chord);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 62,
+            velocity: 1.0,
+        });
+        let notes: heapless::Vec<u8, 16> = voices.active_notes().iter().collect();
+        assert_eq!(notes.as_slice(), &[62, 66, 69]);
+
+        voices.handle_control(ControlMessage::NoteOff { note: 62 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 124,
+            velocity: 1.0,
+        });
+        let notes: heapless::Vec<u8, 16> = voices.active_notes().iter().collect();
+        assert_eq!(notes.as_slice(), &[124]);
+    }
+
+    #[test]
+    fn unison_sustain_holds_group_until_pedal_release() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        enable_unison(&mut voices, UnisonMode::V4);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        assert_eq!(voices.active_notes().len(), 4);
+        voices.handle_control(ControlMessage::SustainPedal { pressed: false });
+        assert!(voices.active_notes().is_empty());
+    }
+
+    #[test]
+    fn disabling_unison_revoices_all_physically_held_keys_polyphonically() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::KeyMode,
+            KeyMode::Last.index() as f32,
+        ));
+        enable_unison(&mut voices, UnisonMode::V4);
+        for note in [60, 64] {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+        assert!(voices.active_notes().iter().all(|note| note == 64));
+        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 0.0));
+        let notes = voices.active_notes();
+        assert_eq!(notes.len(), 2);
+        assert!(notes.contains(&60));
+        assert!(notes.contains(&64));
     }
 
     #[test]
@@ -608,8 +1152,14 @@ mod tests {
         assert_eq!(four_voices[0].test_pan_positions(), [1.0, -1.0, 0.5, -0.5]);
 
         let eight_voices = Voices::<2>::new(44_100.0);
-        assert_eq!(eight_voices[0].test_pan_positions(), [1.0, -1.0, 0.75, -0.75]);
-        assert_eq!(eight_voices[1].test_pan_positions(), [0.5, -0.5, 0.25, -0.25]);
+        assert_eq!(
+            eight_voices[0].test_pan_positions(),
+            [1.0, -1.0, 0.75, -0.75]
+        );
+        assert_eq!(
+            eight_voices[1].test_pan_positions(),
+            [0.5, -0.5, 0.25, -0.25]
+        );
     }
 
     #[test]
@@ -655,6 +1205,54 @@ mod tests {
     }
 
     #[test]
+    fn lfo_key_sync_phase_continues_when_a_later_block_becomes_active() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 25.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1KeySync, 1.0));
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 64);
+        for note in 61..=64 {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+        process_frames(&mut voices, 1);
+
+        assert_eq!(
+            voices[1].test_lfo_output(0).to_bits(),
+            voices[0].test_lfo_output(0).to_bits(),
+            "the fifth note should join the LFO cycle started by the first key"
+        );
+    }
+
+    #[test]
+    fn rebuilding_held_notes_does_not_reset_key_synced_lfos() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 25.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1KeySync, 1.0));
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 64);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 1.0));
+        process_frames(&mut voices, 1);
+
+        assert!(
+            voices[0].test_lfo_output(0).abs() > 0.01,
+            "rebuilding voices without a key press must preserve LFO phase"
+        );
+    }
+
+    #[test]
     fn steals_oldest_voice_when_polyphony_exhausted() {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::NoteOn {
@@ -687,7 +1285,11 @@ mod tests {
             Some(76),
             "stolen voice should reserve its lane for note 76"
         );
-        assert_eq!(voices[0].test_note(0), 60, "old DSP state should fade first");
+        assert_eq!(
+            voices[0].test_note(0),
+            60,
+            "old DSP state should fade first"
+        );
         assert!(voices[0].has_pending_note(0));
     }
 

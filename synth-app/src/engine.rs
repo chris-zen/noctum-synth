@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use synth_core::{
-    ControlMessage, FilterOversampling, FilterType, MidiProgramImport, ModDestination, ModRoute,
-    ModSource, ModulationParam, ParamId, Patch,
+    ChordMemory, ControlMessage, FilterOversampling, FilterType, MidiProgramImport, ModDestination,
+    ModRoute, ModSource, ModulationParam, ParamId, Patch,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -162,6 +162,7 @@ pub struct SynthEngineControl {
     midi_program_sender: Arc<Mutex<rtrb::Producer<Box<MidiProgramImport>>>>,
     midi_output: MidiOutputHandle,
     input_enabled: Arc<AtomicBool>,
+    held_notes: Arc<Mutex<[bool; 128]>>,
 }
 
 impl SynthEngineControl {
@@ -214,15 +215,40 @@ impl SynthEngineControl {
     }
 
     pub fn note_on(&self, note: u8, velocity: f32) {
+        if note < 128 && velocity > 0.0 {
+            self.held_notes.lock()[usize::from(note)] = true;
+        } else if note < 128 {
+            self.held_notes.lock()[usize::from(note)] = false;
+        }
         self.send(ControlMessage::NoteOn { note, velocity });
     }
 
     pub fn note_off(&self, note: u8) {
+        if note < 128 {
+            self.held_notes.lock()[usize::from(note)] = false;
+        }
         self.send(ControlMessage::NoteOff { note });
     }
 
     pub fn all_notes_off(&self) {
+        *self.held_notes.lock() = [false; 128];
         self.send(ControlMessage::AllNotesOff);
+    }
+
+    /// Captures the unique notes currently held by UI or MIDI input.
+    pub fn capture_unison_chord(&self) -> Option<ChordMemory> {
+        let held = self.held_notes.lock();
+        let chord = ChordMemory::from_notes(
+            held.iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(note, is_held)| is_held.then_some(note as u8)),
+        );
+        (!chord.is_empty()).then_some(chord)
+    }
+
+    pub fn set_unison_chord(&self, chord: ChordMemory) {
+        self.send(ControlMessage::SetUnisonChord(chord));
     }
 
     pub fn pitch_bend(&self, value: f32) {
@@ -263,6 +289,7 @@ impl SynthEngineControl {
     }
 
     pub fn load_patch(&self, patch: &Patch) {
+        self.set_unison_chord(patch.unison_chord);
         patch.for_each_param(|id, value| self.send(ControlMessage::SetParam(id, value)));
         patch.for_each_modulation(|route, slot| {
             self.send(ControlMessage::SetModulation {
@@ -290,6 +317,7 @@ impl SynthEngineControl {
 
     /// Applies a complete MIDI-originated patch without echoing it to MIDI output.
     pub fn load_midi_patch(&self, patch: &Patch) {
+        self.set_unison_chord(patch.unison_chord);
         patch.for_each_param(|id, value| self.set_midi_param(id, value));
         patch.for_each_modulation(|route, slot| {
             self.send(ControlMessage::SetModulation {
@@ -380,6 +408,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             midi_program_sender: Arc::new(Mutex::new(midi_program_sender)),
             midi_output: MidiOutputHandle::default(),
             input_enabled: input_enabled.clone(),
+            held_notes: Arc::new(Mutex::new([false; 128])),
         },
         view: SynthEngineView {
             active_voices: active_voices.clone(),
@@ -416,5 +445,58 @@ pub fn rebind_audio_channels(bridge: &SynthEngineBridge) -> SynthEngineAudio {
             sender: feedback_sender,
         },
         input_enabled: bridge.control.input_enabled.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chord_capture_tracks_unique_held_notes_and_releases() {
+        let (_audio, bridge) = create_synth_engine_bridge(16);
+        bridge.control.note_on(64, 1.0);
+        bridge.control.note_on(67, 0.8);
+        bridge.control.note_on(72, 0.7);
+        assert_eq!(
+            bridge.control.capture_unison_chord().unwrap().intervals(),
+            &[0, 3, 8]
+        );
+        bridge.control.note_off(67);
+        assert_eq!(
+            bridge.control.capture_unison_chord().unwrap().intervals(),
+            &[0, 8]
+        );
+        bridge.control.all_notes_off();
+        assert!(bridge.control.capture_unison_chord().is_none());
+    }
+
+    #[test]
+    fn patch_load_queues_chord_memory_before_parameter_updates() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let mut patch = Patch::default();
+        patch.unison_chord = ChordMemory::from_notes([60, 64, 67]);
+        bridge.control.load_patch(&patch);
+        let mut first = None;
+        audio.control.drain(|message| {
+            if first.is_none() {
+                first = Some(message);
+            }
+        });
+        match first {
+            Some(ControlMessage::SetUnisonChord(chord)) => {
+                assert_eq!(chord, patch.unison_chord)
+            }
+            _ => panic!("patch load must queue chord memory first"),
+        }
+    }
+
+    #[test]
+    fn local_patch_load_does_not_generate_midi_ui_updates() {
+        let (_audio, bridge) = create_synth_engine_bridge(16);
+        bridge.control.load_patch(&Patch::default());
+        let mut updates = 0;
+        bridge.view.drain_midi_ui_updates(|_| updates += 1);
+        assert_eq!(updates, 0);
     }
 }

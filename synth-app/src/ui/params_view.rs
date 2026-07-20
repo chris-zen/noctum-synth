@@ -9,10 +9,11 @@ use crate::ui::widgets::{
     param_toggle_sized,
 };
 use synth_core::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterType, GlideMode, KeyMode,
-    MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
-    ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
+    ChordMemory, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
+    DEFAULT_SUSTAIN_LEVEL, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType,
+    FilterType, GlideMode, KeyMode, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModMatrix,
+    ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
+    Patch, UnisonMode,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -43,7 +44,7 @@ const GLIDE_CELL_H: f32 = 64.0;
 const UNISON_COLUMN_W: f32 = 90.0;
 const UNISON_CONTROL_W: f32 = 88.0;
 const UNISON_BUTTON_SIZE: egui::Vec2 = egui::vec2(UNISON_CONTROL_W, 22.0);
-const UNISON_CELL_H: f32 = 64.0;
+const UNISON_CELL_H: f32 = 80.0;
 const MOD_SLOT_BUTTON_SIZE: egui::Vec2 = egui::vec2(28.0, 26.0);
 const EFFECT_TYPE_COUNT: usize = 13;
 
@@ -96,6 +97,7 @@ pub struct UiState {
     pub unison_enabled: bool,
     pub unison_mode: usize,
     pub unison_detune: f32,
+    pub unison_chord: ChordMemory,
     pub bpm: f32,
     pub clock_divide: usize,
     pub sub_level: f32,
@@ -188,6 +190,7 @@ impl Default for UiState {
             unison_enabled: false,
             unison_mode: 0,
             unison_detune: 0.0,
+            unison_chord: ChordMemory::default(),
             bpm: 120.0,
             clock_divide: 1,
             sub_level: 0.0,
@@ -275,10 +278,13 @@ impl UiState {
         self.osc2_keyboard_on = patch.osc2.keyboard_on;
         self.glide_mode = patch.glide_mode.index();
         self.glide_enabled = patch.glide_enabled;
+        self.glide_time = patch.glide_time;
+        self.pitch_bend_range = patch.pitch_bend_range;
         self.key_mode = patch.key_mode.index();
         self.unison_enabled = patch.unison_enabled;
         self.unison_mode = patch.unison_mode.index();
         self.unison_detune = patch.unison_detune;
+        self.unison_chord = patch.unison_chord;
         self.bpm = patch.bpm;
         self.clock_divide = patch.clock_divide as usize;
         self.sub_level = patch.sub_osc_level;
@@ -340,9 +346,6 @@ impl UiState {
         self.effect_type = patch.effects.effect_type.index();
         self.effect_mix = patch.effects.mix;
         self.effect_clock_sync = patch.effects.clock_sync;
-        if !EffectType::from_index(self.effect_type).is_delay() {
-            self.effect_clock_sync = false;
-        }
         self.effect_param1 = patch.effects.param1;
         self.effect_param2 = patch.effects.param2;
         self.effect_runtime_params = [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT];
@@ -583,6 +586,7 @@ impl From<&UiState> for Patch {
             unison_enabled: state.unison_enabled,
             unison_mode: UnisonMode::from_index(state.unison_mode),
             unison_detune: state.unison_detune,
+            unison_chord: state.unison_chord,
             bpm: state.bpm,
             clock_divide: state.clock_divide as f32,
             filter: synth_core::FilterParams {
@@ -693,8 +697,6 @@ pub fn show(
     midi_output_port: Option<&str>,
     muted: &mut bool,
 ) {
-    let patch_before = Patch::from(&*state);
-
     command_row(
         ui,
         control,
@@ -780,13 +782,6 @@ pub fn show(
             });
         });
     });
-
-    let finalized = patch_mgr.finalize_loaded_patch(state);
-    if !finalized && user_edited_patch(ui, &patch_before, &Patch::from(&*state)) {
-        patch_mgr.mark_user_modified();
-    }
-    let name_focused = ui.memory(|memory| memory.has_focus(egui::Id::new(PATCH_NAME_FIELD_ID)));
-    patch_mgr.sync_display_name(name_focused);
 }
 
 const MODIFIED_SUFFIX: &str = " (modified)";
@@ -807,7 +802,7 @@ fn load_patch_by_name(
     if let Some(patch) = patch_mgr.load_patch(name) {
         state.apply_from_patch(&patch);
         control.load_patch_respecting_mute(&patch, muted);
-        patch_mgr.begin_loaded_patch(name);
+        patch_mgr.set_loaded_patch(name, &Patch::from(&*state));
     }
 }
 
@@ -833,17 +828,24 @@ fn command_row(
                     }
                 }
                 prev.on_hover_text("Previous patch");
+                let modified = patch_mgr.is_modified(&Patch::from(&*state));
                 egui::Frame::NONE
                     .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                     .inner_margin(egui::Margin::symmetric(4, 2))
                     .corner_radius(2.0)
                     .show(ui, |ui| {
-                        ui.add_sized(
-                            [200.0, 18.0],
-                            egui::TextEdit::singleline(&mut patch_mgr.save_name)
-                                .id_salt(PATCH_NAME_FIELD_ID)
-                                .frame(egui::Frame::NONE),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.add_sized(
+                                [200.0, 18.0],
+                                egui::TextEdit::singleline(&mut patch_mgr.save_name)
+                                    .id_salt(PATCH_NAME_FIELD_ID)
+                                    .frame(egui::Frame::NONE),
+                            );
+                            if modified {
+                                ui.label(MODIFIED_SUFFIX.trim());
+                            }
+                        });
                     });
                 let next = ui.add_enabled(has_patches, egui::Button::new("▶"));
                 if next.clicked() {
@@ -937,9 +939,10 @@ fn command_row(
                     let name = patch_mgr.canonical_save_name();
                     if !name.is_empty() {
                         let patch = Patch::from(&*state);
-                        patch_mgr.save_patch(&name, &patch);
-                        patch_mgr.begin_loaded_patch(&name);
-                        patch_mgr.refresh();
+                        match patch_mgr.save_patch(&name, &patch) {
+                            Ok(()) => patch_mgr.refresh(),
+                            Err(err) => eprintln!("Failed to save patch {name}: {err}"),
+                        }
                     }
                 }
                 let send = ui.add_enabled(midi_output_port.is_some(), egui::Button::new("Send"));
@@ -1268,17 +1271,75 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 ui.allocate_ui_with_layout(
-                    egui::vec2(COMBO_COLUMN_W, CONTROL_CELL_H),
+                    egui::vec2(UNISON_COLUMN_W, UNISON_CELL_H),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        param_toggle_sized(
-                            ui,
-                            COMBO_BUTTON_SIZE,
-                            "Sync",
-                            &mut state.sync,
-                            ParamId::HardSync,
-                            control,
-                        );
+                        ui.set_max_width(UNISON_COLUMN_W);
+                        ui.vertical(|ui| {
+                            if framed_selectable_sized(
+                                ui,
+                                UNISON_BUTTON_SIZE,
+                                state.unison_enabled,
+                                "Unison",
+                            )
+                            .clicked()
+                            {
+                                let captured = (state.unison_mode == UnisonMode::Chord.index())
+                                    .then(|| control.capture_unison_chord())
+                                    .flatten();
+                                if let Some(chord) = captured {
+                                    state.unison_chord = chord;
+                                    state.unison_enabled = true;
+                                    control.set_unison_chord(chord);
+                                    control.set_param(ParamId::UnisonEnabled, 1.0);
+                                } else {
+                                    state.unison_enabled = !state.unison_enabled;
+                                    control.set_param(
+                                        ParamId::UnisonEnabled,
+                                        f32::from(state.unison_enabled),
+                                    );
+                                }
+                            }
+                            ui.add_space(4.0);
+                            let current = UnisonMode::from_index(state.unison_mode);
+                            egui::ComboBox::from_id_salt("unison_mode")
+                                .width(UNISON_CONTROL_W)
+                                .truncate()
+                                .selected_text(current.name())
+                                .show_ui(ui, |ui| {
+                                    for (index, mode) in UnisonMode::ALL.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                state.unison_mode == index,
+                                                mode.name(),
+                                            )
+                                            .clicked()
+                                        {
+                                            state.unison_mode = index;
+                                            control.set_param(ParamId::UnisonMode, index as f32);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            ui.add_space(4.0);
+                            let current = KeyMode::from_index(state.key_mode);
+                            egui::ComboBox::from_id_salt("key_mode")
+                                .width(UNISON_CONTROL_W)
+                                .truncate()
+                                .selected_text(current.name())
+                                .show_ui(ui, |ui| {
+                                    for (index, mode) in KeyMode::ALL.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(state.key_mode == index, mode.name())
+                                            .clicked()
+                                        {
+                                            state.key_mode = index;
+                                            control.set_param(ParamId::KeyMode, index as f32);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                        });
                     },
                 );
                 ui.allocate_ui_with_layout(
@@ -1320,41 +1381,17 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     },
                 );
                 ui.allocate_ui_with_layout(
-                    egui::vec2(UNISON_COLUMN_W, UNISON_CELL_H),
+                    egui::vec2(COMBO_COLUMN_W, CONTROL_CELL_H),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.set_max_width(UNISON_COLUMN_W);
-                        ui.vertical(|ui| {
-                            param_toggle_sized(
-                                ui,
-                                UNISON_BUTTON_SIZE,
-                                "Unison",
-                                &mut state.unison_enabled,
-                                ParamId::UnisonEnabled,
-                                control,
-                            );
-                            ui.add_space(4.0);
-                            let current = UnisonMode::from_index(state.unison_mode);
-                            egui::ComboBox::from_id_salt("unison_mode")
-                                .width(UNISON_CONTROL_W)
-                                .truncate()
-                                .selected_text(current.name())
-                                .show_ui(ui, |ui| {
-                                    for (index, mode) in UnisonMode::ALL.iter().enumerate() {
-                                        if ui
-                                            .selectable_label(
-                                                state.unison_mode == index,
-                                                mode.name(),
-                                            )
-                                            .clicked()
-                                        {
-                                            state.unison_mode = index;
-                                            control.set_param(ParamId::UnisonMode, index as f32);
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                        });
+                        param_toggle_sized(
+                            ui,
+                            COMBO_BUTTON_SIZE,
+                            "Sync",
+                            &mut state.sync,
+                            ParamId::HardSync,
+                            control,
+                        );
                     },
                 );
                 ui.end_row();
@@ -1480,46 +1517,6 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 ui.allocate_ui_with_layout(
-                    egui::vec2(COMBO_COLUMN_W, CONTROL_CELL_H),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.set_max_width(COMBO_COLUMN_W);
-                        ui.label("Key Mode:");
-                        let current = KeyMode::from_index(state.key_mode);
-                        egui::ComboBox::from_id_salt("key_mode")
-                            .width(COMBO_CONTROL_W)
-                            .truncate()
-                            .selected_text(current.name())
-                            .show_ui(ui, |ui| {
-                                for (index, mode) in KeyMode::ALL.iter().enumerate() {
-                                    if ui
-                                        .selectable_label(state.key_mode == index, mode.name())
-                                        .clicked()
-                                    {
-                                        state.key_mode = index;
-                                        control.set_param(ParamId::KeyMode, index as f32);
-                                        ui.close();
-                                    }
-                                }
-                            });
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(GLIDE_COLUMN_W, GLIDE_CELL_H),
-                    egui::Layout::top_down(egui::Align::Center),
-                    |ui| {
-                        param_knob_f32(
-                            ui,
-                            "Glide",
-                            &mut state.glide_time,
-                            0.0..=1.0,
-                            0.0,
-                            ParamId::GlideTime,
-                            control,
-                        );
-                    },
-                );
-                ui.allocate_ui_with_layout(
                     egui::vec2(UNISON_COLUMN_W, CONTROL_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
@@ -1534,6 +1531,26 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                         );
                     },
                 );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(GLIDE_COLUMN_W, GLIDE_CELL_H),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        param_knob_f32(
+                            ui,
+                            "Glide",
+                            &mut state.glide_time,
+                            0.0..=16.0,
+                            0.0,
+                            ParamId::GlideTime,
+                            control,
+                        );
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(COMBO_COLUMN_W, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |_| {},
+                );
                 ui.end_row();
             });
     });
@@ -1546,8 +1563,7 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                 ui.add_space(4.0);
                 for index in 0..4 {
                     let selected = state.selected_lfo == index;
-                    let active =
-                        state.lfo_depths[index] > 0.0 && state.lfo_destinations[index] != 0;
+                    let active = state.lfo_destinations[index] != 0;
                     let mut button = egui::Button::selectable(selected, format!("{}", index + 1))
                         .frame_when_inactive(true);
                     if active && !selected {
@@ -2042,10 +2058,6 @@ fn effects_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineC
                             control,
                         );
                     });
-                    if !active && state.effect_clock_sync {
-                        state.effect_clock_sync = false;
-                        control.set_param(ParamId::EffectClockSync, 0.0);
-                    }
                 },
             );
 
@@ -2740,8 +2752,6 @@ pub struct PatchManager {
     pub save_name: String,
     loaded_name: String,
     baseline: Option<Patch>,
-    baseline_pending: bool,
-    user_modified: bool,
     pub patch_names: Vec<String>,
     config_dir: PathBuf,
     patches_dir: PathBuf,
@@ -2759,8 +2769,6 @@ impl PatchManager {
             save_name: String::new(),
             loaded_name: String::new(),
             baseline: None,
-            baseline_pending: false,
-            user_modified: false,
             patch_names,
             config_dir,
             patches_dir,
@@ -2775,68 +2783,42 @@ impl PatchManager {
         restored_patch: &Patch,
     ) {
         self.loaded_name = loaded_name;
-        self.baseline = baseline;
-        self.baseline_pending = false;
-        if !save_name.is_empty() {
-            self.save_name = save_name;
+        self.baseline =
+            baseline.or_else(|| (!self.loaded_name.is_empty()).then(|| restored_patch.clone()));
+        let restored_name = if !save_name.is_empty() {
+            save_name
         } else if !self.loaded_name.is_empty() {
-            self.save_name = self.loaded_name.clone();
-        }
-
-        let was_modified = self
-            .baseline
-            .as_ref()
-            .is_some_and(|baseline| !patches_equal(baseline, restored_patch));
-        self.user_modified = was_modified;
-        if !was_modified && !self.loaded_name.is_empty() {
-            self.baseline = None;
-            self.baseline_pending = true;
-        }
+            self.loaded_name.clone()
+        } else {
+            String::new()
+        };
+        self.save_name = strip_modified_suffix(restored_name.trim()).to_string();
     }
 
-    pub fn mark_user_modified(&mut self) {
-        if !self.loaded_name.is_empty() {
-            self.user_modified = true;
-        }
-    }
-
-    pub fn begin_loaded_patch(&mut self, name: &str) {
+    pub fn set_loaded_patch(&mut self, name: &str, patch: &Patch) {
         self.loaded_name = name.to_string();
         self.save_name = name.to_string();
-        self.user_modified = false;
-        self.baseline_pending = true;
+        self.baseline = Some(patch.clone());
     }
 
-    pub fn finalize_loaded_patch(&mut self, state: &UiState) -> bool {
-        if self.baseline_pending {
-            self.baseline = Some(Patch::from(state));
-            self.baseline_pending = false;
-            self.user_modified = false;
-            return true;
-        }
-        false
+    pub fn is_modified(&self, current: &Patch) -> bool {
+        !self.loaded_name.is_empty()
+            && self
+                .baseline
+                .as_ref()
+                .is_some_and(|baseline| !patches_equal(baseline, current))
     }
 
     pub fn canonical_save_name(&self) -> String {
         strip_modified_suffix(self.save_name.trim()).to_string()
     }
 
-    pub fn sync_display_name(&mut self, name_focused: bool) {
-        if self.loaded_name.is_empty() || name_focused || self.baseline_pending {
-            return;
-        }
-        self.save_name = if self.user_modified {
-            format!("{}{}", self.loaded_name, MODIFIED_SUFFIX)
-        } else {
-            self.loaded_name.clone()
-        };
-    }
-
-    pub fn save_patch(&self, name: &str, patch: &Patch) {
+    pub fn save_patch(&mut self, name: &str, patch: &Patch) -> std::io::Result<()> {
         let path = self.patches_dir.join(format!("{name}.json"));
-        if let Ok(json) = serde_json::to_string_pretty(patch) {
-            let _ = std::fs::write(&path, json);
-        }
+        let json = serde_json::to_string_pretty(patch).map_err(std::io::Error::other)?;
+        std::fs::write(&path, json)?;
+        self.set_loaded_patch(name, patch);
+        Ok(())
     }
 
     pub fn save_midi_program(
@@ -2963,13 +2945,6 @@ fn sanitize_filename(name: &str) -> String {
     output
 }
 
-fn user_edited_patch(ui: &egui::Ui, before: &Patch, after: &Patch) -> bool {
-    if patches_equal(before, after) {
-        return false;
-    }
-    ui.input(|input| input.pointer.is_decidedly_dragging() || input.pointer.any_click())
-}
-
 fn strip_modified_suffix(name: &str) -> &str {
     name.strip_suffix(MODIFIED_SUFFIX).unwrap_or(name)
 }
@@ -3016,6 +2991,35 @@ mod tests {
     }
 
     #[test]
+    fn unison_chord_round_trips_between_patch_and_ui_state() {
+        let mut patch = Patch::default();
+        patch.unison_enabled = true;
+        patch.unison_mode = UnisonMode::Chord;
+        patch.unison_detune = 9.0;
+        patch.unison_chord = ChordMemory::from_notes([60, 63, 67]);
+        let mut state = UiState::default();
+        state.apply_from_patch(&patch);
+        let round_trip = Patch::from(&state);
+        assert!(round_trip.unison_enabled);
+        assert_eq!(round_trip.unison_mode, UnisonMode::Chord);
+        assert_eq!(round_trip.unison_detune, 9.0);
+        assert_eq!(round_trip.unison_chord.intervals(), &[0, 3, 7]);
+    }
+
+    #[test]
+    fn performance_parameters_load_into_ui_state() {
+        let mut patch = Patch::default();
+        patch.glide_time = 3.25;
+        patch.pitch_bend_range = 7.0;
+        let mut state = UiState::default();
+
+        state.apply_from_patch(&patch);
+
+        assert_eq!(state.glide_time, 3.25);
+        assert_eq!(state.pitch_bend_range, 7.0);
+    }
+
+    #[test]
     fn midi_modulation_fields_update_and_enable_ui_routes() {
         let mut state = UiState::default();
         state.apply_midi_update(MidiUiUpdate::Modulation {
@@ -3047,8 +3051,6 @@ mod tests {
             save_name: loaded_name.to_string(),
             loaded_name: loaded_name.to_string(),
             baseline: None,
-            baseline_pending: false,
-            user_modified: false,
             patch_names: names.iter().map(|name| (*name).to_string()).collect(),
             config_dir: PathBuf::new(),
             patches_dir: PathBuf::new(),
@@ -3092,17 +3094,29 @@ mod tests {
     }
 
     #[test]
-    fn sync_display_name_appends_modified_suffix() {
+    fn patch_modified_state_is_derived_from_loaded_baseline() {
         let mut mgr = test_patch_manager(&["a"], "a");
-        let state = UiState::default();
-        mgr.begin_loaded_patch("a");
-        mgr.finalize_loaded_patch(&state);
-        mgr.sync_display_name(false);
+        let mut state = UiState::default();
+        mgr.set_loaded_patch("a", &Patch::from(&state));
+        assert!(!mgr.is_modified(&Patch::from(&state)));
         assert_eq!(mgr.save_name, "a");
 
-        mgr.mark_user_modified();
-        mgr.sync_display_name(false);
-        assert_eq!(mgr.save_name, "a (modified)");
+        state.filter_cutoff = 5_000.0;
+        assert!(mgr.is_modified(&Patch::from(&state)));
+        assert_eq!(mgr.save_name, "a");
+    }
+
+    #[test]
+    fn patch_modified_state_clears_when_patch_matches_baseline() {
+        let mut mgr = test_patch_manager(&["a"], "a");
+        let mut state = UiState::default();
+        mgr.set_loaded_patch("a", &Patch::from(&state));
+
+        state.filter_cutoff = 5_000.0;
+        assert!(mgr.is_modified(&Patch::from(&state)));
+
+        state.filter_cutoff = 20_000.0;
+        assert!(!mgr.is_modified(&Patch::from(&state)));
     }
 
     #[test]
@@ -3115,10 +3129,8 @@ mod tests {
         state.apply_from_patch(&patch);
 
         let mut mgr = test_patch_manager(&["a"], "a");
-        mgr.begin_loaded_patch("a");
-        mgr.finalize_loaded_patch(&state);
-        mgr.sync_display_name(false);
-        assert_eq!(mgr.save_name, "a");
+        mgr.set_loaded_patch("a", &Patch::from(&state));
+        assert!(!mgr.is_modified(&Patch::from(&state)));
     }
 
     #[test]
@@ -3128,7 +3140,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_patch_not_modified_after_finalize() {
+    fn loaded_patch_is_not_modified_after_capture() {
         let mut state = UiState::default();
         let mut patch = Patch::default();
         patch.filter.cutoff = 4_500.0;
@@ -3138,14 +3150,51 @@ mod tests {
         state.apply_from_patch(&patch);
 
         let mut mgr = test_patch_manager(&["a"], "a");
-        mgr.begin_loaded_patch("a");
-        mgr.finalize_loaded_patch(&state);
-        mgr.sync_display_name(false);
-        assert_eq!(mgr.save_name, "a");
+        mgr.set_loaded_patch("a", &Patch::from(&state));
+        assert!(!mgr.is_modified(&Patch::from(&state)));
     }
 
     #[test]
-    fn restore_unmodified_autosave_refreshes_baseline() {
+    fn rendering_idle_parameters_ui_does_not_change_loaded_patch() {
+        let mut patch = Patch::default();
+        patch.filter.cutoff = 381.52045;
+        patch.filter.eg_decay = 2.9529605;
+        patch.amplifier.eg_release = 5.984453;
+        patch.lfos[0].rate_hz = 11.053047;
+        patch.effects.effect_type = EffectType::PhaserLow;
+        patch.effects.clock_sync = true;
+        patch.master_volume = 0.9448819;
+        let mut state = UiState::default();
+        state.apply_from_patch(&patch);
+        let loaded = Patch::from(&state);
+        let mut manager = test_patch_manager(&["preset"], "preset");
+        manager.set_loaded_patch("preset", &loaded);
+        let (_audio, bridge) = crate::engine::create_synth_engine_bridge(1);
+        let mut analysis_open = false;
+        let mut filter_type = FilterType::default();
+        let mut muted = false;
+
+        egui::__run_test_ui(|ui| {
+            ui.set_min_size(egui::vec2(1_200.0, 3_000.0));
+            show(
+                ui,
+                &mut state,
+                &bridge.control,
+                &mut analysis_open,
+                &mut manager,
+                &mut filter_type,
+                None,
+                &mut muted,
+            );
+        });
+
+        let rendered = Patch::from(&state);
+        assert!(patches_equal(&loaded, &rendered));
+        assert!(!manager.is_modified(&rendered));
+    }
+
+    #[test]
+    fn restore_unmodified_autosave_preserves_baseline() {
         let mut state = UiState::default();
         let mut patch = Patch::default();
         patch.filter.cutoff = 4_500.0;
@@ -3159,10 +3208,91 @@ mod tests {
             "a".to_string(),
             &snapshot,
         );
-        assert!(mgr.baseline_pending);
-        mgr.finalize_loaded_patch(&state);
-        mgr.sync_display_name(false);
+        assert!(!mgr.is_modified(&Patch::from(&state)));
         assert_eq!(mgr.save_name, "a");
+    }
+
+    #[test]
+    fn restore_autosave_strips_legacy_modified_suffix_from_editable_name() {
+        let patch = Patch::default();
+        let mut mgr = test_patch_manager(&["preset"], "preset");
+        mgr.restore_autosave_metadata(
+            "preset".to_string(),
+            Some(patch.clone()),
+            "renamed (modified)".to_string(),
+            &patch,
+        );
+
+        assert_eq!(mgr.save_name, "renamed");
+        assert!(!mgr.is_modified(&patch));
+    }
+
+    #[test]
+    fn restore_autosave_derives_modified_state_and_preserves_draft_name() {
+        let baseline = Patch::default();
+        let mut restored = baseline.clone();
+        restored.master_volume = 0.25;
+        let mut mgr = test_patch_manager(&["preset"], "preset");
+        mgr.restore_autosave_metadata(
+            "preset".to_string(),
+            Some(baseline),
+            "save as copy".to_string(),
+            &restored,
+        );
+
+        assert_eq!(mgr.save_name, "save as copy");
+        assert!(mgr.is_modified(&restored));
+    }
+
+    #[test]
+    fn successful_save_adopts_name_and_clean_baseline() {
+        let root =
+            std::env::temp_dir().join(format!("analog-synth-patch-save-{}", std::process::id()));
+        let patches_dir = root.join("patches");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        let mut manager = PatchManager {
+            save_name: "renamed".to_string(),
+            loaded_name: "original".to_string(),
+            baseline: Some(Patch::default()),
+            patch_names: Vec::new(),
+            config_dir: root.clone(),
+            patches_dir,
+        };
+        let mut patch = Patch::default();
+        patch.master_volume = 0.25;
+
+        manager.save_patch("renamed", &patch).unwrap();
+
+        assert_eq!(manager.loaded_name, "renamed");
+        assert_eq!(manager.save_name, "renamed");
+        assert!(!manager.is_modified(&patch));
+        assert!(root.join("patches/renamed.json").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_save_preserves_loaded_name_and_baseline() {
+        let root = std::env::temp_dir().join(format!(
+            "analog-synth-patch-save-failure-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        let baseline = Patch::default();
+        let mut manager = PatchManager {
+            save_name: "renamed".to_string(),
+            loaded_name: "original".to_string(),
+            baseline: Some(baseline.clone()),
+            patch_names: Vec::new(),
+            config_dir: root.clone(),
+            patches_dir: root.join("missing/patches"),
+        };
+        let mut changed = baseline.clone();
+        changed.master_volume = 0.25;
+
+        assert!(manager.save_patch("renamed", &changed).is_err());
+        assert_eq!(manager.loaded_name, "original");
+        assert_eq!(manager.save_name, "renamed");
+        assert!(manager.is_modified(&changed));
     }
 
     #[test]
@@ -3174,8 +3304,6 @@ mod tests {
             save_name: "preset (modified)".to_string(),
             loaded_name: "preset".to_string(),
             baseline: Some(Patch::default()),
-            baseline_pending: false,
-            user_modified: false,
             patch_names: Vec::new(),
             config_dir: root.clone(),
             patches_dir: root.join("patches"),
@@ -3201,8 +3329,6 @@ mod tests {
             save_name: String::new(),
             loaded_name: String::new(),
             baseline: None,
-            baseline_pending: false,
-            user_modified: false,
             patch_names: Vec::new(),
             config_dir: root.clone(),
             patches_dir,
@@ -3241,8 +3367,6 @@ mod tests {
             save_name: String::new(),
             loaded_name: String::new(),
             baseline: None,
-            baseline_pending: false,
-            user_modified: false,
             patch_names: Vec::new(),
             config_dir: root.clone(),
             patches_dir,

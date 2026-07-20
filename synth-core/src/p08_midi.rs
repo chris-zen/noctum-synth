@@ -337,6 +337,10 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             f32::from(raw.min(100)) - 50.0,
         )),
         2 => emit_osc_shape(emit, true, raw.min(103)),
+        4 => emit(P08MidiUpdate::Param(
+            ParamId::Osc1KeyboardOn,
+            f32::from(raw != 0),
+        )),
         5 => emit(P08MidiUpdate::Param(
             ParamId::Osc2Frequency,
             f32::from(raw.min(120)),
@@ -346,6 +350,10 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             f32::from(raw.min(100)) - 50.0,
         )),
         7 => emit_osc_shape(emit, false, raw.min(103)),
+        9 => emit(P08MidiUpdate::Param(
+            ParamId::Osc2KeyboardOn,
+            f32::from(raw != 0),
+        )),
         10 => emit(P08MidiUpdate::Param(ParamId::HardSync, f32::from(raw != 0))),
         12 => emit(P08MidiUpdate::Param(ParamId::OscSlop, unit(raw, 5))),
         13 => emit(P08MidiUpdate::Param(ParamId::OscMix, unit(raw, 127))),
@@ -450,6 +458,28 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             ParamId::AuxEgRelease,
             ranged(raw, 127, 0.0005, 10.0),
         )),
+        95 => emit(P08MidiUpdate::Param(
+            ParamId::KeyMode,
+            f32::from(raw.min(5)),
+        )),
+        96 => {
+            let (mode, detune) = match raw.min(4) {
+                0 => (crate::UnisonMode::V1, 0.0),
+                1 => (crate::UnisonMode::V8, 0.0),
+                2 => (crate::UnisonMode::V8, 16.0 / 3.0),
+                3 => (crate::UnisonMode::V8, 32.0 / 3.0),
+                _ => (crate::UnisonMode::V8, 16.0),
+            };
+            emit(P08MidiUpdate::Param(
+                ParamId::UnisonMode,
+                mode.index() as f32,
+            ));
+            emit(P08MidiUpdate::Param(ParamId::UnisonDetune, detune));
+        }
+        99 => emit(P08MidiUpdate::Param(
+            ParamId::UnisonEnabled,
+            f32::from(raw != 0),
+        )),
         100 => emit(P08MidiUpdate::Param(
             ParamId::PitchBendRange,
             f32::from(raw.min(12)),
@@ -549,7 +579,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         0 | 5 => 120,
         1 | 6 => 100,
         2 | 7 => 103,
-        10 | 19 | 41 | 46 | 51 | 56 => 1,
+        4 | 9 | 10 | 19 | 41 | 46 | 51 | 56 => 1,
         12 => 5,
         15 => 164,
         20 | 58 | 66 | 69 | 72 | 75 | 81 | 83 | 85 | 87 | 89 => 254,
@@ -674,6 +704,52 @@ mod tests {
                 Some(P08MidiUpdate::Param(ParamId::Osc1Waveform, 1.0)),
                 Some(P08MidiUpdate::Param(ParamId::Osc1ShapeMod, 0.0)),
             ]
+        );
+    }
+
+    #[test]
+    fn oscillator_keyboard_parameters_map_for_both_oscillators() {
+        for (number, raw, expected) in [
+            (4, 0, P08MidiUpdate::Param(ParamId::Osc1KeyboardOn, 0.0)),
+            (4, 1, P08MidiUpdate::Param(ParamId::Osc1KeyboardOn, 1.0)),
+            (9, 0, P08MidiUpdate::Param(ParamId::Osc2KeyboardOn, 0.0)),
+            (9, 1, P08MidiUpdate::Param(ParamId::Osc2KeyboardOn, 1.0)),
+        ] {
+            let mut update = None;
+            map_nrpn(number, raw, &mut |value| update = Some(value));
+            assert_eq!(update, Some(expected));
+            assert_eq!(nrpn_max(number), Some(1));
+        }
+    }
+
+    #[test]
+    fn p08_unison_modes_translate_to_rev2_first_patch_values() {
+        let mut updates = [None; 2];
+        let mut len = 0;
+        map_nrpn(96, 4, &mut |update| {
+            updates[len] = Some(update);
+            len += 1;
+        });
+        assert_eq!(len, 2);
+        assert_eq!(
+            updates,
+            [
+                Some(P08MidiUpdate::Param(
+                    ParamId::UnisonMode,
+                    crate::UnisonMode::V8.index() as f32,
+                )),
+                Some(P08MidiUpdate::Param(ParamId::UnisonDetune, 16.0)),
+            ]
+        );
+
+        let mut update = None;
+        map_nrpn(95, 3, &mut |value| update = Some(value));
+        assert_eq!(
+            update,
+            Some(P08MidiUpdate::Param(
+                ParamId::KeyMode,
+                crate::KeyMode::HighRetrigger.index() as f32,
+            ))
         );
     }
 

@@ -137,7 +137,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
     let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
     unpack_program_data(packed, &mut raw);
     let mut patch = Patch::default();
-    for number in 0..=158 {
+    for number in 0..=179 {
         if let Some(value) = program_nrpn_value(&raw, number, 0) {
             map_nrpn(number, value, &mut |update| match update {
                 Rev2MidiUpdate::Param(param, value) => patch.set_param(param, value),
@@ -309,10 +309,10 @@ impl Rev2MidiEncoder {
             ParamId::Osc2Glide => (8, quantize(value, 0.0, 1.0, 127)),
             ParamId::GlideMode => (11, quantize(value, 0.0, 3.0, 3)),
             ParamId::GlideEnabled => (111, bool_raw(value)),
-            ParamId::KeyMode => (170, quantize(value, 0.0, 5.0, 5)),
+            ParamId::KeyMode => (170, key_mode_raw(value)),
             ParamId::UnisonEnabled => (168, bool_raw(value)),
             ParamId::UnisonMode => (169, quantize(value, 0.0, 16.0, 16)),
-            ParamId::UnisonDetune => (167, quantize(value, 0.0, 1.0, 16)),
+            ParamId::UnisonDetune => (167, quantize(value, 0.0, 16.0, 16)),
             ParamId::Bpm => (179, quantize(value, 30.0, 250.0, 220)),
             ParamId::ClockDivide => (175, quantize(value, 0.0, 12.0, 12)),
             ParamId::FilterCutoff => (15, quantize_log(value, 20.0, 20_000.0, 164)),
@@ -419,12 +419,7 @@ impl Rev2MidiEncoder {
                     quantize(amount, -1.0, 1.0, 254),
                     &mut emit,
                 );
-                emit_nrpn(
-                    channel,
-                    base + 2,
-                    destination.index() as u16,
-                    &mut emit,
-                );
+                emit_nrpn(channel, base + 2, destination.index() as u16, &mut emit);
             }
             ModRoute::Dedicated(source) => {
                 let Some(index) = DedicatedModSource::ALL
@@ -547,6 +542,12 @@ fn program_field(number: u16, layer_offset: usize) -> Option<ProgramField> {
         156 => 118,
         157 => 119,
         158 => 120,
+        167 => 208,
+        168 => 123,
+        169 => 124,
+        170 => 122,
+        175 => 131,
+        179 => 130,
         _ => return None,
     };
     let msb_offset = match number {
@@ -648,6 +649,28 @@ fn emit_nrpn(channel: u8, number: u16, value: u16, emit: &mut impl FnMut([u8; 3]
 
 fn bool_raw(value: f32) -> u16 {
     u16::from(value >= 0.5)
+}
+
+fn key_mode_raw(value: f32) -> u16 {
+    match crate::KeyMode::from_index(value as usize) {
+        crate::KeyMode::Low => 0,
+        crate::KeyMode::High => 1,
+        crate::KeyMode::Last => 2,
+        crate::KeyMode::LowRetrigger => 3,
+        crate::KeyMode::HighRetrigger => 4,
+        crate::KeyMode::LastRetrigger => 5,
+    }
+}
+
+fn key_mode_index(raw: u16) -> f32 {
+    (match raw.min(5) {
+        0 => crate::KeyMode::Low.index(),
+        1 => crate::KeyMode::High.index(),
+        2 => crate::KeyMode::Last.index(),
+        3 => crate::KeyMode::LowRetrigger.index(),
+        4 => crate::KeyMode::HighRetrigger.index(),
+        _ => crate::KeyMode::LastRetrigger.index(),
+    }) as f32
 }
 
 fn quantize(value: f32, min: f32, max: f32, raw_max: u16) -> u16 {
@@ -859,10 +882,10 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         156 => emit_param(emit, ParamId::EffectParam1, unit(raw, 255)),
         157 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
         158 => emit_param(emit, ParamId::EffectClockSync, f32::from(raw != 0)),
-        167 => emit_param(emit, ParamId::UnisonDetune, unit(raw, 16)),
+        167 => emit_param(emit, ParamId::UnisonDetune, f32::from(raw.min(16))),
         168 => emit_param(emit, ParamId::UnisonEnabled, f32::from(raw != 0)),
         169 => emit_param(emit, ParamId::UnisonMode, f32::from(raw.min(16))),
-        170 => emit_param(emit, ParamId::KeyMode, f32::from(raw.min(5))),
+        170 => emit_param(emit, ParamId::KeyMode, key_mode_index(raw)),
         175 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
         179 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
         _ => {}
@@ -948,7 +971,12 @@ fn nrpn_max(number: u16) -> Option<u16> {
         1 | 6 => 100,
         2 | 7 | 38 | 43 | 48 | 53 => 4,
         10 | 19 | 41 | 46 | 51 | 56 | 97 | 99 | 104..=108 | 153 | 158 => 1,
-        11 | 111 | 168 | 169 | 170 | 175 => return None,
+        11 => 3,
+        111 | 168 => 1,
+        167 | 169 => 16,
+        170 => 5,
+        175 => 12,
+        179 => 250,
         15 => 164,
         20 | 58 | 66 | 69 | 72 | 75 | 78 | 81 | 84 | 87 | 116 | 118 | 120 | 122 | 124 => 254,
         37 | 42 | 47 | 52 => 150,
@@ -956,7 +984,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         | 125 => 52,
         65 | 68 | 71 | 74 | 77 | 80 | 83 | 86 => 22,
         102 | 103 => 99,
-         100 | 154 => 12,
+        100 | 154 => 12,
         156 => 255,
         12..=14 | 16..=18 | 21..=26 | 28..=36 | 39 | 44 | 49 | 54 | 59..=64 | 110 | 155 | 157 => {
             127
@@ -998,6 +1026,53 @@ mod tests {
             decoded,
             Some(Rev2MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
         );
+    }
+
+    #[test]
+    fn unison_nrpn_uses_rev2_ranges_and_key_mode_order() {
+        let mut encoder = Rev2MidiEncoder::default();
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoded = None;
+        assert!(encoder.param(0, ParamId::UnisonDetune, 16.0, |message| {
+            decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+        }));
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(ParamId::UnisonDetune, 16.0))
+        );
+
+        let mut decoded = None;
+        assert!(encoder.param(
+            0,
+            ParamId::KeyMode,
+            crate::KeyMode::High.index() as f32,
+            |message| {
+                decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+            }
+        ));
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(
+                ParamId::KeyMode,
+                crate::KeyMode::High.index() as f32,
+            ))
+        );
+    }
+
+    #[test]
+    fn program_data_round_trips_documented_unison_fields() {
+        let mut patch = Patch::default();
+        patch.unison_enabled = true;
+        patch.unison_mode = crate::UnisonMode::Chord;
+        patch.unison_detune = 12.0;
+        patch.key_mode = crate::KeyMode::LastRetrigger;
+        let message = program_data_message(0, 0, &patch);
+        let decoded = Rev2MidiDecoder::program_data(&message).unwrap().patch;
+        assert!(decoded.unison_enabled);
+        assert_eq!(decoded.unison_mode, crate::UnisonMode::Chord);
+        assert_eq!(decoded.unison_detune, 12.0);
+        assert_eq!(decoded.key_mode, crate::KeyMode::LastRetrigger);
+        assert!(decoded.unison_chord.is_empty());
     }
 
     #[test]
@@ -1325,14 +1400,8 @@ mod tests {
 
     #[test]
     fn mod_destination_matches_cc_chart_indices() {
-        assert_eq!(
-            ModDestination::from_index(4),
-            ModDestination::OscMix
-        );
-        assert_eq!(
-            ModDestination::from_index(7),
-            ModDestination::Osc1ShapeMod
-        );
+        assert_eq!(ModDestination::from_index(4), ModDestination::OscMix);
+        assert_eq!(ModDestination::from_index(7), ModDestination::Osc1ShapeMod);
         assert_eq!(ModDestination::Osc1ShapeMod.index(), 7);
     }
 }

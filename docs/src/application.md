@@ -70,9 +70,11 @@ app's existing units, such as hertz and seconds.
 NRPN selection and Data Entry state is tracked independently for each MIDI
 channel. Data Increment, Data Decrement, and the null RPN reset are supported.
 Program Edit Buffer SysEx dumps are decoded into the shared `Patch` type. The
-app imports Layer A; Layer B, sequencer, arpeggiator, unison, glide-mode, and
-global-setting entries are ignored because this app does not currently
-implement those Rev2 systems.
+app imports Layer A, including key mode, unison enable, unison voice count, and
+unison detune. Layer B, sequencer, arpeggiator, glide behavior, and global
+settings are ignored because the app does not currently implement those Rev2
+systems. Rev2 chord voicings cannot be imported because their program-image
+bytes are not documented; native patches preserve chord memory.
 
 Stored Program Data dumps are library imports rather than live edits. The app
 reads their bank and program metadata, decodes Layer A, and saves the patch as

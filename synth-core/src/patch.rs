@@ -9,6 +9,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub const PATCH_NAME_CAPACITY: usize = 20;
+pub const CHORD_MEMORY_CAPACITY: usize = 16;
 
 pub type PatchName = heapless::String<PATCH_NAME_CAPACITY>;
 
@@ -746,13 +747,43 @@ pub enum UnisonMode {
     #[default]
     V1,
     V2,
+    V3,
     V4,
+    V5,
+    V6,
+    V7,
     V8,
+    V9,
+    V10,
+    V11,
+    V12,
+    V13,
+    V14,
+    V15,
     V16,
+    Chord,
 }
 
 impl UnisonMode {
-    pub const ALL: [Self; 5] = [Self::V1, Self::V2, Self::V4, Self::V8, Self::V16];
+    pub const ALL: [Self; 17] = [
+        Self::V1,
+        Self::V2,
+        Self::V3,
+        Self::V4,
+        Self::V5,
+        Self::V6,
+        Self::V7,
+        Self::V8,
+        Self::V9,
+        Self::V10,
+        Self::V11,
+        Self::V12,
+        Self::V13,
+        Self::V14,
+        Self::V15,
+        Self::V16,
+        Self::Chord,
+    ];
 
     pub fn from_index(index: usize) -> Self {
         Self::ALL.get(index).copied().unwrap_or_default()
@@ -766,10 +797,77 @@ impl UnisonMode {
         match self {
             Self::V1 => "1 Voice",
             Self::V2 => "2 Voices",
+            Self::V3 => "3 Voices",
             Self::V4 => "4 Voices",
+            Self::V5 => "5 Voices",
+            Self::V6 => "6 Voices",
+            Self::V7 => "7 Voices",
             Self::V8 => "8 Voices",
+            Self::V9 => "9 Voices",
+            Self::V10 => "10 Voices",
+            Self::V11 => "11 Voices",
+            Self::V12 => "12 Voices",
+            Self::V13 => "13 Voices",
+            Self::V14 => "14 Voices",
+            Self::V15 => "15 Voices",
             Self::V16 => "16 Voices",
+            Self::Chord => "Chord",
         }
+    }
+
+    pub fn voice_count(self) -> Option<usize> {
+        (self != Self::Chord).then_some(self.index() + 1)
+    }
+}
+
+/// Rev2 chord-memory voicing stored as ascending intervals from its lowest note.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChordMemory {
+    intervals: [u8; CHORD_MEMORY_CAPACITY],
+    len: u8,
+}
+
+impl Default for ChordMemory {
+    fn default() -> Self {
+        Self {
+            intervals: [0; CHORD_MEMORY_CAPACITY],
+            len: 0,
+        }
+    }
+}
+
+impl ChordMemory {
+    pub fn from_notes(notes: impl IntoIterator<Item = u8>) -> Self {
+        let mut present = [false; 128];
+        for note in notes {
+            if note < 128 {
+                present[usize::from(note)] = true;
+            }
+        }
+        let Some(root) = present.iter().position(|held| *held) else {
+            return Self::default();
+        };
+        let mut memory = Self::default();
+        for (note, held) in present.iter().copied().enumerate().skip(root) {
+            if held && memory.len() < CHORD_MEMORY_CAPACITY {
+                memory.intervals[usize::from(memory.len)] = (note - root) as u8;
+                memory.len += 1;
+            }
+        }
+        memory
+    }
+
+    pub fn intervals(&self) -> &[u8] {
+        &self.intervals[..self.len()]
+    }
+
+    pub fn len(&self) -> usize {
+        usize::from(self.len).min(CHORD_MEMORY_CAPACITY)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 
@@ -823,6 +921,8 @@ pub struct Patch {
     pub unison_enabled: bool,
     pub unison_mode: UnisonMode,
     pub unison_detune: f32,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub unison_chord: ChordMemory,
     pub bpm: f32,
     pub clock_divide: f32,
     pub filter: FilterParams,
@@ -856,6 +956,7 @@ impl Default for Patch {
             unison_enabled: false,
             unison_mode: UnisonMode::default(),
             unison_detune: 0.0,
+            unison_chord: ChordMemory::default(),
             bpm: crate::DEFAULT_TEMPO_BPM,
             clock_divide: 1.0,
             filter: FilterParams {
@@ -1074,7 +1175,7 @@ impl Patch {
             ParamId::KeyMode => self.key_mode = KeyMode::from_index(value as usize),
             ParamId::UnisonEnabled => self.unison_enabled = flag,
             ParamId::UnisonMode => self.unison_mode = UnisonMode::from_index(value as usize),
-            ParamId::UnisonDetune => self.unison_detune = value,
+            ParamId::UnisonDetune => self.unison_detune = value.clamp(0.0, 16.0),
             ParamId::Bpm => self.bpm = value.clamp(30.0, 250.0),
             ParamId::ClockDivide => self.clock_divide = value,
             ParamId::FilterCutoff => self.filter.cutoff = value,
@@ -1234,5 +1335,26 @@ mod tests {
         let encoded = serde_json::to_value(&patch).unwrap();
         let decoded: Patch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.amplifier.pan_mod_mode, PanModMode::Fixed);
+    }
+
+    #[test]
+    fn chord_memory_preserves_voicing_and_round_trips() {
+        let mut patch = Patch::default();
+        patch.unison_mode = UnisonMode::Chord;
+        patch.unison_chord = ChordMemory::from_notes([64, 67, 72]);
+        assert_eq!(patch.unison_chord.intervals(), &[0, 3, 8]);
+        let encoded = serde_json::to_value(&patch).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.unison_mode, UnisonMode::Chord);
+        assert_eq!(decoded.unison_chord, patch.unison_chord);
+    }
+
+    #[test]
+    fn old_patch_without_chord_memory_gets_an_empty_default() {
+        let patch = Patch::default();
+        let mut encoded = serde_json::to_value(&patch).unwrap();
+        encoded.as_object_mut().unwrap().remove("unison_chord");
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        assert!(decoded.unison_chord.is_empty());
     }
 }

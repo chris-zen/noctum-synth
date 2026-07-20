@@ -451,7 +451,7 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 121 | (unused) | — |
 | 122 | Key Mode | 0 = low, 1 = high, 2 = last, 3 = low retrigger, 4 = high retrigger, 5 = last retrigger |
 | 123 | Unison On/Off | 0 = off, 1 = on |
-| 124 | Unison Mode | 0–15 |
+| 124 | Unison Mode | 0 = 1 voice through 15 = 16 voices, 16 = chord memory |
 | 125–129 | (unused) | — |
 | 130 | BPM | 30–250 |
 | 131 | Clock Divide | 0 = half note, 1 = quarter, 2 = eighth, 3 = eighth half swing, 4 = eighth full swing, 5 = eighth triplets, 6 = sixteenth, 7 = sixteenth half swing, 8 = sixteenth full swing, 9 = sixteenth triplets, 10 = thirty-second, 11 = thirty-second triplets, 12 = sixty-fourth triplets |
@@ -700,9 +700,10 @@ Breath/Foot amount bytes form reciprocal pairs.
 The synth decodes voice parameters at offsets 0–36, 37–56 (LFOs), 57–64
 (auxiliary envelope), 65–76 (free modulation slots), and 81–90 (dedicated
 modulation). Byte 27 (VCA Initial Level) is decoded directly. It also reads the
-program name from bytes 184–199. Glide, keyboard
-mode, sequencer, arpeggiator, unison, tempo, and split settings are present in
-the image but not applied.
+program name from bytes 184–199. Key mode and the Prophet '08 unison fields are
+also applied: the three fixed detune modes translate to eight Rev2-style voices
+at progressively larger detune values. Glide, sequencer, arpeggiator, tempo,
+and split settings are present in the image but not applied.
 
 #### Layer B (bytes 200–383)
 
@@ -716,7 +717,7 @@ The following Prophet '08 systems are not implemented:
 - Layer B parameter control
 - Live MIDI control of Prophet '08 parameters (SysEx import only)
 - Sequencer and arpeggiator
-- Unison, split, and stack program modes
+- Split and stack program modes
 - Glide / portamento
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)
@@ -740,7 +741,7 @@ The following Prophet Rev2 systems are not implemented by this synth:
 
 - Layer B parameter control
 - Sequencer and arpeggiator
-- Unison and chord memory
+- Rev2 SysEx import/export of the undocumented chord-memory voicing bytes
 - Glide / portamento
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)

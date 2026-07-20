@@ -97,13 +97,13 @@ pub(crate) fn param_knob_f32_offset(
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
-    let previous = *value;
+    let mut knob_value = *value;
     let format_fn = format_knob_value(min - display_offset, max - display_offset);
 
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let response = ui.add(
-        Knob::new(value, min, max, KnobStyle::Wiper)
+        Knob::new(&mut knob_value, min, max, KnobStyle::Wiper)
             .with_size(KNOB_SIZE)
             .with_stroke_width(2.0)
             .with_colors(knob_color, accent, text_color)
@@ -112,6 +112,9 @@ pub(crate) fn param_knob_f32_offset(
             .with_background_arc(true)
             .with_show_filled_segments(true),
     );
+    if response.changed() {
+        *value = knob_value;
+    }
 
     ui.add_space(KNOB_LABEL_OVERLAP);
 
@@ -136,7 +139,7 @@ pub(crate) fn param_knob_f32_offset(
         text_color,
     );
 
-    if edited || response.changed() || *value != previous {
+    if edited || response.changed() {
         control.set_param(param, *value);
     }
 }
@@ -166,7 +169,6 @@ pub fn param_knob_log_hz(
     let max_log = max_hz.ln();
     let log_range = max_log - min_log;
     let mut normalized = ((*value_hz).clamp(min_hz, max_hz).ln() - min_log) / log_range;
-    let previous_hz = *value_hz;
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
@@ -185,7 +187,9 @@ pub fn param_knob_log_hz(
             .with_show_filled_segments(true),
     );
 
-    *value_hz = (min_log + normalized.clamp(0.0, 1.0) * log_range).exp();
+    if response.changed() {
+        *value_hz = (min_log + normalized.clamp(0.0, 1.0) * log_range).exp();
+    }
 
     ui.add_space(KNOB_LABEL_OVERLAP);
 
@@ -202,7 +206,7 @@ pub fn param_knob_log_hz(
         ui, edit_id, value_hz, min_hz, max_hz, 0.0, format_hz, font_id, text_color,
     );
 
-    if edited || response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON {
+    if edited || response.changed() {
         control.set_param(param, *value_hz);
     }
 }
@@ -260,7 +264,7 @@ pub fn master_volume(
     control: &SynthEngineControl,
     echo_midi: bool,
 ) {
-    let previous = *value;
+    let mut knob_value = *value;
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
@@ -278,26 +282,34 @@ pub fn master_volume(
         let knob_visual = MASTER_KNOB_SIZE + MASTER_KNOB_STROKE * 2.0;
         let (knob_rect, _) =
             ui.allocate_exact_size(egui::vec2(knob_visual, knob_visual), egui::Sense::hover());
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(egui::Rect::from_min_size(
-                    knob_rect.min,
-                    egui::vec2(knob_visual, knob_visual + 16.0),
-                ))
-                .layout(egui::Layout::top_down(egui::Align::Center)),
-            |ui| {
-                ui.add(
-                    Knob::new(value, 0.0, 1.0, KnobStyle::Wiper)
-                        .with_size(MASTER_KNOB_SIZE)
-                        .with_stroke_width(MASTER_KNOB_STROKE)
-                        .with_colors(knob_color, accent, text_color)
-                        .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
-                        .with_double_click_reset(1.0)
-                        .with_background_arc(false)
-                        .with_show_filled_segments(false),
-                );
-            },
-        );
+        let knob_response = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(egui::Rect::from_min_size(
+                        knob_rect.min,
+                        egui::vec2(knob_visual, knob_visual + 16.0),
+                    ))
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+                |ui| {
+                    ui.add(
+                        Knob::new(&mut knob_value, 0.0, 1.0, KnobStyle::Wiper)
+                            .with_size(MASTER_KNOB_SIZE)
+                            .with_stroke_width(MASTER_KNOB_STROKE)
+                            .with_colors(knob_color, accent, text_color)
+                            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+                            .with_double_click_reset(1.0)
+                            .with_background_arc(false)
+                            .with_show_filled_segments(false),
+                    )
+                },
+            )
+            .inner;
+        if knob_response.changed() {
+            *value = knob_value;
+            if echo_midi {
+                control.set_param(ParamId::MasterVolume, *value);
+            }
+        }
 
         let edit_id = egui::Id::new("knob_txt_master_volume");
 
@@ -306,8 +318,6 @@ pub fn master_volume(
             .unwrap_or_default();
 
         let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
-        let changed = *value != previous;
-
         if !edit_has_focus {
             edit_text = format!("{:.2}", *value);
         }
@@ -344,10 +354,6 @@ pub fn master_volume(
         }
 
         ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
-
-        if changed && echo_midi {
-            control.set_param(ParamId::MasterVolume, *value);
-        }
     });
 }
 
@@ -367,7 +373,7 @@ fn format_knob_value(min: f32, max: f32) -> impl Fn(f32) -> String + 'static {
     move |value| {
         if min < 0.0 && max <= 1.0 {
             format!("{value:+.2}")
-        } else if max > 20.0 {
+        } else if max >= 16.0 {
             format!("{value:.0}")
         } else if max > 2.0 {
             format!("{value:.2}")
@@ -377,7 +383,9 @@ fn format_knob_value(min: f32, max: f32) -> impl Fn(f32) -> String + 'static {
     }
 }
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 fn value_to_note_name(value: f32) -> String {
     let v = value.clamp(0.0, 120.0) as i32;
@@ -393,9 +401,7 @@ fn parse_note_name(text: &str) -> Option<f32> {
     }
 
     let first = trimmed.chars().next()?.to_ascii_uppercase();
-    let note_idx = NOTE_NAMES
-        .iter()
-        .position(|&n| n.starts_with(first))?;
+    let note_idx = NOTE_NAMES.iter().position(|&n| n.starts_with(first))?;
 
     let mut pos = 1;
     let accidental = if trimmed.len() > pos {
@@ -494,12 +500,12 @@ pub fn param_knob_note(
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
-    let previous = *value;
+    let mut knob_value = *value;
 
     ui.spacing_mut().item_spacing.y = 0.0;
 
     let response = ui.add(
-        Knob::new(value, min, max, KnobStyle::Wiper)
+        Knob::new(&mut knob_value, min, max, KnobStyle::Wiper)
             .with_size(KNOB_SIZE)
             .with_stroke_width(2.0)
             .with_colors(knob_color, accent, text_color)
@@ -508,6 +514,9 @@ pub fn param_knob_note(
             .with_background_arc(true)
             .with_show_filled_segments(true),
     );
+    if response.changed() {
+        *value = knob_value;
+    }
 
     ui.add_space(KNOB_LABEL_OVERLAP);
 
@@ -522,7 +531,70 @@ pub fn param_knob_note(
 
     let edited = knob_note_edit(ui, edit_id, value, min, max, font_id, text_color);
 
-    if edited || response.changed() || *value != previous {
+    if edited || response.changed() {
         control.set_param(param, *value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::create_synth_engine_bridge;
+
+    #[test]
+    fn idle_knobs_do_not_change_parameter_bits() {
+        let (_audio, bridge) = create_synth_engine_bridge(1);
+        let mut envelope = 1.0635071_f32;
+        let mut frequency = 0.26123878_f32;
+        let mut note = 61.23457_f32;
+        let mut master = 0.08661418_f32;
+        let expected = [
+            envelope.to_bits(),
+            frequency.to_bits(),
+            note.to_bits(),
+            master.to_bits(),
+        ];
+
+        egui::__run_test_ui(|ui| {
+            param_knob_f32(
+                ui,
+                "Attack",
+                &mut envelope,
+                0.0005..=5.0,
+                0.0005,
+                ParamId::FilterEgAttack,
+                &bridge.control,
+            );
+            param_knob_log_hz(
+                ui,
+                "Frequency",
+                &mut frequency,
+                0.022,
+                30.0,
+                1.0,
+                ParamId::Lfo1Rate,
+                &bridge.control,
+            );
+            param_knob_note(
+                ui,
+                "Note",
+                &mut note,
+                0.0..=120.0,
+                60.0,
+                ParamId::Osc1Frequency,
+                &bridge.control,
+            );
+            master_volume(ui, &mut master, &bridge.control, true);
+        });
+
+        assert_eq!(
+            [
+                envelope.to_bits(),
+                frequency.to_bits(),
+                note.to_bits(),
+                master.to_bits(),
+            ],
+            expected
+        );
     }
 }

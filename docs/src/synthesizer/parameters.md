@@ -50,6 +50,21 @@ bypass-style patches. Amplifier velocity changes loudness response. Pan spread i
 left/right placement applied to successive voices, while master volume sets the
 final output level.
 
+## Unison and key mode
+
+Unison changes the engine from polyphonic allocation to one selected note
+played by 1–16 voices. Detune spreads those voices symmetrically around the
+played pitch; stacked voices are intentionally not gain-normalized. Low, High,
+and Last key modes choose which physically held note controls the stack. Their
+Retrigger variants restart the envelopes on every note-on, while the other
+modes retune legato without restarting the sound.
+
+Chord mode stores the intervals of a held chord from its lowest note. A single
+key then transposes that voicing. Press Unison while Chord mode is selected and
+notes are held to replace the stored voicing. Native patches preserve the
+chord; the supplied Rev2 MIDI documentation does not identify the external
+program bytes that contain it.
+
 ## LFOs
 
 The four LFOs share the same control model:

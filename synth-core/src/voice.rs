@@ -80,6 +80,7 @@ struct PendingNote {
     note: u8,
     velocity: f32,
     reset_key_synced_lfos: bool,
+    tuning_cents: [f32; LANES],
 }
 
 /// Four-lane subtractive voice: oscillators → filter → amplifier.
@@ -93,6 +94,11 @@ pub struct VoiceBlock {
     ages: [u64; LANES],
     pending_notes: [Option<PendingNote>; LANES],
     pending_note_mask: u8,
+    lifecycle_gain: f32x4,
+    lifecycle_fade_start: [f32; LANES],
+    lifecycle_fade_target: [f32; LANES],
+    lifecycle_fade_remaining: [u32; LANES],
+    lifecycle_fade_total: [u32; LANES],
 
     oscillators: Oscillators,
     amp_env: DadsrEnvelope,
@@ -137,6 +143,11 @@ impl VoiceBlock {
             ages: [0; LANES],
             pending_notes: [None; LANES],
             pending_note_mask: 0,
+            lifecycle_gain: f32x4::ZERO,
+            lifecycle_fade_start: [0.0; LANES],
+            lifecycle_fade_target: [0.0; LANES],
+            lifecycle_fade_remaining: [0; LANES],
+            lifecycle_fade_total: [0; LANES],
             oscillators: Oscillators::new(sample_rate),
             amp_env: DadsrEnvelope::analog(sample_rate),
             filter_env: DadsrEnvelope::analog(sample_rate),
@@ -172,8 +183,20 @@ impl VoiceBlock {
     }
 
     pub fn note_on(&mut self, lane: usize, note: u8, velocity: f32, reset_key_synced_lfos: bool) {
+        self.note_on_tuned(lane, note, velocity, reset_key_synced_lfos, [0.0; LANES]);
+    }
+
+    pub(crate) fn note_on_tuned(
+        &mut self,
+        lane: usize,
+        note: u8,
+        velocity: f32,
+        reset_key_synced_lfos: bool,
+        tuning_cents: [f32; LANES],
+    ) {
         self.pending_notes[lane] = None;
         self.pending_note_mask &= !(1 << lane);
+        self.activate_lifecycle_lane(lane);
         self.notes[lane] = note;
         self.velocities[lane] = velocity;
         self.gates[lane] = true;
@@ -183,14 +206,36 @@ impl VoiceBlock {
         self.aux_env.trigger_lane(lane);
 
         if reset_key_synced_lfos {
-            for lfo in &mut self.lfos {
-                if lfo.key_sync() {
-                    lfo.reset_all();
-                }
-            }
+            self.reset_key_synced_lfos();
         }
-        self.oscillators.note_on(lane, self.note_frequencies_hz());
+        self.oscillators
+            .note_on(lane, self.note_frequencies_hz(tuning_cents));
         self.filter.reset_lane(lane);
+    }
+
+    /// Changes a sounding lane's pitch and velocity without retriggering its DSP state.
+    pub(crate) fn retune_lane(
+        &mut self,
+        lane: usize,
+        note: u8,
+        velocity: f32,
+        tuning_cents: [f32; LANES],
+    ) {
+        if let Some(pending) = &mut self.pending_notes[lane] {
+            pending.note = note;
+            pending.velocity = velocity;
+            pending.tuning_cents = tuning_cents;
+            return;
+        }
+        self.notes[lane] = note;
+        self.velocities[lane] = velocity;
+        self.oscillators
+            .set_note_frequency(self.note_frequencies_hz(tuning_cents));
+    }
+
+    pub(crate) fn set_tuning_cents(&mut self, tuning_cents: [f32; LANES]) {
+        self.oscillators
+            .set_note_frequency(self.note_frequencies_hz(tuning_cents));
     }
 
     pub(crate) fn schedule_note_on(
@@ -200,17 +245,30 @@ impl VoiceBlock {
         velocity: f32,
         reset_key_synced_lfos: bool,
     ) {
+        self.schedule_note_on_tuned(lane, note, velocity, reset_key_synced_lfos, [0.0; LANES]);
+    }
+
+    pub(crate) fn schedule_note_on_tuned(
+        &mut self,
+        lane: usize,
+        note: u8,
+        velocity: f32,
+        reset_key_synced_lfos: bool,
+        tuning_cents: [f32; LANES],
+    ) {
         let shutdown_in_progress = self.pending_notes[lane].is_some();
         self.pending_notes[lane] = Some(PendingNote {
             note,
             velocity,
             reset_key_synced_lfos,
+            tuning_cents,
         });
         self.pending_note_mask |= 1 << lane;
         if shutdown_in_progress {
             return;
         }
         self.gates[lane] = false;
+        self.fade_out_lifecycle_lane(lane);
         self.amp_env
             .shutdown_lane(lane, VOICE_STEAL_SHUTDOWN_SECONDS);
         self.filter_env.release_lane(lane);
@@ -291,6 +349,7 @@ impl VoiceBlock {
         let aux_signal = aux_env * f32x4::splat(self.aux_env_amount) * aux_velocity_scale;
         let filter_env = self.filter_env.next();
         let amp = self.amp_env.next();
+        let lifecycle_gain = self.next_lifecycle_gain();
         #[cfg(feature = "profiling")]
         profiler.end(RenderStage::EnvelopeAdvance);
 
@@ -395,7 +454,7 @@ impl VoiceBlock {
             + (f32x4::splat(1.0 - self.vca_initial_level) * amp * self.amp_env_amount);
         let amp_lfo_gain = (f32x4::splat(1.0) + lfo_modulation.amp_gain)
             .clamp(f32x4::splat(0.0), f32x4::splat(2.0));
-        let output = filtered * velocity_gain * env_gain * amp_lfo_gain;
+        let output = filtered * velocity_gain * env_gain * amp_lfo_gain * lifecycle_gain;
 
         let stereo = self.pan_lanes(output, lfo_modulation.pan);
         #[cfg(feature = "profiling")]
@@ -458,8 +517,39 @@ impl VoiceBlock {
         }
     }
 
-    fn note_frequencies_hz(&self) -> f32x4 {
-        f32x4::new(self.notes.map(midi_to_hz))
+    pub(crate) fn reset_key_synced_lfos(&mut self) {
+        for lfo in &mut self.lfos {
+            if lfo.key_sync() {
+                lfo.reset_all();
+            }
+        }
+    }
+
+    /// Keeps free-running LFO phases current while this block has no audible voices.
+    pub(crate) fn advance_idle_lfos(&mut self, performance: PerformanceModulation) {
+        if !self.modulation_plan.any_modulation {
+            return;
+        }
+        let context = ModSignalContext {
+            performance,
+            velocities: f32x4::ZERO,
+            filter_env: f32x4::ZERO,
+            amp_env: f32x4::ZERO,
+            aux_env: f32x4::ZERO,
+            aux_signal: f32x4::ZERO,
+        };
+        let lfo_control = if self.modulation_plan.control_count == 0 {
+            LfoControlModulation::default()
+        } else {
+            self.evaluate_lfo_control_routes(context)
+        };
+        self.advance_lfos(lfo_control);
+    }
+
+    fn note_frequencies_hz(&self, tuning_cents: [f32; LANES]) -> f32x4 {
+        let base = f32x4::new(self.notes.map(midi_to_hz));
+        let cents = f32x4::new(tuning_cents);
+        base * (cents * f32x4::splat(1.0 / 1_200.0)).exp2()
     }
 
     fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
@@ -489,7 +579,12 @@ impl VoiceBlock {
     }
 
     pub fn is_lane_silent(&self, lane: usize) -> bool {
-        self.pending_notes[lane].is_none() && !self.gates[lane] && self.amp_env.is_idle_lane(lane)
+        let biased_lane_is_audible =
+            self.vca_initial_level > 0.0 && self.lifecycle_gain.to_array()[lane] > 0.0;
+        self.pending_notes[lane].is_none()
+            && !self.gates[lane]
+            && self.amp_env.is_idle_lane(lane)
+            && !biased_lane_is_audible
     }
 
     pub fn is_lane_released(&self, lane: usize) -> bool {
@@ -527,6 +622,11 @@ impl VoiceBlock {
             if !self.amp_env.is_idle_lane(lane) {
                 continue;
             }
+            if self.lifecycle_fade_remaining[lane] != 0
+                || self.lifecycle_gain.to_array()[lane] > 0.0
+            {
+                continue;
+            }
             let Some(pending) = self.pending_notes[lane].take() else {
                 continue;
             };
@@ -534,13 +634,72 @@ impl VoiceBlock {
             self.amp_env.reset_lane(lane);
             self.filter_env.reset_lane(lane);
             self.aux_env.reset_lane(lane);
-            self.note_on(
+            self.note_on_tuned(
                 lane,
                 pending.note,
                 pending.velocity,
                 pending.reset_key_synced_lfos,
+                pending.tuning_cents,
             );
         }
+    }
+
+    fn activate_lifecycle_lane(&mut self, lane: usize) {
+        if self.vca_initial_level > 0.0 && self.lifecycle_gain.to_array()[lane] < 1.0 {
+            self.start_lifecycle_fade(lane, 1.0);
+        } else {
+            self.set_lifecycle_gain(lane, 1.0);
+        }
+    }
+
+    fn fade_out_lifecycle_lane(&mut self, lane: usize) {
+        self.start_lifecycle_fade(lane, 0.0);
+    }
+
+    fn start_lifecycle_fade(&mut self, lane: usize, target: f32) {
+        let current = self.lifecycle_gain.to_array()[lane];
+        if current == target {
+            self.set_lifecycle_gain(lane, target);
+            return;
+        }
+        let samples =
+            crate::math::round(VOICE_STEAL_SHUTDOWN_SECONDS * self.sample_rate).max(1.0) as u32;
+        self.lifecycle_fade_start[lane] = current;
+        self.lifecycle_fade_target[lane] = target;
+        self.lifecycle_fade_remaining[lane] = samples;
+        self.lifecycle_fade_total[lane] = samples;
+    }
+
+    fn set_lifecycle_gain(&mut self, lane: usize, gain: f32) {
+        let mut gains = self.lifecycle_gain.to_array();
+        gains[lane] = gain;
+        self.lifecycle_gain = f32x4::new(gains);
+        self.lifecycle_fade_start[lane] = gain;
+        self.lifecycle_fade_target[lane] = gain;
+        self.lifecycle_fade_remaining[lane] = 0;
+        self.lifecycle_fade_total[lane] = 0;
+    }
+
+    fn next_lifecycle_gain(&mut self) -> f32x4 {
+        let mut gains = self.lifecycle_gain.to_array();
+        for (lane, gain) in gains.iter_mut().enumerate() {
+            let remaining = self.lifecycle_fade_remaining[lane];
+            if remaining == 0 {
+                continue;
+            }
+            let next_remaining = remaining - 1;
+            self.lifecycle_fade_remaining[lane] = next_remaining;
+            if next_remaining == 0 {
+                *gain = self.lifecycle_fade_target[lane];
+                continue;
+            }
+            let progress = 1.0 - next_remaining as f32 / self.lifecycle_fade_total[lane] as f32;
+            let smooth = progress * progress * (3.0 - 2.0 * progress);
+            let start = self.lifecycle_fade_start[lane];
+            *gain = start + (self.lifecycle_fade_target[lane] - start) * smooth;
+        }
+        self.lifecycle_gain = f32x4::new(gains);
+        self.lifecycle_gain
     }
 
     pub fn active_lane_count(&self) -> usize {
@@ -1147,6 +1306,11 @@ impl VoiceBlock {
         self.notes[lane]
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_age(&self, lane: usize) -> u64 {
+        self.ages[lane]
+    }
+
     pub(crate) fn test_pan_positions(&self) -> [f32; LANES] {
         self.pan_positions
     }
@@ -1408,6 +1572,21 @@ impl ModulationExecutionPlan {
             }
         }
 
+        // Even with zero base depth, an LFO whose depth is targeted by a
+        // control route can produce non-zero output once the control signal
+        // becomes active.  Pre-scan control-route destinations so those
+        // LFOs are included in the active mask before audio-route compilation.
+        for slot in matrix_slots {
+            if slot.enabled && slot.amount != 0.0 {
+                plan.active_lfo_mask |= Self::lfo_depth_target_mask(slot.destination);
+            }
+        }
+        for slot in dedicated_slots {
+            if slot.enabled && slot.amount != 0.0 {
+                plan.active_lfo_mask |= Self::lfo_depth_target_mask(slot.destination);
+            }
+        }
+
         let lfo_sources = [
             ModSource::Lfo1,
             ModSource::Lfo2,
@@ -1415,7 +1594,7 @@ impl ModulationExecutionPlan {
             ModSource::Lfo4,
         ];
         for (index, destination) in lfo_destinations.iter().copied().enumerate() {
-            if destination != ModDestination::Off && lfo_base_depths[index] != 0.0 {
+            if destination != ModDestination::Off && plan.active_lfo_mask & (1 << index) != 0 {
                 plan.add_route(CompiledModRoute {
                     source: CompiledModSource::Standard(lfo_sources[index]),
                     destination,
@@ -1562,7 +1741,8 @@ impl ModulationExecutionPlan {
     }
 
     fn is_lfo_control_destination(destination: ModDestination) -> bool {
-        Self::lfo_rate_target_mask(destination) != 0 || Self::lfo_depth_target_mask(destination) != 0
+        Self::lfo_rate_target_mask(destination) != 0
+            || Self::lfo_depth_target_mask(destination) != 0
     }
 
     fn is_audio_destination(destination: ModDestination) -> bool {
@@ -2348,5 +2528,57 @@ mod tests {
             "zero VCA level with full envelope amount should still gate audibly, RMS {enveloped_left}"
         );
     }
-}
 
+    #[test]
+    fn vca_initial_level_keeps_drone_rendering_after_amp_release() {
+        let mut drone = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.25));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
+        drone.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut drone, 512);
+        drone.handle_control(ControlMessage::NoteOff { note: 60 });
+        process_frames(&mut drone, 512);
+
+        assert!(drone[0].amp_env.is_idle_lane(0));
+        assert!(!drone[0].is_lane_silent(0));
+        let (left, _) = stereo_rms(&mut drone, 4_096);
+        assert!(
+            left > 0.01,
+            "VCA bias should remain audible after the amp envelope release, RMS {left}"
+        );
+    }
+
+    #[test]
+    fn voice_reuse_fades_vca_bias_out_and_back_in() {
+        let mut patch = Patch::default();
+        patch.amplifier.initial_level = 1.0;
+        patch.amplifier.env_amount = 0.0;
+        let mut block = VoiceBlock::new(44_100.0, &patch);
+        block.note_on(0, 60, 1.0, false);
+        for _ in 0..221 {
+            voice_block_next(&mut block);
+        }
+        assert_eq!(block.lifecycle_gain.to_array(), [1.0, 0.0, 0.0, 0.0]);
+
+        block.schedule_note_on(0, 64, 1.0, false);
+        for _ in 0..221 {
+            voice_block_next(&mut block);
+        }
+        assert!(block.has_pending_note(0));
+        assert_eq!(block.lifecycle_gain.to_array()[0], 0.0);
+
+        voice_block_next(&mut block);
+        assert!(!block.has_pending_note(0));
+        let fade_in_start = block.lifecycle_gain.to_array()[0];
+        assert!(fade_in_start > 0.0 && fade_in_start < 0.001);
+        for _ in 1..221 {
+            voice_block_next(&mut block);
+        }
+        assert_eq!(block.lifecycle_gain.to_array()[0], 1.0);
+    }
+}

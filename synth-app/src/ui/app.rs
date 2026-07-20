@@ -177,7 +177,6 @@ impl eframe::App for App {
 
         self.engine.view.drain_midi_ui_updates(|update| {
             self.ui_state.apply_midi_update(update);
-            self.patch_mgr.mark_user_modified();
         });
 
         let mut imports = Vec::new();

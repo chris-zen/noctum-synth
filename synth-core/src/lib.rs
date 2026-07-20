@@ -106,9 +106,10 @@ pub use p08_midi::{
     P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
 };
 pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, EffectParams,
-    EffectType, FilterParams, GlideMode, KeyMode, LfoParams, ModDestination, ModMatrix,
-    ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
+    AmplifierParams, AuxEnvelopeParams, ChordMemory, DedicatedModSlot, DedicatedModSource,
+    EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LfoParams, ModDestination,
+    ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName,
+    UnisonMode,
 };
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};
@@ -365,6 +366,8 @@ pub enum ModulationParam {
 /// Host-to-engine control and performance input.
 pub enum ControlMessage {
     SetParam(ParamId, f32),
+    /// Replaces the native chord-memory voicing used by unison Chord mode.
+    SetUnisonChord(ChordMemory),
     /// Updates the engine tempo used by clock-synchronized effects.
     SetTempoBpm {
         bpm: f32,
