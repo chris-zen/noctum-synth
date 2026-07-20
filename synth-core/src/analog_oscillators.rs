@@ -9,6 +9,8 @@ use crate::{AnalogSubOscillator, Waveform, WhiteNoise, midi_to_hz};
 #[cfg(feature = "profiling")]
 use crate::{RenderProfiler, RenderStage};
 
+// Give unassigned, keyboard-tracked lanes a real pitch so their
+// phases advance before the first note when note reset is off.
 const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
 
 /// Oscillator section for one [`crate::VoiceBlock`]: two analog oscillators, sub, and noise.
@@ -32,12 +34,13 @@ impl Oscillators {
             sub_osc: AnalogSubOscillator::default(),
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
-            note_frequency_hz: f32x4::splat(0.0),
+            note_frequency_hz: f32x4::splat(midi_to_hz(CENTER_FREQUENCY_SEMITONES as u8)),
             last_frequency_modulation: [f32x4::splat(0.0); 2],
             last_shape_modulation: [0.0; 2],
             sample_rate,
         };
         oscillators.apply_params_without_frequency();
+        oscillators.update_frequencies();
         oscillators
     }
 
@@ -221,20 +224,10 @@ impl Oscillators {
         #[cfg(feature = "profiling")]
         profiler.end(RenderStage::OscillatorControl);
 
-        let osc2_step = if self.params.osc2.enabled {
-            #[cfg(feature = "profiling")]
-            {
-                self.osc2.next_step_profiled(profiler)
-            }
-            #[cfg(not(feature = "profiling"))]
-            self.osc2.next_step()
-        } else {
-            crate::analog_oscillator::OscillatorStep {
-                output: f32x4::splat(0.0),
-                wrapped: f32x4::splat(0.0),
-                subsample_offset: f32x4::splat(0.0),
-            }
-        };
+        #[cfg(feature = "profiling")]
+        let osc2_step = self.osc2.next_step_profiled(profiler);
+        #[cfg(not(feature = "profiling"))]
+        let osc2_step = self.osc2.next_step();
 
         if self.params.sync && self.params.osc2.enabled {
             self.osc1
@@ -460,6 +453,59 @@ mod tests {
         for _ in 0..frames {
             oscillators.next(OscillatorModulation::default());
         }
+    }
+
+    #[test]
+    fn note_reset_off_advances_phase_before_first_note() {
+        let frequency = f32x4::splat(midi_to_hz(60));
+        let mut immediate = Oscillators::new(SAMPLE_RATE);
+        let mut delayed = Oscillators::new(SAMPLE_RATE);
+        immediate.set_osc1_note_reset(false);
+        delayed.set_osc1_note_reset(false);
+
+        settle(&mut delayed, 137);
+        immediate.note_on(0, frequency);
+        delayed.note_on(0, frequency);
+
+        let immediate_sample = immediate
+            .next(OscillatorModulation::default())
+            .osc1
+            .to_array()[0];
+        let delayed_sample = delayed
+            .next(OscillatorModulation::default())
+            .osc1
+            .to_array()[0];
+        assert!(
+            (immediate_sample - delayed_sample).abs() > 0.1,
+            "a delayed first note should inherit an advanced free-running phase"
+        );
+    }
+
+    #[test]
+    fn disabled_osc2_keeps_advancing_when_note_reset_is_off() {
+        let frequency = f32x4::splat(220.0);
+        let mut audible = Oscillators::new(SAMPLE_RATE);
+        let mut muted = Oscillators::new(SAMPLE_RATE);
+        for oscillators in [&mut audible, &mut muted] {
+            oscillators.set_osc2_enabled(true);
+            oscillators.set_osc2_note_reset(false);
+            oscillators.note_on(0, frequency);
+        }
+
+        muted.set_osc2_enabled(false);
+        settle(&mut audible, 137);
+        settle(&mut muted, 137);
+        muted.set_osc2_enabled(true);
+
+        let audible_sample = audible
+            .next(OscillatorModulation::default())
+            .osc2
+            .to_array()[0];
+        let muted_sample = muted.next(OscillatorModulation::default()).osc2.to_array()[0];
+        assert!(
+            (audible_sample - muted_sample).abs() < 1e-6,
+            "muting oscillator 2 must not freeze its free-running phase"
+        );
     }
 
     #[test]
