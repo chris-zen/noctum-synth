@@ -1,11 +1,11 @@
 //! Sequential Prophet '08-compatible program SysEx decoder.
 
-use crate::{
-    DedicatedModSource, DEFAULT_TEMPO_BPM, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
-    ModRoute, ModSource, ModulationParam, ParamId, Patch,
-};
 use crate::patch::decode_patch_name;
 use crate::rev2_midi::Rev2SysexError;
+use crate::{
+    DEFAULT_TEMPO_BPM, DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
+    ModRoute, ModSource, ModulationParam, ParamId, Patch,
+};
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
 
@@ -111,10 +111,13 @@ enum P08MidiUpdate {
 }
 
 fn program_field(number: u16) -> Option<ProgramField> {
-    if number > 119 {
+    if number > 119 && number != 100 {
         return None;
     }
-    let value_offset = number as usize;
+    let value_offset = match number {
+        100 => 93,
+        _ => number as usize,
+    };
     let msb_offset = match number {
         15 => Some(19),
         20 => Some(14),
@@ -187,11 +190,12 @@ const P08_MOD_DESTINATIONS: [ModDestination; 44] = [
     ModDestination::Off,
     ModDestination::Osc1Frequency,
     ModDestination::Osc2Frequency,
+    ModDestination::OscAllFrequency,
     ModDestination::OscMix,
     ModDestination::NoiseLevel,
-    ModDestination::Osc1Shape,
-    ModDestination::Osc2Shape,
-    ModDestination::OscAllShape,
+    ModDestination::Osc1ShapeMod,
+    ModDestination::Osc2ShapeMod,
+    ModDestination::OscAllShapeMod,
     ModDestination::FilterCutoff,
     ModDestination::FilterResonance,
     ModDestination::FilterAudioMod,
@@ -227,7 +231,6 @@ const P08_MOD_DESTINATIONS: [ModDestination; 44] = [
     ModDestination::Mod2Amount,
     ModDestination::Mod3Amount,
     ModDestination::Mod4Amount,
-    ModDestination::Off,
 ];
 
 fn p08_mod_destination(raw: u16) -> ModDestination {
@@ -279,17 +282,22 @@ fn p08_lfo_rate(raw: u16) -> (f32, bool) {
             false,
         );
     }
-    (
-        p08_clock_sync_lfo_rate_hz(raw, DEFAULT_TEMPO_BPM),
-        true,
-    )
+    (p08_clock_sync_lfo_rate_hz(raw, DEFAULT_TEMPO_BPM), true)
 }
 
 fn emit_osc_shape(emit: &mut impl FnMut(P08MidiUpdate), osc1: bool, raw: u16) {
     let (enabled_param, waveform_param, shape_param) = if osc1 {
-        (ParamId::Osc1Enabled, ParamId::Osc1Waveform, ParamId::Osc1Shape)
+        (
+            ParamId::Osc1Enabled,
+            ParamId::Osc1Waveform,
+            ParamId::Osc1ShapeMod,
+        )
     } else {
-        (ParamId::Osc2Enabled, ParamId::Osc2Waveform, ParamId::Osc2Shape)
+        (
+            ParamId::Osc2Enabled,
+            ParamId::Osc2Waveform,
+            ParamId::Osc2ShapeMod,
+        )
     };
     emit(P08MidiUpdate::Param(enabled_param, f32::from(raw != 0)));
     if raw == 0 {
@@ -320,13 +328,19 @@ fn emit_osc_shape(emit: &mut impl FnMut(P08MidiUpdate), osc1: bool, raw: u16) {
 
 fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
     match number {
-        0 => emit(P08MidiUpdate::Param(ParamId::Osc1Frequency, f32::from(raw.min(120)))),
+        0 => emit(P08MidiUpdate::Param(
+            ParamId::Osc1Frequency,
+            f32::from(raw.min(120)),
+        )),
         1 => emit(P08MidiUpdate::Param(
             ParamId::Osc1FineTune,
             f32::from(raw.min(100)) - 50.0,
         )),
         2 => emit_osc_shape(emit, true, raw.min(103)),
-        5 => emit(P08MidiUpdate::Param(ParamId::Osc2Frequency, f32::from(raw.min(120)))),
+        5 => emit(P08MidiUpdate::Param(
+            ParamId::Osc2Frequency,
+            f32::from(raw.min(120)),
+        )),
         6 => emit(P08MidiUpdate::Param(
             ParamId::Osc2FineTune,
             f32::from(raw.min(100)) - 50.0,
@@ -340,13 +354,34 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             ParamId::FilterCutoff,
             logarithmic(raw, 164, 20.0, 20_000.0),
         )),
-        16 => emit(P08MidiUpdate::Param(ParamId::FilterResonance, unit(raw, 127))),
-        17 => emit(P08MidiUpdate::Param(ParamId::FilterKeyTrack, unit(raw, 127))),
-        18 => emit(P08MidiUpdate::Param(ParamId::FilterAudioMod, unit(raw, 127))),
-        19 => emit(P08MidiUpdate::Param(ParamId::FilterPoles, f32::from(raw != 0))),
-        20 => emit(P08MidiUpdate::Param(ParamId::FilterEnvAmount, bipolar(raw, 254))),
-        21 => emit(P08MidiUpdate::Param(ParamId::FilterVelocity, unit(raw, 127))),
-        22 => emit(P08MidiUpdate::Param(ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0))),
+        16 => emit(P08MidiUpdate::Param(
+            ParamId::FilterResonance,
+            unit(raw, 127),
+        )),
+        17 => emit(P08MidiUpdate::Param(
+            ParamId::FilterKeyTrack,
+            unit(raw, 127),
+        )),
+        18 => emit(P08MidiUpdate::Param(
+            ParamId::FilterAudioMod,
+            unit(raw, 127),
+        )),
+        19 => emit(P08MidiUpdate::Param(
+            ParamId::FilterPoles,
+            f32::from(raw != 0),
+        )),
+        20 => emit(P08MidiUpdate::Param(
+            ParamId::FilterEnvAmount,
+            bipolar(raw, 254),
+        )),
+        21 => emit(P08MidiUpdate::Param(
+            ParamId::FilterVelocity,
+            unit(raw, 127),
+        )),
+        22 => emit(P08MidiUpdate::Param(
+            ParamId::FilterEgDelay,
+            ranged(raw, 127, 0.0, 5.0),
+        )),
         23 => emit(P08MidiUpdate::Param(
             ParamId::FilterEgAttack,
             ranged(raw, 127, 0.0005, 5.0),
@@ -355,17 +390,26 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             ParamId::FilterEgDecay,
             ranged(raw, 127, 0.0005, 5.0),
         )),
-        25 => emit(P08MidiUpdate::Param(ParamId::FilterEgSustain, unit(raw, 127))),
+        25 => emit(P08MidiUpdate::Param(
+            ParamId::FilterEgSustain,
+            unit(raw, 127),
+        )),
         26 => emit(P08MidiUpdate::Param(
             ParamId::FilterEgRelease,
             ranged(raw, 127, 0.0005, 10.0),
         )),
-        27 => emit(P08MidiUpdate::Param(ParamId::VcaInitialLevel, unit(raw, 127))),
+        27 => emit(P08MidiUpdate::Param(
+            ParamId::VcaInitialLevel,
+            unit(raw, 127),
+        )),
         28 => emit(P08MidiUpdate::Param(ParamId::PanSpread, unit(raw, 127))),
         29 => emit(P08MidiUpdate::Param(ParamId::MasterVolume, unit(raw, 127))),
         30 => emit(P08MidiUpdate::Param(ParamId::AmpEnvAmount, unit(raw, 127))),
         31 => emit(P08MidiUpdate::Param(ParamId::AmpVelocity, unit(raw, 127))),
-        32 => emit(P08MidiUpdate::Param(ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0))),
+        32 => emit(P08MidiUpdate::Param(
+            ParamId::AmpEgDelay,
+            ranged(raw, 127, 0.0, 5.0),
+        )),
         33 => emit(P08MidiUpdate::Param(
             ParamId::AmpEgAttack,
             ranged(raw, 127, 0.0005, 5.0),
@@ -384,9 +428,15 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             ParamId::AuxEgDestination,
             p08_mod_destination(raw).index() as f32,
         )),
-        58 => emit(P08MidiUpdate::Param(ParamId::AuxEgAmount, bipolar(raw, 254))),
+        58 => emit(P08MidiUpdate::Param(
+            ParamId::AuxEgAmount,
+            bipolar(raw, 254),
+        )),
         59 => emit(P08MidiUpdate::Param(ParamId::AuxEgVelocity, unit(raw, 127))),
-        60 => emit(P08MidiUpdate::Param(ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0))),
+        60 => emit(P08MidiUpdate::Param(
+            ParamId::AuxEgDelay,
+            ranged(raw, 127, 0.0, 5.0),
+        )),
         61 => emit(P08MidiUpdate::Param(
             ParamId::AuxEgAttack,
             ranged(raw, 127, 0.0005, 5.0),
@@ -399,6 +449,10 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
         64 => emit(P08MidiUpdate::Param(
             ParamId::AuxEgRelease,
             ranged(raw, 127, 0.0005, 10.0),
+        )),
+        100 => emit(P08MidiUpdate::Param(
+            ParamId::PitchBendRange,
+            f32::from(raw.min(12)),
         )),
         65..=76 => map_free_mod_nrpn(number, raw, emit),
         81..=90 => map_dedicated_mod_nrpn(number, raw, emit),
@@ -502,6 +556,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         37 | 42 | 47 | 52 => 166,
         38 | 43 | 48 | 53 => 4,
         40 | 45 | 50 | 55 | 57 => 43,
+        100 => 12,
         _ => 127,
     })
 }
@@ -597,7 +652,7 @@ mod tests {
             [
                 Some(P08MidiUpdate::Param(ParamId::Osc1Enabled, 1.0)),
                 Some(P08MidiUpdate::Param(ParamId::Osc1Waveform, 2.0)),
-                Some(P08MidiUpdate::Param(ParamId::Osc1Shape, 0.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1ShapeMod, 0.0)),
             ]
         );
 
@@ -617,7 +672,7 @@ mod tests {
             [
                 Some(P08MidiUpdate::Param(ParamId::Osc1Enabled, 1.0)),
                 Some(P08MidiUpdate::Param(ParamId::Osc1Waveform, 1.0)),
-                Some(P08MidiUpdate::Param(ParamId::Osc1Shape, 0.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1ShapeMod, 0.0)),
             ]
         );
     }
@@ -629,10 +684,34 @@ mod tests {
     }
 
     #[test]
+    fn combined_shape_raw_value_decodes_pulse_and_shape_mod() {
+        let mut updates = [None; 3];
+        let mut len = 0;
+        emit_osc_shape(
+            &mut |update| {
+                updates[len] = Some(update);
+                len += 1;
+            },
+            true,
+            54,
+        );
+        assert_eq!(len, 3);
+        assert_eq!(
+            updates,
+            [
+                Some(P08MidiUpdate::Param(ParamId::Osc1Enabled, 1.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1Waveform, 3.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1ShapeMod, 50.0 / 99.0)),
+            ]
+        );
+    }
+
+    #[test]
     fn mod_destination_maps_p08_indices_to_internal_destinations() {
-        assert_eq!(p08_mod_destination(3), ModDestination::OscMix);
-        assert_eq!(p08_mod_destination(8), ModDestination::FilterCutoff);
-        assert_eq!(p08_mod_destination(24), ModDestination::AmpEnvAmount);
+        assert_eq!(p08_mod_destination(3), ModDestination::OscAllFrequency);
+        assert_eq!(p08_mod_destination(4), ModDestination::OscMix);
+        assert_eq!(p08_mod_destination(9), ModDestination::FilterCutoff);
+        assert_eq!(p08_mod_destination(25), ModDestination::AmpEnvAmount);
     }
 
     #[test]

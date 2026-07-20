@@ -98,6 +98,7 @@ where
                 self.effects.set_param2(value);
             }
             ControlMessage::SetTempoBpm { bpm } => self.set_tempo_bpm(bpm),
+            ControlMessage::SetParam(ParamId::Bpm, value) => self.set_tempo_bpm(value),
             ControlMessage::SetFilterOversampling(oversampling) => {
                 self.set_filter_oversampling(oversampling);
             }

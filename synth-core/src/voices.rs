@@ -11,8 +11,8 @@ use crate::profiling::NoopProfiler;
 use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
-    ControlMessage, FilterOversampling, FilterType, LANES, LfoWaveform, ModDestination, PanModMode,
-    ParamId, Patch, VOICE_PACKS, VoiceBlock, Waveform, voice_pan_position,
+    ControlMessage, FilterOversampling, FilterType, LANES, ParamId, Patch, VOICE_PACKS, VoiceBlock,
+    voice_pan_position,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -109,9 +109,10 @@ pub struct Voices<const PACKS: usize = VOICE_PACKS> {
 
 impl<const PACKS: usize> Voices<PACKS> {
     pub fn new(sample_rate: f32) -> Self {
+        let patch = Patch::default();
         Self {
             blocks: core::array::from_fn(|block_index| {
-                let mut block = VoiceBlock::new(sample_rate);
+                let mut block = VoiceBlock::new(sample_rate, &patch);
                 block.set_pan_positions(core::array::from_fn(|lane| {
                     voice_pan_position(block_index * LANES + lane, Self::VOICE_COUNT)
                 }));
@@ -128,22 +129,7 @@ impl<const PACKS: usize> Voices<PACKS> {
 
     pub(crate) fn apply_patch(&mut self, patch: &Patch) {
         for block in &mut self.blocks {
-            block.begin_patch_update();
-        }
-        patch.for_each_param(|id, value| self.set_param(id, value));
-        patch.for_each_modulation(|route, slot| {
-            for block in &mut self.blocks {
-                block.set_mod_route(
-                    route,
-                    slot.enabled,
-                    slot.source,
-                    slot.destination,
-                    slot.amount,
-                );
-            }
-        });
-        for block in &mut self.blocks {
-            block.finish_patch_update();
+            block.apply_patch(patch);
         }
     }
 
@@ -222,13 +208,13 @@ impl<const PACKS: usize> Voices<PACKS> {
                     11 => self.performance.expression = value,
                     MIDI_CC_FILTER_RESONANCE => {
                         for block in &mut self.blocks {
-                            block.filter.set_resonance(value);
+                            block.set_filter_resonance(value);
                         }
                     }
                     MIDI_CC_FILTER_CUTOFF => {
                         let cutoff = midi_filter_cutoff_hz(value);
                         for block in &mut self.blocks {
-                            block.filter.set_cutoff(cutoff);
+                            block.set_filter_cutoff(cutoff);
                         }
                     }
                     _ => {}
@@ -327,143 +313,7 @@ impl<const PACKS: usize> Voices<PACKS> {
 
     fn set_param(&mut self, id: ParamId, value: f32) {
         for block in &mut self.blocks {
-            match id {
-                ParamId::Osc1Waveform => {
-                    block
-                        .oscillators
-                        .set_osc1_waveform(int_to_waveform(value as i32));
-                }
-                ParamId::Osc1Enabled => block.oscillators.set_osc1_enabled(value >= 0.5),
-                ParamId::Osc2Waveform => {
-                    block
-                        .oscillators
-                        .set_osc2_waveform(int_to_waveform(value as i32));
-                }
-                ParamId::Osc2Enabled => block.oscillators.set_osc2_enabled(value >= 0.5),
-                ParamId::Osc1Frequency => {
-                    block.set_osc1_note_param(value);
-                }
-                ParamId::Osc2Frequency => {
-                    block.set_osc2_note_param(value);
-                }
-                ParamId::Osc1FineTune => {
-                    block.set_osc1_fine(value);
-                }
-                ParamId::Osc2FineTune => {
-                    block.set_osc2_fine(value);
-                }
-                ParamId::Osc1Shape => {
-                    block.oscillators.set_osc1_shape_mod(value);
-                }
-                ParamId::Osc2Shape => {
-                    block.oscillators.set_osc2_shape_mod(value);
-                }
-                ParamId::Osc1Level => {
-                    if value <= 0.0 {
-                        block.oscillators.set_mix(1.0);
-                    }
-                }
-                ParamId::Osc2Level => {
-                    if value <= 0.0 {
-                        block.oscillators.set_mix(0.0);
-                    }
-                }
-                ParamId::OscMix => block.oscillators.set_mix(value),
-                ParamId::SubOscLevel => block.oscillators.set_sub_octave(value),
-                ParamId::NoiseLevel => block.oscillators.set_noise(value),
-                ParamId::HardSync => block.oscillators.set_sync(value >= 0.5),
-                ParamId::OscSlop | ParamId::AnalogDrift => {
-                    block.oscillators.set_slop(value);
-                }
-                ParamId::Osc1NoteReset => block.oscillators.set_osc1_note_reset(value >= 0.5),
-                ParamId::Osc2NoteReset => block.oscillators.set_osc2_note_reset(value >= 0.5),
-                ParamId::Osc1KeyboardOn => {
-                    block.oscillators.set_osc1_keyboard_on(value >= 0.5);
-                }
-                ParamId::Osc2KeyboardOn => {
-                    block.oscillators.set_osc2_keyboard_on(value >= 0.5);
-                }
-                ParamId::FilterCutoff => {
-                    block.filter.set_cutoff(value);
-                }
-                ParamId::FilterResonance => block.filter.set_resonance(value),
-                ParamId::FilterPoles => block.filter.set_poles(if value < 0.5 { 2 } else { 4 }),
-                ParamId::FilterKeyTrack => block.filter.set_key_track(value),
-                ParamId::FilterEnvAmount => block.filter.set_env_amount(value),
-                ParamId::FilterVelocity => block.filter.set_env_velocity_amount(value),
-                ParamId::FilterAudioMod => block.filter.set_audio_mod(value),
-                ParamId::FilterEgDelay => block.set_filter_delay(value),
-                ParamId::FilterEgAttack => block.set_filter_attack(value),
-                ParamId::FilterEgDecay => block.set_filter_decay(value),
-                ParamId::FilterEgSustain => block.set_filter_sustain(value),
-                ParamId::FilterEgRelease => block.set_filter_release(value),
-                ParamId::VcaInitialLevel => block.set_vca_initial_level(value),
-                ParamId::AmpEnvAmount => block.set_amp_env_amount(value),
-                ParamId::AmpVelocity => block.set_amp_velocity_amount(value),
-                ParamId::AmpEgDelay => block.set_amp_delay(value),
-                ParamId::AmpEgAttack => block.set_amp_attack(value),
-                ParamId::AmpEgDecay => block.set_amp_decay(value),
-                ParamId::AmpEgSustain => block.set_amp_sustain(value),
-                ParamId::AmpEgRelease => block.set_amp_release(value),
-                ParamId::AuxEgDestination => {
-                    block.set_aux_destination(ModDestination::from_index(value as usize));
-                }
-                ParamId::AuxEgAmount => block.set_aux_amount(value),
-                ParamId::AuxEgVelocity => block.set_aux_velocity_amount(value),
-                ParamId::AuxEgDelay => block.set_aux_delay(value),
-                ParamId::AuxEgAttack => block.set_aux_attack(value),
-                ParamId::AuxEgDecay => block.set_aux_decay(value),
-                ParamId::AuxEgSustain => block.set_aux_sustain(value),
-                ParamId::AuxEgRelease => block.set_aux_release(value),
-                ParamId::AuxEgLoop => block.set_aux_repeat(value >= 0.5),
-                ParamId::PanSpread => block.set_pan_spread(value),
-                ParamId::PanModMode => {
-                    block.set_pan_mod_mode(PanModMode::from_param(value));
-                }
-                ParamId::Lfo1Rate => block.set_lfo_rate_hz(0, value),
-                ParamId::Lfo2Rate => block.set_lfo_rate_hz(1, value),
-                ParamId::Lfo3Rate => block.set_lfo_rate_hz(2, value),
-                ParamId::Lfo4Rate => block.set_lfo_rate_hz(3, value),
-                ParamId::Lfo1Depth => block.set_lfo_depth(0, value),
-                ParamId::Lfo2Depth => block.set_lfo_depth(1, value),
-                ParamId::Lfo3Depth => block.set_lfo_depth(2, value),
-                ParamId::Lfo4Depth => block.set_lfo_depth(3, value),
-                ParamId::Lfo1Waveform => {
-                    block.set_lfo_waveform(0, int_to_lfo_waveform(value as i32))
-                }
-                ParamId::Lfo2Waveform => {
-                    block.set_lfo_waveform(1, int_to_lfo_waveform(value as i32))
-                }
-                ParamId::Lfo3Waveform => {
-                    block.set_lfo_waveform(2, int_to_lfo_waveform(value as i32))
-                }
-                ParamId::Lfo4Waveform => {
-                    block.set_lfo_waveform(3, int_to_lfo_waveform(value as i32))
-                }
-                ParamId::Lfo1Destination => {
-                    block.set_lfo_destination(0, ModDestination::from_index(value as usize));
-                }
-                ParamId::Lfo2Destination => {
-                    block.set_lfo_destination(1, ModDestination::from_index(value as usize));
-                }
-                ParamId::Lfo3Destination => {
-                    block.set_lfo_destination(2, ModDestination::from_index(value as usize));
-                }
-                ParamId::Lfo4Destination => {
-                    block.set_lfo_destination(3, ModDestination::from_index(value as usize));
-                }
-                ParamId::Lfo1ClockSync => block.set_lfo_clock_sync(0, value >= 0.5),
-                ParamId::Lfo2ClockSync => block.set_lfo_clock_sync(1, value >= 0.5),
-                ParamId::Lfo3ClockSync => block.set_lfo_clock_sync(2, value >= 0.5),
-                ParamId::Lfo4ClockSync => block.set_lfo_clock_sync(3, value >= 0.5),
-                ParamId::Lfo1KeySync => block.set_lfo_key_sync(0, value >= 0.5),
-                ParamId::Lfo2KeySync => block.set_lfo_key_sync(1, value >= 0.5),
-                ParamId::Lfo3KeySync => block.set_lfo_key_sync(2, value >= 0.5),
-                ParamId::Lfo4KeySync => block.set_lfo_key_sync(3, value >= 0.5),
-                ParamId::MasterVolume => {}
-                ParamId::Osc1Glide | ParamId::Osc2Glide | ParamId::GlideTime => {}
-                _ => {}
-            }
+            block.set_param(id, value);
         }
     }
 }
@@ -471,27 +321,6 @@ impl<const PACKS: usize> Voices<PACKS> {
 fn midi_filter_cutoff_hz(value: f32) -> f32 {
     const CUTOFF_RANGE_OCTAVES: f32 = 9.813_781;
     MIN_CUTOFF_HZ * crate::math::exp2(CUTOFF_RANGE_OCTAVES * value)
-}
-
-fn int_to_waveform(value: i32) -> Waveform {
-    match value {
-        0 => Waveform::Saw,
-        1 => Waveform::SawTri,
-        2 => Waveform::Triangle,
-        3 => Waveform::Pulse,
-        _ => Waveform::Saw,
-    }
-}
-
-fn int_to_lfo_waveform(value: i32) -> LfoWaveform {
-    match value {
-        0 => LfoWaveform::Triangle,
-        1 => LfoWaveform::Saw,
-        2 => LfoWaveform::ReverseSaw,
-        3 => LfoWaveform::Square,
-        4 => LfoWaveform::SampleAndHold,
-        _ => LfoWaveform::Triangle,
-    }
 }
 
 impl<const PACKS: usize> Voices<PACKS> {
@@ -520,7 +349,6 @@ impl<const PACKS: usize> Voices<PACKS> {
         for block in &mut self.blocks {
             let block_voice_count = block.active_lane_count();
             if block_voice_count == 0 {
-                block.last_effect_modulation = EffectModulation::default();
                 continue;
             }
             block.age_active_lanes();
@@ -530,7 +358,7 @@ impl<const PACKS: usize> Voices<PACKS> {
             let (block_left, block_right) = block.next_block(self.performance);
             left += block_left;
             right += block_right;
-            effects.add(block.last_effect_modulation);
+            effects.add(block.take_effect_modulation());
         }
 
         self.last_effect_modulation = effects.scale(1.0 / PACKS as f32);
@@ -625,7 +453,7 @@ impl<const PACKS: usize> IndexMut<usize> for Voices<PACKS> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT};
+    use crate::{ModDestination, ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT};
 
     fn process_frames<const PACKS: usize>(voices: &mut Voices<PACKS>, frames: usize) {
         for _ in 0..frames {
@@ -636,7 +464,7 @@ mod tests {
     fn find_gated_note(voices: &Voices, note: u8) -> Option<(usize, usize)> {
         for (block_idx, block) in voices.iter().enumerate() {
             for lane in 0..LANES {
-                if block.gates[lane] && block.notes[lane] == note {
+                if block.test_gate(lane) && block.test_note(lane) == note {
                     return Some((block_idx, lane));
                 }
             }
@@ -701,12 +529,12 @@ mod tests {
 
         assert_eq!(voices.len(), VOICE_PACKS);
         let block = &voices[0];
-        assert_eq!(block.gates, [true, true, true, true]);
-        assert_eq!(block.notes, [60, 64, 67, 72]);
+        assert_eq!(block.test_gates(), [true, true, true, true]);
+        assert_eq!(block.test_notes(), [60, 64, 67, 72]);
 
         for lane in 0..LANES {
-            let expected = crate::midi_to_hz(block.notes[lane]);
-            let osc1_freq = block.oscillators.osc1_frequency_hz().to_array()[lane];
+            let expected = crate::midi_to_hz(block.test_notes()[lane]);
+            let osc1_freq = block.test_osc1_frequency_hz().to_array()[lane];
             assert!(
                 (osc1_freq - expected).abs() < 0.1,
                 "lane {lane} should keep its own pitch, got {} expected {expected}",
@@ -728,7 +556,7 @@ mod tests {
 
         let expected = crate::midi_to_hz(62);
         let block = &voices[0];
-        let osc1 = block.oscillators.osc1_frequency_hz().to_array()[0];
+        let osc1 = block.test_osc1_frequency_hz().to_array()[0];
         assert!(
             (osc1 - expected).abs() < 0.1,
             "osc 1 was {osc1}, expected {expected}"
@@ -754,7 +582,7 @@ mod tests {
         voices.next();
 
         let block = &voices[0];
-        let osc1 = block.oscillators.osc1_frequency_hz().to_array()[0];
+        let osc1 = block.test_osc1_frequency_hz().to_array()[0];
         let expected_osc1 = crate::midi_to_hz(68);
         assert!(
             (osc1 - expected_osc1).abs() < 0.1,
@@ -768,7 +596,7 @@ mod tests {
         for voice_index in 0..crate::REV2_VOICE_PAN_POSITIONS.len() {
             let (block, lane) = voices.voice_location(voice_index);
             assert_eq!(
-                voices[block].pan_positions[lane],
+                voices[block].test_pan_positions()[lane],
                 crate::REV2_VOICE_PAN_POSITIONS[voice_index]
             );
         }
@@ -777,11 +605,11 @@ mod tests {
     #[test]
     fn pan_pattern_scales_with_configured_voice_count() {
         let four_voices = Voices::<1>::new(44_100.0);
-        assert_eq!(four_voices[0].pan_positions, [1.0, -1.0, 0.5, -0.5]);
+        assert_eq!(four_voices[0].test_pan_positions(), [1.0, -1.0, 0.5, -0.5]);
 
         let eight_voices = Voices::<2>::new(44_100.0);
-        assert_eq!(eight_voices[0].pan_positions, [1.0, -1.0, 0.75, -0.75]);
-        assert_eq!(eight_voices[1].pan_positions, [0.5, -0.5, 0.25, -0.25]);
+        assert_eq!(eight_voices[0].test_pan_positions(), [1.0, -1.0, 0.75, -0.75]);
+        assert_eq!(eight_voices[1].test_pan_positions(), [0.5, -0.5, 0.25, -0.25]);
     }
 
     #[test]
@@ -796,7 +624,7 @@ mod tests {
             velocity: 1.0,
         });
         process_frames(&mut voices, 64);
-        let before_second_note = voices[0].last_lfo_outputs[0].to_array()[0];
+        let before_second_note = voices[0].test_lfo_output(0);
         assert!(
             before_second_note.abs() > 0.01,
             "LFO should have advanced before the second note"
@@ -807,7 +635,7 @@ mod tests {
             velocity: 1.0,
         });
         process_frames(&mut voices, 1);
-        let after_second_note = voices[0].last_lfo_outputs[0].to_array()[0];
+        let after_second_note = voices[0].test_lfo_output(0);
         assert!(
             after_second_note.abs() > 0.01,
             "key sync should not reset when another note is already held"
@@ -819,7 +647,7 @@ mod tests {
             velocity: 1.0,
         });
         process_frames(&mut voices, 1);
-        let after_new_first_note = voices[0].last_lfo_outputs[0].to_array()[0];
+        let after_new_first_note = voices[0].test_lfo_output(0);
         assert!(
             after_new_first_note.abs() < 1.0e-6,
             "key sync should reset when a new first held note starts, got {after_new_first_note}"
@@ -859,7 +687,7 @@ mod tests {
             Some(76),
             "stolen voice should reserve its lane for note 76"
         );
-        assert_eq!(voices[0].notes[0], 60, "old DSP state should fade first");
+        assert_eq!(voices[0].test_note(0), 60, "old DSP state should fade first");
         assert!(voices[0].has_pending_note(0));
     }
 
@@ -884,17 +712,17 @@ mod tests {
             velocity: 1.0,
         });
         assert!(voices[0].has_pending_note(0));
-        assert_eq!(voices[0].notes[0], 60);
-        assert!(!voices[0].gates[0]);
+        assert_eq!(voices[0].test_note(0), 60);
+        assert!(!voices[0].test_gate(0));
 
         process_frames(&mut voices, 221);
         assert!(voices[0].has_pending_note(0));
-        assert_eq!(voices[0].notes[0], 60);
+        assert_eq!(voices[0].test_note(0), 60);
 
         process_frames(&mut voices, 1);
         assert!(!voices[0].has_pending_note(0));
-        assert_eq!(voices[0].notes[0], 64);
-        assert!(voices[0].gates[0]);
+        assert_eq!(voices[0].test_note(0), 64);
+        assert!(voices[0].test_gate(0));
     }
 
     #[test]
@@ -918,7 +746,7 @@ mod tests {
 
         assert!(!voices.active_notes().contains(&64));
         assert!(!voices[0].has_pending_note(0));
-        assert_ne!(voices[0].notes[0], 64);
+        assert_ne!(voices[0].test_note(0), 64);
     }
 
     #[test]
@@ -975,8 +803,8 @@ mod tests {
             });
         }
 
-        assert_eq!(voices[0].gates, [true, true, true, true]);
-        assert!(voices[1].gates.iter().any(|gate| *gate));
+        assert_eq!(voices[0].test_gates(), [true, true, true, true]);
+        assert!(voices[1].test_gates().iter().any(|gate| *gate));
         assert_eq!(find_gated_note(&voices, 76), Some((1, 0)));
     }
 
@@ -1027,8 +855,8 @@ mod tests {
 
         let expected_cutoff = (MIN_CUTOFF_HZ * MAX_CUTOFF_HZ).sqrt();
         for block in &voices.blocks {
-            assert!((block.filter.cutoff() - expected_cutoff).abs() < 0.001);
-            assert_eq!(block.filter.resonance(), 0.75);
+            assert!((block.test_filter_cutoff() - expected_cutoff).abs() < 0.001);
+            assert_eq!(block.test_filter_resonance(), 0.75);
         }
     }
 
@@ -1049,7 +877,7 @@ mod tests {
         });
 
         for block in &voices.blocks {
-            let slot = block.mod_matrix_slots[0];
+            let slot = block.test_mod_matrix_slot(0);
             assert!(slot.enabled);
             assert_eq!(slot.source, ModSource::Lfo1);
             assert_eq!(slot.destination, ModDestination::FilterCutoff);
@@ -1073,7 +901,7 @@ mod tests {
 
         voices.handle_control(ControlMessage::SustainPedal { pressed: false });
 
-        assert!(!voices[0].gates[0]);
+        assert!(!voices[0].test_gate(0));
         assert!(!voices.sustained_voices[0][0]);
     }
 
@@ -1134,13 +962,13 @@ mod tests {
             velocity: 1.0,
         });
 
-        let pan_before = voices[0].pan_positions[0];
+        let pan_before = voices[0].test_pan_positions()[0];
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 0.8,
         });
 
-        assert_eq!(voices[0].pan_positions[0], pan_before);
+        assert_eq!(voices[0].test_pan_positions()[0], pan_before);
     }
 
     #[test]

@@ -61,7 +61,7 @@ fn main() -> ! {
     });
     run_scenario(&mut sdram, "U1-001-four-notes-flat-osc1-shape", |engine| {
         let mut patch = u1_001_patch();
-        patch.osc1.shape = 0.0;
+        patch.osc1.shape_mod = 0.0;
         patch.lfos[3].depth = 0.0;
         patch.lfos[3].destination = ModDestination::Off;
         engine.apply_patch(&patch);
@@ -92,7 +92,7 @@ fn main() -> ! {
     });
     run_scenario(&mut sdram, "four-note-osc1-sawtri", |engine| {
         configure_single_oscillator_waveform(engine, Waveform::SawTri);
-        engine.set_param(ParamId::Osc1Shape, 0.5);
+        engine.set_param(ParamId::Osc1ShapeMod, 0.5);
     });
     run_scenario(&mut sdram, "four-note-osc1-pulse-square", |engine| {
         configure_single_oscillator_pulse(engine, 0.0);
@@ -114,7 +114,7 @@ fn main() -> ! {
         engine.set_param(ParamId::Lfo1Depth, 1.0);
         engine.set_param(
             ParamId::Lfo1Destination,
-            ModDestination::Osc1Shape.index() as f32,
+            ModDestination::Osc1ShapeMod.index() as f32,
         );
     });
     run_scenario(&mut sdram, "four-note-osc1-pulse-dc-shape", |engine| {
@@ -123,7 +123,7 @@ fn main() -> ! {
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::Dc,
-            destination: ModDestination::Osc1Shape,
+            destination: ModDestination::Osc1ShapeMod,
             amount: 0.49,
         });
     });
@@ -135,7 +135,7 @@ fn main() -> ! {
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::Lfo1,
-            destination: ModDestination::Osc1Shape,
+            destination: ModDestination::Osc1ShapeMod,
             amount: 0.49,
         });
     });
@@ -296,7 +296,7 @@ fn u1_001_patch() -> Patch {
     patch.osc1.enabled = true;
     patch.osc1.frequency = 24.0;
     patch.osc1.fine_tune = -2.0;
-    patch.osc1.shape = 0.505_050_5;
+    patch.osc1.shape_mod = 0.505_050_5;
     patch.osc1.level = 1.0;
     patch.osc1.note_reset = false;
     patch.osc1.keyboard_on = true;
@@ -306,7 +306,7 @@ fn u1_001_patch() -> Patch {
     patch.osc2.enabled = true;
     patch.osc2.frequency = 24.0;
     patch.osc2.fine_tune = 2.0;
-    patch.osc2.shape = 0.434_343_43;
+    patch.osc2.shape_mod = 0.434_343_43;
     patch.osc2.level = 1.0;
     patch.osc2.note_reset = false;
     patch.osc2.keyboard_on = true;
@@ -355,7 +355,7 @@ fn u1_001_patch() -> Patch {
         (2.538_176, 0.0, ModDestination::Off),
         (0.023_521_572, 0.007_874_016, ModDestination::FxMix),
         (0.261_238_8, 0.409_448_83, ModDestination::SubOscLevel),
-        (0.319_277_8, 0.299_212_6, ModDestination::Osc1Shape),
+        (0.319_277_8, 0.299_212_6, ModDestination::Osc1ShapeMod),
     ]
     .into_iter()
     .enumerate()
@@ -377,7 +377,7 @@ fn u1_001_patch() -> Patch {
     let route = &mut patch.mod_matrix.free_slots[1];
     route.enabled = true;
     route.source = ModSource::Lfo2;
-    route.destination = ModDestination::Osc2Shape;
+    route.destination = ModDestination::Osc2ShapeMod;
     route.amount = 0.0;
 
     let route = &mut patch.mod_matrix.free_slots[7];
@@ -461,7 +461,7 @@ fn configure_single_oscillator_waveform(engine: &mut HardwareSynth, waveform: Wa
     configure_four_notes(engine);
     engine.set_param(ParamId::Osc1Enabled, 1.0);
     engine.set_param(ParamId::Osc1Waveform, waveform as u8 as f32);
-    engine.set_param(ParamId::Osc1Shape, 0.0);
+    engine.set_param(ParamId::Osc1ShapeMod, 0.0);
     engine.set_param(ParamId::Osc2Enabled, 0.0);
     engine.set_param(ParamId::OscMix, 0.0);
     engine.set_param(ParamId::SubOscLevel, 0.0);
@@ -472,7 +472,7 @@ fn configure_single_oscillator_waveform(engine: &mut HardwareSynth, waveform: Wa
 
 fn configure_single_oscillator_pulse(engine: &mut HardwareSynth, shape: f32) {
     configure_single_oscillator_waveform(engine, Waveform::Pulse);
-    engine.set_param(ParamId::Osc1Shape, shape);
+    engine.set_param(ParamId::Osc1ShapeMod, shape);
 }
 
 fn configure_self_oscillation(engine: &mut HardwareSynth, oversampling: FilterOversampling) {
@@ -507,7 +507,7 @@ fn configure_dual_oscillator(engine: &mut HardwareSynth) {
 
 fn configure_pwm(engine: &mut HardwareSynth) {
     configure_single_oscillator_pulse(engine, 0.5);
-    configure_lfo_route(engine, ModRoute::Free(0), ModDestination::Osc1Shape, 0.49);
+    configure_lfo_route(engine, ModRoute::Free(0), ModDestination::Osc1ShapeMod, 0.49);
 }
 
 fn configure_cutoff_matrix_lfo(engine: &mut HardwareSynth) {
@@ -565,8 +565,8 @@ fn configure_eight_free_routes(engine: &mut HardwareSynth) {
         ModSource::Dc,
     ];
     let destinations = [
-        ModDestination::Osc1Shape,
-        ModDestination::Osc2Shape,
+        ModDestination::Osc1ShapeMod,
+        ModDestination::Osc2ShapeMod,
         ModDestination::FilterCutoff,
         ModDestination::FilterResonance,
         ModDestination::OscMix,
@@ -603,7 +603,7 @@ fn configure_route_saturation(engine: &mut HardwareSynth) {
 
     for (source, destination) in [
         (DedicatedModSource::ModWheel, ModDestination::Vca),
-        (DedicatedModSource::Pressure, ModDestination::Osc1Level),
+        (DedicatedModSource::Pressure, ModDestination::OscMix),
         (DedicatedModSource::Breath, ModDestination::NoiseLevel),
         (DedicatedModSource::Velocity, ModDestination::Pan),
         (DedicatedModSource::Footswitch, ModDestination::FxMix),

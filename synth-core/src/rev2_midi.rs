@@ -1,10 +1,10 @@
 //! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
 
+use crate::patch::decode_patch_name;
 use crate::{
     DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModRoute, ModSource,
     ModulationParam, ParamId, Patch,
 };
-use crate::patch::decode_patch_name;
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
 
@@ -284,7 +284,7 @@ impl Rev2MidiEncoder {
             }
             ParamId::Osc1Frequency => (0, quantize(value, 0.0, 120.0, 120)),
             ParamId::Osc1FineTune => (1, quantize(value, -50.0, 50.0, 100)),
-            ParamId::Osc1Shape => (102, quantize(value, 0.0, 1.0, 99)),
+            ParamId::Osc1ShapeMod => (102, quantize(value, 0.0, 1.0, 99)),
             ParamId::Osc2Waveform => {
                 self.oscillator_waveforms[1] = value as u8;
                 (7, u16::from(self.oscillator_shape(1)))
@@ -295,7 +295,7 @@ impl Rev2MidiEncoder {
             }
             ParamId::Osc2Frequency => (5, quantize(value, 0.0, 120.0, 120)),
             ParamId::Osc2FineTune => (6, quantize(value, -50.0, 50.0, 100)),
-            ParamId::Osc2Shape => (103, quantize(value, 0.0, 1.0, 99)),
+            ParamId::Osc2ShapeMod => (103, quantize(value, 0.0, 1.0, 99)),
             ParamId::OscMix => (13, quantize(value, 0.0, 1.0, 127)),
             ParamId::SubOscLevel => (110, quantize(value, 0.0, 1.0, 127)),
             ParamId::NoiseLevel => (14, quantize(value, 0.0, 1.0, 127)),
@@ -303,6 +303,18 @@ impl Rev2MidiEncoder {
             ParamId::OscSlop | ParamId::AnalogDrift => (12, quantize(value, 0.0, 1.0, 127)),
             ParamId::Osc1NoteReset => (99, bool_raw(value)),
             ParamId::Osc2NoteReset => (104, bool_raw(value)),
+            ParamId::Osc1KeyboardOn => (4, bool_raw(value)),
+            ParamId::Osc2KeyboardOn => (9, bool_raw(value)),
+            ParamId::Osc1Glide => (3, quantize(value, 0.0, 1.0, 127)),
+            ParamId::Osc2Glide => (8, quantize(value, 0.0, 1.0, 127)),
+            ParamId::GlideMode => (11, quantize(value, 0.0, 3.0, 3)),
+            ParamId::GlideEnabled => (111, bool_raw(value)),
+            ParamId::KeyMode => (170, quantize(value, 0.0, 5.0, 5)),
+            ParamId::UnisonEnabled => (168, bool_raw(value)),
+            ParamId::UnisonMode => (169, quantize(value, 0.0, 16.0, 16)),
+            ParamId::UnisonDetune => (167, quantize(value, 0.0, 1.0, 16)),
+            ParamId::Bpm => (179, quantize(value, 30.0, 250.0, 220)),
+            ParamId::ClockDivide => (175, quantize(value, 0.0, 12.0, 12)),
             ParamId::FilterCutoff => (15, quantize_log(value, 20.0, 20_000.0, 164)),
             ParamId::FilterResonance => (16, quantize(value, 0.0, 1.0, 127)),
             ParamId::FilterPoles => (19, bool_raw(value)),
@@ -375,6 +387,7 @@ impl Rev2MidiEncoder {
             ParamId::EffectParam1 => (156, quantize(value, 0.0, 1.0, 255)),
             ParamId::EffectParam2 => (157, quantize(value, 0.0, 1.0, 127)),
             ParamId::MasterVolume => (29, quantize(value, 0.0, 1.0, 127)),
+            ParamId::PitchBendRange => (100, quantize(value, 0.0, 12.0, 12)),
             _ => return false,
         };
         emit_nrpn(channel, mapped.0, mapped.1, &mut emit);
@@ -409,7 +422,7 @@ impl Rev2MidiEncoder {
                 emit_nrpn(
                     channel,
                     base + 2,
-                    destination.index().min(52) as u16,
+                    destination.index() as u16,
                     &mut emit,
                 );
             }
@@ -426,7 +439,7 @@ impl Rev2MidiEncoder {
                     channel,
                     base + 1,
                     if enabled {
-                        destination.index().min(52) as u16
+                        destination.index() as u16
                     } else {
                         0
                     },
@@ -521,6 +534,7 @@ fn program_field(number: u16, layer_offset: usize) -> Option<ProgramField> {
         }
         97 => 31,
         99 => 12,
+        100 => 20,
         102 => 6,
         103 => 7,
         104 => 13,
@@ -689,12 +703,15 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
             ParamId::EffectType,
             crate::math::round(ranged(raw, 127, 0.0, 12.0)),
         ),
+        5 => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
         7 | 37 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
         8 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
         9 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
         10 => emit_param(emit, ParamId::PanModMode, f32::from(raw >= 64)),
         12 => emit_param(emit, ParamId::EffectParam1, unit(raw, 127)),
         13 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
+        14 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
+        15 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
         16 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw >= 64)),
         17 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
         20 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
@@ -704,6 +721,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
             true,
             crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
         ),
+        23 => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
         24 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
         25 => emit_param(emit, ParamId::Osc2FineTune, ranged(raw, 127, -50.0, 50.0)),
         26 => emit_osc_shape(
@@ -711,10 +729,12 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
             false,
             crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
         ),
+        27 => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
         28 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
         29 => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
-        30 => emit_param(emit, ParamId::Osc1Shape, unit(raw, 127)),
-        31 => emit_param(emit, ParamId::Osc2Shape, unit(raw, 127)),
+        30 => emit_param(emit, ParamId::Osc1ShapeMod, unit(raw, 127)),
+        31 => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 127)),
+        65 => emit_param(emit, ParamId::GlideEnabled, f32::from(raw >= 64)),
         71 | 103 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
         74 | 102 => emit_param(
             emit,
@@ -765,10 +785,15 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         0 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
         1 => emit_param(emit, ParamId::Osc1FineTune, f32::from(raw.min(100)) - 50.0),
         2 => emit_osc_shape(emit, true, raw.min(4)),
+        3 => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
+        4 => emit_param(emit, ParamId::Osc1KeyboardOn, f32::from(raw != 0)),
         5 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
         6 => emit_param(emit, ParamId::Osc2FineTune, f32::from(raw.min(100)) - 50.0),
         7 => emit_osc_shape(emit, false, raw.min(4)),
+        8 => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
+        9 => emit_param(emit, ParamId::Osc2KeyboardOn, f32::from(raw != 0)),
         10 => emit_param(emit, ParamId::HardSync, f32::from(raw != 0)),
+        11 => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
         12 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
         13 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
         14 => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
@@ -802,7 +827,11 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         35 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
         36 => emit_param(emit, ParamId::AmpEgRelease, ranged(raw, 127, 0.0005, 10.0)),
         37..=56 => map_lfo_nrpn(number, raw, emit),
-        57 => emit_param(emit, ParamId::AuxEgDestination, f32::from(raw.min(52))),
+        57 => emit_param(
+            emit,
+            ParamId::AuxEgDestination,
+            f32::from(ModDestination::from_index(usize::from(raw.min(52))).index() as u16),
+        ),
         58 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 254)),
         59 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
         60 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
@@ -813,14 +842,16 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         65..=88 => map_free_mod_nrpn(number, raw, emit),
         97 => emit_param(emit, ParamId::AuxEgLoop, f32::from(raw != 0)),
         99 => emit_param(emit, ParamId::Osc1NoteReset, f32::from(raw != 0)),
-        102 => emit_param(emit, ParamId::Osc1Shape, unit(raw, 99)),
-        103 => emit_param(emit, ParamId::Osc2Shape, unit(raw, 99)),
+        100 => emit_param(emit, ParamId::PitchBendRange, f32::from(raw.min(12))),
+        102 => emit_param(emit, ParamId::Osc1ShapeMod, unit(raw, 99)),
+        103 => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 99)),
         104 => emit_param(emit, ParamId::Osc2NoteReset, f32::from(raw != 0)),
         105 => emit_param(emit, ParamId::Lfo1KeySync, f32::from(raw != 0)),
         106 => emit_param(emit, ParamId::Lfo2KeySync, f32::from(raw != 0)),
         107 => emit_param(emit, ParamId::Lfo3KeySync, f32::from(raw != 0)),
         108 => emit_param(emit, ParamId::Lfo4KeySync, f32::from(raw != 0)),
         110 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
+        111 => emit_param(emit, ParamId::GlideEnabled, f32::from(raw != 0)),
         116..=125 => map_dedicated_mod_nrpn(number, raw, emit),
         153 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw != 0)),
         154 => emit_param(emit, ParamId::EffectType, f32::from(raw.min(12))),
@@ -828,6 +859,12 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         156 => emit_param(emit, ParamId::EffectParam1, unit(raw, 255)),
         157 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
         158 => emit_param(emit, ParamId::EffectClockSync, f32::from(raw != 0)),
+        167 => emit_param(emit, ParamId::UnisonDetune, unit(raw, 16)),
+        168 => emit_param(emit, ParamId::UnisonEnabled, f32::from(raw != 0)),
+        169 => emit_param(emit, ParamId::UnisonMode, f32::from(raw.min(16))),
+        170 => emit_param(emit, ParamId::KeyMode, f32::from(raw.min(5))),
+        175 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
+        179 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
         _ => {}
     }
 }
@@ -869,7 +906,7 @@ fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         0 => logarithmic(raw, 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
         1 => f32::from(raw.min(4)),
         2 => unit(raw, 127),
-        3 => f32::from(raw.min(52)),
+        3 => f32::from(ModDestination::from_index(usize::from(raw.min(52))).index() as u16),
         _ => f32::from(raw != 0),
     };
     emit_param(emit, params[lfo][field as usize], value);
@@ -911,6 +948,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         1 | 6 => 100,
         2 | 7 | 38 | 43 | 48 | 53 => 4,
         10 | 19 | 41 | 46 | 51 | 56 | 97 | 99 | 104..=108 | 153 | 158 => 1,
+        11 | 111 | 168 | 169 | 170 | 175 => return None,
         15 => 164,
         20 | 58 | 66 | 69 | 72 | 75 | 78 | 81 | 84 | 87 | 116 | 118 | 120 | 122 | 124 => 254,
         37 | 42 | 47 | 52 => 150,
@@ -918,7 +956,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         | 125 => 52,
         65 | 68 | 71 | 74 | 77 | 80 | 83 | 86 => 22,
         102 | 103 => 99,
-        154 => 12,
+         100 | 154 => 12,
         156 => 255,
         12..=14 | 16..=18 | 21..=26 | 28..=36 | 39 | 44 | 49 | 54 | 59..=64 | 110 | 155 | 157 => {
             127
@@ -1092,6 +1130,7 @@ mod tests {
         source.osc1.enabled = true;
         source.osc2.waveform = 2;
         source.osc2.enabled = true;
+        source.osc1.shape_mod = 0.42;
         source.filter.cutoff = 1_234.0;
         source.filter.env_amount = -0.5;
         source.lfos[2].destination = ModDestination::FilterCutoff;
@@ -1101,7 +1140,7 @@ mod tests {
         source.mod_matrix.free_slots[0] = crate::ModMatrixSlot {
             enabled: true,
             source: ModSource::Lfo1,
-            destination: ModDestination::Osc1Shape,
+            destination: ModDestination::Osc1ShapeMod,
             amount: -0.25,
         };
 
@@ -1116,6 +1155,7 @@ mod tests {
         assert!(decoded.osc1.enabled);
         assert_eq!(decoded.osc2.waveform, 2);
         assert!(decoded.osc2.enabled);
+        assert!((decoded.osc1.shape_mod - source.osc1.shape_mod).abs() < 0.02);
         assert!((decoded.filter.cutoff - source.filter.cutoff).abs() < 50.0);
         assert!((decoded.filter.env_amount - source.filter.env_amount).abs() < 0.01);
         assert_eq!(decoded.lfos[2].destination, ModDestination::FilterCutoff);
@@ -1125,7 +1165,7 @@ mod tests {
         let slot = decoded.mod_matrix.free_slots[0];
         assert!(slot.enabled);
         assert_eq!(slot.source, ModSource::Lfo1);
-        assert_eq!(slot.destination, ModDestination::Osc1Shape);
+        assert_eq!(slot.destination, ModDestination::Osc1ShapeMod);
         assert!((slot.amount - source.mod_matrix.free_slots[0].amount).abs() < 0.01);
     }
 
@@ -1213,5 +1253,86 @@ mod tests {
             Rev2MidiDecoder::program_data(&message[..message.len() - 1]),
             Err(Rev2SysexError::InvalidLength)
         ));
+    }
+
+    const FACTORY_SYSEX: &[u8] =
+        include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
+
+    #[test]
+    fn factory_program_decodes_mod_destination_indices() {
+        let message = &FACTORY_SYSEX[..REV2_PROGRAM_DATA_SYSEX_LEN];
+        let decoded = Rev2MidiDecoder::program_data(message).unwrap();
+        assert_eq!(
+            decoded.patch.lfos[2].destination,
+            ModDestination::Osc1ShapeMod
+        );
+
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        unpack_program_data(&message[6..6 + REV2_PROGRAM_PACKED_LEN], &mut raw);
+        assert_eq!(raw[67] & 0x7f, 7);
+        assert_eq!(raw[93] & 0x7f, 3);
+    }
+
+    #[test]
+    fn rev2_oscillator_shape_uses_rev2_waveform_order() {
+        for (raw, expected_waveform) in [(2, 1.0), (3, 2.0), (4, 3.0)] {
+            let mut waveform = None;
+            emit_osc_shape(
+                &mut |update| {
+                    if let Rev2MidiUpdate::Param(ParamId::Osc1Waveform, value) = update {
+                        waveform = Some(value);
+                    }
+                },
+                true,
+                raw,
+            );
+            assert_eq!(waveform, Some(expected_waveform));
+        }
+    }
+
+    #[test]
+    fn shape_mod_nrpn_round_trips() {
+        let mut encoder = Rev2MidiEncoder::default();
+        let mut messages = [[0_u8; 3]; 4];
+        let mut len = 0;
+        encoder.param(0, ParamId::Osc1ShapeMod, 0.5, |message| {
+            messages[len] = message;
+            len += 1;
+        });
+        assert_eq!(len, 4);
+        let number = u16::from(messages[0][2]) * 128 + u16::from(messages[1][2]);
+        let value = u16::from(messages[2][2]) * 128 + u16::from(messages[3][2]);
+        assert_eq!(number, 102);
+        assert_eq!(value, 50);
+
+        let mut decoded = None;
+        map_nrpn(number, value, &mut |update| decoded = Some(update));
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(ParamId::Osc1ShapeMod, 50.0 / 99.0))
+        );
+    }
+
+    #[test]
+    fn shape_mod_cc_round_trips() {
+        let mut decoded = None;
+        map_cc(30, 64, &mut |update| decoded = Some(update));
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(ParamId::Osc1ShapeMod, 64.0 / 127.0))
+        );
+    }
+
+    #[test]
+    fn mod_destination_matches_cc_chart_indices() {
+        assert_eq!(
+            ModDestination::from_index(4),
+            ModDestination::OscMix
+        );
+        assert_eq!(
+            ModDestination::from_index(7),
+            ModDestination::Osc1ShapeMod
+        );
+        assert_eq!(ModDestination::Osc1ShapeMod.index(), 7);
     }
 }

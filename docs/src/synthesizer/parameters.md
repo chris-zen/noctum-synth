@@ -9,7 +9,7 @@ the Rust parameter identifiers used by hosts.
 | --- | --- |
 | Waveform | Choose saw, saw/triangle, triangle, or pulse as the starting harmonic content. |
 | Frequency and fine tune | Set interval and detuning between the two main oscillators. |
-| Shape | Vary the selected waveform's timbre. |
+| Shape Mod | Vary pulse width / waveshape depth. |
 | Level and oscillator mix | Balance the two main oscillators. |
 | Sub oscillator and noise | Add bass weight or noisy texture. |
 | Hard sync | Reset oscillator 2 from oscillator 1 for harmonically intense sweep sounds. |

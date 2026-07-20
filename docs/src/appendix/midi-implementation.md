@@ -165,6 +165,7 @@ value shown in the Max column. Values beyond this maximum are clamped.
 | 13 | Oscillator Mix | 0–127 → 0%–100% | 127 |
 | 14 | Noise Level | 0–127 → 0%–100% | 127 |
 | 99 | Oscillator 1 Note Reset | 0=off, 1=on | 1 |
+| 100 | Pitch Bend Range | 0–12 semitones | 12 |
 | 102 | Oscillator 1 Shape Mod | 0–99 → 0%–100% | 99 |
 | 103 | Oscillator 2 Shape Mod | 0–99 → 0%–100% | 99 |
 | 104 | Oscillator 2 Note Reset | 0=off, 1=on | 1 |
@@ -378,13 +379,13 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 25 | Filter Audio Mod | 0–127 |
 | 26 | Filter Poles | 0 = 2-pole, 1 = 4-pole |
 | 27 | VCA Level | 0–127 |
-| 28 | Program Volume | 0–127 |
+| 28 | Program Volume (low 7 bits); bit 7 is MSB for Aux Envelope Amount | 0–127 |
 | 29 | Pan Spread | 0–127 |
-| 30 | (MSB for Filter Env Amount) | — |
+| 30 | Aux Envelope Destination (low 7 bits); bit 7 is MSB for Filter Envelope Amount | 0–52 destination index |
 | 31 | Aux Envelope Loop | 0 = off, 1 = on |
-| 32 | Filter Envelope Amount | 0–254 (−127 to +127) |
+| 32 | Filter Envelope Amount (low 7 bits; MSB in byte 30) | 0–254 (−127 to +127) |
 | 33 | Amp Envelope Amount | 0–127 |
-| 34 | Aux Envelope Amount | 0–254 (−127 to +127) |
+| 34 | Aux Envelope Amount (low 7 bits; MSB in byte 28) | 0–254 (−127 to +127) |
 | 35 | Filter Envelope Velocity | 0–127 |
 | 36 | Amp Envelope Velocity | 0–127 |
 | 37 | Aux Envelope Velocity | 0–127 |
@@ -485,10 +486,34 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 704–767 | Gated Seq details | 4 tracks × 16 steps |
 | 768–1023 | Poly Seq Track details | 6 tracks × 4 voices |
 
-**Note:** Bipolar values (max 254) and values exceeding 127 use a split-MSB
-scheme where the value's high bit is stored in another byte. Byte 27 (VCA
-Level) is decoded directly because it has no NRPN mapping. Offsets above 255
-are sequencer data and are not decoded by the synth.
+**Split-MSB sidebands:** Bipolar values (max 254) and other values above 127
+store their low 7 bits in one byte and bit 8 in bit 7 of a *different* byte
+(that host byte's own value occupies bits 0–6). Some parameters use bit 7 of
+their own byte instead. Byte 27 (VCA Level) is decoded directly because it has
+no NRPN mapping. Offsets above 255 are sequencer data and are not decoded by
+the synth.
+
+| Value byte | Parameter | MSB stored in byte | Host parameter at MSB byte |
+|---|---|---|---|
+| 32 | Filter Envelope Amount | 30 | Aux Envelope Destination |
+| 34 | Aux Envelope Amount | 28 | Program Volume |
+| 85 | Mod Slot 1 Amount | 89 | Mod Slot 5 Amount |
+| 86 | Mod Slot 2 Amount | 88 | Mod Slot 4 Amount |
+| 87 | Mod Slot 3 Amount | 87 | Mod Slot 3 Amount (same byte) |
+| 88 | Mod Slot 4 Amount | 86 | Mod Slot 2 Amount |
+| 89 | Mod Slot 5 Amount | 85 | Mod Slot 1 Amount |
+| 90 | Mod Slot 6 Amount | 84 | Mod Slot 8 Source |
+| 91 | Mod Slot 7 Amount | 97 | Mod Slot 5 Destination |
+| 92 | Mod Slot 8 Amount | 96 | Mod Slot 4 Destination |
+| 101 | Mod Wheel Amount | 101 | Mod Wheel Amount (same byte) |
+| 103 | Pressure Amount | 99 | Mod Slot 7 Destination |
+| 105 | Breath Amount | 111 | Gated Sequencer 1 Destination |
+| 107 | Velocity Amount | 109 | MIDI Foot Amount |
+| 109 | MIDI Foot Amount | 107 | Velocity Amount |
+
+Mod slot amounts 1–5 and dedicated Velocity/Foot amounts form reciprocal pairs
+(each byte's bit 7 holds the other's MSB). Mod slots 6–8 borrow bit 7 from a
+source or destination byte instead.
 
 ##### Layer B
 
@@ -529,9 +554,9 @@ Layer B (bytes 200–383). The synth decodes Layer A only. Layer B uses the same
 field layout at offset +200 (for example, Output Spread is byte 28 in Layer A
 and byte 228 in Layer B).
 
-Bipolar values (max 254) use the same split-MSB sideband scheme as Rev2. The
-decoder handles the documented MSB sidebands for filter cutoff, envelope amounts,
-LFO rates, and dedicated modulation amounts.
+Bipolar values (max 254) and other values above 127 use the same split-MSB
+sideband scheme as Rev2 (low 7 bits in one byte, bit 8 in bit 7 of another).
+The decoder handles all documented MSB sidebands listed below.
 
 #### Layer A (bytes 0–199)
 
@@ -551,13 +576,13 @@ LFO rates, and dedicated modulation amounts.
 | 11 | Glide Mode | 0 = fixed rate, 1 = fixed rate auto, 2 = fixed time, 3 = fixed time auto |
 | 12 | Oscillator Slop | 0–5 |
 | 13 | Oscillator 1–2 Mix | 0–127 |
-| 14 | Noise Level | 0–127 |
-| 15 | Filter Cutoff | 0–164 (logarithmic; 20 Hz – 20 kHz when decoded) |
+| 14 | Noise Level (low 7 bits); bit 7 is MSB for Filter Envelope Amount | 0–127 |
+| 15 | Filter Cutoff (low 7 bits; MSB in byte 19) | 0–164 (logarithmic; 20 Hz – 20 kHz when decoded) |
 | 16 | Filter Resonance | 0–127 |
 | 17 | Filter Keyboard Amount | 0–127 |
 | 18 | Filter Audio Modulation | 0–127 |
-| 19 | Filter Poles | 0 = 2-pole, 1 = 4-pole |
-| 20 | Filter Envelope Amount | 0–254 (−127 to +127) |
+| 19 | Filter Poles (low 7 bits); bit 7 is MSB for Filter Cutoff and Mod Wheel Amount | 0 = 2-pole, 1 = 4-pole |
+| 20 | Filter Envelope Amount (low 7 bits; MSB in byte 14) | 0–254 (−127 to +127) |
 | 21 | Filter Envelope Velocity | 0–127 |
 | 22 | Filter Envelope Delay | 0–127 (0–5 s when decoded) |
 | 23 | Filter Envelope Attack | 0–127 (0.5 ms – 5 s when decoded) |
@@ -574,59 +599,59 @@ LFO rates, and dedicated modulation amounts.
 | 34 | VCA Envelope Decay | 0–127 (0.5 ms – 5 s when decoded) |
 | 35 | VCA Envelope Sustain | 0–127 |
 | 36 | VCA Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
-| 37 | LFO 1 Frequency | 0–150 = unsynced rate, 151–166 = clock-synced divisions |
+| 37 | LFO 1 Frequency (low 7 bits; MSB in byte 39) | 0–150 = unsynced rate, 151–166 = clock-synced divisions |
 | 38 | LFO 1 Shape | 0 = triangle, 1 = reverse saw, 2 = saw, 3 = square, 4 = random |
-| 39 | LFO 1 Amount | 0–127 |
+| 39 | LFO 1 Amount (low 7 bits); bit 7 is MSB for LFO 1 Frequency | 0–127 |
 | 40 | LFO 1 Destination | 0–43 (modulation destination index) |
 | 41 | LFO 1 Key Sync | 0 = off, 1 = on |
-| 42 | LFO 2 Frequency | same as LFO 1 |
-| 43 | LFO 2 Shape | same as LFO 1 |
+| 42 | LFO 2 Frequency (low 7 bits; MSB in byte 48) | same as LFO 1 |
+| 43 | LFO 2 Shape (low 7 bits); bit 7 is MSB for LFO 3 Frequency | same as LFO 1 |
 | 44 | LFO 2 Amount | 0–127 |
 | 45 | LFO 2 Destination | 0–43 |
 | 46 | LFO 2 Key Sync | 0 = off, 1 = on |
-| 47 | LFO 3 Frequency | same as LFO 1 |
-| 48 | LFO 3 Shape | same as LFO 1 |
+| 47 | LFO 3 Frequency (low 7 bits; MSB in byte 43) | same as LFO 1 |
+| 48 | LFO 3 Shape (low 7 bits); bit 7 is MSB for LFO 2 Frequency | same as LFO 1 |
 | 49 | LFO 3 Amount | 0–127 |
 | 50 | LFO 3 Destination | 0–43 |
 | 51 | LFO 3 Key Sync | 0 = off, 1 = on |
-| 52 | LFO 4 Frequency | same as LFO 1 |
+| 52 | LFO 4 Frequency (low 7 bits; MSB in same byte); bit 7 is also MSB for Pressure Amount | same as LFO 1 |
 | 53 | LFO 4 Shape | same as LFO 1 |
 | 54 | LFO 4 Amount | 0–127 |
 | 55 | LFO 4 Destination | 0–43 |
 | 56 | LFO 4 Key Sync | 0 = off, 1 = on |
 | 57 | Envelope 3 Destination | 0–43 |
-| 58 | Envelope 3 Amount | 0–254 (−127 to +127) |
+| 58 | Envelope 3 Amount (low 7 bits; MSB in byte 60) | 0–254 (−127 to +127) |
 | 59 | Envelope 3 Velocity | 0–127 |
-| 60 | Envelope 3 Delay | 0–127 |
+| 60 | Envelope 3 Delay (low 7 bits); bit 7 is MSB for Envelope 3 Amount | 0–127 |
 | 61 | Envelope 3 Attack | 0–127 |
 | 62 | Envelope 3 Decay | 0–127 |
-| 63 | Envelope 3 Sustain | 0–127 |
+| 63 | Envelope 3 Sustain (low 7 bits); bit 7 is MSB for Mod 2 Amount | 0–127 |
 | 64 | Envelope 3 Release | 0–127 |
 | 65 | Mod 1 Source | 0–20 (modulation source index) |
 | 66 | Mod 1 Amount | 0–254 (−127 to +127) |
 | 67 | Mod 1 Destination | 0–43 |
 | 68 | Mod 2 Source | 0–20 |
-| 69 | Mod 2 Amount | 0–254 (−127 to +127) |
+| 69 | Mod 2 Amount (low 7 bits; MSB in byte 63) | 0–254 (−127 to +127) |
 | 70 | Mod 2 Destination | 0–43 |
-| 71 | Mod 3 Source | 0–20 |
-| 72 | Mod 3 Amount | 0–254 (−127 to +127) |
+| 71 | Mod 3 Source (low 7 bits); bit 7 is MSB for Mod 4 Amount | 0–20 |
+| 72 | Mod 3 Amount (low 7 bits; MSB in byte 74) | 0–254 (−127 to +127) |
 | 73 | Mod 3 Destination | 0–43 |
-| 74 | Mod 4 Source | 0–20 |
-| 75 | Mod 4 Amount | 0–254 (−127 to +127) |
+| 74 | Mod 4 Source (low 7 bits); bit 7 is MSB for Mod 3 Amount | 0–20 |
+| 75 | Mod 4 Amount (low 7 bits; MSB in byte 71) | 0–254 (−127 to +127) |
 | 76 | Mod 4 Destination | 0–43 |
 | 77 | Sequence 1 Destination | 0–43 |
 | 78 | Sequence 2 Destination | 0–43 |
 | 79 | Sequence 3 Destination | 0–43 |
 | 80 | Sequence 4 Destination | 0–43 |
-| 81 | Mod Wheel Amount | 0–254 (−127 to +127) |
+| 81 | Mod Wheel Amount (low 7 bits; MSB in byte 19) | 0–254 (−127 to +127) |
 | 82 | Mod Wheel Destination | 0–43 |
-| 83 | Pressure Amount | 0–254 (−127 to +127) |
+| 83 | Pressure Amount (low 7 bits; MSB in byte 52) | 0–254 (−127 to +127) |
 | 84 | Pressure Destination | 0–43 |
-| 85 | Breath Amount | 0–254 (−127 to +127) |
+| 85 | Breath Amount (low 7 bits; MSB in byte 89) | 0–254 (−127 to +127) |
 | 86 | Breath Destination | 0–43 |
-| 87 | Velocity Amount | 0–254 (−127 to +127) |
+| 87 | Velocity Amount (low 7 bits; MSB in same byte) | 0–254 (−127 to +127) |
 | 88 | Velocity Destination | 0–43 |
-| 89 | Foot Control Amount | 0–254 (−127 to +127) |
+| 89 | Foot Control Amount (low 7 bits; MSB in byte 85) | 0–254 (−127 to +127) |
 | 90 | Foot Control Destination | 0–43 |
 | 91 | BPM | 30–250 |
 | 92 | Clock Divide | 0 = half note, 1 = quarter, 2 = eighth, 3 = eighth half swing, 4 = eighth full swing, 5 = eighth triplets, 6 = sixteenth, 7 = sixteenth half swing, 8 = sixteenth full swing, 9 = sixteenth triplets, 10 = thirty-second, 11 = thirty-second triplets, 12 = sixty-fourth triplets |
@@ -647,6 +672,30 @@ LFO rates, and dedicated modulation amounts.
 | 152–167 | Sequence Track 3 Steps 1–16 | 0–125 = step value, 126 = reset, 127 = rest |
 | 168–183 | Sequence Track 4 Steps 1–16 | 0–125 = step value, 126 = reset, 127 = rest |
 | 184–199 | Program Name | 16 ASCII characters (bytes 32–127) |
+
+**Split-MSB sidebands (Prophet '08):**
+
+| Value byte | Parameter | MSB stored in byte | Host parameter at MSB byte |
+|---|---|---|---|
+| 15 | Filter Cutoff | 19 | Filter Poles |
+| 20 | Filter Envelope Amount | 14 | Noise Level |
+| 37 | LFO 1 Frequency | 39 | LFO 1 Amount |
+| 42 | LFO 2 Frequency | 48 | LFO 3 Shape |
+| 47 | LFO 3 Frequency | 43 | LFO 2 Shape |
+| 52 | LFO 4 Frequency | 52 | LFO 4 Frequency (same byte) |
+| 58 | Envelope 3 Amount | 60 | Envelope 3 Delay |
+| 69 | Mod 2 Amount | 63 | Envelope 3 Sustain |
+| 72 | Mod 3 Amount | 74 | Mod 4 Source |
+| 75 | Mod 4 Amount | 71 | Mod 3 Source |
+| 81 | Mod Wheel Amount | 19 | Filter Poles |
+| 83 | Pressure Amount | 52 | LFO 4 Frequency |
+| 85 | Breath Amount | 89 | Foot Control Amount |
+| 87 | Velocity Amount | 87 | Velocity Amount (same byte) |
+| 89 | Foot Control Amount | 85 | Breath Amount |
+
+Filter Poles (byte 19) and LFO 4 Frequency (byte 52) each host two MSB
+sidebands because their own values never use bit 7. Mod 3/4 source and
+Breath/Foot amount bytes form reciprocal pairs.
 
 The synth decodes voice parameters at offsets 0–36, 37–56 (LFOs), 57–64
 (auxiliary envelope), 65–76 (free modulation slots), and 81–90 (dedicated

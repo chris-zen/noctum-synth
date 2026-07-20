@@ -175,12 +175,10 @@ impl eframe::App for App {
         self.engine.view.drain_feedback();
         self.main_viewport.drive(ctx);
 
-        self.engine
-            .view
-            .drain_midi_ui_updates(|update| {
-                self.ui_state.apply_midi_update(update);
-                self.patch_mgr.mark_user_modified();
-            });
+        self.engine.view.drain_midi_ui_updates(|update| {
+            self.ui_state.apply_midi_update(update);
+            self.patch_mgr.mark_user_modified();
+        });
 
         let mut imports = Vec::new();
         self.engine
@@ -191,7 +189,11 @@ impl eframe::App for App {
             match self.patch_mgr.save_midi_program(&program) {
                 Ok(path) => {
                     saved_any = true;
-                    eprintln!("Imported {:?} program to {}", program.source(), path.display());
+                    eprintln!(
+                        "Imported {:?} program to {}",
+                        program.source(),
+                        path.display()
+                    );
                 }
                 Err(err) => eprintln!(
                     "Failed to import bank {} program {}: {err}",

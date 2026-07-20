@@ -1,6 +1,6 @@
 use crate::f32x4;
 
-use crate::LANES;
+use crate::{F32x4Ext, LANES};
 
 pub const MIN_TIME_SECONDS: f32 = 0.0005;
 pub const MAX_TIME_SECONDS: f32 = 30.0;
@@ -215,7 +215,7 @@ impl DadsrEnvelope {
             self.delay_samples_remaining[lane] = 0;
             let current = self.value.to_array()[lane].max(0.0);
             if current <= IDLE_THRESHOLD {
-                self.set_lane_value(lane, 0.0);
+                self.value = self.value.replace_lane(lane, 0.0);
                 self.stage[lane] = EnvStage::Idle;
             } else {
                 self.stage[lane] = EnvStage::Release;
@@ -260,7 +260,7 @@ impl DadsrEnvelope {
         self.shutdown_start[lane] = 0.0;
         self.shutdown_samples_remaining[lane] = 0;
         self.shutdown_total_samples[lane] = 0;
-        self.set_lane_value(lane, 0.0);
+        self.value = self.value.replace_lane(lane, 0.0);
         self.stage[lane] = EnvStage::Idle;
     }
 
@@ -274,13 +274,6 @@ impl DadsrEnvelope {
                 crate::math::round(self.delay_seconds * self.sample_rate).max(1.0) as u32;
             self.stage[lane] = EnvStage::Delay;
         }
-    }
-
-    /// Writes one lane of the SIMD envelope value without changing the other lanes.
-    fn set_lane_value(&mut self, lane: usize, value: f32) {
-        let mut values = self.value.to_array();
-        values[lane] = value;
-        self.value = f32x4::new(values);
     }
 }
 

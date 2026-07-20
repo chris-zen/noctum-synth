@@ -2,7 +2,7 @@ use crate::f32x4;
 
 use crate::analog_oscillator::{MAX_PHASE_INC, MIN_PHASE_INC};
 use crate::blep::{SawMethod, blep_pulse};
-use crate::wrap01;
+use crate::{F32x4Ext, wrap01};
 
 /// One-octave-down square sub oscillator.
 pub struct AnalogSubOscillator {
@@ -25,9 +25,7 @@ impl AnalogSubOscillator {
     }
 
     pub fn reset_lane(&mut self, lane: usize) {
-        let mut phase = self.phase.to_array();
-        phase[lane] = 0.0;
-        self.phase = f32x4::new(phase);
+        self.phase = self.phase.replace_lane(lane, 0.0);
     }
 
     pub fn next(&mut self) -> f32x4 {
@@ -40,5 +38,28 @@ impl AnalogSubOscillator {
     pub fn set_frequency(&mut self, freq: f32x4, sample_rate: f32) {
         self.phase_inc = (freq * f32x4::splat(0.5 / sample_rate))
             .clamp(f32x4::splat(MIN_PHASE_INC), f32x4::splat(MAX_PHASE_INC));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_frequency_square_starts_positive() {
+        let sample_rate = 44100.0;
+        let mut sub = AnalogSubOscillator::default();
+        sub.set_frequency(f32x4::splat(440.0), sample_rate);
+
+        let mut positive_count = 0;
+        for _ in 0..50 {
+            if sub.next().to_array()[0] > 0.0 {
+                positive_count += 1;
+            }
+        }
+        assert_eq!(
+            positive_count, 50,
+            "first 50 samples should all be positive"
+        );
     }
 }

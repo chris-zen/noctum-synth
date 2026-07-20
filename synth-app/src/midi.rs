@@ -76,21 +76,21 @@ impl MidiInputManager {
     pub fn sync(&mut self, entries: &[MidiInputEntry]) {
         let configured: HashSet<&str> = entries.iter().map(|entry| entry.port.as_str()).collect();
 
-        self.connections
-            .retain(|port, managed| {
-                if configured.contains(port.as_str()) {
-                    true
-                } else {
-                    self.pending.remove(port);
-                    let _ = managed;
-                    false
-                }
-            });
+        self.connections.retain(|port, managed| {
+            if configured.contains(port.as_str()) {
+                true
+            } else {
+                self.pending.remove(port);
+                let _ = managed;
+                false
+            }
+        });
 
         for entry in entries {
             if let Some(managed) = self.connections.get(&entry.port) {
                 managed.flags.sync(entry);
-                self.pending.insert(entry.port.clone(), managed.flags.clone());
+                self.pending
+                    .insert(entry.port.clone(), managed.flags.clone());
                 continue;
             }
 
@@ -109,13 +109,8 @@ impl MidiInputManager {
                 flags.clone(),
             ) {
                 eprintln!("MIDI connected: {}", entry.port);
-                self.connections.insert(
-                    entry.port.clone(),
-                    ManagedInput {
-                        connection,
-                        flags,
-                    },
-                );
+                self.connections
+                    .insert(entry.port.clone(), ManagedInput { connection, flags });
             }
         }
     }
@@ -127,7 +122,8 @@ impl MidiInputManager {
         self.last_tick = Instant::now();
         self.available_ports = list_input_ports();
 
-        self.connections.retain(|port, _| port_is_available(port, &self.available_ports));
+        self.connections
+            .retain(|port, _| port_is_available(port, &self.available_ports));
 
         let entries: Vec<(String, Arc<MidiInputFlags>)> = self
             .pending
@@ -141,11 +137,15 @@ impl MidiInputManager {
             if !port_is_available(&port, &self.available_ports) {
                 continue;
             }
-            if let Some(connection) =
-                connect_input_port(&port, self.control.clone(), self.output.clone(), flags.clone())
-            {
+            if let Some(connection) = connect_input_port(
+                &port,
+                self.control.clone(),
+                self.output.clone(),
+                flags.clone(),
+            ) {
                 eprintln!("MIDI reconnected: {port}");
-                self.connections.insert(port, ManagedInput { connection, flags });
+                self.connections
+                    .insert(port, ManagedInput { connection, flags });
             }
         }
     }
@@ -199,9 +199,9 @@ fn connect_input_port(
 
 fn port_is_available(port: &str, available_ports: &[String]) -> bool {
     let port_lower = port.to_lowercase();
-    available_ports
-        .iter()
-        .any(|name| name.to_lowercase().contains(&port_lower) || port_lower.contains(&name.to_lowercase()))
+    available_ports.iter().any(|name| {
+        name.to_lowercase().contains(&port_lower) || port_lower.contains(&name.to_lowercase())
+    })
 }
 
 pub fn merged_port_list(available: &[String], configured: &[String]) -> Vec<String> {
@@ -303,7 +303,11 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
     }
 }
 
-fn handle_midi_control(message: &[u8], control: &SynthEngineControl, decoder: &mut Rev2MidiDecoder) {
+fn handle_midi_control(
+    message: &[u8],
+    control: &SynthEngineControl,
+    decoder: &mut Rev2MidiDecoder,
+) {
     let msg = match MidiMessage::try_from(message) {
         Ok(msg) => msg,
         Err(err) => {
@@ -760,9 +764,9 @@ mod tests {
         handle_midi(&batch, &bridge.control, &mut decoder);
 
         let mut locations = Vec::new();
-        bridge
-            .view
-            .drain_midi_program_imports(|program| locations.push((program.bank(), program.program())));
+        bridge.view.drain_midi_program_imports(|program| {
+            locations.push((program.bank(), program.program()))
+        });
         assert_eq!(locations, [(4, 0), (4, 1)]);
     }
 
@@ -775,7 +779,13 @@ mod tests {
             patches: AtomicBool::new(true),
             forward: AtomicBool::new(false),
         });
-        handle_midi_with_flags(&[0x90, 60, 100], &bridge.control, &mut decoder, &MidiOutputHandle::default(), &flags);
+        handle_midi_with_flags(
+            &[0x90, 60, 100],
+            &bridge.control,
+            &mut decoder,
+            &MidiOutputHandle::default(),
+            &flags,
+        );
         assert!(audio.control.0.pop().is_err());
     }
 
@@ -789,7 +799,13 @@ mod tests {
             forward: AtomicBool::new(false),
         });
         let message = stored_program_message(4, 0);
-        handle_midi_with_flags(&message, &bridge.control, &mut decoder, &MidiOutputHandle::default(), &flags);
+        handle_midi_with_flags(
+            &message,
+            &bridge.control,
+            &mut decoder,
+            &MidiOutputHandle::default(),
+            &flags,
+        );
 
         let mut imported = None;
         bridge
@@ -811,7 +827,13 @@ mod tests {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
         let mut decoder = Rev2MidiDecoder::default();
         let output = MidiOutputHandle::default();
-        handle_midi_with_flags(&[0x90, 60, 100], &bridge.control, &mut decoder, &output, &all_flags());
+        handle_midi_with_flags(
+            &[0x90, 60, 100],
+            &bridge.control,
+            &mut decoder,
+            &output,
+            &all_flags(),
+        );
         assert!(matches!(
             audio.control.0.pop(),
             Ok(ControlMessage::NoteOn { note: 60, .. })

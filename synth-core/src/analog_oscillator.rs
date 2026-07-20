@@ -7,7 +7,7 @@ use crate::blep::{
 #[cfg(feature = "profiling")]
 use crate::profiling::NoopProfiler;
 use crate::rng::DspRng;
-use crate::{DEFAULT_SAMPLE_RATE, LANES, wrap01};
+use crate::{DEFAULT_SAMPLE_RATE, F32x4Ext, LANES, wrap01};
 #[cfg(feature = "profiling")]
 use crate::{RenderProfiler, RenderStage};
 
@@ -30,6 +30,26 @@ pub enum Waveform {
     SawTri,
     Triangle,
     Pulse,
+}
+
+impl Waveform {
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::SawTri,
+            2 => Self::Triangle,
+            3 => Self::Pulse,
+            _ => Self::Saw,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Saw => 0,
+            Self::SawTri => 1,
+            Self::Triangle => 2,
+            Self::Pulse => 3,
+        }
+    }
 }
 
 trait OscillatorKernel {
@@ -175,16 +195,19 @@ type EngineOscillatorKernel = PolyBlepOscillatorKernel;
 type EngineOscillatorKernel = BlepOscillatorKernel;
 pub(crate) type EngineOscillator = AnalogOscillator<EngineOscillatorKernel>;
 
+/// Per-lane comparison mask for conditional SIMD updates (`blend` true branch).
+type LaneMask = f32x4;
+
 /// Output of a single oscillator sample step, including phase-wrap metadata
 /// used by oscillator sync.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OscillatorStep {
     /// Band-limited waveform output per SIMD lane.
     pub output: f32x4,
-    /// Whether each lane wrapped past the end of its cycle this step.
-    pub wrapped: [bool; LANES],
+    /// Lanes that wrapped past the end of their cycle this step.
+    pub wrapped: LaneMask,
     /// Sub-sample position of the wrap within the step, in `[0, 1)`.
-    pub wrap_phase_fraction: [f32; LANES],
+    pub subsample_offset: f32x4,
 }
 
 /// A 4-lane (SIMD) virtual-analog oscillator.
@@ -336,65 +359,29 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         self.triangle_integrator = naive_triangle(self.phase);
     }
 
-    /// Resets all lanes to mid-cycle phase (`0.5`).
-    pub fn reset_phase(&mut self) {
-        self.phase = f32x4::splat(0.5);
-        self.triangle_integrator = naive_triangle(self.phase);
-    }
-
-    /// Resets one lane to mid-cycle phase (`0.5`).
-    pub fn reset_phase_lane(&mut self, lane: usize) {
-        let mut phase = self.phase.to_array();
-        phase[lane] = 0.5;
-        self.phase = f32x4::new(phase);
-        self.triangle_integrator = set_lane(self.triangle_integrator, lane, 1.0);
-    }
-
-    /// Resets one lane to the start of its cycle (`0.0`).
-    pub fn reset_cycle_lane(&mut self, lane: usize) {
-        let mut phase = self.phase.to_array();
-        phase[lane] = 0.0;
-        self.phase = f32x4::new(phase);
-        self.triangle_integrator = set_lane(self.triangle_integrator, lane, -1.0);
-    }
-
-    /// Resets the phase of each flagged lane to the start of its cycle, as
-    /// driven by an oscillator-sync master.
-    pub fn sync_reset_lanes(&mut self, reset: [bool; LANES]) {
-        let mut phase = self.phase.to_array();
-        for lane in 0..LANES {
-            if reset[lane] {
-                phase[lane] = 0.0;
-                self.triangle_integrator = set_lane(self.triangle_integrator, lane, -1.0);
-            }
-        }
-        self.phase = f32x4::new(phase);
+    /// Resets one lane to its waveform-appropriate starting phase.
+    pub fn start_phase_lane(&mut self, lane: usize) {
+        let start_phase = 0.0;
+        self.phase = self.phase.replace_lane(lane, start_phase);
+        let tri = naive_triangle_scalar(start_phase);
+        self.triangle_integrator = self.triangle_integrator.replace_lane(lane, tri);
     }
 
     /// Applies oscillator-sync resets at sub-sample positions from the master.
     ///
     /// The slave phase is set to where it would be at the end of the current
-    /// sample after resetting at `wrap_phase_fraction` and advancing for the
+    /// sample after resetting at `subsample_offset` and advancing for the
     /// remaining part of the sample.
-    pub(crate) fn sync_reset_lanes_at(
-        &mut self,
-        reset: [bool; LANES],
-        wrap_phase_fraction: [f32; LANES],
-    ) {
-        let mut phase = self.phase.to_array();
-        let phase_inc = self.phase_inc.to_array();
-        let mut triangle_integrator = self.triangle_integrator.to_array();
+    pub(crate) fn hard_sync_reset(&mut self, reset: LaneMask, subsample_offset: f32x4) {
+        let one = f32x4::splat(1.0);
+        let remaining = (one - subsample_offset).clamp(f32x4::splat(0.0), one);
+        let synced_phase = self.phase_inc * remaining;
 
-        for lane in 0..LANES {
-            if reset[lane] {
-                let remaining = (1.0 - wrap_phase_fraction[lane]).clamp(0.0, 1.0);
-                phase[lane] = phase_inc[lane] * remaining;
-                triangle_integrator[lane] = naive_triangle_lane(phase[lane]);
-            }
-        }
-
-        self.phase = f32x4::new(phase);
-        self.triangle_integrator = f32x4::new(triangle_integrator);
+        self.phase = reset.blend(synced_phase, self.phase);
+        self.triangle_integrator = reset.blend(
+            naive_triangle(synced_phase),
+            self.triangle_integrator,
+        );
     }
 
     /// Sets the intended (pre-slop) frequency per lane and refreshes the
@@ -423,7 +410,7 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     pub(crate) fn trigger_lane(&mut self, lane: usize, reset_phase: bool) {
         self.slop.trigger_lane(lane);
         if reset_phase {
-            self.reset_phase_lane(lane);
+            self.start_phase_lane(lane);
         }
         self.refresh_effective_frequency();
     }
@@ -467,8 +454,8 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
 
         let phi = self.phase;
         let next_phase = self.phase + self.phase_inc;
-        let wrapped = phase_wrapped(phi, self.phase_inc, next_phase);
-        let wrap_phase_fraction = wrap_phase_fraction(phi, self.phase_inc, wrapped);
+        let wrapped = phase_wrapped_mask(phi, self.phase_inc, next_phase);
+        let subsample_offset = wrap_subsample_offset(phi, self.phase_inc, wrapped);
         self.phase = wrap01(next_phase);
 
         #[cfg(feature = "profiling")]
@@ -491,7 +478,7 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         OscillatorStep {
             output: output * self.enabled_mask,
             wrapped,
-            wrap_phase_fraction,
+            subsample_offset,
         }
     }
 
@@ -628,21 +615,17 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         self.correction_transition_mask = 0;
     }
 
-    fn align_triangle_integrator_after_wrap(&mut self, wrapped: [bool; LANES]) {
+    fn align_triangle_integrator_after_wrap(&mut self, wrapped: LaneMask) {
         if !matches!(self.waveform, Waveform::Triangle | Waveform::SawTri)
             || !self.kernel.needs_triangle_wrap_alignment()
         {
             return;
         }
 
-        let phase = self.phase.to_array();
-        let mut integrator = self.triangle_integrator.to_array();
-        for lane in 0..LANES {
-            if wrapped[lane] {
-                integrator[lane] = naive_triangle_lane(phase[lane]);
-            }
-        }
-        self.triangle_integrator = f32x4::new(integrator);
+        self.triangle_integrator = wrapped.blend(
+            naive_triangle(self.phase),
+            self.triangle_integrator,
+        );
     }
 
     /// Recomputes the effective frequency and phase increment from the
@@ -785,12 +768,6 @@ impl OscSlopState {
     }
 }
 
-fn set_lane(value: f32x4, lane: usize, lane_value: f32) -> f32x4 {
-    let mut values = value.to_array();
-    values[lane] = lane_value;
-    f32x4::new(values)
-}
-
 /// Clamps each lane's frequency to a finite, non-negative value below Nyquist.
 fn sanitize_frequency(freq: f32x4, sample_rate: f32) -> f32x4 {
     let max_freq = max_frequency(sample_rate);
@@ -813,30 +790,20 @@ fn max_frequency(sample_rate: f32) -> f32 {
     }
 }
 
-/// Flags lanes whose phase crosses the `1.0` cycle boundary this step.
-fn phase_wrapped(phi: f32x4, phase_inc: f32x4, next_phase: f32x4) -> [bool; LANES] {
-    let old = phi.to_array();
-    let inc = phase_inc.to_array();
-    let next = next_phase.to_array();
-    let mut wrapped = [false; LANES];
-    for lane in 0..LANES {
-        wrapped[lane] = inc[lane] > 0.0 && next[lane] >= 1.0 && old[lane] < 1.0;
-    }
-    wrapped
+/// Returns a per-lane mask for lanes whose phase crosses the `1.0` boundary.
+fn phase_wrapped_mask(phi: f32x4, phase_inc: f32x4, next_phase: f32x4) -> LaneMask {
+    let zero = f32x4::splat(0.0);
+    let one = f32x4::splat(1.0);
+    phase_inc.simd_gt(zero) & next_phase.simd_ge(one) & phi.simd_lt(one)
 }
 
 /// Computes the sub-sample position of each lane's wrap within the step, in
 /// `[0, 1)`, for hard-sync alignment.
-fn wrap_phase_fraction(phi: f32x4, phase_inc: f32x4, wrapped: [bool; LANES]) -> [f32; LANES] {
-    let old = phi.to_array();
-    let inc = phase_inc.to_array();
-    let mut fraction = [0.0; LANES];
-    for lane in 0..LANES {
-        if wrapped[lane] && inc[lane] > 0.0 {
-            fraction[lane] = ((1.0 - old[lane]) / inc[lane]).clamp(0.0, 1.0);
-        }
-    }
-    fraction
+fn wrap_subsample_offset(phi: f32x4, phase_inc: f32x4, wrapped: LaneMask) -> f32x4 {
+    let zero = f32x4::splat(0.0);
+    let one = f32x4::splat(1.0);
+    let offset = ((one - phi) / phase_inc).clamp(zero, one);
+    wrapped.blend(offset, zero)
 }
 
 /// Evaluates a band-limited triangle per SIMD lane, correcting the two
@@ -861,7 +828,7 @@ fn polyblamp2_triangle_scalar_lanes(phi: f32x4, dt: f32x4) -> f32x4 {
     for lane in 0..LANES {
         let phase = phases[lane];
         let phase_increment = phase_increments[lane];
-        let naive = naive_triangle_lane(phase);
+        let naive = naive_triangle_scalar(phase);
         if !(phase_increment > 0.0 && phase_increment < MAX_POLYBLAMP2_PHASE_INC) {
             output[lane] = naive;
             continue;
@@ -924,7 +891,7 @@ fn naive_triangle(phi: f32x4) -> f32x4 {
 }
 
 /// Scalar [`naive_triangle`] for a single lane.
-fn naive_triangle_lane(phase: f32) -> f32 {
+fn naive_triangle_scalar(phase: f32) -> f32 {
     1.0 - (phase - 0.5).abs() * 4.0
 }
 
@@ -996,6 +963,19 @@ pub fn pulse_width_from_shape(shape_mod: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lane_mask(lanes: [bool; LANES]) -> LaneMask {
+        f32x4::new([
+            f32::from_bits(if lanes[0] { u32::MAX } else { 0 }),
+            f32::from_bits(if lanes[1] { u32::MAX } else { 0 }),
+            f32::from_bits(if lanes[2] { u32::MAX } else { 0 }),
+            f32::from_bits(if lanes[3] { u32::MAX } else { 0 }),
+        ])
+    }
+
+    fn lane_mask_active(mask: LaneMask, lane: usize) -> bool {
+        mask.to_array()[lane].to_bits() & 0x8000_0000 != 0
+    }
 
     #[test]
     fn optimized_polyblamp_matches_branchless_reference() {
@@ -1266,9 +1246,12 @@ mod tests {
 
         let step = osc.next_step();
 
-        assert_eq!(step.wrapped, [true, true, false, false]);
-        assert!((step.wrap_phase_fraction[0] - 0.75).abs() < 0.001);
-        assert!((step.wrap_phase_fraction[1] - 0.5).abs() < 0.001);
+        assert!(lane_mask_active(step.wrapped, 0));
+        assert!(lane_mask_active(step.wrapped, 1));
+        assert!(!lane_mask_active(step.wrapped, 2));
+        assert!(!lane_mask_active(step.wrapped, 3));
+        assert!((step.subsample_offset.to_array()[0] - 0.75).abs() < 0.001);
+        assert!((step.subsample_offset.to_array()[1] - 0.5).abs() < 0.001);
     }
 
     #[test]
@@ -1279,7 +1262,10 @@ mod tests {
         osc.set_phase(f32x4::new([0.4, 0.4, 0.4, 0.4]));
         osc.next();
 
-        osc.sync_reset_lanes_at([true, false, true, false], [0.25, 0.0, 0.75, 0.0]);
+        osc.hard_sync_reset(
+            lane_mask([true, false, true, false]),
+            f32x4::new([0.25, 0.0, 0.75, 0.0]),
+        );
         let phase = osc.phase.to_array();
 
         assert!(
@@ -1299,6 +1285,594 @@ mod tests {
         assert!(
             (phase[3] - 0.5).abs() < 0.001,
             "non-reset lane should keep its advanced phase"
+        );
+    }
+
+    #[test]
+    fn sync_reset_lanes_at_resets_only_selected_lanes() {
+        let mut osc = AnalogOscillator::new(100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(1.0));
+        osc.set_phase(f32x4::new([0.25, 0.25, 0.75, 0.75]));
+
+        osc.hard_sync_reset(
+            lane_mask([true, false, true, false]),
+            f32x4::new([1.0, 0.0, 1.0, 0.0]),
+        );
+        let out = osc.next().to_array();
+
+        assert!(
+            out[0].abs() < 0.1,
+            "reset lane should render from cycle start, got {}",
+            out[0]
+        );
+        assert!(
+            (out[1] - out[0]).abs() > 0.1,
+            "non-reset lane should keep its previous phase"
+        );
+        assert!(
+            out[2].abs() < 0.1,
+            "reset lane should render from cycle start, got {}",
+            out[2]
+        );
+        assert!(
+            (out[3] - out[2]).abs() > 0.1,
+            "non-reset lane should keep its previous phase"
+        );
+    }
+
+    #[test]
+    fn saw_phase_zero_is_corrected() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(440.0));
+        let out = osc.next();
+        let arr = out.to_array();
+        assert!(
+            arr[0].abs() < 0.1,
+            "saw at phi=0 should be corrected to ~0, got {}",
+            arr[0]
+        );
+    }
+
+    #[test]
+    fn saw_mid_cycle_near_zero() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(1.0));
+        for _ in 0..22050 {
+            osc.next();
+        }
+        let out = osc.next();
+        let arr = out.to_array();
+        assert!(
+            (arr[0] - 0.0).abs() < 0.02,
+            "mid-cycle saw should be near 0, got {}",
+            arr[0]
+        );
+    }
+
+    #[test]
+    fn triangle_peak() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_frequency(f32x4::splat(1.0));
+        for _ in 0..22050 {
+            osc.next();
+        }
+        let out = osc.next();
+        let arr = out.to_array();
+        assert!(
+            arr[0] > 0.95,
+            "triangle should peak near 1.0 at φ=0.5, got {}",
+            arr[0]
+        );
+    }
+
+    #[test]
+    fn triangle_zero_crossing() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_frequency(f32x4::splat(1.0));
+        for _ in 0..11025 {
+            osc.next();
+        }
+        let out = osc.next();
+        let arr = out.to_array();
+        assert!(
+            arr[0].abs() < 0.02,
+            "triangle should cross 0 at φ=0.25, got {}",
+            arr[0]
+        );
+    }
+
+    #[test]
+    fn polyblamp_triangle_smooths_corners_below_overlap_limit() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_frequency(f32x4::splat(4410.0));
+
+        osc.set_phase(f32x4::splat(0.0));
+        let valley = osc.next().to_array()[0];
+        assert!(
+            valley > -0.95,
+            "PolyBLAMP should raise the sharp triangle valley, got {valley}"
+        );
+
+        osc.set_phase(f32x4::splat(0.5));
+        let peak = osc.next().to_array()[0];
+        assert!(
+            peak < 0.95,
+            "PolyBLAMP should lower the sharp triangle peak, got {peak}"
+        );
+    }
+
+    #[test]
+    fn polyblamp_triangle_zero_frequency_lanes_stay_finite() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_frequency(f32x4::new([0.0, 4410.0, 0.0, 4410.0]));
+        osc.set_phase(f32x4::new([0.0, 0.0, 0.5, 0.5]));
+
+        let out = osc.next().to_array();
+        for sample in out {
+            assert!(sample.is_finite(), "triangle produced non-finite sample");
+        }
+        assert!(
+            (out[0] + 1.0).abs() < 1e-6,
+            "zero-frequency valley lane should use the naive value, got {}",
+            out[0]
+        );
+        assert!(
+            (out[2] - 1.0).abs() < 1e-6,
+            "zero-frequency peak lane should use the naive value, got {}",
+            out[2]
+        );
+    }
+
+    #[test]
+    fn polyblamp_triangle_disables_correction_above_overlap_limit() {
+        let mut osc = AnalogOscillator::new(100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_frequency(f32x4::splat(30.0));
+
+        osc.set_phase(f32x4::splat(0.0));
+        let valley = osc.next().to_array()[0];
+        assert!(
+            (valley + 1.0).abs() < 1e-6,
+            "above the overlap limit the valley should stay naive, got {valley}"
+        );
+
+        osc.set_phase(f32x4::splat(0.5));
+        let peak = osc.next().to_array()[0];
+        assert!(
+            (peak - 1.0).abs() < 1e-6,
+            "above the overlap limit the peak should stay naive, got {peak}"
+        );
+    }
+
+    #[test]
+    fn saw_method_selects_triangle_bandlimiting_path() {
+        let mut polyblep = AnalogOscillator::new(44100.0);
+        polyblep.set_waveform(Waveform::Triangle);
+        polyblep.set_saw_method(SawMethod::PolyBlep);
+        polyblep.set_frequency(f32x4::splat(4410.0));
+        polyblep.set_phase(f32x4::splat(0.0));
+
+        let mut polyblamp = AnalogOscillator::new(44100.0);
+        polyblamp.set_waveform(Waveform::Triangle);
+        polyblamp.set_saw_method(SawMethod::Blep);
+        polyblamp.set_frequency(f32x4::splat(4410.0));
+        polyblamp.set_phase(f32x4::splat(0.0));
+
+        let polyblep_sample = polyblep.next().to_array()[0];
+        let polyblamp_sample = polyblamp.next().to_array()[0];
+
+        assert!(
+            (polyblep_sample - polyblamp_sample).abs() > 0.001,
+            "SawMethod should select distinct triangle paths, got {polyblep_sample} and {polyblamp_sample}"
+        );
+    }
+
+    #[test]
+    fn polyblep_integrated_triangle_stays_finite_and_bounded() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_saw_method(SawMethod::PolyBlep);
+        osc.set_frequency(f32x4::new([110.0, 440.0, 1760.0, 7040.0]));
+
+        let mut max_abs = 0.0f32;
+        for _ in 0..4096 {
+            for sample in osc.next().to_array() {
+                assert!(sample.is_finite(), "triangle produced non-finite sample");
+                max_abs = max_abs.max(sample.abs());
+            }
+        }
+
+        assert!(
+            max_abs <= 1.25,
+            "triangle output exceeded bounds: {max_abs}"
+        );
+        assert!(
+            max_abs > 0.1,
+            "triangle output unexpectedly collapsed: {max_abs}"
+        );
+    }
+
+    #[test]
+    fn polyblamp_triangle_high_frequency_stays_finite_and_bounded() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Triangle);
+        osc.set_frequency(f32x4::new([8_000.0, 9_000.0, 10_000.0, 11_000.0]));
+
+        let mut max_abs = 0.0f32;
+        for _ in 0..512 {
+            for sample in osc.next().to_array() {
+                assert!(sample.is_finite(), "triangle produced non-finite sample");
+                max_abs = max_abs.max(sample.abs());
+            }
+        }
+
+        assert!(
+            max_abs <= 1.25,
+            "triangle output exceeded bounds: {max_abs}"
+        );
+        assert!(
+            max_abs > 0.1,
+            "triangle output unexpectedly collapsed: {max_abs}"
+        );
+    }
+
+    #[test]
+    fn pulse_50_percent_is_square() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Pulse);
+        osc.set_shape(0.0);
+        osc.set_frequency(f32x4::splat(440.0));
+        let out1 = osc.next();
+        let arr1 = out1.to_array();
+        assert!(
+            arr1[0].abs() < 0.1,
+            "pulse at phi=0 should be ~0, got {}",
+            arr1[0]
+        );
+
+        for _ in 0..(44100 / 440 / 8) as usize {
+            osc.next();
+        }
+        let out_low = osc.next();
+        let arr_low = out_low.to_array();
+        assert!(
+            arr_low[0] < -0.9,
+            "pulse low should be near -1, got {}",
+            arr_low[0]
+        );
+    }
+
+    #[test]
+    fn waveshape_modulation_on_saw() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_shape(0.0);
+        osc.set_frequency(f32x4::splat(440.0));
+
+        let unshaped = osc.next().to_array()[0];
+
+        osc.set_shape(0.5);
+        osc.set_phase(f32x4::splat(0.0));
+        osc.set_frequency(f32x4::splat(440.0));
+        let shaped = osc.next().to_array()[0];
+
+        assert!(
+            (unshaped - shaped).abs() > 0.001,
+            "shape 0.5 should change saw output, got {unshaped} vs {shaped}"
+        );
+    }
+
+    #[test]
+    fn simd_all_lanes_equal() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(440.0));
+
+        let out = osc.next();
+        let arr = out.to_array();
+        assert!(
+            (arr[0] - arr[1]).abs() < 1e-6
+                && (arr[0] - arr[2]).abs() < 1e-6
+                && (arr[0] - arr[3]).abs() < 1e-6
+        );
+    }
+
+    #[test]
+    fn phase_wraps_correctly() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(440.0));
+
+        for _ in 0..100000 {
+            let out = osc.next();
+            let arr = out.to_array();
+            for &v in &arr {
+                assert!(v >= -1.02 && v <= 1.02, "output out of range: {v}");
+            }
+        }
+    }
+
+    #[test]
+    fn phase_input_wraps_without_remainder_edge_cases() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_phase(f32x4::new([-0.25, 0.25, 0.75, 1.25]));
+
+        let out = osc.next().to_array();
+
+        assert!(
+            (out[0] - out[2]).abs() < 1e-6,
+            "negative phase should wrap to the same point as positive phase"
+        );
+        assert!(
+            (out[1] - out[3]).abs() < 1e-6,
+            "phase above 1.0 should wrap without changing oscillator output"
+        );
+    }
+
+    #[test]
+    fn invalid_frequency_does_not_poison_phase() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::new([440.0, f32::NAN, f32::INFINITY, -1.0]));
+
+        for _ in 0..1024 {
+            let out = osc.next().to_array();
+            for sample in out {
+                assert!(sample.is_finite(), "oscillator produced non-finite sample");
+            }
+        }
+    }
+
+    #[test]
+    fn oscillator_enabled_gain_can_mute_without_stopping_phase() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_enabled(false);
+
+        let muted = osc.next().to_array()[0];
+        assert_eq!(muted, 0.0);
+
+        osc.set_enabled(true);
+        let audible = osc.next().to_array()[0];
+        assert!(
+            audible.abs() > 0.001,
+            "oscillator should keep advancing while muted and become audible when re-enabled"
+        );
+    }
+
+    #[test]
+    fn polyblep_saw_full_cycle() {
+        let sr = 44100.0;
+        let freq = 55.0;
+        let period_samples = (sr as f64 / freq as f64).round() as usize;
+
+        let mut osc = AnalogOscillator::new(sr);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(freq));
+
+        let mut min_val = f32::MAX;
+        let mut max_val = f32::MIN;
+
+        for _ in 0..period_samples + 10 {
+            let val = osc.next().to_array()[0];
+            min_val = min_val.min(val);
+            max_val = max_val.max(val);
+        }
+
+        assert!(min_val < -0.95, "min too high: {min_val}");
+        assert!(max_val > 0.95, "max too low: {max_val}");
+    }
+
+    #[test]
+    fn polyblep_reduces_discontinuity() {
+        let sr = 44100.0;
+        let freq = 440.0;
+
+        let mut osc = AnalogOscillator::new(sr);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(freq));
+
+        let mut prev = 0.0;
+        let mut max_jump = 0.0f32;
+        for _ in 0..300 {
+            let val = osc.next().to_array()[0];
+            max_jump = max_jump.max((val - prev).abs());
+            prev = val;
+        }
+
+        assert!(max_jump < 1.75, "max jump {max_jump} should be < 1.75");
+    }
+
+    #[test]
+    fn polyblep_saw_smooth_transition() {
+        let sr = 44100.0;
+        let freq = 440.0;
+        let dt = freq / sr;
+
+        let mut osc = AnalogOscillator::new(sr);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_frequency(f32x4::splat(freq));
+
+        let mut samples = [0.0f32; 300];
+        for sample in &mut samples {
+            *sample = osc.next().to_array()[0];
+        }
+
+        let period = (1.0 / dt) as usize;
+        let mut min_after_wrap = f32::MAX;
+        let mut spike_count = 0;
+
+        for i in period..samples.len() {
+            let jump = samples[i] - samples[i - 1];
+            if jump.abs() > 1.75 {
+                spike_count += 1;
+            }
+            min_after_wrap = min_after_wrap.min(samples[i]);
+        }
+
+        assert_eq!(spike_count, 0, "found {spike_count} large jumps > 1.75");
+        assert!(
+            min_after_wrap > -1.1,
+            "output went below -1.1: {min_after_wrap}"
+        );
+    }
+
+    #[test]
+    fn table_blep_left_edge_uses_falling_correction() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Saw);
+        osc.set_saw_method(SawMethod::Blep);
+        osc.set_frequency(f32x4::splat(440.0));
+
+        osc.set_phase(f32x4::splat(0.999));
+        let out = osc.next().to_array()[0];
+        assert!(
+            out < 0.6,
+            "left-edge BLEP should pull down before wrap, got {out}"
+        );
+    }
+
+    #[test]
+    fn polyblep_pulse_smooth_edges() {
+        let sr = 44100.0;
+        let freq = 55.0;
+
+        let mut osc = AnalogOscillator::new(sr);
+        osc.set_waveform(Waveform::Pulse);
+        osc.set_shape(0.0);
+        osc.set_frequency(f32x4::splat(freq));
+
+        let mut prev = osc.next().to_array()[0];
+        let mut max_jump = 0.0f32;
+        for _ in 0..3000 {
+            let val = osc.next().to_array()[0];
+            max_jump = max_jump.max((val - prev).abs());
+            prev = val;
+        }
+
+        assert!(
+            max_jump < 1.95,
+            "pulse max jump {max_jump} — should be below naive 2.0"
+        );
+    }
+
+    #[test]
+    fn polyblep_pulse_50_percent() {
+        let sr = 44100.0;
+        let freq = 440.0;
+        let dt = freq / sr;
+
+        let mut osc = AnalogOscillator::new(sr);
+        osc.set_waveform(Waveform::Pulse);
+        osc.set_shape(0.0);
+        osc.set_frequency(f32x4::splat(freq));
+
+        let period = (1.0 / dt) as usize;
+        let mut samples = [0.0f32; 128];
+        for sample in &mut samples[..period + 10] {
+            *sample = osc.next().to_array()[0];
+        }
+
+        let mut high_count = 0;
+        for &s in &samples[..period] {
+            if s > 0.0 {
+                high_count += 1;
+            }
+        }
+
+        let ratio = high_count as f32 / period as f32;
+        assert!(
+            (ratio - 0.5).abs() < 0.05,
+            "duty cycle {ratio:.3} should be ~0.5"
+        );
+    }
+
+    #[test]
+    fn pulse_shape_mod_controls_pwm_duty_without_unbounded_levels() {
+        fn measure(shape: f32) -> (f32, f32) {
+            let sr = 44100.0f32;
+            let freq = 55.0f32;
+            let period = (sr / freq).round() as usize;
+            let mut osc = AnalogOscillator::new(sr);
+            osc.set_waveform(Waveform::Pulse);
+            osc.set_shape(shape);
+            osc.set_frequency(f32x4::splat(freq));
+
+            let mut positive = 0usize;
+            let mut peak = 0.0f32;
+            for _ in 0..period {
+                let sample = osc.next().to_array()[0];
+                if sample > 0.0 {
+                    positive += 1;
+                }
+                peak = peak.max(sample.abs());
+            }
+
+            (positive as f32 / period as f32, peak)
+        }
+
+        let (square_ratio, square_peak) = measure(0.0);
+        let (wide_ratio, wide_peak) = measure(0.51);
+
+        assert!(
+            (square_ratio - pulse_width_from_shape(0.0)).abs() < 0.05,
+            "shape 0.0 should produce a ~50% square duty, got {square_ratio:.3}"
+        );
+        assert!(
+            (wide_ratio - pulse_width_from_shape(0.51)).abs() < 0.05,
+            "shape 0.51 should track its mapped pulse width, got {wide_ratio:.3}"
+        );
+        assert!(
+            wide_ratio > square_ratio + 0.1,
+            "higher shape should widen the positive duty, square={square_ratio:.3} wide={wide_ratio:.3}"
+        );
+        assert!(
+            square_peak < 1.25 && wide_peak < 1.25,
+            "PWM should stay bounded, peaks square={square_peak:.3} wide={wide_peak:.3}"
+        );
+    }
+
+    #[test]
+    fn pulse_shape_maps_to_width_without_phase_blend() {
+        let mut osc = AnalogOscillator::new(44100.0);
+        osc.set_waveform(Waveform::Pulse);
+        osc.set_shape(1.0);
+        osc.set_phase(f32x4::splat(0.123));
+        osc.set_frequency(f32x4::splat(220.0));
+
+        let sr = 44100.0f32;
+        let freq = 220.0f32;
+        let period = (sr / freq).round() as usize;
+
+        let mut positive = 0usize;
+        let mut peak = 0.0f32;
+        for _ in 0..period {
+            let sample = osc.next().to_array()[0];
+            if sample > 0.0 {
+                positive += 1;
+            }
+            peak = peak.max(sample.abs());
+        }
+
+        let duty = positive as f32 / period as f32;
+        assert!(
+            (duty - pulse_width_from_shape(1.0)).abs() < 0.05,
+            "Pulse shape should map straight to pulse width, expected ~{:.3} got {duty:.3}",
+            pulse_width_from_shape(1.0)
+        );
+        assert!(
+            peak < 1.25,
+            "Pulse shape mapping should add no phase-blend overshoot, peak {peak:.3}"
         );
     }
 }

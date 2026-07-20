@@ -1,9 +1,10 @@
 target/
 *.wav
-Prophet-Rev2-Users-Guide-1.2.2.pdf
+Prophet_08_Manual_v1.0.pdf
 Prophet_08_Programs+Readme/
-Prophet-Rev2-Factory-Programs/
+Prophet-Rev2-Users-Guide-1.2.2.pdf
 Prophet-Rev2-Factory-Presets-List.pdf
+Prophet-Rev2-Factory-Programs/
 plans/
 *.sendmidi
 TODO.md

@@ -33,13 +33,12 @@ pub enum ModDestination {
     Osc1Frequency,
     Osc2Frequency,
     OscAllFrequency,
-    Osc1Level,
     OscMix,
     NoiseLevel,
     SubOscLevel,
-    Osc1Shape,
-    Osc2Shape,
-    OscAllShape,
+    Osc1ShapeMod,
+    Osc2ShapeMod,
+    OscAllShapeMod,
     FilterCutoff,
     FilterResonance,
     FilterAudioMod,
@@ -86,18 +85,19 @@ pub enum ModDestination {
 }
 
 impl ModDestination {
-    pub const ALL: [Self; 54] = [
+    pub const COUNT: usize = 53;
+
+    pub const ALL: [Self; Self::COUNT] = [
         Self::Off,
         Self::Osc1Frequency,
         Self::Osc2Frequency,
         Self::OscAllFrequency,
-        Self::Osc1Level,
         Self::OscMix,
         Self::NoiseLevel,
         Self::SubOscLevel,
-        Self::Osc1Shape,
-        Self::Osc2Shape,
-        Self::OscAllShape,
+        Self::Osc1ShapeMod,
+        Self::Osc2ShapeMod,
+        Self::OscAllShapeMod,
         Self::FilterCutoff,
         Self::FilterResonance,
         Self::FilterAudioMod,
@@ -160,13 +160,12 @@ impl ModDestination {
             Self::Osc1Frequency => "Osc 1 Freq",
             Self::Osc2Frequency => "Osc 2 Freq",
             Self::OscAllFrequency => "Osc All Freq",
-            Self::Osc1Level => "Osc 1 Level",
             Self::OscMix => "Osc Mix",
             Self::NoiseLevel => "Noise Level",
             Self::SubOscLevel => "Sub Osc Level",
-            Self::Osc1Shape => "Osc 1 Shape",
-            Self::Osc2Shape => "Osc 2 Shape",
-            Self::OscAllShape => "Osc All Shape",
+            Self::Osc1ShapeMod => "Osc 1 Shape Mod",
+            Self::Osc2ShapeMod => "Osc 2 Shape Mod",
+            Self::OscAllShapeMod => "Osc All Shape Mod",
             Self::FilterCutoff => "Filter Cutoff",
             Self::FilterResonance => "Filter Resonance",
             Self::FilterAudioMod => "Filter Audio Mod",
@@ -336,6 +335,13 @@ impl DedicatedModSource {
             Self::Velocity => ModSource::Velocity,
             Self::Footswitch => ModSource::FootPedal,
         }
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(0)
     }
 
     pub fn name(self) -> &'static str {
@@ -628,9 +634,7 @@ impl PanModMode {
 #[derive(Debug, Clone)]
 pub struct AmplifierParams {
     pub pan_spread: f32,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub pan_mod_mode: PanModMode,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub initial_level: f32,
     pub env_amount: f32,
     pub velocity: f32,
@@ -659,17 +663,129 @@ impl Default for AmplifierParams {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlideMode {
+    #[default]
+    FixedRate,
+    FixedRateAuto,
+    FixedTime,
+    FixedTimeAuto,
+}
+
+impl GlideMode {
+    pub const ALL: [Self; 4] = [
+        Self::FixedRate,
+        Self::FixedRateAuto,
+        Self::FixedTime,
+        Self::FixedTimeAuto,
+    ];
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|m| *m == self).unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::FixedRate => "Fixed Rate",
+            Self::FixedRateAuto => "Fixed Rate Auto",
+            Self::FixedTime => "Fixed Time",
+            Self::FixedTimeAuto => "Fixed Time Auto",
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyMode {
+    #[default]
+    Low,
+    LowRetrigger,
+    High,
+    HighRetrigger,
+    Last,
+    LastRetrigger,
+}
+
+impl KeyMode {
+    pub const ALL: [Self; 6] = [
+        Self::Low,
+        Self::LowRetrigger,
+        Self::High,
+        Self::HighRetrigger,
+        Self::Last,
+        Self::LastRetrigger,
+    ];
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|m| *m == self).unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Low => "Low Note",
+            Self::LowRetrigger => "Low / Retrig",
+            Self::High => "High Note",
+            Self::HighRetrigger => "High / Retrig",
+            Self::Last => "Last Note",
+            Self::LastRetrigger => "Last / Retrig",
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnisonMode {
+    #[default]
+    V1,
+    V2,
+    V4,
+    V8,
+    V16,
+}
+
+impl UnisonMode {
+    pub const ALL: [Self; 5] = [Self::V1, Self::V2, Self::V4, Self::V8, Self::V16];
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|m| *m == self).unwrap_or(0)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::V1 => "1 Voice",
+            Self::V2 => "2 Voices",
+            Self::V4 => "4 Voices",
+            Self::V8 => "8 Voices",
+            Self::V16 => "16 Voices",
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct OscillatorPatch {
     pub waveform: u8,
     pub enabled: bool,
     pub frequency: f32,
     pub fine_tune: f32,
-    pub shape: f32,
+    #[cfg_attr(feature = "serde", serde(alias = "shape"))]
+    pub shape_mod: f32,
     pub level: f32,
     pub note_reset: bool,
     pub keyboard_on: bool,
-    pub glide: bool,
+    pub glide: f32,
 }
 
 impl Default for OscillatorPatch {
@@ -679,11 +795,11 @@ impl Default for OscillatorPatch {
             enabled: false,
             frequency: 60.0,
             fine_tune: 0.0,
-            shape: 0.0,
+            shape_mod: 0.0,
             level: 1.0,
             note_reset: true,
             keyboard_on: true,
-            glide: false,
+            glide: 0.0,
         }
     }
 }
@@ -700,16 +816,22 @@ pub struct Patch {
     pub hard_sync: bool,
     pub osc_slop: f32,
     pub glide_time: f32,
+    pub glide_mode: GlideMode,
+    pub glide_enabled: bool,
+    pub pitch_bend_range: f32,
+    pub key_mode: KeyMode,
+    pub unison_enabled: bool,
+    pub unison_mode: UnisonMode,
+    pub unison_detune: f32,
+    pub bpm: f32,
+    pub clock_divide: f32,
     pub filter: FilterParams,
     pub amplifier: AmplifierParams,
     pub aux_envelope: AuxEnvelopeParams,
     pub lfos: [LfoParams; 4],
-    #[cfg_attr(feature = "serde", serde(default))]
     pub mod_matrix: ModMatrix,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub effects: EffectParams,
     pub master_volume: f32,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub name: PatchName,
 }
 
@@ -727,6 +849,15 @@ impl Default for Patch {
             hard_sync: false,
             osc_slop: 0.0,
             glide_time: 0.0,
+            glide_mode: GlideMode::default(),
+            glide_enabled: false,
+            pitch_bend_range: 2.0,
+            key_mode: KeyMode::default(),
+            unison_enabled: false,
+            unison_mode: UnisonMode::default(),
+            unison_detune: 0.0,
+            bpm: crate::DEFAULT_TEMPO_BPM,
+            clock_divide: 1.0,
             filter: FilterParams {
                 cutoff: 20_000.0,
                 ..FilterParams::default()
@@ -747,14 +878,8 @@ impl Patch {
         if b { 1.0 } else { 0.0 }
     }
 
-    fn lfo_waveform_index(w: LfoWaveform) -> f32 {
-        match w {
-            LfoWaveform::Triangle => 0.0,
-            LfoWaveform::Saw => 1.0,
-            LfoWaveform::ReverseSaw => 2.0,
-            LfoWaveform::Square => 3.0,
-            LfoWaveform::SampleAndHold => 4.0,
-        }
+    fn lfo_waveform_index(lfo_waveform: LfoWaveform) -> f32 {
+        lfo_waveform.index() as f32
     }
 
     /// Calls `f` once per parameter with the corresponding [`ParamId`] and value
@@ -767,21 +892,21 @@ impl Patch {
         f(ParamId::Osc1Enabled, s(self.osc1.enabled));
         f(ParamId::Osc1Frequency, self.osc1.frequency);
         f(ParamId::Osc1FineTune, self.osc1.fine_tune);
-        f(ParamId::Osc1Shape, self.osc1.shape);
+        f(ParamId::Osc1ShapeMod, self.osc1.shape_mod);
         f(ParamId::Osc1Level, self.osc1.level);
         f(ParamId::Osc1NoteReset, s(self.osc1.note_reset));
         f(ParamId::Osc1KeyboardOn, s(self.osc1.keyboard_on));
-        f(ParamId::Osc1Glide, s(self.osc1.glide));
+        f(ParamId::Osc1Glide, self.osc1.glide);
 
         f(ParamId::Osc2Waveform, self.osc2.waveform as f32);
         f(ParamId::Osc2Enabled, s(self.osc2.enabled));
         f(ParamId::Osc2Frequency, self.osc2.frequency);
         f(ParamId::Osc2FineTune, self.osc2.fine_tune);
-        f(ParamId::Osc2Shape, self.osc2.shape);
+        f(ParamId::Osc2ShapeMod, self.osc2.shape_mod);
         f(ParamId::Osc2Level, self.osc2.level);
         f(ParamId::Osc2NoteReset, s(self.osc2.note_reset));
         f(ParamId::Osc2KeyboardOn, s(self.osc2.keyboard_on));
-        f(ParamId::Osc2Glide, s(self.osc2.glide));
+        f(ParamId::Osc2Glide, self.osc2.glide);
 
         f(ParamId::OscMix, self.osc_mix);
         f(ParamId::SubOscLevel, self.sub_osc_level);
@@ -789,6 +914,15 @@ impl Patch {
         f(ParamId::HardSync, s(self.hard_sync));
         f(ParamId::OscSlop, self.osc_slop);
         f(ParamId::GlideTime, self.glide_time);
+        f(ParamId::GlideMode, self.glide_mode.index() as f32);
+        f(ParamId::GlideEnabled, s(self.glide_enabled));
+        f(ParamId::PitchBendRange, self.pitch_bend_range);
+        f(ParamId::KeyMode, self.key_mode.index() as f32);
+        f(ParamId::UnisonEnabled, s(self.unison_enabled));
+        f(ParamId::UnisonMode, self.unison_mode.index() as f32);
+        f(ParamId::UnisonDetune, self.unison_detune);
+        f(ParamId::Bpm, self.bpm);
+        f(ParamId::ClockDivide, self.clock_divide);
 
         f(ParamId::FilterCutoff, self.filter.cutoff);
         f(ParamId::FilterResonance, self.filter.resonance);
@@ -914,26 +1048,35 @@ impl Patch {
             ParamId::Osc1Enabled => self.osc1.enabled = flag,
             ParamId::Osc1Frequency => self.osc1.frequency = value,
             ParamId::Osc1FineTune => self.osc1.fine_tune = value,
-            ParamId::Osc1Shape => self.osc1.shape = value,
+            ParamId::Osc1ShapeMod => self.osc1.shape_mod = value,
             ParamId::Osc1Level => self.osc1.level = value,
             ParamId::Osc1NoteReset => self.osc1.note_reset = flag,
             ParamId::Osc1KeyboardOn => self.osc1.keyboard_on = flag,
-            ParamId::Osc1Glide => self.osc1.glide = flag,
+            ParamId::Osc1Glide => self.osc1.glide = value,
             ParamId::Osc2Waveform => self.osc2.waveform = value as u8,
             ParamId::Osc2Enabled => self.osc2.enabled = flag,
             ParamId::Osc2Frequency => self.osc2.frequency = value,
             ParamId::Osc2FineTune => self.osc2.fine_tune = value,
-            ParamId::Osc2Shape => self.osc2.shape = value,
+            ParamId::Osc2ShapeMod => self.osc2.shape_mod = value,
             ParamId::Osc2Level => self.osc2.level = value,
             ParamId::Osc2NoteReset => self.osc2.note_reset = flag,
             ParamId::Osc2KeyboardOn => self.osc2.keyboard_on = flag,
-            ParamId::Osc2Glide => self.osc2.glide = flag,
+            ParamId::Osc2Glide => self.osc2.glide = value,
             ParamId::OscMix => self.osc_mix = value,
             ParamId::SubOscLevel => self.sub_osc_level = value,
             ParamId::NoiseLevel => self.noise_level = value,
             ParamId::HardSync => self.hard_sync = flag,
             ParamId::OscSlop | ParamId::AnalogDrift => self.osc_slop = value,
             ParamId::GlideTime => self.glide_time = value,
+            ParamId::GlideMode => self.glide_mode = GlideMode::from_index(value as usize),
+            ParamId::GlideEnabled => self.glide_enabled = flag,
+            ParamId::PitchBendRange => self.pitch_bend_range = value.clamp(0.0, 12.0),
+            ParamId::KeyMode => self.key_mode = KeyMode::from_index(value as usize),
+            ParamId::UnisonEnabled => self.unison_enabled = flag,
+            ParamId::UnisonMode => self.unison_mode = UnisonMode::from_index(value as usize),
+            ParamId::UnisonDetune => self.unison_detune = value,
+            ParamId::Bpm => self.bpm = value.clamp(30.0, 250.0),
+            ParamId::ClockDivide => self.clock_divide = value,
             ParamId::FilterCutoff => self.filter.cutoff = value,
             ParamId::FilterResonance => self.filter.resonance = value,
             ParamId::FilterPoles => self.filter.poles = if flag { 4 } else { 2 },
@@ -969,7 +1112,9 @@ impl Patch {
             ParamId::AuxEgLoop => self.aux_envelope.repeat = flag,
             ParamId::Lfo1Rate => self.lfos[0].rate_hz = value,
             ParamId::Lfo1Depth => self.lfos[0].depth = value,
-            ParamId::Lfo1Waveform => self.lfos[0].waveform = lfo_waveform(value),
+            ParamId::Lfo1Waveform => {
+                self.lfos[0].waveform = LfoWaveform::from_index(value as usize)
+            }
             ParamId::Lfo1Destination => {
                 self.lfos[0].destination = ModDestination::from_index(value as usize)
             }
@@ -977,7 +1122,9 @@ impl Patch {
             ParamId::Lfo1KeySync => self.lfos[0].key_sync = flag,
             ParamId::Lfo2Rate => self.lfos[1].rate_hz = value,
             ParamId::Lfo2Depth => self.lfos[1].depth = value,
-            ParamId::Lfo2Waveform => self.lfos[1].waveform = lfo_waveform(value),
+            ParamId::Lfo2Waveform => {
+                self.lfos[1].waveform = LfoWaveform::from_index(value as usize)
+            }
             ParamId::Lfo2Destination => {
                 self.lfos[1].destination = ModDestination::from_index(value as usize)
             }
@@ -985,7 +1132,9 @@ impl Patch {
             ParamId::Lfo2KeySync => self.lfos[1].key_sync = flag,
             ParamId::Lfo3Rate => self.lfos[2].rate_hz = value,
             ParamId::Lfo3Depth => self.lfos[2].depth = value,
-            ParamId::Lfo3Waveform => self.lfos[2].waveform = lfo_waveform(value),
+            ParamId::Lfo3Waveform => {
+                self.lfos[2].waveform = LfoWaveform::from_index(value as usize)
+            }
             ParamId::Lfo3Destination => {
                 self.lfos[2].destination = ModDestination::from_index(value as usize)
             }
@@ -993,7 +1142,9 @@ impl Patch {
             ParamId::Lfo3KeySync => self.lfos[2].key_sync = flag,
             ParamId::Lfo4Rate => self.lfos[3].rate_hz = value,
             ParamId::Lfo4Depth => self.lfos[3].depth = value,
-            ParamId::Lfo4Waveform => self.lfos[3].waveform = lfo_waveform(value),
+            ParamId::Lfo4Waveform => {
+                self.lfos[3].waveform = LfoWaveform::from_index(value as usize)
+            }
             ParamId::Lfo4Destination => {
                 self.lfos[3].destination = ModDestination::from_index(value as usize)
             }
@@ -1032,11 +1183,7 @@ impl Patch {
                 }
             }
             ModRoute::Dedicated(source) => {
-                let index = DedicatedModSource::ALL
-                    .iter()
-                    .position(|candidate| *candidate == source);
-                if let Some(slot) = index.and_then(|index| self.mod_matrix.dedicated.get_mut(index))
-                {
+                if let Some(slot) = self.mod_matrix.dedicated.get_mut(source.index()) {
                     match parameter {
                         crate::ModulationParam::Destination(destination) => {
                             slot.destination = destination
@@ -1048,16 +1195,6 @@ impl Patch {
                 }
             }
         }
-    }
-}
-
-fn lfo_waveform(value: f32) -> LfoWaveform {
-    match value as usize {
-        1 => LfoWaveform::Saw,
-        2 => LfoWaveform::ReverseSaw,
-        3 => LfoWaveform::Square,
-        4 => LfoWaveform::SampleAndHold,
-        _ => LfoWaveform::Triangle,
     }
 }
 
@@ -1082,38 +1219,20 @@ mod tests {
     }
 
     #[test]
-    fn vca_initial_level_defaults_for_older_patches() {
+    fn vca_initial_level_round_trips_through_serde() {
         let mut patch = Patch::default();
         patch.amplifier.initial_level = 0.5;
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded.clone()).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.amplifier.initial_level, 0.5);
-
-        let mut legacy = encoded;
-        legacy
-            .get_mut("amplifier")
-            .and_then(serde_json::Value::as_object_mut)
-            .unwrap()
-            .remove("initial_level");
-        let decoded: Patch = serde_json::from_value(legacy).unwrap();
-        assert_eq!(decoded.amplifier.initial_level, 0.0);
     }
 
     #[test]
-    fn pan_mod_mode_round_trips_and_defaults_for_older_patches() {
+    fn pan_mod_mode_round_trips_through_serde() {
         let mut patch = Patch::default();
         patch.amplifier.pan_mod_mode = PanModMode::Fixed;
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded.clone()).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.amplifier.pan_mod_mode, PanModMode::Fixed);
-
-        let mut legacy = encoded;
-        legacy
-            .get_mut("amplifier")
-            .and_then(serde_json::Value::as_object_mut)
-            .unwrap()
-            .remove("pan_mod_mode");
-        let decoded: Patch = serde_json::from_value(legacy).unwrap();
-        assert_eq!(decoded.amplifier.pan_mod_mode, PanModMode::Alternate);
     }
 }

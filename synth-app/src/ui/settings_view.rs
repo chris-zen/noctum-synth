@@ -137,13 +137,7 @@ pub fn show(
             let gap = ui.spacing().item_spacing.x;
             let midi_width = ((full_width - gap) / 2.0).max(0.0);
             ui.horizontal_top(|ui| {
-                midi_input_panel(
-                    ui,
-                    midi_width,
-                    settings,
-                    midi_inputs,
-                    &midi_input_ports,
-                );
+                midi_input_panel(ui, midi_width, settings, midi_inputs, &midi_input_ports);
                 midi_output_panel(
                     ui,
                     midi_width,
@@ -201,7 +195,13 @@ fn settings_panel(
 }
 
 /// Scrolling list area used by the selectable-option panels.
-fn settings_list(ui: &mut egui::Ui, id: &str, width: f32, max_height: f32, add_items: impl FnOnce(&mut egui::Ui)) {
+fn settings_list(
+    ui: &mut egui::Ui,
+    id: &str,
+    width: f32,
+    max_height: f32,
+    add_items: impl FnOnce(&mut egui::Ui),
+) {
     egui::ScrollArea::vertical()
         .id_salt(id)
         .max_height(max_height)
@@ -235,7 +235,11 @@ fn midi_input_panel(
     midi_inputs: &mut midi::MidiInputManager,
     ports: &[String],
 ) {
-    let configured_ports: Vec<String> = settings.midi_inputs.iter().map(|entry| entry.port.clone()).collect();
+    let configured_ports: Vec<String> = settings
+        .midi_inputs
+        .iter()
+        .map(|entry| entry.port.clone())
+        .collect();
     let merged_ports = midi::merged_port_list(ports, &configured_ports);
 
     settings_panel(ui, width, "MIDI Input Devices", |ui, width| {
@@ -244,10 +248,7 @@ fn midi_input_panel(
                 ui.label("No MIDI input devices detected.");
             }
             for port in &merged_ports {
-                let selected = settings
-                    .midi_inputs
-                    .iter()
-                    .any(|entry| entry.port == *port);
+                let selected = settings.midi_inputs.iter().any(|entry| entry.port == *port);
                 let unavailable = selected
                     && midi_inputs.connection_state(port) != midi::PortConnectionState::Connected;
 
@@ -302,39 +303,46 @@ fn midi_output_panel(
     let merged_ports = midi::merged_port_list(ports, &configured_ports);
 
     settings_panel(ui, width, "MIDI Output Device", |ui, width| {
-        settings_list(ui, "midi_output_list_scroll", width, COLUMN_LIST_HEIGHT, |ui| {
-            if merged_ports.is_empty() {
-                ui.label("No MIDI output devices detected.");
-            }
-            for port in &merged_ports {
-                let selected = settings.midi_output_port.as_deref() == Some(port.as_str());
-                let unavailable = selected
-                    && control.midi_output().connection_state() != midi::PortConnectionState::Connected;
+        settings_list(
+            ui,
+            "midi_output_list_scroll",
+            width,
+            COLUMN_LIST_HEIGHT,
+            |ui| {
+                if merged_ports.is_empty() {
+                    ui.label("No MIDI output devices detected.");
+                }
+                for port in &merged_ports {
+                    let selected = settings.midi_output_port.as_deref() == Some(port.as_str());
+                    let unavailable = selected
+                        && control.midi_output().connection_state()
+                            != midi::PortConnectionState::Connected;
 
-                let label = if unavailable {
-                    egui::RichText::new(port).color(UNAVAILABLE_PORT_COLOR)
-                } else {
-                    egui::RichText::new(port)
-                };
-                if ui.selectable_label(selected, label).clicked()
-                    && (!selected || !control.midi_output_connected())
-                {
-                    settings.midi_output_port = Some(port.clone());
-                    if control.set_midi_output_port(Some(port)) {
-                        control.load_patch_respecting_mute(current_patch, muted);
+                    let label = if unavailable {
+                        egui::RichText::new(port).color(UNAVAILABLE_PORT_COLOR)
+                    } else {
+                        egui::RichText::new(port)
+                    };
+                    if ui.selectable_label(selected, label).clicked()
+                        && (!selected || !control.midi_output_connected())
+                    {
+                        settings.midi_output_port = Some(port.clone());
+                        if control.set_midi_output_port(Some(port)) {
+                            control.load_patch_respecting_mute(current_patch, muted);
+                        }
                     }
                 }
-            }
-            let none_selected = settings.midi_output_port.is_none();
-            if ui
-                .selectable_label(none_selected, "None (disconnect)")
-                .clicked()
-                && !none_selected
-            {
-                settings.midi_output_port = None;
-                control.set_midi_output_port(None);
-            }
-        });
+                let none_selected = settings.midi_output_port.is_none();
+                if ui
+                    .selectable_label(none_selected, "None (disconnect)")
+                    .clicked()
+                    && !none_selected
+                {
+                    settings.midi_output_port = None;
+                    control.set_midi_output_port(None);
+                }
+            },
+        );
     });
 }
 
@@ -416,8 +424,7 @@ fn audio_settings_panel(
                             ui.label("No audio input devices detected.");
                         }
                         for device in input_devices {
-                            let selected =
-                                settings.audio_input.as_deref() == Some(device.as_str());
+                            let selected = settings.audio_input.as_deref() == Some(device.as_str());
                             if truncated_selectable(ui, selected, device).clicked() && !selected {
                                 settings.audio_input = Some(device.clone());
                             }
@@ -493,21 +500,27 @@ fn oversampling_panel(
     control: &SynthEngineControl,
 ) {
     settings_panel(ui, width, "Filter Oversampling", |ui, width| {
-        settings_list(ui, "filter_oversampling_scroll", width, COLUMN_LIST_HEIGHT, |ui| {
-            for (mode, label) in [
-                (FilterOversampling::Auto, "Auto"),
-                (FilterOversampling::Off, "Off"),
-                (FilterOversampling::X2, "2x"),
-                (FilterOversampling::X4, "4x"),
-            ] {
-                if ui
-                    .selectable_value(&mut settings.filter_oversampling, mode, label)
-                    .changed()
-                {
-                    control.set_filter_oversampling(settings.filter_oversampling);
+        settings_list(
+            ui,
+            "filter_oversampling_scroll",
+            width,
+            COLUMN_LIST_HEIGHT,
+            |ui| {
+                for (mode, label) in [
+                    (FilterOversampling::Auto, "Auto"),
+                    (FilterOversampling::Off, "Off"),
+                    (FilterOversampling::X2, "2x"),
+                    (FilterOversampling::X4, "4x"),
+                ] {
+                    if ui
+                        .selectable_value(&mut settings.filter_oversampling, mode, label)
+                        .changed()
+                    {
+                        control.set_filter_oversampling(settings.filter_oversampling);
+                    }
                 }
-            }
-        });
+            },
+        );
     });
 }
 

@@ -7,6 +7,7 @@ use crate::engine::SynthEngineControl;
 pub const KNOB_SIZE: f32 = 32.0;
 pub const MASTER_KNOB_SIZE: f32 = 22.0;
 pub const MASTER_FONT_SIZE: f32 = 12.0;
+const MASTER_KNOB_STROKE: f32 = 1.5;
 const KNOB_FONT_SIZE: f32 = 11.0;
 const KNOB_SWEEP_START: f32 = 1.0 / 12.0;
 const KNOB_SWEEP_RANGE: f32 = 10.0 / 12.0;
@@ -124,7 +125,15 @@ pub(crate) fn param_knob_f32_offset(
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
     let edited = knob_value_edit(
-        ui, edit_id, value, min, max, display_offset, &format_fn, font_id, text_color,
+        ui,
+        edit_id,
+        value,
+        min,
+        max,
+        display_offset,
+        &format_fn,
+        font_id,
+        text_color,
     );
 
     if edited || response.changed() || *value != previous {
@@ -257,74 +266,89 @@ pub fn master_volume(
     let accent = ui.visuals().selection.bg_fill;
     let font_id = egui::FontId::proportional(MASTER_FONT_SIZE);
 
-    ui.spacing_mut().item_spacing.x = 4.0;
+    ui.horizontal_centered(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
 
-    ui.label(
-        egui::RichText::new("Master")
-            .font(font_id.clone())
-            .color(text_color),
-    );
+        ui.label(
+            egui::RichText::new("Master")
+                .font(font_id.clone())
+                .color(text_color),
+        );
 
-    ui.add_sized(
-        [MASTER_KNOB_SIZE, MASTER_KNOB_SIZE],
-        Knob::new(value, 0.0, 1.0, KnobStyle::Wiper)
-            .with_size(MASTER_KNOB_SIZE)
-            .with_stroke_width(1.5)
-            .with_colors(knob_color, accent, text_color)
-            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
-            .with_double_click_reset(1.0)
-            .with_background_arc(false)
-            .with_show_filled_segments(false),
-    );
+        let knob_visual = MASTER_KNOB_SIZE + MASTER_KNOB_STROKE * 2.0;
+        let (knob_rect, _) =
+            ui.allocate_exact_size(egui::vec2(knob_visual, knob_visual), egui::Sense::hover());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    knob_rect.min,
+                    egui::vec2(knob_visual, knob_visual + 16.0),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Center)),
+            |ui| {
+                ui.add(
+                    Knob::new(value, 0.0, 1.0, KnobStyle::Wiper)
+                        .with_size(MASTER_KNOB_SIZE)
+                        .with_stroke_width(MASTER_KNOB_STROKE)
+                        .with_colors(knob_color, accent, text_color)
+                        .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+                        .with_double_click_reset(1.0)
+                        .with_background_arc(false)
+                        .with_show_filled_segments(false),
+                );
+            },
+        );
 
-    let edit_id = egui::Id::new("knob_txt_master_volume");
+        let edit_id = egui::Id::new("knob_txt_master_volume");
 
-    let mut edit_text = ui
-        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
-        .unwrap_or_default();
+        let mut edit_text = ui
+            .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+            .unwrap_or_default();
 
-    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
-    let changed = *value != previous;
+        let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+        let changed = *value != previous;
 
-    if !edit_has_focus {
-        edit_text = format!("{:.2}", *value);
-    }
-
-    if edit_text.is_empty() {
-        edit_text = format!("{:.2}", *value);
-    }
-
-    let edit_response = ui.add_sized(
-        [38.0, MASTER_KNOB_SIZE],
-        egui::TextEdit::singleline(&mut edit_text)
-            .id(edit_id)
-            .font(font_id)
-            .horizontal_align(egui::Align::Center)
-            .frame(egui::Frame::NONE)
-            .text_color(text_color),
-    );
-
-    let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
-    if apply {
-        if let Ok(new_val) = edit_text.trim().parse::<f32>() {
-            let clamped = new_val.clamp(0.0, 1.0);
-            if (*value - clamped).abs() > f32::EPSILON {
-                *value = clamped;
-                if echo_midi {
-                    control.set_param(ParamId::MasterVolume, *value);
-                }
-            }
-            edit_text = format!("{:.2}", *value);
-        } else {
+        if !edit_has_focus {
             edit_text = format!("{:.2}", *value);
         }
-    }
 
-    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+        if edit_text.is_empty() {
+            edit_text = format!("{:.2}", *value);
+        }
 
-    if changed && echo_midi {
-        control.set_param(ParamId::MasterVolume, *value);
-    }
+        let edit_response = ui.add(
+            egui::TextEdit::singleline(&mut edit_text)
+                .id(edit_id)
+                .font(font_id)
+                .desired_width(36.0)
+                .margin(egui::Margin::ZERO)
+                .horizontal_align(egui::Align::Center)
+                .frame(egui::Frame::NONE)
+                .text_color(text_color),
+        );
+
+        let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
+        if apply {
+            if let Ok(new_val) = edit_text.trim().parse::<f32>() {
+                let clamped = new_val.clamp(0.0, 1.0);
+                if (*value - clamped).abs() > f32::EPSILON {
+                    *value = clamped;
+                    if echo_midi {
+                        control.set_param(ParamId::MasterVolume, *value);
+                    }
+                }
+                edit_text = format!("{:.2}", *value);
+            } else {
+                edit_text = format!("{:.2}", *value);
+            }
+        }
+
+        ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+
+        if changed && echo_midi {
+            control.set_param(ParamId::MasterVolume, *value);
+        }
+    });
 }
 
 fn format_hz(value: f32) -> String {
@@ -350,5 +374,155 @@ fn format_knob_value(min: f32, max: f32) -> impl Fn(f32) -> String + 'static {
         } else {
             format!("{value:.2}")
         }
+    }
+}
+
+const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+fn value_to_note_name(value: f32) -> String {
+    let v = value.clamp(0.0, 120.0) as i32;
+    let note = NOTE_NAMES[(v % 12) as usize];
+    let octave = v / 12 - 2;
+    format!("{note}{octave}")
+}
+
+fn parse_note_name(text: &str) -> Option<f32> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let first = trimmed.chars().next()?.to_ascii_uppercase();
+    let note_idx = NOTE_NAMES
+        .iter()
+        .position(|&n| n.starts_with(first))?;
+
+    let mut pos = 1;
+    let accidental = if trimmed.len() > pos {
+        match trimmed.chars().nth(pos) {
+            Some('#') => {
+                pos += 1;
+                1
+            }
+            Some('b') => {
+                pos += 1;
+                -1
+            }
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    let note_with_accidental = (note_idx as i32 + accidental).rem_euclid(12) as usize;
+    let octave_str: String = trimmed[pos..]
+        .chars()
+        .take_while(|c| *c == '-' || c.is_ascii_digit())
+        .collect();
+
+    let octave: i32 = octave_str.parse().ok()?;
+    let value = (octave + 2) * 12 + note_with_accidental as i32;
+
+    if (0..=120).contains(&value) {
+        Some(value as f32)
+    } else {
+        None
+    }
+}
+
+fn knob_note_edit(
+    ui: &mut egui::Ui,
+    edit_id: egui::Id,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    font_id: egui::FontId,
+    text_color: egui::Color32,
+) -> bool {
+    let mut edit_text = ui
+        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+        .unwrap_or_default();
+
+    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+
+    if !edit_has_focus {
+        edit_text = value_to_note_name(*value);
+    }
+
+    if edit_text.is_empty() {
+        edit_text = value_to_note_name(*value);
+    }
+
+    let edit_response = ui.add(
+        egui::TextEdit::singleline(&mut edit_text)
+            .id(edit_id)
+            .font(font_id)
+            .horizontal_align(egui::Align::Center)
+            .frame(egui::Frame::NONE)
+            .text_color(text_color),
+    );
+
+    let mut changed = false;
+    if edit_response.lost_focus() && !edit_text.trim().is_empty() {
+        let new_val = parse_note_name(&edit_text)
+            .or_else(|| edit_text.trim().parse::<f32>().ok())
+            .unwrap_or(*value)
+            .clamp(min, max);
+
+        if (*value - new_val).abs() > f32::EPSILON {
+            *value = new_val;
+            changed = true;
+        }
+        edit_text = value_to_note_name(*value);
+    }
+
+    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+    changed
+}
+
+pub fn param_knob_note(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
+    let min = *range.start();
+    let max = *range.end();
+    let text_color = ui.visuals().text_color();
+    let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let accent = ui.visuals().selection.bg_fill;
+    let previous = *value;
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let response = ui.add(
+        Knob::new(value, min, max, KnobStyle::Wiper)
+            .with_size(KNOB_SIZE)
+            .with_stroke_width(2.0)
+            .with_colors(knob_color, accent, text_color)
+            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+            .with_double_click_reset(reset_value)
+            .with_background_arc(true)
+            .with_show_filled_segments(true),
+    );
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+
+    ui.label(
+        egui::RichText::new(label)
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    let edit_id = knob_edit_id(param);
+    let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
+
+    let edited = knob_note_edit(ui, edit_id, value, min, max, font_id, text_color);
+
+    if edited || response.changed() || *value != previous {
+        control.set_param(param, *value);
     }
 }

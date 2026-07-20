@@ -398,7 +398,7 @@ fn render_oscillator(state: &mut OscillatorViewState) {
     osc.set_waveform(int_to_waveform(state.waveform));
     osc.set_saw_method(state.saw_method);
     osc.set_shape(state.shape);
-    osc.reset_phase();
+    osc.start_phase_lane(0);
     osc.set_frequency(f32x4::splat(freq));
 
     state.samples.clear();

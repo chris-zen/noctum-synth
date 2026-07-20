@@ -5,17 +5,18 @@ use eframe::egui;
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
     KNOB_SIZE, framed_selectable, framed_selectable_sized, master_volume, param_knob_bipolar,
-    param_knob_f32, param_knob_f32_offset, param_knob_log_hz, param_toggle, param_toggle_sized,
+    param_knob_f32, param_knob_f32_offset, param_knob_log_hz, param_knob_note, param_toggle,
+    param_toggle_sized,
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterType, MAX_LFO_RATE_HZ,
-    MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch,
+    DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterType, GlideMode, KeyMode,
+    MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
+    ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
-const OSC_GRID_WIDTH: f32 = 700.0;
+const OSC_GRID_WIDTH: f32 = 840.0;
 const LFO_PANEL_WIDTH: f32 = 400.0;
 const MOD_MATRIX_PANEL_WIDTH: f32 = 760.0;
 const MOD_MATRIX_EXPANDED_ID: &str = "mod_matrix_expanded";
@@ -27,14 +28,22 @@ const AUX_GRID_WIDTH: f32 = 360.0;
 const CONTROL_CELL_W: f32 = 46.0;
 const CONTROL_CELL_H: f32 = 64.0;
 const DEST_CELL_W: f32 = 112.0;
-const TOGGLE_CELL_W: f32 = 82.0;
-const TOGGLE_CELL_H: f32 = 64.0;
 const WAVE_CELL_W: f32 = 112.0;
-const WAVE_BUTTON_SIZE: egui::Vec2 = egui::vec2(54.0, 22.0);
+const WAVE_BUTTON_SIZE: egui::Vec2 = egui::vec2(56.0, 22.0);
 const LFO_SHAPE_BUTTON_SIZE: egui::Vec2 = egui::vec2(78.0, 22.0);
 const LFO_SYNC_BUTTON_SIZE: egui::Vec2 = egui::vec2(72.0, 22.0);
 const LFO_INDEX_BUTTON_SIZE: egui::Vec2 = egui::vec2(34.0, 28.0);
-const OSC_TOGGLE_BUTTON_SIZE: egui::Vec2 = egui::vec2(82.0, 20.0);
+const COMBO_COLUMN_W: f32 = 80.0;
+const COMBO_CONTROL_W: f32 = 78.0;
+const COMBO_BUTTON_SIZE: egui::Vec2 = egui::vec2(COMBO_CONTROL_W, 22.0);
+const GLIDE_COLUMN_W: f32 = 98.0;
+const GLIDE_CONTROL_W: f32 = 96.0;
+const GLIDE_BUTTON_SIZE: egui::Vec2 = egui::vec2(GLIDE_CONTROL_W, 22.0);
+const GLIDE_CELL_H: f32 = 64.0;
+const UNISON_COLUMN_W: f32 = 90.0;
+const UNISON_CONTROL_W: f32 = 88.0;
+const UNISON_BUTTON_SIZE: egui::Vec2 = egui::vec2(UNISON_CONTROL_W, 22.0);
+const UNISON_CELL_H: f32 = 64.0;
 const MOD_SLOT_BUTTON_SIZE: egui::Vec2 = egui::vec2(28.0, 26.0);
 const EFFECT_TYPE_COUNT: usize = 13;
 
@@ -68,13 +77,27 @@ pub struct UiState {
     pub osc2_freq: f32,
     pub osc1_fine: f32,
     pub osc2_fine: f32,
-    pub osc1_shape: f32,
-    pub osc2_shape: f32,
+    pub osc1_shape_mod: f32,
+    pub osc2_shape_mod: f32,
     pub osc_mix: f32,
     pub sync: bool,
     pub osc_slop: f32,
     pub osc1_note_reset: bool,
     pub osc2_note_reset: bool,
+    pub osc1_glide: f32,
+    pub osc2_glide: f32,
+    pub osc1_keyboard_on: bool,
+    pub osc2_keyboard_on: bool,
+    pub glide_mode: usize,
+    pub glide_enabled: bool,
+    pub glide_time: f32,
+    pub pitch_bend_range: f32,
+    pub key_mode: usize,
+    pub unison_enabled: bool,
+    pub unison_mode: usize,
+    pub unison_detune: f32,
+    pub bpm: f32,
+    pub clock_divide: usize,
     pub sub_level: f32,
     pub noise_level: f32,
     pub filter_cutoff: f32,
@@ -146,13 +169,27 @@ impl Default for UiState {
             osc2_freq: 60.0,
             osc1_fine: 0.0,
             osc2_fine: 0.0,
-            osc1_shape: 0.0,
-            osc2_shape: 0.0,
+            osc1_shape_mod: 0.0,
+            osc2_shape_mod: 0.0,
             osc_mix: 0.0,
             sync: false,
             osc_slop: 0.0,
             osc1_note_reset: true,
             osc2_note_reset: true,
+            osc1_glide: 0.0,
+            osc2_glide: 0.0,
+            osc1_keyboard_on: true,
+            osc2_keyboard_on: true,
+            glide_mode: 0,
+            glide_enabled: false,
+            glide_time: 0.0,
+            pitch_bend_range: 2.0,
+            key_mode: 0,
+            unison_enabled: false,
+            unison_mode: 0,
+            unison_detune: 0.0,
+            bpm: 120.0,
+            clock_divide: 1,
             sub_level: 0.0,
             noise_level: 0.0,
             filter_cutoff: 20_000.0,
@@ -225,13 +262,25 @@ impl UiState {
         self.osc2_freq = patch.osc2.frequency;
         self.osc1_fine = patch.osc1.fine_tune;
         self.osc2_fine = patch.osc2.fine_tune;
-        self.osc1_shape = patch.osc1.shape;
-        self.osc2_shape = patch.osc2.shape;
+        self.osc1_shape_mod = patch.osc1.shape_mod;
+        self.osc2_shape_mod = patch.osc2.shape_mod;
         self.osc_mix = patch.osc_mix;
         self.sync = patch.hard_sync;
         self.osc_slop = patch.osc_slop;
         self.osc1_note_reset = patch.osc1.note_reset;
         self.osc2_note_reset = patch.osc2.note_reset;
+        self.osc1_glide = patch.osc1.glide;
+        self.osc2_glide = patch.osc2.glide;
+        self.osc1_keyboard_on = patch.osc1.keyboard_on;
+        self.osc2_keyboard_on = patch.osc2.keyboard_on;
+        self.glide_mode = patch.glide_mode.index();
+        self.glide_enabled = patch.glide_enabled;
+        self.key_mode = patch.key_mode.index();
+        self.unison_enabled = patch.unison_enabled;
+        self.unison_mode = patch.unison_mode.index();
+        self.unison_detune = patch.unison_detune;
+        self.bpm = patch.bpm;
+        self.clock_divide = patch.clock_divide as usize;
         self.sub_level = patch.sub_osc_level;
         self.noise_level = patch.noise_level;
         self.filter_cutoff = patch.filter.cutoff;
@@ -317,12 +366,12 @@ impl UiState {
             ParamId::Osc1Enabled => self.osc1_enabled = enabled,
             ParamId::Osc1Frequency => self.osc1_freq = value,
             ParamId::Osc1FineTune => self.osc1_fine = value,
-            ParamId::Osc1Shape => self.osc1_shape = value,
+            ParamId::Osc1ShapeMod => self.osc1_shape_mod = value,
             ParamId::Osc2Waveform => self.osc2_waveform = value as usize,
             ParamId::Osc2Enabled => self.osc2_enabled = enabled,
             ParamId::Osc2Frequency => self.osc2_freq = value,
             ParamId::Osc2FineTune => self.osc2_fine = value,
-            ParamId::Osc2Shape => self.osc2_shape = value,
+            ParamId::Osc2ShapeMod => self.osc2_shape_mod = value,
             ParamId::OscMix => self.osc_mix = value,
             ParamId::SubOscLevel => self.sub_level = value,
             ParamId::NoiseLevel => self.noise_level = value,
@@ -330,6 +379,20 @@ impl UiState {
             ParamId::OscSlop | ParamId::AnalogDrift => self.osc_slop = value,
             ParamId::Osc1NoteReset => self.osc1_note_reset = enabled,
             ParamId::Osc2NoteReset => self.osc2_note_reset = enabled,
+            ParamId::Osc1KeyboardOn => self.osc1_keyboard_on = enabled,
+            ParamId::Osc2KeyboardOn => self.osc2_keyboard_on = enabled,
+            ParamId::Osc1Glide => self.osc1_glide = value,
+            ParamId::Osc2Glide => self.osc2_glide = value,
+            ParamId::GlideMode => self.glide_mode = value as usize,
+            ParamId::GlideEnabled => self.glide_enabled = enabled,
+            ParamId::GlideTime => self.glide_time = value,
+            ParamId::PitchBendRange => self.pitch_bend_range = value,
+            ParamId::KeyMode => self.key_mode = value as usize,
+            ParamId::UnisonEnabled => self.unison_enabled = enabled,
+            ParamId::UnisonMode => self.unison_mode = value as usize,
+            ParamId::UnisonDetune => self.unison_detune = value,
+            ParamId::Bpm => self.bpm = value.clamp(30.0, 250.0),
+            ParamId::ClockDivide => self.clock_divide = value as usize,
             ParamId::FilterCutoff => self.filter_cutoff = value,
             ParamId::FilterResonance => self.filter_resonance = value,
             ParamId::FilterPoles => self.filter_poles = usize::from(enabled),
@@ -490,29 +553,38 @@ impl From<&UiState> for Patch {
                 enabled: state.osc1_enabled,
                 frequency: state.osc1_freq,
                 fine_tune: state.osc1_fine,
-                shape: state.osc1_shape,
+                shape_mod: state.osc1_shape_mod,
                 level: 1.0,
                 note_reset: state.osc1_note_reset,
-                keyboard_on: true,
-                glide: false,
+                keyboard_on: state.osc1_keyboard_on,
+                glide: state.osc1_glide,
             },
             osc2: OscillatorPatch {
                 waveform: state.osc2_waveform as u8,
                 enabled: state.osc2_enabled,
                 frequency: state.osc2_freq,
                 fine_tune: state.osc2_fine,
-                shape: state.osc2_shape,
+                shape_mod: state.osc2_shape_mod,
                 level: 1.0,
                 note_reset: state.osc2_note_reset,
-                keyboard_on: true,
-                glide: false,
+                keyboard_on: state.osc2_keyboard_on,
+                glide: state.osc2_glide,
             },
             osc_mix: state.osc_mix,
             sub_osc_level: state.sub_level,
             noise_level: state.noise_level,
             hard_sync: state.sync,
             osc_slop: state.osc_slop,
-            glide_time: 0.0,
+            glide_time: state.glide_time,
+            glide_mode: GlideMode::from_index(state.glide_mode),
+            glide_enabled: state.glide_enabled,
+            pitch_bend_range: state.pitch_bend_range,
+            key_mode: KeyMode::from_index(state.key_mode),
+            unison_enabled: state.unison_enabled,
+            unison_mode: UnisonMode::from_index(state.unison_mode),
+            unison_detune: state.unison_detune,
+            bpm: state.bpm,
+            clock_divide: state.clock_divide as f32,
             filter: synth_core::FilterParams {
                 cutoff: state.filter_cutoff,
                 resonance: state.filter_resonance,
@@ -689,6 +761,24 @@ pub fn show(
         module_panel(ui, "Effects", |ui| {
             effects_module(ui, state, control);
         });
+
+        ui.add_space(8.0);
+
+        module_panel(ui, "Misc", |ui| {
+            ui.horizontal(|ui| {
+                control_cell(ui, |ui| {
+                    param_knob_f32(
+                        ui,
+                        "Bend Range",
+                        &mut state.pitch_bend_range,
+                        0.0..=12.0,
+                        2.0,
+                        ParamId::PitchBendRange,
+                        control,
+                    );
+                });
+            });
+        });
     });
 
     let finalized = patch_mgr.finalize_loaded_patch(state);
@@ -749,7 +839,7 @@ fn command_row(
                     .corner_radius(2.0)
                     .show(ui, |ui| {
                         ui.add_sized(
-                            [240.0, 18.0],
+                            [200.0, 18.0],
                             egui::TextEdit::singleline(&mut patch_mgr.save_name)
                                 .id_salt(PATCH_NAME_FIELD_ID)
                                 .frame(egui::Frame::NONE),
@@ -776,8 +866,9 @@ fn command_row(
                         ui.set_min_width(PATCH_LOAD_POPUP_WIDTH);
 
                         let filter_id = egui::Id::new(PATCH_LOAD_FILTER_ID);
-                        let mut filter = ui
-                            .data_mut(|data| data.get_temp_mut_or_default::<String>(filter_id).clone());
+                        let mut filter = ui.data_mut(|data| {
+                            data.get_temp_mut_or_default::<String>(filter_id).clone()
+                        });
                         ui.horizontal(|ui| {
                             ui.label("Filter:");
                             let filter_response = ui.add(
@@ -790,7 +881,9 @@ fn command_row(
                                 filter_response.request_focus();
                             }
                         });
-                        ui.data_mut(|data| *data.get_temp_mut_or_default::<String>(filter_id) = filter);
+                        ui.data_mut(|data| {
+                            *data.get_temp_mut_or_default::<String>(filter_id) = filter
+                        });
 
                         ui.separator();
 
@@ -864,9 +957,50 @@ fn command_row(
                 } else {
                     "Select a MIDI output device in Settings"
                 });
+
+                ui.separator();
+
+                ui.label("BPM:");
+                let mut bpm = state.bpm;
+                let response = ui.add(
+                    egui::DragValue::new(&mut bpm)
+                        .range(30.0..=250.0)
+                        .speed(0.5)
+                        .fixed_decimals(0),
+                );
+                if response.changed() {
+                    state.bpm = bpm;
+                    control.set_param(ParamId::Bpm, bpm);
+                }
+                response.on_hover_text("Beats per minute (30–250)");
+
+                ui.label("Div:");
+                let divide_names = [
+                    "1/2", "1/4", "1/8", "1/8h", "1/8s", "1/8t", "1/16", "1/16h", "1/16s", "1/16t",
+                    "1/32", "1/32t", "1/64t",
+                ];
+                let current_label = divide_names
+                    .get(state.clock_divide)
+                    .copied()
+                    .unwrap_or("1/4");
+                egui::ComboBox::from_id_salt("clock_divide")
+                    .width(52.0)
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
+                        for (index, label) in divide_names.iter().enumerate() {
+                            if ui
+                                .selectable_label(state.clock_divide == index, *label)
+                                .clicked()
+                            {
+                                state.clock_divide = index;
+                                control.set_param(ParamId::ClockDivide, index as f32);
+                                ui.close();
+                            }
+                        }
+                    });
             });
 
-            ui.add_space(8.0);
+            ui.add_space(4.0);
 
             ui.horizontal(|ui| {
                 if ui.button("Analysis").clicked() {
@@ -914,10 +1048,11 @@ fn command_row(
                         }
                     });
                 if ui.button("Play").clicked() {
-                    control.note_on(play_midi_note(state.play_pitch_class, state.play_octave), 0.8);
+                    control.note_on(
+                        play_midi_note(state.play_pitch_class, state.play_octave),
+                        0.8,
+                    );
                 }
-
-                ui.separator();
 
                 if ui.button("Stop All").clicked() {
                     control.all_notes_off();
@@ -1009,21 +1144,33 @@ fn module_panel_with_header(
 fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
     fixed_panel_scroll(ui, "oscillators_grid_scroll", OSC_GRID_WIDTH, |ui| {
         egui::Grid::new("oscillators_grid")
-            .num_columns(9)
-            .spacing(egui::vec2(14.0, 10.0))
+            .num_columns(12)
+            .spacing(egui::vec2(8.0, 10.0))
             .show(ui, |ui| {
                 strong_label(ui, "OSC 1");
                 control_cell(ui, |ui| {
-                    param_knob_f32_offset(
-                        ui,
-                        "Freq",
-                        &mut state.osc1_freq,
-                        0.0..=120.0,
-                        60.0,
-                        60.0,
-                        ParamId::Osc1Frequency,
-                        control,
-                    );
+                    if state.osc1_keyboard_on {
+                        param_knob_f32_offset(
+                            ui,
+                            "Freq",
+                            &mut state.osc1_freq,
+                            0.0..=120.0,
+                            60.0,
+                            60.0,
+                            ParamId::Osc1Frequency,
+                            control,
+                        );
+                    } else {
+                        param_knob_note(
+                            ui,
+                            "Freq",
+                            &mut state.osc1_freq,
+                            0.0..=120.0,
+                            60.0,
+                            ParamId::Osc1Frequency,
+                            control,
+                        );
+                    }
                 });
                 control_cell(ui, |ui| {
                     param_knob_f32(
@@ -1039,11 +1186,22 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Shape",
-                        &mut state.osc1_shape,
+                        "Shape Mod",
+                        &mut state.osc1_shape_mod,
                         0.0..=1.0,
                         0.0,
-                        ParamId::Osc1Shape,
+                        ParamId::Osc1ShapeMod,
+                        control,
+                    );
+                });
+                control_cell(ui, |ui| {
+                    param_knob_f32(
+                        ui,
+                        "Glide",
+                        &mut state.osc1_glide,
+                        0.0..=1.0,
+                        0.0,
+                        ParamId::Osc1Glide,
                         control,
                     );
                 });
@@ -1051,19 +1209,32 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     egui::vec2(32.0, CONTROL_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), KNOB_SIZE),
-                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                            |ui| {
-                                param_toggle(
-                                    ui,
-                                    "On",
-                                    &mut state.osc1_enabled,
-                                    ParamId::Osc1Enabled,
-                                    control,
-                                );
-                            },
-                        );
+                        ui.vertical(|ui| {
+                            param_toggle_sized(
+                                ui,
+                                WAVE_BUTTON_SIZE,
+                                "On",
+                                &mut state.osc1_enabled,
+                                ParamId::Osc1Enabled,
+                                control,
+                            );
+                            param_toggle_sized(
+                                ui,
+                                WAVE_BUTTON_SIZE,
+                                "Key",
+                                &mut state.osc1_keyboard_on,
+                                ParamId::Osc1KeyboardOn,
+                                control,
+                            );
+                            param_toggle_sized(
+                                ui,
+                                WAVE_BUTTON_SIZE,
+                                "Reset",
+                                &mut state.osc1_note_reset,
+                                ParamId::Osc1NoteReset,
+                                control,
+                            );
+                        });
                     },
                 );
                 wave_selector_cell(
@@ -1097,37 +1268,92 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 ui.allocate_ui_with_layout(
-                    egui::vec2(TOGGLE_CELL_W, TOGGLE_CELL_H),
-                    egui::Layout::top_down(egui::Align::Center),
+                    egui::vec2(COMBO_COLUMN_W, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        ui.add_space(6.0);
+                        param_toggle_sized(
+                            ui,
+                            COMBO_BUTTON_SIZE,
+                            "Sync",
+                            &mut state.sync,
+                            ParamId::HardSync,
+                            control,
+                        );
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(GLIDE_COLUMN_W, GLIDE_CELL_H),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_max_width(GLIDE_COLUMN_W);
                         ui.vertical(|ui| {
                             param_toggle_sized(
                                 ui,
-                                OSC_TOGGLE_BUTTON_SIZE,
-                                "Osc1 Reset",
-                                &mut state.osc1_note_reset,
-                                ParamId::Osc1NoteReset,
+                                GLIDE_BUTTON_SIZE,
+                                "Glide",
+                                &mut state.glide_enabled,
+                                ParamId::GlideEnabled,
                                 control,
                             );
-                            ui.add_space(3.0);
+                            ui.add_space(4.0);
+                            let current = GlideMode::from_index(state.glide_mode);
+                            egui::ComboBox::from_id_salt("glide_mode")
+                                .width(GLIDE_CONTROL_W)
+                                .truncate()
+                                .selected_text(current.name())
+                                .show_ui(ui, |ui| {
+                                    for (index, mode) in GlideMode::ALL.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                state.glide_mode == index,
+                                                mode.name(),
+                                            )
+                                            .clicked()
+                                        {
+                                            state.glide_mode = index;
+                                            control.set_param(ParamId::GlideMode, index as f32);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                        });
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(UNISON_COLUMN_W, UNISON_CELL_H),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_max_width(UNISON_COLUMN_W);
+                        ui.vertical(|ui| {
                             param_toggle_sized(
                                 ui,
-                                OSC_TOGGLE_BUTTON_SIZE,
-                                "Osc2 Reset",
-                                &mut state.osc2_note_reset,
-                                ParamId::Osc2NoteReset,
+                                UNISON_BUTTON_SIZE,
+                                "Unison",
+                                &mut state.unison_enabled,
+                                ParamId::UnisonEnabled,
                                 control,
                             );
-                            ui.add_space(3.0);
-                            param_toggle_sized(
-                                ui,
-                                OSC_TOGGLE_BUTTON_SIZE,
-                                "Sync",
-                                &mut state.sync,
-                                ParamId::HardSync,
-                                control,
-                            );
+                            ui.add_space(4.0);
+                            let current = UnisonMode::from_index(state.unison_mode);
+                            egui::ComboBox::from_id_salt("unison_mode")
+                                .width(UNISON_CONTROL_W)
+                                .truncate()
+                                .selected_text(current.name())
+                                .show_ui(ui, |ui| {
+                                    for (index, mode) in UnisonMode::ALL.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                state.unison_mode == index,
+                                                mode.name(),
+                                            )
+                                            .clicked()
+                                        {
+                                            state.unison_mode = index;
+                                            control.set_param(ParamId::UnisonMode, index as f32);
+                                            ui.close();
+                                        }
+                                    }
+                                });
                         });
                     },
                 );
@@ -1135,16 +1361,28 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
 
                 strong_label(ui, "OSC 2");
                 control_cell(ui, |ui| {
-                    param_knob_f32_offset(
-                        ui,
-                        "Freq",
-                        &mut state.osc2_freq,
-                        0.0..=120.0,
-                        60.0,
-                        60.0,
-                        ParamId::Osc2Frequency,
-                        control,
-                    );
+                    if state.osc2_keyboard_on {
+                        param_knob_f32_offset(
+                            ui,
+                            "Freq",
+                            &mut state.osc2_freq,
+                            0.0..=120.0,
+                            60.0,
+                            60.0,
+                            ParamId::Osc2Frequency,
+                            control,
+                        );
+                    } else {
+                        param_knob_note(
+                            ui,
+                            "Freq",
+                            &mut state.osc2_freq,
+                            0.0..=120.0,
+                            60.0,
+                            ParamId::Osc2Frequency,
+                            control,
+                        );
+                    }
                 });
                 control_cell(ui, |ui| {
                     param_knob_f32(
@@ -1160,11 +1398,22 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "Shape",
-                        &mut state.osc2_shape,
+                        "Shape Mod",
+                        &mut state.osc2_shape_mod,
                         0.0..=1.0,
                         0.0,
-                        ParamId::Osc2Shape,
+                        ParamId::Osc2ShapeMod,
+                        control,
+                    );
+                });
+                control_cell(ui, |ui| {
+                    param_knob_f32(
+                        ui,
+                        "Glide",
+                        &mut state.osc2_glide,
+                        0.0..=1.0,
+                        0.0,
+                        ParamId::Osc2Glide,
                         control,
                     );
                 });
@@ -1172,19 +1421,32 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     egui::vec2(32.0, CONTROL_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(ui.available_width(), KNOB_SIZE),
-                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                            |ui| {
-                                param_toggle(
-                                    ui,
-                                    "On",
-                                    &mut state.osc2_enabled,
-                                    ParamId::Osc2Enabled,
-                                    control,
-                                );
-                            },
-                        );
+                        ui.vertical(|ui| {
+                            param_toggle_sized(
+                                ui,
+                                WAVE_BUTTON_SIZE,
+                                "On",
+                                &mut state.osc2_enabled,
+                                ParamId::Osc2Enabled,
+                                control,
+                            );
+                            param_toggle_sized(
+                                ui,
+                                WAVE_BUTTON_SIZE,
+                                "Key",
+                                &mut state.osc2_keyboard_on,
+                                ParamId::Osc2KeyboardOn,
+                                control,
+                            );
+                            param_toggle_sized(
+                                ui,
+                                WAVE_BUTTON_SIZE,
+                                "Reset",
+                                &mut state.osc2_note_reset,
+                                ParamId::Osc2NoteReset,
+                                control,
+                            );
+                        });
                     },
                 );
                 wave_selector_cell(
@@ -1217,6 +1479,61 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                         control,
                     );
                 });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(COMBO_COLUMN_W, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_max_width(COMBO_COLUMN_W);
+                        ui.label("Key Mode:");
+                        let current = KeyMode::from_index(state.key_mode);
+                        egui::ComboBox::from_id_salt("key_mode")
+                            .width(COMBO_CONTROL_W)
+                            .truncate()
+                            .selected_text(current.name())
+                            .show_ui(ui, |ui| {
+                                for (index, mode) in KeyMode::ALL.iter().enumerate() {
+                                    if ui
+                                        .selectable_label(state.key_mode == index, mode.name())
+                                        .clicked()
+                                    {
+                                        state.key_mode = index;
+                                        control.set_param(ParamId::KeyMode, index as f32);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(GLIDE_COLUMN_W, GLIDE_CELL_H),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        param_knob_f32(
+                            ui,
+                            "Glide",
+                            &mut state.glide_time,
+                            0.0..=1.0,
+                            0.0,
+                            ParamId::GlideTime,
+                            control,
+                        );
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(UNISON_COLUMN_W, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        param_knob_f32(
+                            ui,
+                            "Detune",
+                            &mut state.unison_detune,
+                            0.0..=1.0,
+                            0.0,
+                            ParamId::UnisonDetune,
+                            control,
+                        );
+                    },
+                );
                 ui.end_row();
             });
     });
@@ -1229,21 +1546,17 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                 ui.add_space(4.0);
                 for index in 0..4 {
                     let selected = state.selected_lfo == index;
-                    let active = state.lfo_depths[index] > 0.0
-                        && state.lfo_destinations[index] != 0;
-                    let mut button =
-                        egui::Button::selectable(selected, format!("{}", index + 1))
-                            .frame_when_inactive(true);
+                    let active =
+                        state.lfo_depths[index] > 0.0 && state.lfo_destinations[index] != 0;
+                    let mut button = egui::Button::selectable(selected, format!("{}", index + 1))
+                        .frame_when_inactive(true);
                     if active && !selected {
                         button = button.fill(egui::Color32::from_rgb(0, 55, 90));
                     }
-                    if ui
-                        .add_sized(LFO_INDEX_BUTTON_SIZE, button)
-                        .clicked()
-                    {
+                    if ui.add_sized(LFO_INDEX_BUTTON_SIZE, button).clicked() {
                         state.selected_lfo = index;
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
                 }
             });
 
@@ -1359,36 +1672,36 @@ fn lfo_destination_selector(ui: &mut egui::Ui, state: &mut UiState, control: &Sy
 }
 
 fn modulation_matrix_panel(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
-    module_panel_with_header(ui, "Modulation Matrix", |ui| {
-        let expanded_id = egui::Id::new(MOD_MATRIX_EXPANDED_ID);
-        let expanded = ui
-            .data(|data| data.get_temp::<bool>(expanded_id).unwrap_or(false));
-        let chevron = if expanded { "▼" } else { "▶" };
-        if ui
-            .small_button(chevron)
-            .on_hover_text(if expanded {
-                "Collapse"
-            } else {
-                "Expand"
-            })
-            .clicked()
-        {
-            ui.data_mut(|data| {
-                let current = data.get_temp::<bool>(expanded_id).unwrap_or(false);
-                data.insert_temp(expanded_id, !current);
+    module_panel_with_header(
+        ui,
+        "Modulation Matrix",
+        |ui| {
+            let expanded_id = egui::Id::new(MOD_MATRIX_EXPANDED_ID);
+            let expanded = ui.data(|data| data.get_temp::<bool>(expanded_id).unwrap_or(false));
+            let chevron = if expanded { "▼" } else { "▶" };
+            if ui
+                .small_button(chevron)
+                .on_hover_text(if expanded { "Collapse" } else { "Expand" })
+                .clicked()
+            {
+                ui.data_mut(|data| {
+                    let current = data.get_temp::<bool>(expanded_id).unwrap_or(false);
+                    data.insert_temp(expanded_id, !current);
+                });
+            }
+        },
+        |ui| {
+            let expanded = ui.data(|data| {
+                data.get_temp::<bool>(egui::Id::new(MOD_MATRIX_EXPANDED_ID))
+                    .unwrap_or(false)
             });
-        }
-    }, |ui| {
-        let expanded = ui.data(|data| {
-            data.get_temp::<bool>(egui::Id::new(MOD_MATRIX_EXPANDED_ID))
-                .unwrap_or(false)
-        });
-        if expanded {
-            modulation_matrix_module_expanded(ui, state, control);
-        } else {
-            modulation_matrix_module_collapsed(ui, state, control);
-        }
-    });
+            if expanded {
+                modulation_matrix_module_expanded(ui, state, control);
+            } else {
+                modulation_matrix_module_collapsed(ui, state, control);
+            }
+        },
+    );
 }
 
 fn modulation_matrix_module_collapsed(
@@ -1449,8 +1762,7 @@ fn modulation_matrix_module_expanded(
 
 fn mod_slot_label_button(ui: &mut egui::Ui, state: &mut UiState, index: usize) -> bool {
     let enabled = state.mod_enabled[index];
-    let mut button =
-        egui::Button::new((index + 1).to_string()).frame_when_inactive(true);
+    let mut button = egui::Button::new((index + 1).to_string()).frame_when_inactive(true);
     if enabled {
         button = button.fill(egui::Color32::from_rgb(0, 55, 90));
     }
@@ -2338,7 +2650,7 @@ fn wave_selector_cell(
         |ui| {
             egui::Grid::new(ui.id().with("wave_selector"))
                 .num_columns(2)
-                .spacing(egui::vec2(4.0, 2.0))
+                .spacing(egui::vec2(4.0, 4.0))
                 .show(ui, |ui| {
                     for (index, name) in ["Saw", "Saw+Tri", "Triangle", "Pulse"].iter().enumerate()
                     {
@@ -2546,8 +2858,7 @@ impl PatchManager {
             )
         })?;
         let path = self.patches_dir.join(format!("{name}.json"));
-        let json =
-            serde_json::to_string_pretty(program.patch()).map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(program.patch()).map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
         Ok(path)
     }
@@ -2656,9 +2967,7 @@ fn user_edited_patch(ui: &egui::Ui, before: &Patch, after: &Patch) -> bool {
     if patches_equal(before, after) {
         return false;
     }
-    ui.input(|input| {
-        input.pointer.is_decidedly_dragging() || input.pointer.any_click()
-    })
+    ui.input(|input| input.pointer.is_decidedly_dragging() || input.pointer.any_click())
 }
 
 fn strip_modified_suffix(name: &str) -> &str {

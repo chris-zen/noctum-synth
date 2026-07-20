@@ -317,7 +317,7 @@ fn measure_control_stress(
                 ParamId::FilterResonance,
                 patch.filter.resonance + direction * 0.001,
             ),
-            (ParamId::Osc1Shape, patch.osc1.shape + direction * 0.001),
+            (ParamId::Osc1ShapeMod, patch.osc1.shape_mod + direction * 0.001),
             (
                 ParamId::EffectParam1,
                 patch.effects.param1 + direction * 0.001,

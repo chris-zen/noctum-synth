@@ -104,6 +104,16 @@ impl f32x4 {
     }
 
     #[inline]
+    pub fn simd_ge(self, other: Self) -> Self {
+        Self::mask([
+            self.0[0] >= other.0[0],
+            self.0[1] >= other.0[1],
+            self.0[2] >= other.0[2],
+            self.0[3] >= other.0[3],
+        ])
+    }
+
+    #[inline]
     pub fn blend(self, if_true: Self, if_false: Self) -> Self {
         Self([
             if Self::mask_lane(self.0[0]) {
@@ -219,6 +229,15 @@ impl From<f32x4> for [f32; 4] {
     #[inline]
     fn from(value: f32x4) -> Self {
         value.to_array()
+    }
+}
+
+impl crate::F32x4Ext for f32x4 {
+    #[inline(always)]
+    fn replace_lane(mut self, lane: usize, value: f32) -> Self {
+        debug_assert!(lane < 4);
+        self.0[lane] = value;
+        self
     }
 }
 

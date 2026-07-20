@@ -42,19 +42,13 @@ fn describe_config(config: &AudioConfig) -> String {
         .sample_rate
         .map(|rate| format!("{rate} Hz"))
         .unwrap_or_else(|| "device default".to_string());
-    let output = config
-        .output_device
-        .as_deref()
-        .unwrap_or("system default");
-    let input = config
-        .input_device
-        .as_deref()
-        .unwrap_or("none");
+    let output = config.output_device.as_deref().unwrap_or("system default");
+    let input = config.input_device.as_deref().unwrap_or("none");
     format!("output={output}, input={input}, rate={rate}")
 }
 
 use crate::engine::{
-    self, rebind_audio_channels, AudioBlock, AudioMetrics, SynthEngineAudio, SynthEngineBridge,
+    self, AudioBlock, AudioMetrics, SynthEngineAudio, SynthEngineBridge, rebind_audio_channels,
 };
 
 // ============================================================================
@@ -168,57 +162,66 @@ fn run_audio_thread(
     }
 
     while let Ok(config) = request_rx.recv() {
-        log_audio(&format!("Restarting audio ({})...", describe_config(&config)));
+        log_audio(&format!(
+            "Restarting audio ({})...",
+            describe_config(&config)
+        ));
         drop(session.take());
         log_audio("Stopped previous audio session");
         wait_for_device_settle();
         engine_audio = rebind_audio_channels(&bridge);
 
         match probe_session(&host, &config) {
-            Ok(probed) => match build_session(
-                &host,
-                engine_audio,
-                &config,
-                &probed,
-                SessionMode::Restart,
-            ) {
-                Ok(new_session) => {
-                    let info = session_info(&config, &probed);
-                    generation += 1;
-                    let mut applied_state = applied_audio_config(&info, None);
-                    applied_state.generation = generation;
-                    *applied.write() = applied_state;
-                    session = Some(new_session);
-                    last_good_config = effective_config(&config, &info);
-                }
-                Err(err) => {
-                    log_audio(&format!("Failed to apply audio config: {err}"));
-                    engine_audio = rebind_audio_channels(&bridge);
-                    match start_session(&host, engine_audio, &last_good_config, SessionMode::Recovery) {
-                        Ok((recovered, info)) => {
-                            generation += 1;
-                            let mut applied_state = applied_audio_config(
-                                &info,
-                                Some(format!("{err} (reverted to previous settings)")),
-                            );
-                            applied_state.generation = generation;
-                            *applied.write() = applied_state;
-                            session = Some(recovered);
-                        }
-                        Err(recover_err) => {
-                            *applied.write() = AppliedAudioConfig {
-                                applying: false,
-                                error: Some(format!("{err}; recovery failed: {recover_err}")),
-                                generation,
-                                ..applied.read().clone()
-                            };
+            Ok(probed) => {
+                match build_session(&host, engine_audio, &config, &probed, SessionMode::Restart) {
+                    Ok(new_session) => {
+                        let info = session_info(&config, &probed);
+                        generation += 1;
+                        let mut applied_state = applied_audio_config(&info, None);
+                        applied_state.generation = generation;
+                        *applied.write() = applied_state;
+                        session = Some(new_session);
+                        last_good_config = effective_config(&config, &info);
+                    }
+                    Err(err) => {
+                        log_audio(&format!("Failed to apply audio config: {err}"));
+                        engine_audio = rebind_audio_channels(&bridge);
+                        match start_session(
+                            &host,
+                            engine_audio,
+                            &last_good_config,
+                            SessionMode::Recovery,
+                        ) {
+                            Ok((recovered, info)) => {
+                                generation += 1;
+                                let mut applied_state = applied_audio_config(
+                                    &info,
+                                    Some(format!("{err} (reverted to previous settings)")),
+                                );
+                                applied_state.generation = generation;
+                                *applied.write() = applied_state;
+                                session = Some(recovered);
+                            }
+                            Err(recover_err) => {
+                                *applied.write() = AppliedAudioConfig {
+                                    applying: false,
+                                    error: Some(format!("{err}; recovery failed: {recover_err}")),
+                                    generation,
+                                    ..applied.read().clone()
+                                };
+                            }
                         }
                     }
                 }
-            },
+            }
             Err(err) => {
                 log_audio(&format!("Audio config probe failed: {err}"));
-                match start_session(&host, engine_audio, &last_good_config, SessionMode::Recovery) {
+                match start_session(
+                    &host,
+                    engine_audio,
+                    &last_good_config,
+                    SessionMode::Recovery,
+                ) {
                     Ok((recovered, info)) => {
                         generation += 1;
                         let mut applied_state = applied_audio_config(
@@ -336,10 +339,7 @@ fn start_session(
 ) -> Result<(AudioSession, SessionInfo), String> {
     let probed = probe_session(host, config)?;
     let session = build_session(host, engine_audio, config, &probed, mode)?;
-    Ok((
-        session,
-        session_info(config, &probed),
-    ))
+    Ok((session, session_info(config, &probed)))
 }
 
 fn build_session(
@@ -365,10 +365,12 @@ fn build_session(
     wait_for_device_settle();
 
     let (input_stream, input_consumer) = if let Some(filter) = config.input_device.as_deref() {
-        log_audio(&format!("Opening input \"{filter}\" at {} Hz", probed.sample_rate));
-        let input = open_input(host, filter, probed.sample_rate, output.channels).ok_or_else(|| {
-            format!("Failed to open audio input \"{filter}\".")
-        })?;
+        log_audio(&format!(
+            "Opening input \"{filter}\" at {} Hz",
+            probed.sample_rate
+        ));
+        let input = open_input(host, filter, probed.sample_rate, output.channels)
+            .ok_or_else(|| format!("Failed to open audio input \"{filter}\"."))?;
         (Some(input.stream), Some(input.consumer))
     } else {
         (None, None)
@@ -402,10 +404,13 @@ fn build_session(
     }
 
     match mode {
-        SessionMode::Initial => log_audio(&format!("Audio session ready at {} Hz", probed.sample_rate)),
-        SessionMode::Restart => {
-            log_audio(&format!("Audio restart complete at {} Hz", probed.sample_rate))
+        SessionMode::Initial => {
+            log_audio(&format!("Audio session ready at {} Hz", probed.sample_rate))
         }
+        SessionMode::Restart => log_audio(&format!(
+            "Audio restart complete at {} Hz",
+            probed.sample_rate
+        )),
         SessionMode::Recovery => {
             log_audio(&format!("Audio recovered at {} Hz", probed.sample_rate))
         }
@@ -524,7 +529,9 @@ fn choose_output_config(
                  (likely clock-locked); using device default"
             ));
         } else {
-            log_audio(&format!("Requested sample rate {rate} Hz unsupported; using device default"));
+            log_audio(&format!(
+                "Requested sample rate {rate} Hz unsupported; using device default"
+            ));
         }
     }
 
@@ -607,7 +614,9 @@ fn open_input(
         .unwrap_or_default();
 
     let Some(device) = find_device(&devices, filter) else {
-        log_audio(&format!("No audio input matching \"{filter}\"; input disabled"));
+        log_audio(&format!(
+            "No audio input matching \"{filter}\"; input disabled"
+        ));
         return None;
     };
 

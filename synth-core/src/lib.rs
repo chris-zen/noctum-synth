@@ -58,9 +58,9 @@ pub mod filter;
 pub mod fixed_index_list;
 pub mod lfo;
 pub(crate) mod math;
-pub(crate) mod midi_program;
 #[cfg(feature = "embedded-math")]
 mod micromath;
+pub(crate) mod midi_program;
 pub mod noise;
 mod output_limiter;
 pub mod p08_midi;
@@ -68,12 +68,12 @@ pub mod patch;
 #[cfg(feature = "profiling")]
 pub mod profiling;
 mod render_rate;
-pub mod wavetable;
 pub mod rev2_midi;
 pub(crate) mod rng;
 pub mod tuning;
 pub mod voice;
 pub mod voices;
+pub mod wavetable;
 
 #[cfg(feature = "embedded-math")]
 pub use crate::micromath::f32x4;
@@ -85,8 +85,8 @@ pub(crate) use crate::micromath::i32x4;
 #[cfg(not(feature = "embedded-math"))]
 pub(crate) use wide::i32x4;
 
-pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
 pub use analog_oscillator::WavetableOscillator;
+pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
 pub use analog_oscillators::{
     OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput, OscillatorsParams,
 };
@@ -99,33 +99,47 @@ pub use envelope::{
 };
 pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
-pub use noise::WhiteNoise;
-pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, EffectParams,
-    EffectType, FilterParams, LfoParams, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
-    ModSource, OscillatorPatch, PanModMode, Patch, PatchName,
-};
-#[cfg(feature = "profiling")]
-pub use profiling::{RenderProfiler, RenderStage};
 pub use midi_program::{MidiProgramImport, MidiProgramSource};
+pub use noise::WhiteNoise;
 pub use p08_midi::{
     P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN, P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
     P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
 };
+pub use patch::{
+    AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, EffectParams,
+    EffectType, FilterParams, GlideMode, KeyMode, LfoParams, ModDestination, ModMatrix,
+    ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
+};
+#[cfg(feature = "profiling")]
+pub use profiling::{RenderProfiler, RenderStage};
 pub use rev2_midi::{
     REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
     REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,
     Rev2SysexError,
 };
 pub use tuning::midi_to_hz;
-pub use voice::{
-    PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, voice_pan_position,
-};
+pub use voice::{PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, voice_pan_position};
 pub use voices::{ActiveNotes, Voices};
 pub use wavetable::{
     WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
     generate_wavetable_bank,
 };
+
+pub trait F32x4Ext {
+    #[must_use]
+    fn replace_lane(self, lane: usize, value: f32) -> Self;
+}
+
+#[cfg(not(feature = "embedded-math"))]
+impl F32x4Ext for f32x4 {
+    #[inline(always)]
+    fn replace_lane(self, lane: usize, value: f32) -> Self {
+        debug_assert!(lane < 4);
+        let mut values = self.to_array();
+        values[lane] = value;
+        Self::new(values)
+    }
+}
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
 ///
@@ -137,13 +151,13 @@ pub enum ParamId {
     Osc1Enabled,
     Osc1Frequency,
     Osc1FineTune,
-    Osc1Shape,
+    Osc1ShapeMod,
     Osc1Level,
     Osc2Waveform,
     Osc2Enabled,
     Osc2Frequency,
     Osc2FineTune,
-    Osc2Shape,
+    Osc2ShapeMod,
     Osc2Level,
     OscMix,
     SubOscLevel,
@@ -186,6 +200,14 @@ pub enum ParamId {
     AuxEgSustain,
     AuxEgRelease,
     AuxEgLoop,
+    GlideMode,
+    GlideEnabled,
+    KeyMode,
+    UnisonEnabled,
+    UnisonMode,
+    UnisonDetune,
+    Bpm,
+    ClockDivide,
     Lfo1Rate,
     Lfo1Depth,
     Lfo1Waveform,
@@ -221,6 +243,7 @@ pub enum ParamId {
     PanSpread,
     PanModMode,
     MasterVolume,
+    PitchBendRange,
 }
 
 impl ParamId {
@@ -231,13 +254,13 @@ impl ParamId {
             Self::Osc1Enabled => "Osc 1 Enabled",
             Self::Osc1Frequency => "Osc 1 Frequency",
             Self::Osc1FineTune => "Osc 1 Fine Tune",
-            Self::Osc1Shape => "Osc 1 Shape",
+            Self::Osc1ShapeMod => "Osc 1 Shape Mod",
             Self::Osc1Level => "Osc 1 Level",
             Self::Osc2Waveform => "Osc 2 Waveform",
             Self::Osc2Enabled => "Osc 2 Enabled",
             Self::Osc2Frequency => "Osc 2 Frequency",
             Self::Osc2FineTune => "Osc 2 Fine Tune",
-            Self::Osc2Shape => "Osc 2 Shape",
+            Self::Osc2ShapeMod => "Osc 2 Shape Mod",
             Self::Osc2Level => "Osc 2 Level",
             Self::OscMix => "Osc Mix",
             Self::SubOscLevel => "Sub Osc Level",
@@ -280,6 +303,14 @@ impl ParamId {
             Self::AuxEgSustain => "Aux Env Sustain",
             Self::AuxEgRelease => "Aux Env Release",
             Self::AuxEgLoop => "Aux Env Loop",
+            Self::GlideMode => "Glide Mode",
+            Self::GlideEnabled => "Glide On/Off",
+            Self::KeyMode => "Key Mode",
+            Self::UnisonEnabled => "Unison",
+            Self::UnisonMode => "Unison Mode",
+            Self::UnisonDetune => "Unison Detune",
+            Self::Bpm => "BPM",
+            Self::ClockDivide => "Clock Divide",
             Self::Lfo1Rate => "LFO 1 Rate",
             Self::Lfo1Depth => "LFO 1 Depth",
             Self::Lfo1Waveform => "LFO 1 Waveform",
@@ -315,6 +346,7 @@ impl ParamId {
             Self::PanSpread => "Pan Spread",
             Self::PanModMode => "Pan Mod Mode",
             Self::MasterVolume => "Master Volume",
+            Self::PitchBendRange => "Pitch Bend Range",
         }
     }
 }

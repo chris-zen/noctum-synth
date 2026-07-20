@@ -231,14 +231,14 @@ impl Oscillators {
         } else {
             crate::analog_oscillator::OscillatorStep {
                 output: f32x4::splat(0.0),
-                wrapped: [false; crate::LANES],
-                wrap_phase_fraction: [0.0; crate::LANES],
+                wrapped: f32x4::splat(0.0),
+                subsample_offset: f32x4::splat(0.0),
             }
         };
 
         if self.params.sync && self.params.osc2.enabled {
             self.osc1
-                .sync_reset_lanes_at(osc2_step.wrapped, osc2_step.wrap_phase_fraction);
+                .hard_sync_reset(osc2_step.wrapped, osc2_step.subsample_offset);
         }
         #[cfg(feature = "profiling")]
         let osc1 = self.osc1.next_profiled(profiler);

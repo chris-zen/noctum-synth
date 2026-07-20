@@ -2,7 +2,7 @@
 
 use crate::f32x4;
 
-use crate::LANES;
+use crate::{F32x4Ext, LANES};
 use crate::rng::DspRng;
 
 /// Minimum LFO rate in Hz.
@@ -19,6 +19,28 @@ pub enum LfoWaveform {
     ReverseSaw,
     Square,
     SampleAndHold,
+}
+
+impl LfoWaveform {
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Saw,
+            2 => Self::ReverseSaw,
+            3 => Self::Square,
+            4 => Self::SampleAndHold,
+            _ => Self::Triangle,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Triangle => 0,
+            Self::Saw => 1,
+            Self::ReverseSaw => 2,
+            Self::Square => 3,
+            Self::SampleAndHold => 4,
+        }
+    }
 }
 
 /// Four-lane LFO with configurable rate, depth, waveform, and key sync.
@@ -104,17 +126,16 @@ impl Lfo {
     }
 
     pub fn reset_lane(&mut self, lane: usize) {
-        let mut phases = self.phase.to_array();
-        phases[lane] = 0.0;
-        self.phase = f32x4::new(phases);
+        self.phase = self.phase.replace_lane(lane, 0.0);
+        let phases = self.phase.to_array();
         self.phase_uniform = phases
             .iter()
             .all(|phase| phase.to_bits() == phases[0].to_bits());
 
         if self.waveform == LfoWaveform::SampleAndHold {
-            let mut values = self.sample_and_hold.to_array();
-            values[lane] = bipolar_random(&mut self.rng[lane]);
-            self.sample_and_hold = f32x4::new(values);
+            self.sample_and_hold = self
+                .sample_and_hold
+                .replace_lane(lane, bipolar_random(&mut self.rng[lane]));
         }
     }
 

@@ -220,10 +220,14 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
             let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
             let osc = &mut state.osc;
 
-            osc.input_buffer_l.extend_from_slice(&block.input_left[..block_len]);
-            osc.input_buffer_r.extend_from_slice(&block.input_right[..block_len]);
-            osc.output_buffer_l.extend_from_slice(&block.output_left[..block_len]);
-            osc.output_buffer_r.extend_from_slice(&block.output_right[..block_len]);
+            osc.input_buffer_l
+                .extend_from_slice(&block.input_left[..block_len]);
+            osc.input_buffer_r
+                .extend_from_slice(&block.input_right[..block_len]);
+            osc.output_buffer_l
+                .extend_from_slice(&block.output_left[..block_len]);
+            osc.output_buffer_r
+                .extend_from_slice(&block.output_right[..block_len]);
 
             let excess = osc.input_buffer_l.len().saturating_sub(MAX_SCOPE_SAMPLES);
             if excess > 0 {

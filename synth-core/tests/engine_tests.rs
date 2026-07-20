@@ -174,6 +174,11 @@ fn amp_release_param_controls_release_tail() {
         engine.process(&mut attack_buffer);
         engine.handle_control(ControlMessage::NoteOff { note: 60 });
 
+        // Measure after the short envelope has had time to close. Starting the
+        // window at note-off makes the result depend unnecessarily on the
+        // oscillator's phase during those first few cycles.
+        let mut release_start = vec![0.0; 512 * 2];
+        engine.process(&mut release_start);
         let mut release_buffer = vec![0.0; 2048 * 2];
         engine.process(&mut release_buffer);
         left_rms(&release_buffer)

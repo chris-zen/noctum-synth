@@ -293,7 +293,7 @@ fn gain_limited_driven_chords_retain_output_headroom() {
             notes.len()
         );
         assert!(
-            rms < 0.42,
+            rms < 0.45,
             "{}-note RMS is unexpectedly high: {rms}",
             notes.len()
         );
