@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -15,6 +15,8 @@ use crate::engine::SynthEngineControl;
 use crate::ui::settings_view::MidiInputEntry;
 
 const RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
+const MIDI_ECHO_TTL: Duration = Duration::from_secs(1);
+const MIDI_ECHO_CAPACITY: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortConnectionState {
@@ -221,6 +223,10 @@ fn handle_midi_with_flags(
     output: &MidiOutputHandle,
     flags: &MidiInputFlags,
 ) {
+    if output.consume_echo(message) {
+        return;
+    }
+
     if flags.forward.load(Ordering::Relaxed) {
         output.send_raw(message);
     }
@@ -377,6 +383,7 @@ struct MidiOutputState {
     configured_port: Option<String>,
     available_ports: Vec<String>,
     last_tick: Instant,
+    recent_messages: VecDeque<(Instant, Vec<u8>)>,
 }
 
 const REV2_NRPN_PARAMETER_COUNT: usize = 159;
@@ -397,6 +404,7 @@ impl Default for MidiOutputHandle {
                 configured_port: None,
                 available_ports: Vec::new(),
                 last_tick: Instant::now(),
+                recent_messages: VecDeque::new(),
             })),
         }
     }
@@ -486,7 +494,13 @@ impl MidiOutputHandle {
         };
         if connection.send(message).is_err() {
             clear_midi_output(&mut state);
+        } else {
+            record_midi_echo(&mut state.recent_messages, message);
         }
+    }
+
+    fn consume_echo(&self, message: &[u8]) -> bool {
+        consume_midi_echo(&mut self.state.lock().recent_messages, message)
     }
 
     pub fn send_param(&self, param: ParamId, value: f32) {
@@ -542,6 +556,7 @@ impl MidiOutputHandle {
             false
         } else {
             state.last_nrpn_values.fill(None);
+            record_midi_echo(&mut state.recent_messages, &message[..length]);
             true
         }
     }
@@ -556,16 +571,46 @@ fn send_messages(state: &mut MidiOutputState, messages: &[[u8; 3]]) {
     let Some(connection) = connection.as_mut() else {
         return;
     };
+    let mut sent = Vec::new();
     if !send_changed_nrpn_messages(last_nrpn_values, messages, |message| {
-        connection.send(message).is_ok()
+        if connection.send(message).is_ok() {
+            sent.push(message.to_vec());
+            true
+        } else {
+            false
+        }
     }) {
         clear_midi_output(state);
+    } else {
+        for message in sent {
+            record_midi_echo(&mut state.recent_messages, &message);
+        }
     }
+}
+
+fn record_midi_echo(recent: &mut VecDeque<(Instant, Vec<u8>)>, message: &[u8]) {
+    let now = Instant::now();
+    recent.retain(|(sent_at, _)| now.duration_since(*sent_at) <= MIDI_ECHO_TTL);
+    if recent.len() >= MIDI_ECHO_CAPACITY {
+        recent.pop_front();
+    }
+    recent.push_back((now, message.to_vec()));
+}
+
+fn consume_midi_echo(recent: &mut VecDeque<(Instant, Vec<u8>)>, message: &[u8]) -> bool {
+    let now = Instant::now();
+    recent.retain(|(sent_at, _)| now.duration_since(*sent_at) <= MIDI_ECHO_TTL);
+    let Some(index) = recent.iter().position(|(_, sent)| sent == message) else {
+        return false;
+    };
+    recent.remove(index);
+    true
 }
 
 fn clear_midi_output(state: &mut MidiOutputState) {
     state.connection = None;
     state.last_nrpn_values.fill(None);
+    state.recent_messages.clear();
 }
 
 /// Sends only NRPN sequences whose quantized value differs from the last value
@@ -712,6 +757,49 @@ mod tests {
             true
         }));
         assert_eq!(sent, 8);
+    }
+
+    #[test]
+    fn midi_echo_cache_consumes_only_matching_recent_output() {
+        let mut recent = VecDeque::new();
+        record_midi_echo(&mut recent, &[0xf0, 0x01, 0xf7]);
+
+        assert!(!consume_midi_echo(&mut recent, &[0x90, 60, 100]));
+        assert!(consume_midi_echo(&mut recent, &[0xf0, 0x01, 0xf7]));
+        assert!(!consume_midi_echo(&mut recent, &[0xf0, 0x01, 0xf7]));
+    }
+
+    #[test]
+    fn midi_echo_cache_does_not_consume_expired_output() {
+        let mut recent = VecDeque::from([(
+            Instant::now() - MIDI_ECHO_TTL - Duration::from_millis(1),
+            vec![0xb0, 14, 90],
+        )]);
+
+        assert!(!consume_midi_echo(&mut recent, &[0xb0, 14, 90]));
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn echoed_patch_is_not_applied_to_ui() {
+        let (_audio, bridge) = create_synth_engine_bridge(16);
+        let output = MidiOutputHandle::default();
+        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        Rev2MidiEncoder::program_edit_buffer(&Patch::default(), &mut message).unwrap();
+        record_midi_echo(&mut output.state.lock().recent_messages, &message);
+        let mut decoder = Rev2MidiDecoder::default();
+
+        handle_midi_with_flags(
+            &message,
+            &bridge.control,
+            &mut decoder,
+            &output,
+            &all_flags(),
+        );
+
+        let mut updates = 0;
+        bridge.view.drain_midi_ui_updates(|_| updates += 1);
+        assert_eq!(updates, 0);
     }
 
     #[test]
