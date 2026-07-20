@@ -4,8 +4,6 @@ mod audio;
 mod config;
 mod engine;
 mod midi;
-mod p08_factory_presets;
-mod rev2_factory_presets;
 mod ui;
 
 use crate::audio::{AudioConfig, AudioManager};

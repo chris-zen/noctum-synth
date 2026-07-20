@@ -8,6 +8,23 @@ use crate::{
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+pub const PATCH_NAME_CAPACITY: usize = 20;
+
+pub type PatchName = heapless::String<PATCH_NAME_CAPACITY>;
+
+pub fn decode_patch_name(bytes: &[u8]) -> PatchName {
+    let mut name = PatchName::new();
+    for &byte in bytes {
+        if (0x20..=0x7e).contains(&byte) {
+            let _ = name.push(byte as char);
+        }
+    }
+    while name.ends_with(' ') {
+        name.pop();
+    }
+    name
+}
+
 /// Target for a modulation route.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -659,6 +676,8 @@ pub struct Patch {
     #[cfg_attr(feature = "serde", serde(default))]
     pub effects: EffectParams,
     pub master_volume: f32,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub name: PatchName,
 }
 
 impl Default for Patch {
@@ -685,6 +704,7 @@ impl Default for Patch {
             mod_matrix: ModMatrix::default(),
             effects: EffectParams::default(),
             master_volume: 0.8,
+            name: PatchName::new(),
         }
     }
 }
@@ -1001,5 +1021,26 @@ fn lfo_waveform(value: f32) -> LfoWaveform {
         3 => LfoWaveform::Square,
         4 => LfoWaveform::SampleAndHold,
         _ => LfoWaveform::Triangle,
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patch_name_round_trips_through_serde() {
+        let mut patch = Patch::default();
+        patch.name.push_str("LosVangelis2041").unwrap();
+        let encoded = serde_json::to_value(&patch).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.name.as_str(), "LosVangelis2041");
+    }
+
+    #[test]
+    fn decode_patch_name_trims_trailing_spaces() {
+        let mut bytes = [b' '; PATCH_NAME_CAPACITY];
+        bytes[..15].copy_from_slice(b"LosVangelis2041");
+        assert_eq!(decode_patch_name(&bytes).as_str(), "LosVangelis2041");
     }
 }

@@ -1,10 +1,13 @@
 //! Sequential Prophet '08-compatible program SysEx decoder.
 
 use crate::{
-    DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModRoute, ModSource,
-    ModulationParam, ParamId, Patch,
+    DedicatedModSource, DEFAULT_TEMPO_BPM, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
+    ModRoute, ModSource, ModulationParam, ParamId, Patch,
 };
+use crate::patch::decode_patch_name;
 use crate::rev2_midi::Rev2SysexError;
+
+const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
 
 pub const P08_PROGRAM_DATA_LEN: usize = 384;
 pub const P08_PROGRAM_PACKED_LEN: usize = 439;
@@ -94,6 +97,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
             });
         }
     }
+    patch.name = decode_patch_name(&raw[LAYER_A_NAME_RANGE]);
     Ok(patch)
 }
 
@@ -179,6 +183,108 @@ fn logarithmic(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
     min * crate::math::powf(max / min, unit(raw, raw_max))
 }
 
+const P08_MOD_DESTINATIONS: [ModDestination; 44] = [
+    ModDestination::Off,
+    ModDestination::Osc1Frequency,
+    ModDestination::Osc2Frequency,
+    ModDestination::OscMix,
+    ModDestination::NoiseLevel,
+    ModDestination::Osc1Shape,
+    ModDestination::Osc2Shape,
+    ModDestination::OscAllShape,
+    ModDestination::FilterCutoff,
+    ModDestination::FilterResonance,
+    ModDestination::FilterAudioMod,
+    ModDestination::Vca,
+    ModDestination::Pan,
+    ModDestination::Lfo1Frequency,
+    ModDestination::Lfo2Frequency,
+    ModDestination::Lfo3Frequency,
+    ModDestination::Lfo4Frequency,
+    ModDestination::LfoAllFrequency,
+    ModDestination::Lfo1Amount,
+    ModDestination::Lfo2Amount,
+    ModDestination::Lfo3Amount,
+    ModDestination::Lfo4Amount,
+    ModDestination::LfoAllAmount,
+    ModDestination::LpFilterEnvAmount,
+    ModDestination::AmpEnvAmount,
+    ModDestination::Env3Amount,
+    ModDestination::EnvAllAmount,
+    ModDestination::LpFilterAttack,
+    ModDestination::VcaAttack,
+    ModDestination::Env3Attack,
+    ModDestination::EnvAllAttack,
+    ModDestination::LpFilterDecay,
+    ModDestination::VcaDecay,
+    ModDestination::Env3Decay,
+    ModDestination::EnvAllDecay,
+    ModDestination::LpFilterRelease,
+    ModDestination::VcaRelease,
+    ModDestination::Env3Release,
+    ModDestination::EnvAllRelease,
+    ModDestination::Mod1Amount,
+    ModDestination::Mod2Amount,
+    ModDestination::Mod3Amount,
+    ModDestination::Mod4Amount,
+    ModDestination::Off,
+];
+
+fn p08_mod_destination(raw: u16) -> ModDestination {
+    P08_MOD_DESTINATIONS
+        .get(usize::from(raw.min(43)))
+        .copied()
+        .unwrap_or(ModDestination::Off)
+}
+
+fn p08_lfo_waveform(raw: u16) -> f32 {
+    match raw.min(4) {
+        0 => 0.0,
+        1 => 2.0,
+        2 => 1.0,
+        3 => 3.0,
+        4 => 4.0,
+        _ => 0.0,
+    }
+}
+
+fn p08_clock_sync_lfo_rate_hz(raw: u16, tempo_bpm: f32) -> f32 {
+    let step = 60.0 / tempo_bpm.max(1.0) / 4.0;
+    let cycles_per_step = match raw {
+        151 => 1.0 / 32.0,
+        152 => 1.0 / 16.0,
+        153 => 1.0 / 8.0,
+        154 => 1.0 / 6.0,
+        155 => 1.0 / 4.0,
+        156 => 1.0 / 3.0,
+        157 => 1.0 / 2.0,
+        158 => 2.0 / 3.0,
+        159 => 1.0,
+        160 => 2.0 / 3.0,
+        161 => 2.0,
+        162 => 1.0 / 3.0,
+        163 => 4.0,
+        164 => 6.0,
+        165 => 8.0,
+        166 => 16.0,
+        _ => MIN_LFO_RATE_HZ / step,
+    };
+    (cycles_per_step / step).clamp(MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ)
+}
+
+fn p08_lfo_rate(raw: u16) -> (f32, bool) {
+    if raw <= 150 {
+        return (
+            logarithmic(raw, 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
+            false,
+        );
+    }
+    (
+        p08_clock_sync_lfo_rate_hz(raw, DEFAULT_TEMPO_BPM),
+        true,
+    )
+}
+
 fn emit_osc_shape(emit: &mut impl FnMut(P08MidiUpdate), osc1: bool, raw: u16) {
     let (enabled_param, waveform_param, shape_param) = if osc1 {
         (ParamId::Osc1Enabled, ParamId::Osc1Waveform, ParamId::Osc1Shape)
@@ -189,13 +295,27 @@ fn emit_osc_shape(emit: &mut impl FnMut(P08MidiUpdate), osc1: bool, raw: u16) {
     if raw == 0 {
         return;
     }
-    if raw <= 3 {
-        emit(P08MidiUpdate::Param(waveform_param, f32::from(raw - 1)));
-        emit(P08MidiUpdate::Param(shape_param, 0.0));
-        return;
+    match raw {
+        1 => {
+            emit(P08MidiUpdate::Param(waveform_param, 0.0));
+            emit(P08MidiUpdate::Param(shape_param, 0.0));
+        }
+        2 => {
+            emit(P08MidiUpdate::Param(waveform_param, 2.0));
+            emit(P08MidiUpdate::Param(shape_param, 0.0));
+        }
+        3 => {
+            emit(P08MidiUpdate::Param(waveform_param, 1.0));
+            emit(P08MidiUpdate::Param(shape_param, 0.0));
+        }
+        _ => {
+            emit(P08MidiUpdate::Param(waveform_param, 3.0));
+            emit(P08MidiUpdate::Param(
+                shape_param,
+                unit(raw.saturating_sub(4), 99),
+            ));
+        }
     }
-    emit(P08MidiUpdate::Param(waveform_param, 3.0));
-    emit(P08MidiUpdate::Param(shape_param, unit(raw.saturating_sub(4), 99)));
 }
 
 fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
@@ -261,7 +381,7 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
         37..=56 => map_lfo_nrpn(number, raw, emit),
         57 => emit(P08MidiUpdate::Param(
             ParamId::AuxEgDestination,
-            f32::from(raw.min(43)),
+            p08_mod_destination(raw).index() as f32,
         )),
         58 => emit(P08MidiUpdate::Param(ParamId::AuxEgAmount, bipolar(raw, 254))),
         59 => emit(P08MidiUpdate::Param(ParamId::AuxEgVelocity, unit(raw, 127))),
@@ -318,14 +438,26 @@ fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             ParamId::Lfo4KeySync,
         ],
     ];
-    let value = match field {
-        0 => logarithmic(raw, 166, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
-        1 => f32::from(raw.min(4)),
-        2 => unit(raw, 127),
-        3 => f32::from(raw.min(43)),
-        _ => f32::from(raw != 0),
-    };
-    emit(P08MidiUpdate::Param(params[lfo][field as usize], value));
+    let clock_sync = [
+        ParamId::Lfo1ClockSync,
+        ParamId::Lfo2ClockSync,
+        ParamId::Lfo3ClockSync,
+        ParamId::Lfo4ClockSync,
+    ];
+    match field {
+        0 => {
+            let (rate, synced) = p08_lfo_rate(raw);
+            emit(P08MidiUpdate::Param(params[lfo][0], rate));
+            emit(P08MidiUpdate::Param(clock_sync[lfo], f32::from(synced)));
+        }
+        1 => emit(P08MidiUpdate::Param(params[lfo][1], p08_lfo_waveform(raw))),
+        2 => emit(P08MidiUpdate::Param(params[lfo][2], unit(raw, 127))),
+        3 => emit(P08MidiUpdate::Param(
+            params[lfo][3],
+            p08_mod_destination(raw).index() as f32,
+        )),
+        _ => emit(P08MidiUpdate::Param(params[lfo][4], f32::from(raw != 0))),
+    }
 }
 
 fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
@@ -333,7 +465,7 @@ fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)
     let parameter = match (number - 65) % 3 {
         0 => ModulationParam::Source(ModSource::from_index(usize::from(raw.min(20)))),
         1 => ModulationParam::Amount(bipolar(raw, 254)),
-        _ => ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(43)))),
+        _ => ModulationParam::Destination(p08_mod_destination(raw)),
     };
     emit(P08MidiUpdate::Modulation {
         route: ModRoute::Free(index),
@@ -349,7 +481,7 @@ fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUp
     let parameter = if (number - 81) % 2 == 0 {
         ModulationParam::Amount(bipolar(raw, 254))
     } else {
-        ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(43))))
+        ModulationParam::Destination(p08_mod_destination(raw))
     };
     emit(P08MidiUpdate::Modulation {
         route: ModRoute::Dedicated(*source),
@@ -386,6 +518,18 @@ mod tests {
     }
 
     #[test]
+    fn decode_patch_payload_reads_layer_a_name() {
+        let decoded = P08MidiDecoder::program_data(factory_message(0, 0)).unwrap();
+        assert_eq!(decoded.patch.name.as_str(), "Wagnerian");
+
+        let decoded = P08MidiDecoder::program_data(factory_message(0, 1)).unwrap();
+        assert_eq!(decoded.patch.name.as_str(), "Tom Sawyer");
+
+        let decoded = P08MidiDecoder::program_data(factory_message(1, 0)).unwrap();
+        assert_eq!(decoded.patch.name.as_str(), "AnalogWurlyRoids");
+    }
+
+    #[test]
     fn stored_program_data_decodes_factory_metadata() {
         let decoded = P08MidiDecoder::program_data(factory_message(0, 0)).unwrap();
         assert_eq!(decoded.bank, 0);
@@ -395,6 +539,81 @@ mod tests {
         let decoded = P08MidiDecoder::program_data(factory_message(1, 0)).unwrap();
         assert_eq!(decoded.bank, 1);
         assert_eq!(decoded.program, 0);
+    }
+
+    #[test]
+    fn program_values_above_127_use_the_documented_msb_sideband() {
+        let mut raw = [0_u8; P08_PROGRAM_DATA_LEN];
+        raw[20] = 1;
+        raw[14] = 0x80;
+        assert_eq!(program_nrpn_value(&raw, 20), Some(129));
+    }
+
+    #[test]
+    fn oscillator_shape_uses_p08_waveform_order() {
+        let mut updates = [None; 3];
+        let mut len = 0;
+        emit_osc_shape(
+            &mut |update| {
+                updates[len] = Some(update);
+                len += 1;
+            },
+            true,
+            2,
+        );
+        assert_eq!(len, 3);
+        assert_eq!(
+            updates,
+            [
+                Some(P08MidiUpdate::Param(ParamId::Osc1Enabled, 1.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1Waveform, 2.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1Shape, 0.0)),
+            ]
+        );
+
+        let mut updates = [None; 3];
+        let mut len = 0;
+        emit_osc_shape(
+            &mut |update| {
+                updates[len] = Some(update);
+                len += 1;
+            },
+            true,
+            3,
+        );
+        assert_eq!(len, 3);
+        assert_eq!(
+            updates,
+            [
+                Some(P08MidiUpdate::Param(ParamId::Osc1Enabled, 1.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1Waveform, 1.0)),
+                Some(P08MidiUpdate::Param(ParamId::Osc1Shape, 0.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn lfo_waveform_uses_p08_shape_order() {
+        assert_eq!(p08_lfo_waveform(1), 2.0);
+        assert_eq!(p08_lfo_waveform(2), 1.0);
+    }
+
+    #[test]
+    fn mod_destination_maps_p08_indices_to_internal_destinations() {
+        assert_eq!(p08_mod_destination(3), ModDestination::OscMix);
+        assert_eq!(p08_mod_destination(8), ModDestination::FilterCutoff);
+        assert_eq!(p08_mod_destination(24), ModDestination::AmpEnvAmount);
+    }
+
+    #[test]
+    fn clock_synced_lfo_rate_sets_sync_flag_and_nominal_rate() {
+        let (rate, synced) = p08_lfo_rate(37);
+        assert!(!synced);
+        assert!(rate > MIN_LFO_RATE_HZ);
+
+        let (rate, synced) = p08_lfo_rate(159);
+        assert!(synced);
+        assert!((rate - 8.0).abs() < 0.01);
     }
 
     #[test]

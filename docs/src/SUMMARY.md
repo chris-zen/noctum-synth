@@ -20,6 +20,11 @@
 - [Engine Architecture](sdk/engine-architecture.md)
 - [Development Workflow](sdk/development.md)
 
+# Appendix
+
+- [MIDI Implementation](appendix/midi-implementation.md)
+- [Factory Presets](appendix/factory-presets.md)
+
 # Hardware
 
 - [Future Hardware](hardware/overview.md)

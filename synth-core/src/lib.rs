@@ -103,7 +103,7 @@ pub use noise::WhiteNoise;
 pub use patch::{
     AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, EffectParams,
     EffectType, FilterParams, LfoParams, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
-    ModSource, OscillatorPatch, Patch,
+    ModSource, OscillatorPatch, Patch, PatchName,
 };
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};

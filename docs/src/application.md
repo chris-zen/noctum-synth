@@ -78,9 +78,9 @@ Stored Program Data dumps are library imports rather than live edits. The app
 reads their bank and program metadata, decodes Layer A, and saves the patch as
 pretty JSON without changing the active engine or UI. Rev2 factory sysex banks 0-3
 save as F1-F4; Rev2 device banks 4-7 save as U1-U4. Prophet '08 factory banks
-save as F5-F6. All use published factory preset names and sortable filenames such
-as `F1-001-LosVangelis2041.json`; receiving the same location again overwrites the
-same file.
+save as F5-F6. Imported programs use the embedded Layer A name from each program.
+Filenames are sortable, such as `F1-001-LosVangelis2041.json`; receiving the same
+location again overwrites the same file.
 
 Whole patch loads and initial device synchronization use one Rev2 Program Edit
 Buffer SysEx message. Layer A contains the local patch, Layer B contains the

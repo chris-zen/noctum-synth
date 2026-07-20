@@ -4,6 +4,9 @@ use crate::{
     DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModRoute, ModSource,
     ModulationParam, ParamId, Patch,
 };
+use crate::patch::decode_patch_name;
+
+const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
 
 pub const REV2_PROGRAM_DATA_LEN: usize = 2046;
 pub const REV2_PROGRAM_PACKED_LEN: usize = 2339;
@@ -144,6 +147,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
             });
         }
     }
+    patch.name = decode_patch_name(&raw[LAYER_A_NAME_RANGE]);
     Ok(patch)
 }
 
@@ -1022,6 +1026,16 @@ mod tests {
                 assert_eq!(program_nrpn_value(&raw, number, 0), Some(value));
             }
         }
+    }
+
+    #[test]
+    fn decode_patch_payload_reads_layer_a_name() {
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        raw[super::LAYER_A_NAME_RANGE].copy_from_slice(b"LosVangelis2041     ");
+        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        pack_program_data(&raw, &mut packed);
+        let patch = decode_patch_payload(&packed).unwrap();
+        assert_eq!(patch.name.as_str(), "LosVangelis2041");
     }
 
     #[test]

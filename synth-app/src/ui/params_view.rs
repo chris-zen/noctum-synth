@@ -594,6 +594,7 @@ impl From<&UiState> for Patch {
                 param2: state.effect_param2,
             },
             master_volume: state.master_volume,
+            name: synth_core::PatchName::new(),
         }
     }
 }
@@ -2298,10 +2299,10 @@ impl PatchManager {
     ) -> std::io::Result<PathBuf> {
         let name = match program {
             synth_core::MidiProgramImport::Rev2(program) => {
-                crate::rev2_factory_presets::program_filename(program.bank, program.program)
+                rev2_program_filename(program.bank, program.program, program.patch.name.as_str())
             }
             synth_core::MidiProgramImport::P08(program) => {
-                crate::p08_factory_presets::program_filename(program.bank, program.program)
+                p08_program_filename(program.bank, program.program, program.patch.name.as_str())
             }
         }
         .ok_or_else(|| {
@@ -2365,6 +2366,56 @@ impl PatchManager {
         let next_idx = (idx as isize + delta).rem_euclid(len) as usize;
         Some(self.patch_names[next_idx].as_str())
     }
+}
+
+fn rev2_program_filename(bank: u8, program: u8, patch_name: &str) -> Option<String> {
+    if bank > 7 || program > 127 {
+        return None;
+    }
+    let (bank_kind, bank_number) = if bank < 4 {
+        ('F', bank + 1)
+    } else {
+        ('U', bank - 3)
+    };
+    let name = midi_import_filename(patch_name);
+    Some(format!(
+        "{bank_kind}{bank_number}-{:03}-{name}",
+        program + 1
+    ))
+}
+
+fn p08_program_filename(bank: u8, program: u8, patch_name: &str) -> Option<String> {
+    if bank > 1 || program > 127 {
+        return None;
+    }
+    let name = midi_import_filename(patch_name);
+    Some(format!("F{}-{:03}-{name}", bank + 5, program + 1))
+}
+
+fn midi_import_filename(patch_name: &str) -> String {
+    if patch_name.is_empty() {
+        "Patch".to_string()
+    } else {
+        sanitize_filename(patch_name)
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let mut output = String::with_capacity(name.len());
+    let mut separator = false;
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+            output.push(character);
+            separator = false;
+        } else if !separator && !output.is_empty() {
+            output.push('_');
+            separator = true;
+        }
+    }
+    while output.ends_with('_') {
+        output.pop();
+    }
+    output
 }
 
 fn user_edited_patch(ui: &egui::Ui, before: &Patch, after: &Patch) -> bool {
@@ -2616,7 +2667,11 @@ mod tests {
         let mut program = synth_core::MidiProgramImport::Rev2(synth_core::Rev2ProgramData {
             bank: 4,
             program: 0,
-            patch: Patch::default(),
+            patch: {
+                let mut patch = Patch::default();
+                patch.name.push_str("LosVangelis2041").unwrap();
+                patch
+            },
         });
         let path = manager.save_midi_program(&program).unwrap();
         assert_eq!(
@@ -2630,6 +2685,39 @@ mod tests {
         let decoded: Patch =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(decoded.master_volume, 0.25);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn p08_midi_program_save_uses_embedded_patch_name() {
+        let root =
+            std::env::temp_dir().join(format!("analog-synth-p08-import-{}", std::process::id()));
+        let patches_dir = root.join("patches");
+        std::fs::create_dir_all(&patches_dir).unwrap();
+        let manager = PatchManager {
+            save_name: String::new(),
+            loaded_name: String::new(),
+            baseline: None,
+            baseline_pending: false,
+            user_modified: false,
+            patch_names: Vec::new(),
+            config_dir: root.clone(),
+            patches_dir,
+        };
+        let program = synth_core::MidiProgramImport::P08(synth_core::P08ProgramData {
+            bank: 0,
+            program: 0,
+            patch: {
+                let mut patch = Patch::default();
+                patch.name.push_str("Wagnerian").unwrap();
+                patch
+            },
+        });
+        let path = manager.save_midi_program(&program).unwrap();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("F5-001-Wagnerian.json")
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
