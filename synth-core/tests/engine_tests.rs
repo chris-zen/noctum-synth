@@ -103,6 +103,28 @@ fn default_note_on_renders_oscillator_without_noise() {
 }
 
 #[test]
+fn vca_initial_level_drone_produces_audio_without_amp_envelope() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    engine.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+    engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+    engine.handle_control(ControlMessage::NoteOn {
+        note: 60,
+        velocity: 1.0,
+    });
+
+    let mut buffer = vec![0.0; 8_192 * 2];
+    engine.process(&mut buffer);
+    let rms = left_rms(&buffer);
+
+    assert!(
+        rms > 0.05,
+        "full VCA level should produce audio without amp envelope amount, RMS {rms}"
+    );
+}
+
+#[test]
 fn note_off_decays_instead_of_cutting_to_silence() {
     let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.002));

@@ -11,7 +11,7 @@ use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterType, MAX_LFO_RATE_HZ,
     MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    ModulationParam, OscillatorPatch, ParamId, Patch,
+    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -88,6 +88,8 @@ pub struct UiState {
     pub filter_sustain: f32,
     pub filter_release: f32,
     pub amp_pan_spread: f32,
+    pub amp_pan_mod_mode: PanModMode,
+    pub amp_vca_initial_level: f32,
     pub amp_env_amount: f32,
     pub amp_velocity: f32,
     pub amp_delay: f32,
@@ -164,6 +166,8 @@ impl Default for UiState {
             filter_sustain: DEFAULT_SUSTAIN_LEVEL,
             filter_release: DEFAULT_RELEASE_SECONDS,
             amp_pan_spread: 0.0,
+            amp_pan_mod_mode: PanModMode::Alternate,
+            amp_vca_initial_level: 0.0,
             amp_env_amount: 1.0,
             amp_velocity: 1.0,
             amp_delay: 0.0,
@@ -241,6 +245,8 @@ impl UiState {
         self.filter_sustain = patch.filter.eg_sustain;
         self.filter_release = patch.filter.eg_release;
         self.amp_pan_spread = patch.amplifier.pan_spread;
+        self.amp_pan_mod_mode = patch.amplifier.pan_mod_mode;
+        self.amp_vca_initial_level = patch.amplifier.initial_level;
         self.amp_env_amount = patch.amplifier.env_amount;
         self.amp_velocity = patch.amplifier.velocity;
         self.amp_delay = patch.amplifier.eg_delay;
@@ -335,6 +341,8 @@ impl UiState {
             ParamId::FilterEgSustain => self.filter_sustain = value,
             ParamId::FilterEgRelease => self.filter_release = value,
             ParamId::PanSpread => self.amp_pan_spread = value,
+            ParamId::PanModMode => self.amp_pan_mod_mode = PanModMode::from_param(value),
+            ParamId::VcaInitialLevel => self.amp_vca_initial_level = value,
             ParamId::AmpEnvAmount => self.amp_env_amount = value,
             ParamId::AmpVelocity => self.amp_velocity = value,
             ParamId::AmpEgDelay => self.amp_delay = value,
@@ -519,6 +527,8 @@ impl From<&UiState> for Patch {
             },
             amplifier: synth_core::AmplifierParams {
                 pan_spread: state.amp_pan_spread,
+                pan_mod_mode: state.amp_pan_mod_mode,
+                initial_level: state.amp_vca_initial_level,
                 env_amount: state.amp_env_amount,
                 velocity: state.amp_velocity,
                 eg_delay: state.amp_delay,
@@ -1795,7 +1805,7 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
 fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
     fixed_panel_scroll(ui, "amp_grid_scroll", AMP_GRID_WIDTH, |ui| {
         egui::Grid::new("amp_grid")
-            .num_columns(4)
+            .num_columns(5)
             .spacing(egui::vec2(12.0, 12.0))
             .show(ui, |ui| {
                 control_cell(ui, |ui| {
@@ -1806,6 +1816,17 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
                         0.0..=1.0,
                         0.0,
                         ParamId::PanSpread,
+                        control,
+                    );
+                });
+                control_cell(ui, |ui| {
+                    param_knob_f32(
+                        ui,
+                        "VCA Level",
+                        &mut state.amp_vca_initial_level,
+                        0.0..=1.0,
+                        0.0,
+                        ParamId::VcaInitialLevel,
                         control,
                     );
                 });
@@ -1888,6 +1909,33 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
                         control,
                     );
                 });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(82.0, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.label(egui::RichText::new("Pan Mode").strong());
+                        ui.add_space(4.0);
+                        egui::ComboBox::from_id_salt("amp_pan_mod_mode")
+                            .width(76.0)
+                            .selected_text(match state.amp_pan_mod_mode {
+                                PanModMode::Alternate => "Alternate",
+                                PanModMode::Fixed => "Fixed",
+                            })
+                            .show_ui(ui, |ui| {
+                                for (mode, label) in [
+                                    (PanModMode::Alternate, "Alternate"),
+                                    (PanModMode::Fixed, "Fixed"),
+                                ] {
+                                    if ui
+                                        .selectable_value(&mut state.amp_pan_mod_mode, mode, label)
+                                        .clicked()
+                                    {
+                                        control.set_param(ParamId::PanModMode, mode.as_param());
+                                    }
+                                }
+                            });
+                    },
+                );
                 ui.end_row();
             });
     });

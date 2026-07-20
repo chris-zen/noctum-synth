@@ -4,7 +4,9 @@ use crate::f32x4;
 
 use crate::analog_oscillators::{OscillatorModulation, Oscillators};
 use crate::effects::EffectModulation;
-use crate::patch::{DedicatedModSlot, DedicatedModSource, ModDestination, ModMatrixSlot, ModRoute};
+use crate::patch::{
+    DedicatedModSlot, DedicatedModSource, ModDestination, ModMatrixSlot, ModRoute, PanModMode,
+};
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::{
@@ -13,8 +15,49 @@ use crate::{
 };
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
+const PITCH_BEND_RANGE_SEMITONES: f32 = 2.0;
 const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 48.0;
 const MAX_COMPILED_MOD_ROUTES: usize = 18;
+/// Short smooth release used before replacing an audible voice (SynthLab precedent).
+const VOICE_STEAL_SHUTDOWN_SECONDS: f32 = 0.005;
+
+/// Provisional Rev2-16 physical-voice pan pattern.
+///
+/// Sequential documents a deterministic alternating pattern whose voices move
+/// progressively toward center. These coefficients are isolated so measured
+/// hardware values can replace the estimate without changing pan semantics.
+pub const REV2_VOICE_PAN_POSITIONS: [f32; 16] = [
+    1.0, -1.0, 0.875, -0.875, 0.75, -0.75, 0.625, -0.625, 0.5, -0.5, 0.375, -0.375, 0.25, -0.25,
+    0.125, -0.125,
+];
+
+/// Return the deterministic spread coefficient for one physical voice.
+///
+/// Voices alternate right/left. Each pair moves one equal step toward center,
+/// with the step size derived from the available polyphony. `voice_count` is
+/// expected to be a non-zero even number, as all engine configurations contain
+/// four-lane voice blocks.
+pub const fn voice_pan_position(voice_index: usize, voice_count: usize) -> f32 {
+    if voice_count == 0 {
+        return 0.0;
+    }
+    let pair_count = voice_count.div_ceil(2);
+    let wrapped_index = voice_index % voice_count;
+    let pair_index = wrapped_index / 2;
+    let magnitude = (pair_count - pair_index) as f32 / pair_count as f32;
+    if wrapped_index.is_multiple_of(2) {
+        magnitude
+    } else {
+        -magnitude
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PendingNote {
+    note: u8,
+    velocity: f32,
+    reset_key_synced_lfos: bool,
+}
 
 /// Four-lane subtractive voice: oscillators → filter → amplifier.
 ///
@@ -25,6 +68,8 @@ pub struct VoiceBlock {
     pub velocities: [f32; LANES],
     pub gates: [bool; LANES],
     pub ages: [u64; LANES],
+    pending_notes: [Option<PendingNote>; LANES],
+    pending_note_mask: u8,
 
     pub oscillators: Oscillators,
     pub amp_env: DadsrEnvelope,
@@ -45,10 +90,12 @@ pub struct VoiceBlock {
     pub dedicated_mod_slots: [DedicatedModSlot; 5],
     modulation_plan: ModulationExecutionPlan,
     defer_modulation_plan_rebuild: bool,
+    pub vca_initial_level: f32,
     pub amp_env_amount: f32,
     pub amp_velocity_amount: f32,
     pub pan_spread: f32,
-    pub pan_sides: [f32; LANES],
+    pub pan_positions: [f32; LANES],
+    pub pan_mod_mode: PanModMode,
     centered_pan_sin: f32x4,
     centered_pan_cos: f32x4,
 
@@ -64,6 +111,8 @@ impl VoiceBlock {
             velocities: [1.0; LANES],
             gates: [false; LANES],
             ages: [0; LANES],
+            pending_notes: [None; LANES],
+            pending_note_mask: 0,
             oscillators: Oscillators::new(sample_rate),
             amp_env: DadsrEnvelope::analog(sample_rate),
             filter_env: DadsrEnvelope::analog(sample_rate),
@@ -83,29 +132,27 @@ impl VoiceBlock {
             dedicated_mod_slots: [DedicatedModSlot::default(); 5],
             modulation_plan: ModulationExecutionPlan::default(),
             defer_modulation_plan_rebuild: false,
+            vca_initial_level: 0.0,
             amp_env_amount: 1.0,
             amp_velocity_amount: 1.0,
             pan_spread: 0.0,
-            pan_sides: [0.0; LANES],
+            pan_positions: core::array::from_fn(|lane| {
+                voice_pan_position(lane, LANES)
+            }),
+            pan_mod_mode: PanModMode::Alternate,
             centered_pan_sin,
             centered_pan_cos,
             sample_rate,
         }
     }
 
-    pub fn note_on(
-        &mut self,
-        lane: usize,
-        note: u8,
-        velocity: f32,
-        pan_side: f32,
-        reset_key_synced_lfos: bool,
-    ) {
+    pub fn note_on(&mut self, lane: usize, note: u8, velocity: f32, reset_key_synced_lfos: bool) {
+        self.pending_notes[lane] = None;
+        self.pending_note_mask &= !(1 << lane);
         self.notes[lane] = note;
         self.velocities[lane] = velocity;
         self.gates[lane] = true;
         self.ages[lane] = 0;
-        self.pan_sides[lane] = pan_side;
         self.amp_env.trigger_lane(lane);
         self.filter_env.trigger_lane(lane);
         self.aux_env.trigger_lane(lane);
@@ -121,15 +168,41 @@ impl VoiceBlock {
         self.filter.reset_lane(lane);
     }
 
+    pub(crate) fn schedule_note_on(
+        &mut self,
+        lane: usize,
+        note: u8,
+        velocity: f32,
+        reset_key_synced_lfos: bool,
+    ) {
+        let shutdown_in_progress = self.pending_notes[lane].is_some();
+        self.pending_notes[lane] = Some(PendingNote {
+            note,
+            velocity,
+            reset_key_synced_lfos,
+        });
+        self.pending_note_mask |= 1 << lane;
+        if shutdown_in_progress {
+            return;
+        }
+        self.gates[lane] = false;
+        self.amp_env
+            .shutdown_lane(lane, VOICE_STEAL_SHUTDOWN_SECONDS);
+        self.filter_env.release_lane(lane);
+        self.aux_env.release_lane(lane);
+    }
+
     pub fn note_off(&mut self, note: u8) {
         for lane in 0..LANES {
-            if self.notes[lane] == note && self.gates[lane] {
+            if self.active_note(lane) == Some(note) {
                 self.note_off_lane(lane);
             }
         }
     }
 
     pub fn note_off_lane(&mut self, lane: usize) {
+        self.pending_notes[lane] = None;
+        self.pending_note_mask &= !(1 << lane);
         self.gates[lane] = false;
         self.amp_env.release_lane(lane);
         self.filter_env.release_lane(lane);
@@ -137,6 +210,8 @@ impl VoiceBlock {
     }
 
     pub fn all_notes_off(&mut self) {
+        self.pending_notes = [None; LANES];
+        self.pending_note_mask = 0;
         self.gates = [false; LANES];
         self.amp_env.release_all();
         self.filter_env.release_all();
@@ -152,40 +227,34 @@ impl VoiceBlock {
     }
 
     pub fn next(&mut self, performance: PerformanceModulation) -> (f32, f32) {
-        let active_lane_count = self.active_lane_count();
         #[cfg(feature = "profiling")]
         {
-            return self.next_inner(performance, active_lane_count, &mut NoopProfiler);
+            return self.next_inner(performance, &mut NoopProfiler);
         }
         #[cfg(not(feature = "profiling"))]
-        self.next_inner(performance, active_lane_count)
+        self.next_inner(performance)
     }
 
     #[cfg(feature = "profiling")]
     pub(crate) fn next_profiled(
         &mut self,
         performance: PerformanceModulation,
-        active_lane_count: usize,
         profiler: &mut impl RenderProfiler,
     ) -> (f32, f32) {
-        self.next_inner(performance, active_lane_count, profiler)
+        self.next_inner(performance, profiler)
     }
 
     #[cfg(not(feature = "profiling"))]
-    pub(crate) fn next_with_active_lane_count(
-        &mut self,
-        performance: PerformanceModulation,
-        active_lane_count: usize,
-    ) -> (f32, f32) {
-        self.next_inner(performance, active_lane_count)
+    pub(crate) fn next_block(&mut self, performance: PerformanceModulation) -> (f32, f32) {
+        self.next_inner(performance)
     }
 
     fn next_inner(
         &mut self,
         performance: PerformanceModulation,
-        active_lane_count: usize,
         #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
     ) -> (f32, f32) {
+        self.start_pending_notes();
         #[cfg(feature = "profiling")]
         profiler.begin(RenderStage::EnvelopesAndModulation);
         #[cfg(feature = "profiling")]
@@ -208,7 +277,10 @@ impl VoiceBlock {
             aux_env,
             aux_signal,
         };
+        let pitch_bend = f32x4::splat(performance.pitch_bend * PITCH_BEND_RANGE_SEMITONES);
         let mut lfo_modulation = LfoModulation::default();
+        lfo_modulation.oscillators.osc1_frequency_semitones = pitch_bend;
+        lfo_modulation.oscillators.osc2_frequency_semitones = pitch_bend;
         if self.modulation_plan.any_modulation {
             #[cfg(feature = "profiling")]
             profiler.begin(RenderStage::LfoControlRouting);
@@ -294,12 +366,13 @@ impl VoiceBlock {
         profiler.begin(RenderStage::AmplifierAndPan);
         let velocity_gain =
             f32x4::splat(1.0 - self.amp_velocity_amount) + velocities * self.amp_velocity_amount;
-        let env_gain = amp * self.amp_env_amount;
+        let env_gain = f32x4::splat(self.vca_initial_level)
+            + (f32x4::splat(1.0 - self.vca_initial_level) * amp * self.amp_env_amount);
         let amp_lfo_gain = (f32x4::splat(1.0) + lfo_modulation.amp_gain)
             .clamp(f32x4::splat(0.0), f32x4::splat(2.0));
         let output = filtered * velocity_gain * env_gain * amp_lfo_gain;
 
-        let stereo = self.pan_lanes(output, lfo_modulation.pan, active_lane_count);
+        let stereo = self.pan_lanes(output, lfo_modulation.pan);
         #[cfg(feature = "profiling")]
         profiler.end(RenderStage::AmplifierAndPan);
         stereo
@@ -368,37 +441,85 @@ impl VoiceBlock {
         f32x4::new(self.notes.map(midi_to_hz))
     }
 
-    fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4, active_lane_count: usize) -> (f32, f32) {
-        if active_lane_count <= 1 || (self.pan_spread == 0.0 && pan_mod == f32x4::ZERO) {
+    fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
+        if self.pan_spread == 0.0
+            && (self.pan_mod_mode == PanModMode::Alternate || pan_mod == f32x4::ZERO)
+        {
             return (
                 (lanes * self.centered_pan_cos).reduce_add(),
                 (lanes * self.centered_pan_sin).reduce_add(),
             );
         }
 
-        let spread =
-            (f32x4::splat(self.pan_spread) + pan_mod).clamp(f32x4::splat(-1.0), f32x4::splat(1.0));
-        let position = f32x4::new(self.pan_sides);
-        let angle =
-            (position * spread + f32x4::splat(1.0)) * f32x4::splat(core::f32::consts::FRAC_PI_4);
+        let voice_position = f32x4::new(self.pan_positions);
+        let position = match self.pan_mod_mode {
+            PanModMode::Alternate => {
+                let spread = (f32x4::splat(self.pan_spread) + pan_mod)
+                    .clamp(f32x4::ZERO, f32x4::splat(1.0));
+                voice_position * spread
+            }
+            PanModMode::Fixed => (voice_position * f32x4::splat(self.pan_spread) + pan_mod)
+                .clamp(f32x4::splat(-1.0), f32x4::splat(1.0)),
+        };
+        let angle = (position + f32x4::splat(1.0))
+            * f32x4::splat(core::f32::consts::FRAC_PI_4);
         let (sin, cos) = angle.sin_cos();
 
         ((lanes * cos).reduce_add(), (lanes * sin).reduce_add())
     }
 
     pub fn is_lane_silent(&self, lane: usize) -> bool {
-        !self.gates[lane] && self.amp_env.is_idle_lane(lane)
+        self.pending_notes[lane].is_none() && !self.gates[lane] && self.amp_env.is_idle_lane(lane)
     }
 
     pub fn is_lane_released(&self, lane: usize) -> bool {
-        !self.gates[lane]
+        self.pending_notes[lane].is_none() && !self.gates[lane]
     }
 
     pub fn for_each_active_note(&self, mut f: impl FnMut(u8)) {
         for lane in 0..LANES {
-            if self.gates[lane] {
+            if let Some(pending) = self.pending_notes[lane] {
+                f(pending.note);
+            } else if self.gates[lane] {
                 f(self.notes[lane]);
             }
+        }
+    }
+
+    pub(crate) fn active_note(&self, lane: usize) -> Option<u8> {
+        self.pending_notes[lane]
+            .map(|pending| pending.note)
+            .or_else(|| self.gates[lane].then_some(self.notes[lane]))
+    }
+
+    pub(crate) fn has_pending_note(&self, lane: usize) -> bool {
+        self.pending_notes[lane].is_some()
+    }
+
+    fn start_pending_notes(&mut self) {
+        if self.pending_note_mask == 0 {
+            return;
+        }
+        for lane in 0..LANES {
+            if self.pending_note_mask & (1 << lane) == 0 {
+                continue;
+            }
+            if !self.amp_env.is_idle_lane(lane) {
+                continue;
+            }
+            let Some(pending) = self.pending_notes[lane].take() else {
+                continue;
+            };
+
+            self.amp_env.reset_lane(lane);
+            self.filter_env.reset_lane(lane);
+            self.aux_env.reset_lane(lane);
+            self.note_on(
+                lane,
+                pending.note,
+                pending.velocity,
+                pending.reset_key_synced_lfos,
+            );
         }
     }
 
@@ -461,6 +582,10 @@ impl VoiceBlock {
         self.amp_env.set_release_seconds(seconds);
     }
 
+    pub fn set_vca_initial_level(&mut self, level: f32) {
+        self.vca_initial_level = level.clamp(0.0, 1.0);
+    }
+
     pub fn set_amp_env_amount(&mut self, amount: f32) {
         self.amp_env_amount = amount.clamp(0.0, 1.0);
     }
@@ -471,6 +596,14 @@ impl VoiceBlock {
 
     pub fn set_pan_spread(&mut self, spread: f32) {
         self.pan_spread = spread.clamp(0.0, 1.0);
+    }
+
+    pub fn set_pan_mod_mode(&mut self, mode: PanModMode) {
+        self.pan_mod_mode = mode;
+    }
+
+    pub(crate) fn set_pan_positions(&mut self, positions: [f32; LANES]) {
+        self.pan_positions = positions.map(|position| position.clamp(-1.0, 1.0));
     }
 
     pub fn set_lfo_rate_hz(&mut self, index: usize, rate_hz: f32) {
@@ -1436,38 +1569,75 @@ mod tests {
     }
 
     fn pan_lanes_reference(block: &VoiceBlock, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
-        let spread =
-            (f32x4::splat(block.pan_spread) + pan_mod).clamp(f32x4::splat(-1.0), f32x4::splat(1.0));
-        let position = if block.active_lane_count() <= 1 {
-            f32x4::ZERO
-        } else {
-            f32x4::new(block.pan_sides)
+        let voice_position = f32x4::new(block.pan_positions);
+        let position = match block.pan_mod_mode {
+            PanModMode::Alternate => {
+                let spread = (f32x4::splat(block.pan_spread) + pan_mod)
+                    .clamp(f32x4::ZERO, f32x4::splat(1.0));
+                voice_position * spread
+            }
+            PanModMode::Fixed => (voice_position * f32x4::splat(block.pan_spread) + pan_mod)
+                .clamp(f32x4::splat(-1.0), f32x4::splat(1.0)),
         };
         let angle =
-            (position * spread + f32x4::splat(1.0)) * f32x4::splat(core::f32::consts::FRAC_PI_4);
+            (position + f32x4::splat(1.0)) * f32x4::splat(core::f32::consts::FRAC_PI_4);
         let (sin, cos) = angle.sin_cos();
 
         ((lanes * cos).reduce_add(), (lanes * sin).reduce_add())
     }
 
     #[test]
-    fn centered_pan_fast_path_matches_general_equation_bit_exactly() {
+    fn pan_lanes_matches_rev2_mode_equations() {
         let lanes = f32x4::new([0.75, -0.25, 0.125, -0.0625]);
         let mut block = VoiceBlock::new(44_100.0);
 
         block.set_pan_spread(1.0);
-        block.note_on(0, 60, 1.0, -1.0, false);
+        block.note_on(0, 60, 1.0, false);
         let expected = pan_lanes_reference(&block, lanes, f32x4::splat(0.75));
-        let actual = block.pan_lanes(lanes, f32x4::splat(0.75), block.active_lane_count());
+        let actual = block.pan_lanes(lanes, f32x4::splat(0.75));
         assert_eq!(actual.0.to_bits(), expected.0.to_bits());
         assert_eq!(actual.1.to_bits(), expected.1.to_bits());
 
-        block.note_on(1, 67, 1.0, 1.0, false);
-        block.set_pan_spread(0.0);
-        let expected = pan_lanes_reference(&block, lanes, f32x4::ZERO);
-        let actual = block.pan_lanes(lanes, f32x4::ZERO, block.active_lane_count());
+        block.set_pan_mod_mode(PanModMode::Fixed);
+        let expected = pan_lanes_reference(&block, lanes, f32x4::splat(-0.25));
+        let actual = block.pan_lanes(lanes, f32x4::splat(-0.25));
         assert_eq!(actual.0.to_bits(), expected.0.to_bits());
         assert_eq!(actual.1.to_bits(), expected.1.to_bits());
+    }
+
+    #[test]
+    fn a_single_voice_keeps_its_physical_pan_position() {
+        let lanes = f32x4::new([1.0, 0.0, 0.0, 0.0]);
+        let mut block = VoiceBlock::new(44_100.0);
+        block.set_pan_spread(1.0);
+
+        let (left, right) = block.pan_lanes(lanes, f32x4::ZERO);
+
+        assert!(
+            left.abs() < 1.0e-6,
+            "voice 1 should be hard right, got {left}"
+        );
+        assert!(
+            (right - 1.0).abs() < 1.0e-6,
+            "voice 1 right gain was {right}"
+        );
+    }
+
+    #[test]
+    fn alternate_modulation_changes_width_and_fixed_modulation_translates() {
+        let lanes = f32x4::new([1.0, 1.0, 0.0, 0.0]);
+        let mut block = VoiceBlock::new(44_100.0);
+        block.set_pan_spread(0.5);
+
+        let alternate = block.pan_lanes(lanes, f32x4::splat(0.25));
+        assert!((alternate.0 - alternate.1).abs() < 1.0e-6);
+
+        block.set_pan_mod_mode(PanModMode::Fixed);
+        let fixed = block.pan_lanes(lanes, f32x4::splat(0.25));
+        assert!(
+            fixed.1 > fixed.0,
+            "positive Fixed modulation should move the program right"
+        );
     }
 
     #[test]
@@ -1521,7 +1691,7 @@ mod tests {
             block.set_aux_attack(0.0005);
             block.set_aux_decay(5.0);
             block.set_aux_sustain(1.0);
-            block.note_on(0, 60, 1.0, 0.0, false);
+            block.note_on(0, 60, 1.0, false);
 
             let mut peak = 0.0f32;
             for _ in 0..64 {
@@ -1575,7 +1745,7 @@ mod tests {
     }
 
     #[test]
-    fn pan_spread_keeps_single_voice_centered() {
+    fn pan_spread_pans_a_single_voice_to_its_physical_position() {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
@@ -1595,8 +1765,8 @@ mod tests {
         let right = (right_sum / frames as f32).sqrt();
 
         assert!(
-            (left - right).abs() < left.max(right) * 0.05,
-            "one voice should stay centered even at full spread, left {left}, right {right}"
+            right > left * 100.0,
+            "physical voice 1 should pan right at full spread, left {left}, right {right}"
         );
     }
 
@@ -1638,7 +1808,7 @@ mod tests {
     }
 
     #[test]
-    fn pan_spread_keeps_repeated_single_notes_centered_after_release() {
+    fn repeated_notes_advance_through_physical_voice_pan_positions() {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
@@ -1658,12 +1828,12 @@ mod tests {
         let (second_left, second_right) = stereo_rms(&mut voices, 2048);
 
         assert!(
-            (first_left - first_right).abs() < first_left.max(first_right) * 0.05,
-            "first single note should stay centered at full spread, left {first_left}, right {first_right}"
+            first_right > first_left * 100.0,
+            "physical voice 1 should pan right, left {first_left}, right {first_right}"
         );
         assert!(
-            (second_left - second_right).abs() < second_left.max(second_right) * 0.05,
-            "second single note should stay centered at full spread, left {second_left}, right {second_right}"
+            second_left > second_right * 100.0,
+            "physical voice 2 should pan left, left {second_left}, right {second_right}"
         );
     }
 
@@ -1863,5 +2033,56 @@ mod tests {
         repeating.handle_control(ControlMessage::NoteOff { note: 60 });
         assert_eq!(repeating[0].aux_env.next().to_array()[0], 0.0);
         assert!(repeating[0].aux_env.is_idle_lane(0));
+    }
+
+    #[test]
+    fn vca_initial_level_at_one_ignores_amp_envelope_amount() {
+        let mut drone = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        drone.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut drone, 4_096);
+        let (drone_left, _) = stereo_rms(&mut drone, 4_096);
+        assert!(
+            drone_left > 0.05,
+            "full VCA level should bypass amp envelope amount, RMS {drone_left}"
+        );
+
+        let mut gated = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        gated.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
+        gated.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+        gated.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
+        gated.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        gated.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut gated, 4_096);
+        let (gated_left, _) = stereo_rms(&mut gated, 4_096);
+        assert!(
+            gated_left < 0.001,
+            "zero VCA level and envelope amount should be silent, RMS {gated_left}"
+        );
+
+        let mut enveloped = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        enveloped.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
+        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
+        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
+        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        enveloped.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut enveloped, 4_096);
+        let (enveloped_left, _) = stereo_rms(&mut enveloped, 4_096);
+        assert!(
+            enveloped_left > 0.05,
+            "zero VCA level with full envelope amount should still gate audibly, RMS {enveloped_left}"
+        );
     }
 }

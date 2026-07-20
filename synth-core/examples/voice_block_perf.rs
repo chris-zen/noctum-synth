@@ -50,8 +50,7 @@ fn time_case(make_block: fn() -> VoiceBlock) -> Duration {
 fn configured_block() -> VoiceBlock {
     let mut block = VoiceBlock::new(SAMPLE_RATE);
     for (lane, note) in [48, 55, 60, 67].into_iter().enumerate() {
-        let pan_side = if lane % 2 == 0 { -1.0 } else { 1.0 };
-        block.note_on(lane, note, 1.0, pan_side, false);
+        block.note_on(lane, note, 1.0, false);
     }
     block
 }

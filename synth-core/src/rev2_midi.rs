@@ -148,6 +148,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
         }
     }
     patch.name = decode_patch_name(&raw[LAYER_A_NAME_RANGE]);
+    patch.set_param(ParamId::VcaInitialLevel, unit(u16::from(raw[27]), 127));
     Ok(patch)
 }
 
@@ -264,6 +265,14 @@ impl Rev2MidiEncoder {
         value: f32,
         mut emit: impl FnMut([u8; 3]),
     ) -> bool {
+        if param == ParamId::PanModMode {
+            emit([
+                0xb0 | (channel & 0x0f),
+                10,
+                if value >= 0.5 { 127 } else { 0 },
+            ]);
+            return true;
+        }
         let mapped = match param {
             ParamId::Osc1Waveform => {
                 self.oscillator_waveforms[0] = value as u8;
@@ -468,6 +477,7 @@ fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
             store_nrpn(raw, sequence);
         }
     });
+    raw[27] = quantize(patch.amplifier.initial_level, 0.0, 1.0, 127) as u8;
 }
 
 fn store_nrpn(raw: &mut [u8], messages: &[[u8; 3]]) {
@@ -682,18 +692,19 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         7 | 37 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
         8 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
         9 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
+        10 => emit_param(emit, ParamId::PanModMode, f32::from(raw >= 64)),
         12 => emit_param(emit, ParamId::EffectParam1, unit(raw, 127)),
         13 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
         16 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw >= 64)),
         17 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
-        20 => emit_param(emit, ParamId::Osc1Frequency, ranged(raw, 127, 0.0, 120.0)),
+        20 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
         21 => emit_param(emit, ParamId::Osc1FineTune, ranged(raw, 127, -50.0, 50.0)),
         22 => emit_osc_shape(
             emit,
             true,
             crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
         ),
-        24 => emit_param(emit, ParamId::Osc2Frequency, ranged(raw, 127, 0.0, 120.0)),
+        24 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
         25 => emit_param(emit, ParamId::Osc2FineTune, ranged(raw, 127, -50.0, 50.0)),
         26 => emit_osc_shape(
             emit,
@@ -738,6 +749,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
             ranged(raw, 127, 0.0005, 10.0),
         ),
         114 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
+        113 => emit_param(emit, ParamId::VcaInitialLevel, unit(raw, 127)),
         115 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
         116 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
         117 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
@@ -906,7 +918,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         | 125 => 52,
         65 | 68 | 71 | 74 | 77 | 80 | 83 | 86 => 22,
         102 | 103 => 99,
-        154 => 13,
+        154 => 12,
         156 => 255,
         12..=14 | 16..=18 | 21..=26 | 28..=36 | 39 | 44 | 49 | 54 | 59..=64 | 110 | 155 | 157 => {
             127
@@ -947,6 +959,24 @@ mod tests {
         assert_eq!(
             decoded,
             Some(Rev2MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
+        );
+    }
+
+    #[test]
+    fn pan_mod_mode_round_trips_as_cc10() {
+        let mut encoder = Rev2MidiEncoder::default();
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut message = [0_u8; 3];
+        assert!(encoder.param(3, ParamId::PanModMode, 1.0, |encoded| { message = encoded }));
+        assert_eq!(message, [0xb3, 10, 127]);
+
+        let mut decoded = None;
+        assert!(decoder.control_change(3, message[1], message[2], |update| {
+            decoded = Some(update)
+        }));
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(ParamId::PanModMode, 1.0))
         );
     }
 
@@ -1036,6 +1066,23 @@ mod tests {
         pack_program_data(&raw, &mut packed);
         let patch = decode_patch_payload(&packed).unwrap();
         assert_eq!(patch.name.as_str(), "LosVangelis2041");
+    }
+
+    #[test]
+    fn program_edit_buffer_round_trips_vca_initial_level() {
+        let mut source = Patch::default();
+        source.amplifier.initial_level = 103.0 / 127.0;
+
+        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+
+        let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+        assert!(
+            (decoded.amplifier.initial_level - source.amplifier.initial_level).abs() < 0.01,
+            "decoded {} expected {}",
+            decoded.amplifier.initial_level,
+            source.amplifier.initial_level
+        );
     }
 
     #[test]

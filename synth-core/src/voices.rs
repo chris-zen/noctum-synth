@@ -11,8 +11,8 @@ use crate::profiling::NoopProfiler;
 use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
-    ControlMessage, FilterOversampling, FilterType, LANES, LfoWaveform, ModDestination, ParamId,
-    Patch, VOICE_PACKS, VoiceBlock, Waveform,
+    ControlMessage, FilterOversampling, FilterType, LANES, LfoWaveform, ModDestination, PanModMode,
+    ParamId, Patch, VOICE_PACKS, VoiceBlock, Waveform, voice_pan_position,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -103,7 +103,6 @@ pub struct Voices<const PACKS: usize = VOICE_PACKS> {
     sustained_voices: [[bool; LANES]; PACKS],
     sustain_pressed: bool,
     next_voice: usize,
-    next_pan_side: f32,
     performance: PerformanceModulation,
     last_effect_modulation: EffectModulation,
 }
@@ -111,12 +110,17 @@ pub struct Voices<const PACKS: usize = VOICE_PACKS> {
 impl<const PACKS: usize> Voices<PACKS> {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            blocks: core::array::from_fn(|_| VoiceBlock::new(sample_rate)),
+            blocks: core::array::from_fn(|block_index| {
+                let mut block = VoiceBlock::new(sample_rate);
+                block.set_pan_positions(core::array::from_fn(|lane| {
+                    voice_pan_position(block_index * LANES + lane, Self::VOICE_COUNT)
+                }));
+                block
+            }),
             held_voices: FixedIndexList::new(),
             sustained_voices: [[false; LANES]; PACKS],
             sustain_pressed: false,
             next_voice: 0,
-            next_pan_side: -1.0,
             performance: PerformanceModulation::default(),
             last_effect_modulation: EffectModulation::default(),
         }
@@ -158,20 +162,15 @@ impl<const PACKS: usize> Voices<PACKS> {
                 let voice_idx = active_voice_idx.unwrap_or_else(|| self.allocate_voice());
                 let (block_idx, lane) = self.voice_location(voice_idx);
                 self.sustained_voices[block_idx][lane] = false;
-                let pan_side = if active_voice_idx.is_some() {
-                    self.blocks[block_idx].pan_sides[lane]
+                let block = &mut self.blocks[block_idx];
+                let velocity = velocity.clamp(0.0, 1.0);
+                if block.is_lane_silent(lane)
+                    || (active_voice_idx.is_some() && !block.has_pending_note(lane))
+                {
+                    block.note_on(lane, note, velocity, reset_key_synced_lfos);
                 } else {
-                    let pan_side = self.next_pan_side;
-                    self.next_pan_side = -self.next_pan_side;
-                    pan_side
-                };
-                self.blocks[block_idx].note_on(
-                    lane,
-                    note,
-                    velocity.clamp(0.0, 1.0),
-                    pan_side,
-                    reset_key_synced_lfos,
-                );
+                    block.schedule_note_on(lane, note, velocity, reset_key_synced_lfos);
+                }
                 self.mark_held_voice(voice_idx);
                 self.next_voice = (voice_idx + 1) % Self::VOICE_COUNT;
             }
@@ -248,7 +247,7 @@ impl<const PACKS: usize> Voices<PACKS> {
             } else {
                 self.sustained_voices[block_idx][lane] = false;
                 let block = &mut self.blocks[block_idx];
-                if block.notes[lane] == note && block.gates[lane] {
+                if block.active_note(lane) == Some(note) {
                     block.note_off_lane(lane);
                 }
             }
@@ -273,7 +272,7 @@ impl<const PACKS: usize> Voices<PACKS> {
         for voice_idx in self.held_voices.iter() {
             let (block_idx, lane) = self.voice_location(voice_idx);
             let block = &self.blocks[block_idx];
-            if block.gates[lane] && block.notes[lane] == note {
+            if block.active_note(lane) == Some(note) {
                 return Some(voice_idx);
             }
         }
@@ -398,6 +397,7 @@ impl<const PACKS: usize> Voices<PACKS> {
                 ParamId::FilterEgDecay => block.set_filter_decay(value),
                 ParamId::FilterEgSustain => block.set_filter_sustain(value),
                 ParamId::FilterEgRelease => block.set_filter_release(value),
+                ParamId::VcaInitialLevel => block.set_vca_initial_level(value),
                 ParamId::AmpEnvAmount => block.set_amp_env_amount(value),
                 ParamId::AmpVelocity => block.set_amp_velocity_amount(value),
                 ParamId::AmpEgDelay => block.set_amp_delay(value),
@@ -417,6 +417,9 @@ impl<const PACKS: usize> Voices<PACKS> {
                 ParamId::AuxEgRelease => block.set_aux_release(value),
                 ParamId::AuxEgLoop => block.set_aux_repeat(value >= 0.5),
                 ParamId::PanSpread => block.set_pan_spread(value),
+                ParamId::PanModMode => {
+                    block.set_pan_mod_mode(PanModMode::from_param(value));
+                }
                 ParamId::Lfo1Rate => block.set_lfo_rate_hz(0, value),
                 ParamId::Lfo2Rate => block.set_lfo_rate_hz(1, value),
                 ParamId::Lfo3Rate => block.set_lfo_rate_hz(2, value),
@@ -522,11 +525,9 @@ impl<const PACKS: usize> Voices<PACKS> {
             }
             block.age_active_lanes();
             #[cfg(feature = "profiling")]
-            let (block_left, block_right) =
-                block.next_profiled(self.performance, block_voice_count, profiler);
+            let (block_left, block_right) = block.next_profiled(self.performance, profiler);
             #[cfg(not(feature = "profiling"))]
-            let (block_left, block_right) =
-                block.next_with_active_lane_count(self.performance, block_voice_count);
+            let (block_left, block_right) = block.next_block(self.performance);
             left += block_left;
             right += block_right;
             effects.add(block.last_effect_modulation);
@@ -626,7 +627,7 @@ mod tests {
     use super::*;
     use crate::{ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT};
 
-    fn process_frames(voices: &mut Voices, frames: usize) {
+    fn process_frames<const PACKS: usize>(voices: &mut Voices<PACKS>, frames: usize) {
         for _ in 0..frames {
             voices.next();
         }
@@ -715,20 +716,72 @@ mod tests {
     }
 
     #[test]
-    fn pan_spread_assigns_new_voices_to_alternating_sides() {
+    fn pitch_bend_transposes_both_oscillators_by_two_semitones() {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
         });
+        voices.handle_control(ControlMessage::PitchBend { value: 1.0 });
+
+        voices.next();
+
+        let expected = crate::midi_to_hz(62);
+        let block = &voices[0];
+        let osc1 = block.oscillators.osc1_frequency_hz().to_array()[0];
+        assert!(
+            (osc1 - expected).abs() < 0.1,
+            "osc 1 was {osc1}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn pitch_bend_remains_available_as_a_mod_matrix_source() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetModulation {
+            route: ModRoute::Free(0),
+            enabled: true,
+            source: ModSource::PitchBend,
+            destination: ModDestination::Osc1Frequency,
+            amount: 0.5,
+        });
         voices.handle_control(ControlMessage::NoteOn {
-            note: 67,
+            note: 60,
             velocity: 1.0,
         });
+        voices.handle_control(ControlMessage::PitchBend { value: 1.0 });
 
-        assert_eq!(voices[0].pan_sides[0], -1.0);
-        assert_eq!(voices[0].pan_sides[1], 1.0);
+        voices.next();
+
+        let block = &voices[0];
+        let osc1 = block.oscillators.osc1_frequency_hz().to_array()[0];
+        let expected_osc1 = crate::midi_to_hz(68);
+        assert!(
+            (osc1 - expected_osc1).abs() < 0.1,
+            "matrix-routed osc 1 was {osc1}, expected {expected_osc1}"
+        );
+    }
+
+    #[test]
+    fn physical_voices_use_the_rev2_pan_pattern() {
+        let voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        for voice_index in 0..crate::REV2_VOICE_PAN_POSITIONS.len() {
+            let (block, lane) = voices.voice_location(voice_index);
+            assert_eq!(
+                voices[block].pan_positions[lane],
+                crate::REV2_VOICE_PAN_POSITIONS[voice_index]
+            );
+        }
+    }
+
+    #[test]
+    fn pan_pattern_scales_with_configured_voice_count() {
+        let four_voices = Voices::<1>::new(44_100.0);
+        assert_eq!(four_voices[0].pan_positions, [1.0, -1.0, 0.5, -0.5]);
+
+        let eight_voices = Voices::<2>::new(44_100.0);
+        assert_eq!(eight_voices[0].pan_positions, [1.0, -1.0, 0.75, -0.75]);
+        assert_eq!(eight_voices[1].pan_positions, [0.5, -0.5, 0.25, -0.25]);
     }
 
     #[test]
@@ -802,9 +855,96 @@ mod tests {
         );
         assert!(held.contains(&76), "new note 76 should be allocated");
         assert_eq!(
-            voices[0].notes[0], 76,
-            "stolen voice should be reused for note 76"
+            voices[0].active_note(0),
+            Some(76),
+            "stolen voice should reserve its lane for note 76"
         );
+        assert_eq!(voices[0].notes[0], 60, "old DSP state should fade first");
+        assert!(voices[0].has_pending_note(0));
+    }
+
+    #[test]
+    fn stolen_voice_starts_after_five_millisecond_shutdown() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 128);
+        for note in 61..=63 {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        assert!(voices[0].has_pending_note(0));
+        assert_eq!(voices[0].notes[0], 60);
+        assert!(!voices[0].gates[0]);
+
+        process_frames(&mut voices, 221);
+        assert!(voices[0].has_pending_note(0));
+        assert_eq!(voices[0].notes[0], 60);
+
+        process_frames(&mut voices, 1);
+        assert!(!voices[0].has_pending_note(0));
+        assert_eq!(voices[0].notes[0], 64);
+        assert!(voices[0].gates[0]);
+    }
+
+    #[test]
+    fn note_off_cancels_a_pending_stolen_note() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        for note in 60..=63 {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+        process_frames(&mut voices, 128);
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOff { note: 64 });
+        process_frames(&mut voices, 128);
+
+        assert!(!voices.active_notes().contains(&64));
+        assert!(!voices[0].has_pending_note(0));
+        assert_ne!(voices[0].notes[0], 64);
+    }
+
+    #[test]
+    fn sustain_holds_and_then_cancels_a_pending_stolen_note() {
+        let mut voices = Voices::<1>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        for note in 60..=63 {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+        process_frames(&mut voices, 128);
+
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOff { note: 64 });
+        assert!(voices.active_notes().contains(&64));
+        assert!(voices[0].has_pending_note(0));
+
+        voices.handle_control(ControlMessage::SustainPedal { pressed: false });
+        assert!(!voices.active_notes().contains(&64));
+        assert!(!voices[0].has_pending_note(0));
     }
 
     #[test]
@@ -982,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn retrigger_preserves_pan_side() {
+    fn retrigger_preserves_physical_voice_pan_position() {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
@@ -994,13 +1134,13 @@ mod tests {
             velocity: 1.0,
         });
 
-        let pan_before = voices[0].pan_sides[0];
+        let pan_before = voices[0].pan_positions[0];
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 0.8,
         });
 
-        assert_eq!(voices[0].pan_sides[0], pan_before);
+        assert_eq!(voices[0].pan_positions[0], pan_before);
     }
 
     #[test]

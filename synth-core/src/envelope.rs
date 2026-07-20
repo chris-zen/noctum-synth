@@ -23,6 +23,9 @@ pub struct DadsrEnvelope {
     value: f32x4,
     delay_seconds: f32,
     delay_samples_remaining: [u32; LANES],
+    shutdown_start: [f32; LANES],
+    shutdown_samples_remaining: [u32; LANES],
+    shutdown_total_samples: [u32; LANES],
     attack_seconds: f32,
     decay_seconds: f32,
     sustain_level: f32,
@@ -41,6 +44,9 @@ impl DadsrEnvelope {
             value: f32x4::splat(0.0),
             delay_seconds: 0.0,
             delay_samples_remaining: [0; LANES],
+            shutdown_start: [0.0; LANES],
+            shutdown_samples_remaining: [0; LANES],
+            shutdown_total_samples: [0; LANES],
             attack_seconds: DEFAULT_ATTACK_SECONDS,
             decay_seconds: DEFAULT_DECAY_SECONDS,
             sustain_level: DEFAULT_SUSTAIN_LEVEL,
@@ -65,6 +71,9 @@ impl DadsrEnvelope {
             value: f32x4::splat(0.0),
             delay_seconds: 0.0,
             delay_samples_remaining: [0; LANES],
+            shutdown_start: [0.0; LANES],
+            shutdown_samples_remaining: [0; LANES],
+            shutdown_total_samples: [0; LANES],
             attack_seconds: DEFAULT_ATTACK_SECONDS,
             decay_seconds: DEFAULT_DECAY_SECONDS,
             sustain_level: DEFAULT_SUSTAIN_LEVEL,
@@ -172,6 +181,23 @@ impl DadsrEnvelope {
                         self.stage[lane] = EnvStage::Idle;
                     }
                 }
+                EnvStage::Shutdown => {
+                    let remaining = self.shutdown_samples_remaining[lane].saturating_sub(1);
+                    self.shutdown_samples_remaining[lane] = remaining;
+                    if remaining == 0 {
+                        *value = 0.0;
+                        self.shutdown_start[lane] = 0.0;
+                        self.shutdown_total_samples[lane] = 0;
+                        self.stage[lane] = EnvStage::Idle;
+                    } else {
+                        let total = self.shutdown_total_samples[lane] as f32;
+                        let progress = 1.0 - remaining as f32 / total;
+                        // Smoothstep from one to zero. Its zero slope at both ends
+                        // avoids turning the de-click ramp into a slope discontinuity.
+                        let gain = 1.0 - progress * progress * (3.0 - 2.0 * progress);
+                        *value = self.shutdown_start[lane] * gain;
+                    }
+                }
             }
         }
 
@@ -182,6 +208,9 @@ impl DadsrEnvelope {
     /// Releases a single SIMD lane, moving it into the release segment when audible.
     pub fn release_lane(&mut self, lane: usize) {
         self.gate[lane] = false;
+        if self.stage[lane] == EnvStage::Shutdown {
+            return;
+        }
         if self.stage[lane] != EnvStage::Idle {
             self.delay_samples_remaining[lane] = 0;
             let current = self.value.to_array()[lane].max(0.0);
@@ -204,6 +233,35 @@ impl DadsrEnvelope {
     /// Returns true when a lane has reached the idle stage and is effectively silent.
     pub fn is_idle_lane(&self, lane: usize) -> bool {
         self.stage[lane] == EnvStage::Idle && self.value.to_array()[lane] <= IDLE_THRESHOLD
+    }
+
+    /// Smoothly silences a lane over a fixed interval for click-free voice reuse.
+    pub(crate) fn shutdown_lane(&mut self, lane: usize, seconds: f32) {
+        self.gate[lane] = false;
+        self.delay_samples_remaining[lane] = 0;
+        let current = self.value.to_array()[lane].max(0.0);
+        if current <= IDLE_THRESHOLD {
+            self.reset_lane(lane);
+            return;
+        }
+
+        let samples =
+            crate::math::round(seconds.max(MIN_TIME_SECONDS) * self.sample_rate).max(1.0) as u32;
+        self.shutdown_start[lane] = current;
+        self.shutdown_samples_remaining[lane] = samples;
+        self.shutdown_total_samples[lane] = samples;
+        self.stage[lane] = EnvStage::Shutdown;
+    }
+
+    /// Returns a lane to its inactive zero state without disturbing adjacent lanes.
+    pub(crate) fn reset_lane(&mut self, lane: usize) {
+        self.gate[lane] = false;
+        self.delay_samples_remaining[lane] = 0;
+        self.shutdown_start[lane] = 0.0;
+        self.shutdown_samples_remaining[lane] = 0;
+        self.shutdown_total_samples[lane] = 0;
+        self.set_lane_value(lane, 0.0);
+        self.stage[lane] = EnvStage::Idle;
     }
 
     /// Moves a lane into delay or directly into attack based on the current delay time.
@@ -234,6 +292,7 @@ enum EnvStage {
     Decay,
     Sustain,
     Release,
+    Shutdown,
 }
 
 #[derive(Clone, Copy)]
@@ -565,6 +624,67 @@ mod tests {
             after_retrigger > before_retrigger,
             "retrigger should continue upward from {before_retrigger}, got {after_retrigger}"
         );
+    }
+
+    #[test]
+    fn shutdown_reaches_zero_in_the_requested_time() {
+        let mut env = DadsrEnvelope::linear(1000.0);
+        env.set_attack_seconds(0.001);
+        env.trigger_lane(0);
+        assert_eq!(env.next().to_array()[0], 1.0);
+
+        env.shutdown_lane(0, 0.002);
+        assert!((env.next().to_array()[0] - 0.5).abs() < 1.0e-6);
+        assert_eq!(env.next().to_array()[0], 0.0);
+        assert!(env.is_idle_lane(0));
+    }
+
+    #[test]
+    fn shutdown_has_gentle_slopes_at_both_ends() {
+        let mut env = DadsrEnvelope::linear(1000.0);
+        env.set_attack_seconds(0.001);
+        env.trigger_lane(0);
+        assert_eq!(env.next().to_array()[0], 1.0);
+
+        env.shutdown_lane(0, 0.1);
+        let first = env.next().to_array()[0];
+        let mut midpoint = first;
+        for _ in 1..50 {
+            midpoint = env.next().to_array()[0];
+        }
+        let mut penultimate = midpoint;
+        for _ in 50..99 {
+            penultimate = env.next().to_array()[0];
+        }
+        let final_value = env.next().to_array()[0];
+
+        assert!(
+            1.0 - first < 0.001,
+            "shutdown started too abruptly: {first}"
+        );
+        assert!((midpoint - 0.5).abs() < 1.0e-6);
+        assert!(
+            penultimate < 0.001,
+            "shutdown ended too abruptly: {penultimate}"
+        );
+        assert_eq!(final_value, 0.0);
+        assert!(env.is_idle_lane(0));
+    }
+
+    #[test]
+    fn reset_lane_does_not_change_adjacent_lanes() {
+        let mut env = DadsrEnvelope::linear(1000.0);
+        env.set_attack_seconds(0.004);
+        env.trigger_lane(0);
+        env.trigger_lane(1);
+        env.next();
+
+        env.reset_lane(0);
+        let values = env.next().to_array();
+        assert_eq!(values[0], 0.0);
+        assert_eq!(values[1], 0.5);
+        assert!(env.is_idle_lane(0));
+        assert!(!env.is_idle_lane(1));
     }
 
     #[test]

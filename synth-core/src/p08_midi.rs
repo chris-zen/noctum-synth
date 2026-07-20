@@ -360,6 +360,7 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             ParamId::FilterEgRelease,
             ranged(raw, 127, 0.0005, 10.0),
         )),
+        27 => emit(P08MidiUpdate::Param(ParamId::VcaInitialLevel, unit(raw, 127))),
         28 => emit(P08MidiUpdate::Param(ParamId::PanSpread, unit(raw, 127))),
         29 => emit(P08MidiUpdate::Param(ParamId::MasterVolume, unit(raw, 127))),
         30 => emit(P08MidiUpdate::Param(ParamId::AmpEnvAmount, unit(raw, 127))),
@@ -539,6 +540,35 @@ mod tests {
         let decoded = P08MidiDecoder::program_data(factory_message(1, 0)).unwrap();
         assert_eq!(decoded.bank, 1);
         assert_eq!(decoded.program, 0);
+    }
+
+    #[test]
+    fn factory_program_decodes_vca_initial_level() {
+        let decoded = P08MidiDecoder::program_data(factory_message(0, 54)).unwrap();
+        assert!(
+            (decoded.patch.amplifier.initial_level - 103.0 / 127.0).abs() < 0.01,
+            "decoded {}",
+            decoded.patch.amplifier.initial_level
+        );
+    }
+
+    #[test]
+    fn factory_program_pan_spread_uses_documented_program_indices() {
+        let message = factory_message(0, 0);
+        let mut raw = [0_u8; P08_PROGRAM_DATA_LEN];
+        unpack_program_data(&message[6..6 + P08_PROGRAM_PACKED_LEN], &mut raw);
+        let decoded = P08MidiDecoder::program_data(message).unwrap();
+
+        assert_eq!(raw[28], 0, "factory fixture layer A Pan Spread changed");
+        assert_eq!(raw[228], 49, "factory fixture layer B Pan Spread changed");
+        assert_eq!(
+            decoded.patch.amplifier.pan_spread,
+            f32::from(raw[28]) / 127.0
+        );
+        assert_eq!(
+            decoded.patch.amplifier.pan_mod_mode,
+            crate::PanModMode::Alternate
+        );
     }
 
     #[test]

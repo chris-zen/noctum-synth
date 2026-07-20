@@ -44,7 +44,9 @@ makes that amount respond to key velocity, and Repeat loops its attack/decay
 portion for cycling modulation.
 
 Amplifier envelope amount controls how strongly the volume contour gates a
-voice. Amplifier velocity changes loudness response. Pan spread increases the
+voice. VCA Level sets a static amplifier bias before the envelope is applied; at
+full level the envelope amount has no effect, which is useful for drone or
+bypass-style patches. Amplifier velocity changes loudness response. Pan spread increases the
 left/right placement applied to successive voices, while master volume sets the
 final output level.
 

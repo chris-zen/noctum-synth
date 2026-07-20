@@ -598,9 +598,40 @@ impl Default for FilterParams {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PanModMode {
+    /// Pan modulation changes the width of the per-voice spread pattern.
+    #[default]
+    Alternate,
+    /// Pan modulation moves the complete program left or right.
+    Fixed,
+}
+
+impl PanModMode {
+    pub const fn from_param(value: f32) -> Self {
+        if value >= 0.5 {
+            Self::Fixed
+        } else {
+            Self::Alternate
+        }
+    }
+
+    pub const fn as_param(self) -> f32 {
+        match self {
+            Self::Alternate => 0.0,
+            Self::Fixed => 1.0,
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct AmplifierParams {
     pub pan_spread: f32,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pan_mod_mode: PanModMode,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub initial_level: f32,
     pub env_amount: f32,
     pub velocity: f32,
     pub eg_delay: f32,
@@ -614,6 +645,8 @@ impl Default for AmplifierParams {
     fn default() -> Self {
         Self {
             pan_spread: 0.0,
+            pan_mod_mode: PanModMode::Alternate,
+            initial_level: 0.0,
             env_amount: 1.0,
             velocity: 1.0,
             eg_delay: 0.0,
@@ -774,6 +807,8 @@ impl Patch {
         f(ParamId::FilterEgRelease, self.filter.eg_release);
 
         f(ParamId::PanSpread, self.amplifier.pan_spread);
+        f(ParamId::PanModMode, self.amplifier.pan_mod_mode.as_param());
+        f(ParamId::VcaInitialLevel, self.amplifier.initial_level);
         f(ParamId::AmpEnvAmount, self.amplifier.env_amount);
         f(ParamId::AmpVelocity, self.amplifier.velocity);
         f(ParamId::AmpEgDelay, self.amplifier.eg_delay);
@@ -912,6 +947,8 @@ impl Patch {
             ParamId::FilterEgSustain => self.filter.eg_sustain = value,
             ParamId::FilterEgRelease => self.filter.eg_release = value,
             ParamId::PanSpread => self.amplifier.pan_spread = value,
+            ParamId::PanModMode => self.amplifier.pan_mod_mode = PanModMode::from_param(value),
+            ParamId::VcaInitialLevel => self.amplifier.initial_level = value.clamp(0.0, 1.0),
             ParamId::AmpEnvAmount => self.amplifier.env_amount = value,
             ParamId::AmpVelocity => self.amplifier.velocity = value,
             ParamId::AmpEgDelay => self.amplifier.eg_delay = value,
@@ -1042,5 +1079,41 @@ mod tests {
         let mut bytes = [b' '; PATCH_NAME_CAPACITY];
         bytes[..15].copy_from_slice(b"LosVangelis2041");
         assert_eq!(decode_patch_name(&bytes).as_str(), "LosVangelis2041");
+    }
+
+    #[test]
+    fn vca_initial_level_defaults_for_older_patches() {
+        let mut patch = Patch::default();
+        patch.amplifier.initial_level = 0.5;
+        let encoded = serde_json::to_value(&patch).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.amplifier.initial_level, 0.5);
+
+        let mut legacy = encoded;
+        legacy
+            .get_mut("amplifier")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("initial_level");
+        let decoded: Patch = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.amplifier.initial_level, 0.0);
+    }
+
+    #[test]
+    fn pan_mod_mode_round_trips_and_defaults_for_older_patches() {
+        let mut patch = Patch::default();
+        patch.amplifier.pan_mod_mode = PanModMode::Fixed;
+        let encoded = serde_json::to_value(&patch).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(decoded.amplifier.pan_mod_mode, PanModMode::Fixed);
+
+        let mut legacy = encoded;
+        legacy
+            .get_mut("amplifier")
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap()
+            .remove("pan_mod_mode");
+        let decoded: Patch = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.amplifier.pan_mod_mode, PanModMode::Alternate);
     }
 }

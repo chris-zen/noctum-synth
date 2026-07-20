@@ -103,7 +103,7 @@ pub use noise::WhiteNoise;
 pub use patch::{
     AmplifierParams, AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, EffectParams,
     EffectType, FilterParams, LfoParams, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
-    ModSource, OscillatorPatch, Patch, PatchName,
+    ModSource, OscillatorPatch, PanModMode, Patch, PatchName,
 };
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};
@@ -118,7 +118,9 @@ pub use rev2_midi::{
     Rev2SysexError,
 };
 pub use tuning::midi_to_hz;
-pub use voice::{PerformanceModulation, VoiceBlock};
+pub use voice::{
+    PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, voice_pan_position,
+};
 pub use voices::{ActiveNotes, Voices};
 pub use wavetable::{
     WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
@@ -167,6 +169,7 @@ pub enum ParamId {
     FilterEgDecay,
     FilterEgSustain,
     FilterEgRelease,
+    VcaInitialLevel,
     AmpEnvAmount,
     AmpVelocity,
     AmpEgDelay,
@@ -216,6 +219,7 @@ pub enum ParamId {
     AnalogDrift,
     VcaDrive,
     PanSpread,
+    PanModMode,
     MasterVolume,
 }
 
@@ -259,6 +263,7 @@ impl ParamId {
             Self::FilterEgDecay => "Filter Decay",
             Self::FilterEgSustain => "Filter Sustain",
             Self::FilterEgRelease => "Filter Release",
+            Self::VcaInitialLevel => "VCA Level",
             Self::AmpEnvAmount => "Amp Env Amount",
             Self::AmpVelocity => "Amp Velocity",
             Self::AmpEgDelay => "Amp Delay",
@@ -308,6 +313,7 @@ impl ParamId {
             Self::AnalogDrift => "Analog Drift",
             Self::VcaDrive => "VCA Drive",
             Self::PanSpread => "Pan Spread",
+            Self::PanModMode => "Pan Mod Mode",
             Self::MasterVolume => "Master Volume",
         }
     }
