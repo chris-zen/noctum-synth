@@ -22,10 +22,12 @@ fn knob_value_edit(
     value: &mut f32,
     min: f32,
     max: f32,
+    display_offset: f32,
     format: impl Fn(f32) -> String,
     font_id: egui::FontId,
     text_color: egui::Color32,
 ) -> bool {
+    let display = *value - display_offset;
     let mut edit_text = ui
         .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
         .unwrap_or_default();
@@ -33,11 +35,11 @@ fn knob_value_edit(
     let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
 
     if !edit_has_focus {
-        edit_text = format(*value);
+        edit_text = format(display);
     }
 
     if edit_text.is_empty() {
-        edit_text = format(*value);
+        edit_text = format(display);
     }
 
     let edit_response = ui.add(
@@ -52,14 +54,14 @@ fn knob_value_edit(
     let mut changed = false;
     if edit_response.lost_focus() && !edit_text.trim().is_empty() {
         if let Ok(new_val) = edit_text.trim().parse::<f32>() {
-            let clamped = new_val.clamp(min, max);
+            let clamped = (new_val + display_offset).clamp(min, max);
             if (*value - clamped).abs() > f32::EPSILON {
                 *value = clamped;
                 changed = true;
             }
-            edit_text = format(*value);
+            edit_text = format(*value - display_offset);
         } else {
-            edit_text = format(*value);
+            edit_text = format(*value - display_offset);
         }
     }
 
@@ -76,13 +78,26 @@ pub fn param_knob_f32(
     param: ParamId,
     control: &SynthEngineControl,
 ) {
+    param_knob_f32_offset(ui, label, value, range, reset_value, 0.0, param, control);
+}
+
+pub(crate) fn param_knob_f32_offset(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    display_offset: f32,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
     let min = *range.start();
     let max = *range.end();
     let text_color = ui.visuals().text_color();
     let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
     let accent = ui.visuals().selection.bg_fill;
     let previous = *value;
-    let format_fn = format_knob_value(min, max);
+    let format_fn = format_knob_value(min - display_offset, max - display_offset);
 
     ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -109,7 +124,7 @@ pub fn param_knob_f32(
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
     let edited = knob_value_edit(
-        ui, edit_id, value, min, max, &format_fn, font_id, text_color,
+        ui, edit_id, value, min, max, display_offset, &format_fn, font_id, text_color,
     );
 
     if edited || response.changed() || *value != previous {
@@ -175,7 +190,7 @@ pub fn param_knob_log_hz(
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
     let edited = knob_value_edit(
-        ui, edit_id, value_hz, min_hz, max_hz, format_hz, font_id, text_color,
+        ui, edit_id, value_hz, min_hz, max_hz, 0.0, format_hz, font_id, text_color,
     );
 
     if edited || response.changed() || (*value_hz - previous_hz).abs() > f32::EPSILON {

@@ -10,6 +10,8 @@ use std::sync::Arc;
 use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
+const MAX_SCOPE_SAMPLES: usize = 65536;
+
 const INPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 150, 45);
 const INPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
 const OUTPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 205, 255);
@@ -213,20 +215,24 @@ fn copy_channel(dest: &mut [f32], left: &[f32], right: &[f32], channel: Spectrum
 
 pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut RealTimeState) {
     if state.osc.frozen {
-        // Skip data intake so both the oscilloscope and spectrum stay frozen.
     } else {
         for block in audio_blocks {
             let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
-            let osc_copy_len = block_len.min(MAX_AUDIO_BUF);
-            state.osc.input_buffer_l[..osc_copy_len]
-                .copy_from_slice(&block.input_left[..osc_copy_len]);
-            state.osc.input_buffer_r[..osc_copy_len]
-                .copy_from_slice(&block.input_right[..osc_copy_len]);
-            state.osc.output_buffer_l[..osc_copy_len]
-                .copy_from_slice(&block.output_left[..osc_copy_len]);
-            state.osc.output_buffer_r[..osc_copy_len]
-                .copy_from_slice(&block.output_right[..osc_copy_len]);
-            state.osc.buf_len = osc_copy_len;
+            let osc = &mut state.osc;
+
+            osc.input_buffer_l.extend_from_slice(&block.input_left[..block_len]);
+            osc.input_buffer_r.extend_from_slice(&block.input_right[..block_len]);
+            osc.output_buffer_l.extend_from_slice(&block.output_left[..block_len]);
+            osc.output_buffer_r.extend_from_slice(&block.output_right[..block_len]);
+
+            let excess = osc.input_buffer_l.len().saturating_sub(MAX_SCOPE_SAMPLES);
+            if excess > 0 {
+                osc.input_buffer_l.drain(..excess);
+                osc.input_buffer_r.drain(..excess);
+                osc.output_buffer_l.drain(..excess);
+                osc.output_buffer_r.drain(..excess);
+            }
+            osc.buf_len = osc.input_buffer_l.len();
 
             let fft_size = state.fft.fft_size;
             let copy_len = block_len.min(fft_size);
@@ -268,10 +274,10 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
 }
 
 pub struct OscilloscopeState {
-    input_buffer_l: [f32; MAX_AUDIO_BUF],
-    input_buffer_r: [f32; MAX_AUDIO_BUF],
-    output_buffer_l: [f32; MAX_AUDIO_BUF],
-    output_buffer_r: [f32; MAX_AUDIO_BUF],
+    input_buffer_l: Vec<f32>,
+    input_buffer_r: Vec<f32>,
+    output_buffer_l: Vec<f32>,
+    output_buffer_r: Vec<f32>,
     buf_len: usize,
     timebase_ms: f32,
     trigger_level: f32,
@@ -279,10 +285,10 @@ pub struct OscilloscopeState {
     display_mode: OscilloscopeDisplayMode,
     source: SignalSource,
     frozen: bool,
-    frozen_input_l: [f32; MAX_AUDIO_BUF],
-    frozen_input_r: [f32; MAX_AUDIO_BUF],
-    frozen_output_l: [f32; MAX_AUDIO_BUF],
-    frozen_output_r: [f32; MAX_AUDIO_BUF],
+    frozen_input_l: Vec<f32>,
+    frozen_input_r: Vec<f32>,
+    frozen_output_l: Vec<f32>,
+    frozen_output_r: Vec<f32>,
     frozen_len: usize,
 }
 
@@ -296,10 +302,10 @@ enum OscilloscopeDisplayMode {
 impl Default for OscilloscopeState {
     fn default() -> Self {
         Self {
-            input_buffer_l: [0.0; MAX_AUDIO_BUF],
-            input_buffer_r: [0.0; MAX_AUDIO_BUF],
-            output_buffer_l: [0.0; MAX_AUDIO_BUF],
-            output_buffer_r: [0.0; MAX_AUDIO_BUF],
+            input_buffer_l: Vec::with_capacity(MAX_SCOPE_SAMPLES),
+            input_buffer_r: Vec::with_capacity(MAX_SCOPE_SAMPLES),
+            output_buffer_l: Vec::with_capacity(MAX_SCOPE_SAMPLES),
+            output_buffer_r: Vec::with_capacity(MAX_SCOPE_SAMPLES),
             buf_len: 0,
             timebase_ms: 5.0,
             trigger_level: 0.0,
@@ -307,42 +313,42 @@ impl Default for OscilloscopeState {
             display_mode: OscilloscopeDisplayMode::Left,
             source: SignalSource::Output,
             frozen: false,
-            frozen_input_l: [0.0; MAX_AUDIO_BUF],
-            frozen_input_r: [0.0; MAX_AUDIO_BUF],
-            frozen_output_l: [0.0; MAX_AUDIO_BUF],
-            frozen_output_r: [0.0; MAX_AUDIO_BUF],
+            frozen_input_l: Vec::new(),
+            frozen_input_r: Vec::new(),
+            frozen_output_l: Vec::new(),
+            frozen_output_r: Vec::new(),
             frozen_len: 0,
         }
     }
 }
 
 fn find_trigger(buf: &[f32], len: usize, level: f32) -> f32 {
-    for index in 0..len.saturating_sub(1) {
-        if buf[index] < level && buf[index + 1] >= level {
-            let fraction = (level - buf[index]) / (buf[index + 1] - buf[index]);
-            return index as f32 + fraction;
+    for index in (1..len).rev() {
+        if buf[index - 1] < level && buf[index] >= level {
+            let fraction = (level - buf[index - 1]) / (buf[index] - buf[index - 1]);
+            return (index - 1) as f32 + fraction;
         }
     }
     0.0
 }
 
 fn find_combined_trigger(first: &[f32], second: &[f32], len: usize, level: f32) -> f32 {
-    for index in 0..len.saturating_sub(1) {
-        let current = (first[index] + second[index]).clamp(-1.0, 1.0);
-        let next = (first[index + 1] + second[index + 1]).clamp(-1.0, 1.0);
-        if current < level && next >= level {
-            let fraction = (level - current) / (next - current);
-            return index as f32 + fraction;
+    for index in (1..len).rev() {
+        let prev = (first[index - 1] + second[index - 1]).clamp(-1.0, 1.0);
+        let curr = (first[index] + second[index]).clamp(-1.0, 1.0);
+        if prev < level && curr >= level {
+            let fraction = (level - prev) / (curr - prev);
+            return (index - 1) as f32 + fraction;
         }
     }
     0.0
 }
 
 fn freeze_scope(state: &mut OscilloscopeState) {
-    state.frozen_input_l = state.input_buffer_l;
-    state.frozen_input_r = state.input_buffer_r;
-    state.frozen_output_l = state.output_buffer_l;
-    state.frozen_output_r = state.output_buffer_r;
+    state.frozen_input_l = state.input_buffer_l.clone();
+    state.frozen_input_r = state.input_buffer_r.clone();
+    state.frozen_output_l = state.output_buffer_l.clone();
+    state.frozen_output_r = state.output_buffer_r.clone();
     state.frozen_len = state.buf_len;
 }
 
@@ -369,7 +375,7 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState, sample_ra
     ui.horizontal_wrapped(|ui| {
         ui.label("Timebase:");
         ui.add(
-            egui::Slider::new(&mut state.timebase_ms, 1.0..=50.0)
+            egui::Slider::new(&mut state.timebase_ms, 1.0..=500.0)
                 .logarithmic(true)
                 .text("ms"),
         );
@@ -518,16 +524,20 @@ fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState, sample_ra
             OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => (input_l, output_l),
             OscilloscopeDisplayMode::Right => (input_r, output_r),
         };
-        let trig_f32 = match state.source {
+        let mut trig_f32 = match state.source {
             SignalSource::Input => find_trigger(input_trigger, len, state.trigger_level),
             SignalSource::Output => find_trigger(output_trigger, len, state.trigger_level),
             SignalSource::InputAndOutput => {
                 find_combined_trigger(input_trigger, output_trigger, len, state.trigger_level)
             }
         };
-        let trig_idx = trig_f32 as usize;
         let samples_to_show = (state.timebase_ms / 1000.0 * sample_rate) as usize;
-        let samples_to_show = samples_to_show.min(len.saturating_sub(trig_idx)).max(2);
+        let samples_to_show = samples_to_show.max(2);
+        let mut trig_idx = trig_f32 as usize;
+        if trig_idx + samples_to_show > len {
+            trig_idx = len.saturating_sub(samples_to_show);
+            trig_f32 = trig_idx as f32;
+        }
         let start = trig_idx;
         let end = (start + samples_to_show).min(len);
 

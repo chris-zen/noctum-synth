@@ -241,10 +241,12 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::top("tab_bar").show_inside(ui, |ui| {
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Parameters, "Parameters");
                 ui.selectable_value(&mut self.active_tab, Tab::Settings, "Settings");
             });
+            ui.add_space(4.0);
         });
 
         let active = self.engine.view.active_voices();

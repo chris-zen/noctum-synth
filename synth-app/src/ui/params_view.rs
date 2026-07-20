@@ -5,7 +5,7 @@ use eframe::egui;
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
     KNOB_SIZE, framed_selectable, framed_selectable_sized, master_volume, param_knob_bipolar,
-    param_knob_f32, param_knob_log_hz, param_toggle, param_toggle_sized,
+    param_knob_f32, param_knob_f32_offset, param_knob_log_hz, param_toggle, param_toggle_sized,
 };
 use synth_core::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
@@ -18,6 +18,8 @@ const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
 const OSC_GRID_WIDTH: f32 = 700.0;
 const LFO_PANEL_WIDTH: f32 = 400.0;
 const MOD_MATRIX_PANEL_WIDTH: f32 = 760.0;
+const MOD_MATRIX_EXPANDED_ID: &str = "mod_matrix_expanded";
+const MOD_DEDICATED_LABEL_WIDTH: f32 = 110.0;
 const EFFECTS_PANEL_WIDTH: f32 = 560.0;
 const FILTER_GRID_WIDTH: f32 = 360.0;
 const AMP_GRID_WIDTH: f32 = 320.0;
@@ -633,6 +635,7 @@ pub fn show(
 
     ui.add_space(6.0);
 
+    ui.spacing_mut().scroll.fade.strength = 0.0;
     egui::ScrollArea::vertical().show(ui, |ui| {
         module_panel(ui, "Oscillators", |ui| {
             oscillators_module(ui, state, control);
@@ -679,9 +682,7 @@ pub fn show(
 
         ui.add_space(8.0);
 
-        module_panel(ui, "Modulation Matrix", |ui| {
-            modulation_matrix_module(ui, state, control);
-        });
+        modulation_matrix_panel(ui, state, control);
 
         ui.add_space(8.0);
 
@@ -700,6 +701,11 @@ pub fn show(
 
 const MODIFIED_SUFFIX: &str = " (modified)";
 const PATCH_NAME_FIELD_ID: &str = "patch_name_field";
+const PATCH_LOAD_FILTER_ID: &str = "patch_load_filter";
+const PATCH_LOAD_WAS_OPEN_ID: &str = "patch_load_was_open";
+const PATCH_LOAD_POPUP_WIDTH: f32 = 380.0;
+const PATCH_LOAD_POPUP_HEIGHT: f32 = 440.0;
+const PATCH_LOAD_POPUP_CHROME_HEIGHT: f32 = 40.0;
 
 fn load_patch_by_name(
     patch_mgr: &mut PatchManager,
@@ -757,22 +763,83 @@ fn command_row(
                     }
                 }
                 next.on_hover_text("Next patch");
-                let load_clicked = egui::ComboBox::from_id_salt("patch_load")
+                let was_open = ui
+                    .data(|data| data.get_temp::<bool>(egui::Id::new(PATCH_LOAD_WAS_OPEN_ID)))
+                    .unwrap_or(false);
+                let load_response = egui::ComboBox::from_id_salt("patch_load")
                     .selected_text("Load")
                     .width(56.0)
+                    .height(PATCH_LOAD_POPUP_HEIGHT + PATCH_LOAD_POPUP_CHROME_HEIGHT)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show_ui(ui, |ui| {
                         patch_mgr.refresh();
+                        ui.set_min_width(PATCH_LOAD_POPUP_WIDTH);
+
+                        let filter_id = egui::Id::new(PATCH_LOAD_FILTER_ID);
+                        let mut filter = ui
+                            .data_mut(|data| data.get_temp_mut_or_default::<String>(filter_id).clone());
+                        ui.horizontal(|ui| {
+                            ui.label("Filter:");
+                            let filter_response = ui.add(
+                                egui::TextEdit::singleline(&mut filter)
+                                    .id(filter_id)
+                                    .hint_text("File name...")
+                                    .desired_width(ui.available_width()),
+                            );
+                            if !was_open {
+                                filter_response.request_focus();
+                            }
+                        });
+                        ui.data_mut(|data| *data.get_temp_mut_or_default::<String>(filter_id) = filter);
+
+                        ui.separator();
+
                         if patch_mgr.patch_names.is_empty() {
                             ui.label("No saved patches yet.");
                         } else {
-                            for name in patch_mgr.patch_names.clone() {
-                                if ui.button(name.as_str()).clicked() {
-                                    ui.close();
-                                    load_patch_by_name(patch_mgr, control, state, &name, *muted);
-                                }
+                            let current = patch_mgr.canonical_save_name();
+                            let filter = ui.data(|data| {
+                                data.get_temp::<String>(filter_id)
+                                    .map(|value| value.to_ascii_lowercase())
+                                    .unwrap_or_default()
+                            });
+                            let mut selected_name = None;
+                            egui::ScrollArea::vertical()
+                                .max_height(PATCH_LOAD_POPUP_HEIGHT)
+                                .show(ui, |ui| {
+                                    for name in &patch_mgr.patch_names {
+                                        if !filter.is_empty()
+                                            && !name.to_ascii_lowercase().contains(&filter)
+                                        {
+                                            continue;
+                                        }
+                                        if ui
+                                            .selectable_label(current == *name, name.as_str())
+                                            .clicked()
+                                        {
+                                            selected_name = Some(name.clone());
+                                        }
+                                    }
+                                });
+                            if let Some(name) = selected_name {
+                                ui.close();
+                                load_patch_by_name(patch_mgr, control, state, &name, *muted);
+                            } else if !filter.is_empty()
+                                && !patch_mgr
+                                    .patch_names
+                                    .iter()
+                                    .any(|name| name.to_ascii_lowercase().contains(&filter))
+                            {
+                                ui.label("No matching patches.");
                             }
                         }
                     });
+                ui.data_mut(|data| {
+                    data.insert_temp(
+                        egui::Id::new(PATCH_LOAD_WAS_OPEN_ID),
+                        load_response.inner.is_some(),
+                    );
+                });
                 if ui.button("Save").clicked() {
                     let name = patch_mgr.canonical_save_name();
                     if !name.is_empty() {
@@ -797,7 +864,6 @@ fn command_row(
                 } else {
                     "Select a MIDI output device in Settings"
                 });
-                let _ = load_clicked;
             });
 
             ui.add_space(8.0);
@@ -948,11 +1014,12 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
             .show(ui, |ui| {
                 strong_label(ui, "OSC 1");
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    param_knob_f32_offset(
                         ui,
                         "Freq",
                         &mut state.osc1_freq,
                         0.0..=120.0,
+                        60.0,
                         60.0,
                         ParamId::Osc1Frequency,
                         control,
@@ -1068,11 +1135,12 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
 
                 strong_label(ui, "OSC 2");
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    param_knob_f32_offset(
                         ui,
                         "Freq",
                         &mut state.osc2_freq,
                         0.0..=120.0,
+                        60.0,
                         60.0,
                         ParamId::Osc2Frequency,
                         control,
@@ -1161,12 +1229,16 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
                 ui.add_space(4.0);
                 for index in 0..4 {
                     let selected = state.selected_lfo == index;
+                    let active = state.lfo_depths[index] > 0.0
+                        && state.lfo_destinations[index] != 0;
+                    let mut button =
+                        egui::Button::selectable(selected, format!("{}", index + 1))
+                            .frame_when_inactive(true);
+                    if active && !selected {
+                        button = button.fill(egui::Color32::from_rgb(0, 55, 90));
+                    }
                     if ui
-                        .add_sized(
-                            LFO_INDEX_BUTTON_SIZE,
-                            egui::Button::selectable(selected, format!("{}", index + 1))
-                                .frame_when_inactive(true),
-                        )
+                        .add_sized(LFO_INDEX_BUTTON_SIZE, button)
                         .clicked()
                     {
                         state.selected_lfo = index;
@@ -1286,7 +1358,44 @@ fn lfo_destination_selector(ui: &mut egui::Ui, state: &mut UiState, control: &Sy
         });
 }
 
-fn modulation_matrix_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+fn modulation_matrix_panel(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    module_panel_with_header(ui, "Modulation Matrix", |ui| {
+        let expanded_id = egui::Id::new(MOD_MATRIX_EXPANDED_ID);
+        let expanded = ui
+            .data(|data| data.get_temp::<bool>(expanded_id).unwrap_or(false));
+        let chevron = if expanded { "▼" } else { "▶" };
+        if ui
+            .small_button(chevron)
+            .on_hover_text(if expanded {
+                "Collapse"
+            } else {
+                "Expand"
+            })
+            .clicked()
+        {
+            ui.data_mut(|data| {
+                let current = data.get_temp::<bool>(expanded_id).unwrap_or(false);
+                data.insert_temp(expanded_id, !current);
+            });
+        }
+    }, |ui| {
+        let expanded = ui.data(|data| {
+            data.get_temp::<bool>(egui::Id::new(MOD_MATRIX_EXPANDED_ID))
+                .unwrap_or(false)
+        });
+        if expanded {
+            modulation_matrix_module_expanded(ui, state, control);
+        } else {
+            modulation_matrix_module_collapsed(ui, state, control);
+        }
+    });
+}
+
+fn modulation_matrix_module_collapsed(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    control: &SynthEngineControl,
+) {
     fixed_panel_scroll(ui, "mod_matrix_scroll", MOD_MATRIX_PANEL_WIDTH, |ui| {
         ui.horizontal(|ui| {
             for index in 0..8 {
@@ -1304,13 +1413,77 @@ fn modulation_matrix_module(ui: &mut egui::Ui, state: &mut UiState, control: &Sy
             state.selected_mod_route = selected;
 
             if selected < 8 {
-                free_mod_route_row(ui, state, control, selected);
+                free_mod_route_row(ui, state, control, selected, false);
             } else {
-                dedicated_mod_route_row(ui, state, control, selected - 8);
+                dedicated_mod_route_row(ui, state, control, selected - 8, false);
             }
         });
         ui.add_space(6.0);
     });
+}
+
+fn modulation_matrix_module_expanded(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    control: &SynthEngineControl,
+) {
+    fixed_panel_scroll(ui, "mod_matrix_scroll", MOD_MATRIX_PANEL_WIDTH, |ui| {
+        for index in 0..8 {
+            ui.horizontal(|ui| {
+                free_mod_route_row(ui, state, control, index, true);
+            });
+            ui.add_space(4.0);
+        }
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+        for index in 0..DedicatedModSource::ALL.len() {
+            ui.horizontal(|ui| {
+                dedicated_mod_route_row(ui, state, control, index, true);
+            });
+            ui.add_space(4.0);
+        }
+        ui.add_space(6.0);
+    });
+}
+
+fn mod_slot_label_button(ui: &mut egui::Ui, state: &mut UiState, index: usize) -> bool {
+    let enabled = state.mod_enabled[index];
+    let mut button =
+        egui::Button::new((index + 1).to_string()).frame_when_inactive(true);
+    if enabled {
+        button = button.fill(egui::Color32::from_rgb(0, 55, 90));
+    }
+    if ui
+        .add_sized(MOD_SLOT_BUTTON_SIZE, button)
+        .on_hover_text("Toggle enabled")
+        .clicked()
+    {
+        state.mod_enabled[index] = !state.mod_enabled[index];
+        return true;
+    }
+    false
+}
+
+fn dedicated_slot_label_button(ui: &mut egui::Ui, state: &mut UiState, index: usize) -> bool {
+    let enabled = state.dedicated_mod_enabled[index];
+    let label = DedicatedModSource::ALL[index].name();
+    let mut button = egui::Button::new(label).frame_when_inactive(true);
+    if enabled {
+        button = button.fill(egui::Color32::from_rgb(0, 55, 90));
+    }
+    if ui
+        .add_sized(
+            egui::vec2(MOD_DEDICATED_LABEL_WIDTH, MOD_SLOT_BUTTON_SIZE.y),
+            button,
+        )
+        .on_hover_text("Toggle enabled")
+        .clicked()
+    {
+        state.dedicated_mod_enabled[index] = !state.dedicated_mod_enabled[index];
+        return true;
+    }
+    false
 }
 
 fn mod_route_button(ui: &mut egui::Ui, state: &mut UiState, route_index: usize, label: &str) {
@@ -1341,14 +1514,20 @@ fn free_mod_route_row(
     state: &mut UiState,
     control: &SynthEngineControl,
     index: usize,
+    expanded: bool,
 ) {
     let mut changed = false;
-    if framed_selectable(ui, state.mod_enabled[index], "Enabled").clicked() {
+    if expanded {
+        changed |= mod_slot_label_button(ui, state, index);
+        ui.add_space(8.0);
+    } else if framed_selectable(ui, state.mod_enabled[index], "Enabled").clicked() {
         state.mod_enabled[index] = !state.mod_enabled[index];
         changed = true;
     }
 
-    ui.add_space(8.0);
+    if !expanded {
+        ui.add_space(8.0);
+    }
     changed |= mod_source_combo(
         ui,
         ("mod_source", index),
@@ -1374,14 +1553,20 @@ fn dedicated_mod_route_row(
     state: &mut UiState,
     control: &SynthEngineControl,
     index: usize,
+    expanded: bool,
 ) {
     let mut changed = false;
-    if framed_selectable(ui, state.dedicated_mod_enabled[index], "Enabled").clicked() {
+    if expanded {
+        changed |= dedicated_slot_label_button(ui, state, index);
+        ui.add_space(8.0);
+    } else if framed_selectable(ui, state.dedicated_mod_enabled[index], "Enabled").clicked() {
         state.dedicated_mod_enabled[index] = !state.dedicated_mod_enabled[index];
         changed = true;
     }
 
-    ui.add_space(8.0);
+    if !expanded {
+        ui.add_space(8.0);
+    }
     fixed_mod_source_field(ui, DedicatedModSource::ALL[index].name());
     ui.add_space(8.0);
     changed |= mod_destination_combo(
@@ -2108,6 +2293,7 @@ fn fixed_panel_scroll(
     egui::ScrollArea::horizontal()
         .id_salt(id)
         .auto_shrink([false, true])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
             ui.set_min_width(min_width);
             add_contents(ui);
