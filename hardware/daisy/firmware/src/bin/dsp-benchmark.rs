@@ -300,7 +300,7 @@ fn u1_001_patch() -> Patch {
     patch.osc1.level = 1.0;
     patch.osc1.note_reset = false;
     patch.osc1.keyboard_on = true;
-    patch.osc1.glide = false;
+    patch.osc1.glide = 0.0;
 
     patch.osc2.waveform = 3;
     patch.osc2.enabled = true;
@@ -310,7 +310,7 @@ fn u1_001_patch() -> Patch {
     patch.osc2.level = 1.0;
     patch.osc2.note_reset = false;
     patch.osc2.keyboard_on = true;
-    patch.osc2.glide = false;
+    patch.osc2.glide = 0.0;
 
     patch.osc_mix = 0.503_937;
     patch.sub_osc_level = 0.0;
