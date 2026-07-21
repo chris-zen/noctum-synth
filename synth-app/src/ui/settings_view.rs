@@ -229,8 +229,7 @@ fn midi_settings_panel(
                     .iter()
                     .map(|entry| entry.port.clone())
                     .collect();
-                let merged_inputs =
-                    midi::merged_port_list(midi_input_ports, &configured_inputs);
+                let merged_inputs = midi::merged_port_list(midi_input_ports, &configured_inputs);
 
                 settings_column(
                     ui,
@@ -243,10 +242,8 @@ fn midi_settings_panel(
                             ui.label("No MIDI input devices detected.");
                         }
                         for port in &merged_inputs {
-                            let selected = settings
-                                .midi_inputs
-                                .iter()
-                                .any(|entry| entry.port == *port);
+                            let selected =
+                                settings.midi_inputs.iter().any(|entry| entry.port == *port);
                             let clock_selected =
                                 settings.midi_clock_source.as_deref() == Some(port.as_str());
                             let unavailable = selected
@@ -291,9 +288,7 @@ fn midi_settings_panel(
                                                 let mut clock = clock_selected;
                                                 if ui
                                                     .add_enabled(
-                                                        settings
-                                                            .midi_clock_mode
-                                                            .receives_clock(),
+                                                        settings.midi_clock_mode.receives_clock(),
                                                         egui::Button::selectable(clock, "Clock"),
                                                     )
                                                     .clicked()
@@ -308,12 +303,8 @@ fn midi_settings_panel(
                             });
 
                             match clock_change {
-                                Some(true) => {
-                                    settings.midi_clock_source = Some(port.clone())
-                                }
-                                Some(false) if clock_selected => {
-                                    settings.midi_clock_source = None
-                                }
+                                Some(true) => settings.midi_clock_source = Some(port.clone()),
+                                Some(false) if clock_selected => settings.midi_clock_source = None,
                                 _ => {}
                             }
                         }
@@ -327,8 +318,7 @@ fn midi_settings_panel(
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>();
-                let merged_outputs =
-                    midi::merged_port_list(midi_output_ports, &configured_outputs);
+                let merged_outputs = midi::merged_port_list(midi_output_ports, &configured_outputs);
 
                 settings_column(
                     ui,
@@ -357,10 +347,7 @@ fn midi_settings_panel(
                             {
                                 settings.midi_output_port = Some(port.clone());
                                 if control.set_midi_output_port(Some(port)) {
-                                    control.load_patch_respecting_mute(
-                                        current_patch,
-                                        muted,
-                                    );
+                                    control.load_patch_respecting_mute(current_patch, muted);
                                 }
                             }
                         }
@@ -488,7 +475,6 @@ fn settings_column(
     });
 }
 
-
 fn truncated_selectable(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
     ui.add(
         egui::Button::selectable(selected, label)
@@ -612,6 +598,20 @@ fn audio_settings_panel(
 
             ui.add_space(8.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let reconnect_enabled = !applied.applying;
+                if ui
+                    .add_enabled(reconnect_enabled, egui::Button::new("Reconnect"))
+                    .clicked()
+                {
+                    audio_manager.apply(AudioConfig {
+                        output_device: settings.audio_device.clone(),
+                        input_device: settings.audio_input.clone(),
+                        sample_rate: settings.sample_rate,
+                        filter_oversampling: settings.filter_oversampling,
+                        filter_type,
+                    });
+                }
+
                 let enabled = pending && !applied.applying;
                 let label = if applied.applying {
                     "Applying..."
