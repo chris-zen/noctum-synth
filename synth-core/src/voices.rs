@@ -11,8 +11,8 @@ use crate::profiling::NoopProfiler;
 use crate::profiling::RenderProfiler;
 use crate::voice::PerformanceModulation;
 use crate::{
-    ChordMemory, ControlMessage, FilterOversampling, FilterType, KeyMode, LANES, ParamId, Patch,
-    UnisonMode, VOICE_PACKS, VoiceBlock, voice_pan_position,
+    voice_pan_position, ChordMemory, ClockDivision, ControlMessage, FilterOversampling, FilterType,
+    KeyMode, ParamId, Patch, UnisonMode, VoiceBlock, LANES, VOICE_PACKS,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -228,6 +228,8 @@ impl<const PACKS: usize> Voices<PACKS> {
 
     pub(crate) fn apply_patch(&mut self, patch: &Patch) {
         for block in &mut self.blocks {
+            block.set_tempo_bpm(patch.bpm);
+            block.set_clock_division(patch.clock_divide);
             block.apply_patch(patch);
         }
         self.key_mode = patch.key_mode;
@@ -631,6 +633,18 @@ impl<const PACKS: usize> Voices<PACKS> {
         }
         for block in &mut self.blocks {
             block.set_param(id, value);
+        }
+    }
+
+    pub(crate) fn set_tempo_bpm(&mut self, bpm: f32) {
+        for block in &mut self.blocks {
+            block.set_tempo_bpm(bpm);
+        }
+    }
+
+    pub(crate) fn set_clock_division(&mut self, division: ClockDivision) {
+        for block in &mut self.blocks {
+            block.set_clock_division(division);
         }
     }
 }

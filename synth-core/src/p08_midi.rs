@@ -3,8 +3,8 @@
 use crate::patch::decode_patch_name;
 use crate::rev2_midi::Rev2SysexError;
 use crate::{
-    DEFAULT_TEMPO_BPM, DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
-    ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, Patch, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
@@ -251,38 +251,8 @@ fn p08_lfo_waveform(raw: u16) -> f32 {
     }
 }
 
-fn p08_clock_sync_lfo_rate_hz(raw: u16, tempo_bpm: f32) -> f32 {
-    let step = 60.0 / tempo_bpm.max(1.0) / 4.0;
-    let cycles_per_step = match raw {
-        151 => 1.0 / 32.0,
-        152 => 1.0 / 16.0,
-        153 => 1.0 / 8.0,
-        154 => 1.0 / 6.0,
-        155 => 1.0 / 4.0,
-        156 => 1.0 / 3.0,
-        157 => 1.0 / 2.0,
-        158 => 2.0 / 3.0,
-        159 => 1.0,
-        160 => 2.0 / 3.0,
-        161 => 2.0,
-        162 => 1.0 / 3.0,
-        163 => 4.0,
-        164 => 6.0,
-        165 => 8.0,
-        166 => 16.0,
-        _ => MIN_LFO_RATE_HZ / step,
-    };
-    (cycles_per_step / step).clamp(MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ)
-}
-
-fn p08_lfo_rate(raw: u16) -> (f32, bool) {
-    if raw <= 150 {
-        return (
-            logarithmic(raw, 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
-            false,
-        );
-    }
-    (p08_clock_sync_lfo_rate_hz(raw, DEFAULT_TEMPO_BPM), true)
+fn p08_lfo_rate_hz(raw: u16) -> f32 {
+    logarithmic(raw.min(150), 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ)
 }
 
 fn emit_osc_shape(emit: &mut impl FnMut(P08MidiUpdate), osc1: bool, raw: u16) {
@@ -529,11 +499,24 @@ fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
         ParamId::Lfo3ClockSync,
         ParamId::Lfo4ClockSync,
     ];
+    let sync_division = [
+        ParamId::Lfo1SyncDivision,
+        ParamId::Lfo2SyncDivision,
+        ParamId::Lfo3SyncDivision,
+        ParamId::Lfo4SyncDivision,
+    ];
     match field {
         0 => {
-            let (rate, synced) = p08_lfo_rate(raw);
-            emit(P08MidiUpdate::Param(params[lfo][0], rate));
+            let synced = raw > 150;
             emit(P08MidiUpdate::Param(clock_sync[lfo], f32::from(synced)));
+            if synced {
+                emit(P08MidiUpdate::Param(
+                    sync_division[lfo],
+                    LfoSyncDivision::from_p08_raw(raw).index() as f32,
+                ));
+            } else {
+                emit(P08MidiUpdate::Param(params[lfo][0], p08_lfo_rate_hz(raw)));
+            }
         }
         1 => emit(P08MidiUpdate::Param(params[lfo][1], p08_lfo_waveform(raw))),
         2 => emit(P08MidiUpdate::Param(params[lfo][2], unit(raw, 127))),
@@ -791,14 +774,28 @@ mod tests {
     }
 
     #[test]
-    fn clock_synced_lfo_rate_sets_sync_flag_and_nominal_rate() {
-        let (rate, synced) = p08_lfo_rate(37);
-        assert!(!synced);
-        assert!(rate > MIN_LFO_RATE_HZ);
-
-        let (rate, synced) = p08_lfo_rate(159);
-        assert!(synced);
-        assert!((rate - 8.0).abs() < 0.01);
+    fn p08_lfo_rate_decodes_free_rate_and_all_sync_divisions() {
+        assert!(p08_lfo_rate_hz(37) > MIN_LFO_RATE_HZ);
+        for raw in 151..=166 {
+            let division = LfoSyncDivision::from_p08_raw(raw);
+            assert_eq!(division.p08_raw(), raw);
+            let mut updates = [None; 2];
+            let mut len = 0;
+            map_lfo_nrpn(37, raw, &mut |update| {
+                updates[len] = Some(update);
+                len += 1;
+            });
+            assert_eq!(
+                updates,
+                [
+                    Some(P08MidiUpdate::Param(ParamId::Lfo1ClockSync, 1.0)),
+                    Some(P08MidiUpdate::Param(
+                        ParamId::Lfo1SyncDivision,
+                        division.index() as f32,
+                    )),
+                ]
+            );
+        }
     }
 
     #[test]

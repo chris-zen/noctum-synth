@@ -17,6 +17,10 @@ fn knob_edit_id(param: ParamId) -> egui::Id {
     egui::Id::new(format!("knob_txt_{param:?}"))
 }
 
+fn discrete_knob_drag_id(param: ParamId) -> egui::Id {
+    egui::Id::new(format!("knob_discrete_drag_{param:?}"))
+}
+
 fn knob_value_edit(
     ui: &mut egui::Ui,
     edit_id: egui::Id,
@@ -209,6 +213,75 @@ pub fn param_knob_log_hz(
     if edited || response.changed() {
         control.set_param(param, *value_hz);
     }
+}
+
+pub fn param_knob_discrete(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut usize,
+    names: &[&str],
+    reset_value: usize,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
+    if names.is_empty() {
+        return;
+    }
+    let maximum = names.len() - 1;
+    *value = (*value).min(maximum);
+    let text_color = ui.visuals().text_color();
+    let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let accent = ui.visuals().selection.bg_fill;
+    let drag_id = discrete_knob_drag_id(param);
+    let cached_drag = ui.memory_mut(|memory| memory.data.get_temp::<(f32, usize)>(drag_id));
+    let mut knob_value = match cached_drag {
+        Some((drag_value, snapped_value)) if snapped_value == *value => drag_value,
+        _ => *value as f32,
+    };
+    let previous_value = *value;
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let response = ui.add(
+        Knob::new(&mut knob_value, 0.0, maximum as f32, KnobStyle::Wiper)
+            .with_size(KNOB_SIZE)
+            .with_stroke_width(2.0)
+            .with_colors(knob_color, accent, text_color)
+            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+            .with_double_click_reset(reset_value.min(maximum) as f32)
+            .with_background_arc(true)
+            .with_show_filled_segments(true),
+    );
+    let snapped_value = round_to_usize(knob_value).min(maximum);
+    if snapped_value != previous_value {
+        *value = snapped_value;
+        control.set_param(param, *value as f32);
+    }
+    let retained_drag_value = if response.dragged() {
+        knob_value
+    } else {
+        *value as f32
+    };
+    ui.memory_mut(|memory| {
+        memory
+            .data
+            .insert_temp(drag_id, (retained_drag_value, *value));
+    });
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+    ui.label(
+        egui::RichText::new(label)
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+    ui.label(
+        egui::RichText::new(names[*value])
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+}
+
+fn round_to_usize(value: f32) -> usize {
+    value.round().max(0.0) as usize
 }
 
 pub fn param_toggle(

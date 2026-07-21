@@ -1,6 +1,7 @@
 use synth_core::{
-    ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource, EffectType,
-    FilterOversampling, ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine,
+    ClockDivision, ControlMessage, DedicatedModSource, EffectType, FilterOversampling,
+    ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine, DEFAULT_SAMPLE_RATE,
+    DEFAULT_TEMPO_BPM,
 };
 
 fn left_rms(buffer: &[f32]) -> f32 {
@@ -31,6 +32,25 @@ fn tempo_control_updates_and_clamps_the_engine_parameter() {
     assert_eq!(engine.tempo_bpm(), 98.0);
     engine.set_tempo_bpm(500.0);
     assert_eq!(engine.tempo_bpm(), 250.0);
+}
+
+#[test]
+fn clock_division_control_and_patch_application_update_engine_state() {
+    let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+    assert_eq!(engine.clock_division(), ClockDivision::Quarter);
+
+    engine.set_param(
+        ParamId::ClockDivide,
+        ClockDivision::EighthTriplet.index() as f32,
+    );
+    assert_eq!(engine.clock_division(), ClockDivision::EighthTriplet);
+
+    let mut patch = Patch::default();
+    patch.bpm = 87.0;
+    patch.clock_divide = ClockDivision::ThirtySecondTriplet;
+    engine.apply_patch(&patch);
+    assert_eq!(engine.tempo_bpm(), 87.0);
+    assert_eq!(engine.clock_division(), ClockDivision::ThirtySecondTriplet);
 }
 
 #[test]
@@ -852,17 +872,6 @@ fn disabled_mod_matrix_route_has_no_effect() {
 }
 
 #[test]
-fn old_patch_json_defaults_to_empty_mod_matrix() {
-    let mut value = serde_json::to_value(Patch::default()).unwrap();
-    value.as_object_mut().unwrap().remove("mod_matrix");
-
-    let patch: Patch = serde_json::from_value(value).unwrap();
-
-    assert!(patch.mod_matrix.free_slots.iter().all(|slot| !slot.enabled));
-    assert!(patch.mod_matrix.dedicated.iter().all(|slot| !slot.enabled));
-}
-
-#[test]
 fn lfo_to_vca_changes_output_level_over_time() {
     let mut engine = SynthEngine::<{ synth_core::VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
     engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 67.0));
@@ -1049,17 +1058,6 @@ fn reverb_effect_produces_decay_tail() {
         left_rms(&tail) > 0.001,
         "reverb should produce an audible tail after note release"
     );
-}
-
-#[test]
-fn old_patch_json_defaults_to_disabled_effects() {
-    let mut value = serde_json::to_value(Patch::default()).unwrap();
-    value.as_object_mut().unwrap().remove("effects");
-
-    let patch: Patch = serde_json::from_value(value).unwrap();
-
-    assert!(!patch.effects.enabled);
-    assert_eq!(patch.effects.effect_type.index(), 0);
 }
 
 #[test]

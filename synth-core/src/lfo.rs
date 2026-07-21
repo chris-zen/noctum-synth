@@ -2,13 +2,15 @@
 
 use crate::f32x4;
 
-use crate::{F32x4Ext, LANES};
 use crate::rng::DspRng;
+use crate::{F32x4Ext, LANES};
 
 /// Minimum LFO rate in Hz.
 pub const MIN_LFO_RATE_HZ: f32 = 0.022;
 /// Maximum LFO rate in Hz.
 pub const MAX_LFO_RATE_HZ: f32 = 500.0;
+/// Lowest internal rate required by 30 BPM, half-note clock, 32-step sync.
+pub(crate) const MIN_SYNCED_LFO_RATE_HZ: f32 = 1.0 / 128.0;
 
 /// LFO waveform shape.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -92,7 +94,7 @@ impl Lfo {
     }
 
     pub fn set_rate_hz(&mut self, rate_hz: f32) {
-        let rate_hz = rate_hz.clamp(MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ);
+        let rate_hz = rate_hz.clamp(MIN_SYNCED_LFO_RATE_HZ, MAX_LFO_RATE_HZ);
         self.phase_inc = f32x4::splat(rate_hz / self.sample_rate.max(1.0));
     }
 

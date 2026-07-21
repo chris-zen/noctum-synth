@@ -5,14 +5,14 @@ use crate::f32x4;
 use crate::analog_oscillators::{OscillatorModulation, Oscillators};
 use crate::effects::EffectModulation;
 use crate::patch::{
-    DedicatedModSlot, DedicatedModSource, ModDestination, ModMatrixSlot, ModRoute, PanModMode,
-    Patch,
+    ClockDivision, DedicatedModSlot, DedicatedModSource, LfoSyncDivision, ModDestination,
+    ModMatrixSlot, ModRoute, PanModMode, Patch,
 };
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::{
-    DadsrEnvelope, Filter, FilterOversampling, FilterType, LANES, Lfo, LfoWaveform,
-    MIN_LFO_RATE_HZ, ModSource, ModulationParam, ParamId, Waveform, midi_to_hz,
+    midi_to_hz, DadsrEnvelope, Filter, FilterOversampling, FilterType, Lfo, LfoWaveform, ModSource,
+    ModulationParam, ParamId, Waveform, DEFAULT_TEMPO_BPM, LANES, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
 };
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
@@ -111,6 +111,7 @@ pub struct VoiceBlock {
     lfos: [Lfo; 4],
     lfo_destinations: [ModDestination; 4],
     lfo_clock_sync: [bool; 4],
+    lfo_sync_divisions: [LfoSyncDivision; 4],
     lfo_base_rates_hz: [f32; 4],
     lfo_base_depths: [f32; 4],
     last_lfo_outputs: [f32x4; 4],
@@ -128,6 +129,8 @@ pub struct VoiceBlock {
     centered_pan_sin: f32x4,
     centered_pan_cos: f32x4,
     pitch_bend_range: f32,
+    tempo_bpm: f32,
+    clock_division: ClockDivision,
 
     sample_rate: f32,
 }
@@ -159,6 +162,7 @@ impl VoiceBlock {
             lfos: core::array::from_fn(|_| Lfo::new(sample_rate)),
             lfo_destinations: [ModDestination::Off; 4],
             lfo_clock_sync: [false; 4],
+            lfo_sync_divisions: [LfoSyncDivision::default(); 4],
             lfo_base_rates_hz: [MIN_LFO_RATE_HZ; 4],
             lfo_base_depths: [0.0; 4],
             last_lfo_outputs: [f32x4::splat(0.0); 4],
@@ -176,6 +180,8 @@ impl VoiceBlock {
             centered_pan_sin,
             centered_pan_cos,
             pitch_bend_range: 0.0,
+            tempo_bpm: DEFAULT_TEMPO_BPM,
+            clock_division: ClockDivision::default(),
             sample_rate,
         };
         block.apply_patch(patch);
@@ -503,7 +509,12 @@ impl VoiceBlock {
         for (index, lfo) in self.lfos.iter_mut().enumerate() {
             let bit = 1 << index;
             if self.modulation_plan.rate_target_mask & bit != 0 {
-                lfo.set_rate_hz(rates[index]);
+                let rate_hz = if self.lfo_clock_sync[index] {
+                    self.lfo_sync_divisions[index].rate_hz(self.tempo_bpm, self.clock_division)
+                } else {
+                    rates[index]
+                };
+                lfo.set_rate_hz(rate_hz.min(MAX_LFO_RATE_HZ));
             }
             if self.modulation_plan.depth_target_mask & bit != 0 {
                 lfo.set_depth(depths[index]);
@@ -879,8 +890,10 @@ impl VoiceBlock {
 
     pub fn set_lfo_rate_hz(&mut self, index: usize, rate_hz: f32) {
         if let Some(lfo) = self.lfos.get_mut(index) {
-            self.lfo_base_rates_hz[index] = rate_hz;
-            lfo.set_rate_hz(rate_hz);
+            self.lfo_base_rates_hz[index] = rate_hz.clamp(MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ);
+            if !self.lfo_clock_sync[index] {
+                lfo.set_rate_hz(self.lfo_base_rates_hz[index]);
+            }
         }
     }
 
@@ -908,6 +921,51 @@ impl VoiceBlock {
     pub fn set_lfo_clock_sync(&mut self, index: usize, clock_sync: bool) {
         if let Some(slot) = self.lfo_clock_sync.get_mut(index) {
             *slot = clock_sync;
+            self.refresh_lfo_rate(index);
+        }
+    }
+
+    pub fn set_lfo_sync_division(&mut self, index: usize, division: LfoSyncDivision) {
+        if let Some(slot) = self.lfo_sync_divisions.get_mut(index) {
+            *slot = division;
+            if self.lfo_clock_sync[index] {
+                self.refresh_lfo_rate(index);
+            }
+        }
+    }
+
+    pub fn set_tempo_bpm(&mut self, bpm: f32) {
+        self.tempo_bpm = bpm.clamp(30.0, 250.0);
+        self.refresh_synced_lfo_rates();
+    }
+
+    pub fn set_clock_division(&mut self, division: ClockDivision) {
+        self.clock_division = division;
+        self.refresh_synced_lfo_rates();
+    }
+
+    fn effective_lfo_rate_hz(&self, index: usize) -> f32 {
+        if self.lfo_clock_sync[index] {
+            self.lfo_sync_divisions[index]
+                .rate_hz(self.tempo_bpm, self.clock_division)
+                .min(MAX_LFO_RATE_HZ)
+        } else {
+            self.lfo_base_rates_hz[index]
+        }
+    }
+
+    fn refresh_lfo_rate(&mut self, index: usize) {
+        if index < self.lfos.len() {
+            let rate_hz = self.effective_lfo_rate_hz(index);
+            self.lfos[index].set_rate_hz(rate_hz);
+        }
+    }
+
+    fn refresh_synced_lfo_rates(&mut self) {
+        for index in 0..self.lfos.len() {
+            if self.lfo_clock_sync[index] {
+                self.refresh_lfo_rate(index);
+            }
         }
     }
 
@@ -1066,7 +1124,7 @@ impl VoiceBlock {
             self.dedicated_mod_slots,
         );
         for index in 0..self.lfos.len() {
-            self.lfos[index].set_rate_hz(self.lfo_base_rates_hz[index]);
+            self.lfos[index].set_rate_hz(self.effective_lfo_rate_hz(index));
             self.lfos[index].set_depth(self.lfo_base_depths[index]);
         }
     }
@@ -1205,6 +1263,18 @@ impl VoiceBlock {
             ParamId::Lfo2ClockSync => self.set_lfo_clock_sync(1, value >= 0.5),
             ParamId::Lfo3ClockSync => self.set_lfo_clock_sync(2, value >= 0.5),
             ParamId::Lfo4ClockSync => self.set_lfo_clock_sync(3, value >= 0.5),
+            ParamId::Lfo1SyncDivision => {
+                self.set_lfo_sync_division(0, LfoSyncDivision::from_index(value as usize))
+            }
+            ParamId::Lfo2SyncDivision => {
+                self.set_lfo_sync_division(1, LfoSyncDivision::from_index(value as usize))
+            }
+            ParamId::Lfo3SyncDivision => {
+                self.set_lfo_sync_division(2, LfoSyncDivision::from_index(value as usize))
+            }
+            ParamId::Lfo4SyncDivision => {
+                self.set_lfo_sync_division(3, LfoSyncDivision::from_index(value as usize))
+            }
             ParamId::Lfo1KeySync => self.set_lfo_key_sync(0, value >= 0.5),
             ParamId::Lfo2KeySync => self.set_lfo_key_sync(1, value >= 0.5),
             ParamId::Lfo3KeySync => self.set_lfo_key_sync(2, value >= 0.5),
@@ -1219,9 +1289,11 @@ impl VoiceBlock {
             | ParamId::KeyMode
             | ParamId::UnisonEnabled
             | ParamId::UnisonMode
-            | ParamId::UnisonDetune
-            | ParamId::Bpm
-            | ParamId::ClockDivide => {}
+            | ParamId::UnisonDetune => {}
+            ParamId::Bpm => self.set_tempo_bpm(value),
+            ParamId::ClockDivide => {
+                self.set_clock_division(ClockDivision::from_index(value as usize))
+            }
             _ => {}
         }
     }
@@ -1797,6 +1869,83 @@ mod tests {
 
     fn voice_block_next(block: &mut VoiceBlock) -> (f32, f32) {
         block.next(PerformanceModulation::default())
+    }
+
+    #[test]
+    fn synchronized_lfo_rate_tracks_bpm_and_clock_division() {
+        let mut block = VoiceBlock::new(1_000.0, &Patch::default());
+        block.set_lfo_sync_division(0, LfoSyncDivision::Step1);
+        block.set_lfo_clock_sync(0, true);
+        assert_eq!(block.effective_lfo_rate_hz(0), 2.0);
+
+        block.set_tempo_bpm(60.0);
+        assert_eq!(block.effective_lfo_rate_hz(0), 1.0);
+        block.set_clock_division(ClockDivision::Sixteenth);
+        assert_eq!(block.effective_lfo_rate_hz(0), 4.0);
+
+        block.set_tempo_bpm(30.0);
+        block.set_clock_division(ClockDivision::Half);
+        block.set_lfo_sync_division(0, LfoSyncDivision::Steps32);
+        assert_eq!(block.effective_lfo_rate_hz(0), 1.0 / 128.0);
+
+        block.set_tempo_bpm(250.0);
+        block.set_clock_division(ClockDivision::SixtyFourthTriplet);
+        block.set_lfo_sync_division(0, LfoSyncDivision::StepOneSixteenth);
+        assert_eq!(block.effective_lfo_rate_hz(0), MAX_LFO_RATE_HZ);
+    }
+
+    #[test]
+    fn master_clock_changes_do_not_reset_lfo_phase() {
+        let mut block = VoiceBlock::new(1_000.0, &Patch::default());
+        block.set_lfo_depth(0, 1.0);
+        block.set_lfo_clock_sync(0, true);
+        block.advance_lfos(LfoControlModulation::default());
+        let before = block.last_lfo_outputs[0];
+
+        block.set_tempo_bpm(90.0);
+        block.set_clock_division(ClockDivision::Sixteenth);
+        assert_eq!(block.last_lfo_outputs[0], before);
+
+        block.advance_lfos(LfoControlModulation::default());
+        assert_ne!(block.last_lfo_outputs[0], before);
+    }
+
+    #[test]
+    fn direct_patch_application_sets_the_master_clock() {
+        let mut patch = Patch::default();
+        patch.bpm = 90.0;
+        patch.clock_divide = ClockDivision::EighthTriplet;
+        patch.lfos[0].clock_sync = true;
+        patch.lfos[0].sync_division = LfoSyncDivision::StepTwoThirds;
+
+        let block = VoiceBlock::new(1_000.0, &patch);
+        assert_eq!(block.effective_lfo_rate_hz(0), 6.75);
+    }
+
+    #[test]
+    fn free_lfo_rate_is_independent_of_master_clock() {
+        let mut block = VoiceBlock::new(1_000.0, &Patch::default());
+        block.set_lfo_rate_hz(0, 3.25);
+        block.set_tempo_bpm(250.0);
+        block.set_clock_division(ClockDivision::SixtyFourthTriplet);
+        assert_eq!(block.effective_lfo_rate_hz(0), 3.25);
+    }
+
+    #[test]
+    fn synchronized_lfo_ignores_rate_modulation() {
+        let mut block = VoiceBlock::new(1_000.0, &Patch::default());
+        block.set_lfo_depth(0, 1.0);
+        block.set_lfo_sync_division(0, LfoSyncDivision::Step1);
+        block.set_lfo_clock_sync(0, true);
+        block.modulation_plan.rate_target_mask = 1;
+        block.modulation_plan.active_lfo_mask = 1;
+        let mut control = LfoControlModulation::default();
+        control.rate_mod[0] = 1.0;
+        block.advance_lfos(control);
+        let mut control = LfoControlModulation::default();
+        control.rate_mod[0] = 1.0;
+        block.advance_lfos(control);
+        assert!((block.last_lfo_outputs[0].to_array()[0] - 0.008).abs() < 1.0e-6);
     }
 
     fn modulation_context(sample: usize) -> ModSignalContext {

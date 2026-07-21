@@ -65,6 +65,14 @@ notes are held to replace the stored voicing. Native patches preserve the
 chord; the supplied Rev2 MIDI documentation does not identify the external
 program bytes that contain it.
 
+## Master clock
+
+BPM sets the internal clock from 30–250 beats per minute. Clock Divide selects
+the duration of one master-clock step, from a half note through a sixty-fourth
+note triplet; swing divisions use the same nominal continuous rate as their
+straight equivalents. These values drive clock-synchronized LFOs and the BPM
+also drives synchronized effects.
+
 ## LFOs
 
 The four LFOs share the same control model:
@@ -72,11 +80,16 @@ The four LFOs share the same control model:
 | Control | Use it for |
 | --- | --- |
 | Waveform | Choose triangle, saw, reverse saw, square, or sample-and-hold motion. |
-| Rate | Set the speed of the cyclic modulation. |
+| Rate | Set free-running frequency in hertz, or select a step ratio while synchronized. |
 | Depth | Set its intensity. |
 | Destination | Select the parameter the LFO controls. |
-| Clock sync | Quantize modulation rate to musical divisions for sync-capable use. |
+| Clock sync | Lock modulation frequency to BPM, Clock Divide, and the selected step ratio. |
 | Key sync | Restart the LFO with a new first-held note. |
 
 When key sync is on, the LFO restarts when playing begins from silence; adding a
 note while another is held does not restart the shared phase.
+
+The synchronized ratios are 32, 16, 8, 6, 4, 3, 2, 1.5, 1, 2/3, 1/2, 1/3,
+1/4, 1/6, 1/8, and 1/16 step. Each LFO remembers its free-running hertz value
+and synchronized ratio independently. Rate modulation is ignored while clock
+sync is active so the LFO remains locked to the master clock.

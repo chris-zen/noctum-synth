@@ -1,15 +1,15 @@
 //! Top-level synthesis engine and audio render entry point.
 
-use crate::EffectType;
 use crate::effects::EngineEffects;
 use crate::output_limiter::OutputLimiter;
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::render_rate::EngineRateAdapter;
 use crate::voices::Voices;
+use crate::EffectType;
 use crate::{
-    ActiveNotes, ControlMessage, DEFAULT_TEMPO_BPM, FilterOversampling, FilterType, ParamId, Patch,
-    VOICE_PACKS,
+    ActiveNotes, ClockDivision, ControlMessage, FilterOversampling, FilterType, ParamId, Patch,
+    DEFAULT_TEMPO_BPM, VOICE_PACKS,
 };
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
@@ -31,6 +31,7 @@ pub struct SynthEngineWithMemory<const PACKS: usize, Memory> {
     voices: Voices<PACKS>,
     effects: EngineEffects<Memory>,
     tempo_bpm: f32,
+    clock_division: ClockDivision,
     master_volume: f32,
     output_limiter: OutputLimiter,
     output_rate: EngineRateAdapter,
@@ -46,6 +47,7 @@ impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [
             voices: Voices::<PACKS>::new(internal_sample_rate),
             effects,
             tempo_bpm: DEFAULT_TEMPO_BPM,
+            clock_division: ClockDivision::default(),
             master_volume: 0.8,
             output_limiter: OutputLimiter::new(internal_sample_rate),
             output_rate: EngineRateAdapter::default(),
@@ -66,6 +68,7 @@ where
             voices: Voices::<PACKS>::new(internal_sample_rate),
             effects,
             tempo_bpm: DEFAULT_TEMPO_BPM,
+            clock_division: ClockDivision::default(),
             master_volume: 0.8,
             output_limiter: OutputLimiter::new(internal_sample_rate),
             output_rate: EngineRateAdapter::default(),
@@ -99,6 +102,9 @@ where
             }
             ControlMessage::SetTempoBpm { bpm } => self.set_tempo_bpm(bpm),
             ControlMessage::SetParam(ParamId::Bpm, value) => self.set_tempo_bpm(value),
+            ControlMessage::SetParam(ParamId::ClockDivide, value) => {
+                self.set_clock_division(ClockDivision::from_index(value as usize));
+            }
             ControlMessage::SetFilterOversampling(oversampling) => {
                 self.set_filter_oversampling(oversampling);
             }
@@ -113,19 +119,31 @@ where
 
     /// Applies every parameter and modulation route in a patch.
     pub fn apply_patch(&mut self, patch: &Patch) {
+        self.set_tempo_bpm(patch.bpm);
+        self.set_clock_division(patch.clock_divide);
         self.voices.apply_patch(patch);
         self.effects.set_params(patch.effects);
         self.master_volume = patch.master_volume.clamp(0.0, 1.0);
     }
 
-    /// Updates the global tempo and propagates it to clock-synchronized effects.
+    /// Updates the global tempo and propagates it to clock-synchronized consumers.
     pub fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
         self.tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
         self.effects.set_tempo_bpm(self.tempo_bpm);
+        self.voices.set_tempo_bpm(self.tempo_bpm);
     }
 
     pub fn tempo_bpm(&self) -> f32 {
         self.tempo_bpm
+    }
+
+    pub fn set_clock_division(&mut self, division: ClockDivision) {
+        self.clock_division = division;
+        self.voices.set_clock_division(division);
+    }
+
+    pub fn clock_division(&self) -> ClockDivision {
+        self.clock_division
     }
 
     /// Applies the nonlinear filter oversampling policy to all voices.

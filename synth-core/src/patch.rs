@@ -1,8 +1,8 @@
 //! Patch parameter bundles and modulation routing targets.
 
 use crate::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoWaveform, MIN_LFO_RATE_HZ, ParamId,
+    LfoWaveform, ParamId, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
+    DEFAULT_SUSTAIN_LEVEL, MIN_LFO_RATE_HZ,
 };
 
 #[cfg(feature = "serde")]
@@ -514,10 +514,268 @@ impl Default for EffectParams {
     }
 }
 
+/// Master-clock step division relative to one quarter note.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClockDivision {
+    Half,
+    #[default]
+    Quarter,
+    Eighth,
+    EighthHalfSwing,
+    EighthSwing,
+    EighthTriplet,
+    Sixteenth,
+    SixteenthHalfSwing,
+    SixteenthSwing,
+    SixteenthTriplet,
+    ThirtySecond,
+    ThirtySecondTriplet,
+    SixtyFourthTriplet,
+}
+
+impl ClockDivision {
+    pub const ALL: [Self; 13] = [
+        Self::Half,
+        Self::Quarter,
+        Self::Eighth,
+        Self::EighthHalfSwing,
+        Self::EighthSwing,
+        Self::EighthTriplet,
+        Self::Sixteenth,
+        Self::SixteenthHalfSwing,
+        Self::SixteenthSwing,
+        Self::SixteenthTriplet,
+        Self::ThirtySecond,
+        Self::ThirtySecondTriplet,
+        Self::SixtyFourthTriplet,
+    ];
+
+    pub const fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Half,
+            2 => Self::Eighth,
+            3 => Self::EighthHalfSwing,
+            4 => Self::EighthSwing,
+            5 => Self::EighthTriplet,
+            6 => Self::Sixteenth,
+            7 => Self::SixteenthHalfSwing,
+            8 => Self::SixteenthSwing,
+            9 => Self::SixteenthTriplet,
+            10 => Self::ThirtySecond,
+            11 => Self::ThirtySecondTriplet,
+            12 => Self::SixtyFourthTriplet,
+            _ => Self::Quarter,
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Half => 0,
+            Self::Quarter => 1,
+            Self::Eighth => 2,
+            Self::EighthHalfSwing => 3,
+            Self::EighthSwing => 4,
+            Self::EighthTriplet => 5,
+            Self::Sixteenth => 6,
+            Self::SixteenthHalfSwing => 7,
+            Self::SixteenthSwing => 8,
+            Self::SixteenthTriplet => 9,
+            Self::ThirtySecond => 10,
+            Self::ThirtySecondTriplet => 11,
+            Self::SixtyFourthTriplet => 12,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Half => "1/2",
+            Self::Quarter => "1/4",
+            Self::Eighth => "1/8",
+            Self::EighthHalfSwing => "1/8 Half",
+            Self::EighthSwing => "1/8 Swing",
+            Self::EighthTriplet => "1/8 Trip",
+            Self::Sixteenth => "1/16",
+            Self::SixteenthHalfSwing => "1/16 Half",
+            Self::SixteenthSwing => "1/16 Swing",
+            Self::SixteenthTriplet => "1/16 Trip",
+            Self::ThirtySecond => "1/32",
+            Self::ThirtySecondTriplet => "1/32 Trip",
+            Self::SixtyFourthTriplet => "1/64 Trip",
+        }
+    }
+
+    /// Nominal master-clock steps per quarter note. Swing changes event timing,
+    /// but not the continuous LFO's average frequency.
+    pub const fn steps_per_quarter(self) -> f32 {
+        match self {
+            Self::Half => 0.5,
+            Self::Quarter => 1.0,
+            Self::Eighth | Self::EighthHalfSwing | Self::EighthSwing => 2.0,
+            Self::EighthTriplet => 3.0,
+            Self::Sixteenth | Self::SixteenthHalfSwing | Self::SixteenthSwing => 4.0,
+            Self::SixteenthTriplet => 6.0,
+            Self::ThirtySecond => 8.0,
+            Self::ThirtySecondTriplet => 12.0,
+            Self::SixtyFourthTriplet => 16.0,
+        }
+    }
+}
+
+/// LFO cycles relative to one master-clock step while clock sync is enabled.
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LfoSyncDivision {
+    Steps32,
+    Steps16,
+    Steps8,
+    Steps6,
+    Steps4,
+    Steps3,
+    Steps2,
+    StepsOneAndHalf,
+    #[default]
+    Step1,
+    StepTwoThirds,
+    StepOneHalf,
+    StepOneThird,
+    StepOneQuarter,
+    StepOneSixth,
+    StepOneEighth,
+    StepOneSixteenth,
+}
+
+impl LfoSyncDivision {
+    pub const ALL: [Self; 16] = [
+        Self::Steps32,
+        Self::Steps16,
+        Self::Steps8,
+        Self::Steps6,
+        Self::Steps4,
+        Self::Steps3,
+        Self::Steps2,
+        Self::StepsOneAndHalf,
+        Self::Step1,
+        Self::StepTwoThirds,
+        Self::StepOneHalf,
+        Self::StepOneThird,
+        Self::StepOneQuarter,
+        Self::StepOneSixth,
+        Self::StepOneEighth,
+        Self::StepOneSixteenth,
+    ];
+
+    pub const fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Steps32,
+            1 => Self::Steps16,
+            2 => Self::Steps8,
+            3 => Self::Steps6,
+            4 => Self::Steps4,
+            5 => Self::Steps3,
+            6 => Self::Steps2,
+            7 => Self::StepsOneAndHalf,
+            9 => Self::StepTwoThirds,
+            10 => Self::StepOneHalf,
+            11 => Self::StepOneThird,
+            12 => Self::StepOneQuarter,
+            13 => Self::StepOneSixth,
+            14 => Self::StepOneEighth,
+            15 => Self::StepOneSixteenth,
+            _ => Self::Step1,
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Steps32 => 0,
+            Self::Steps16 => 1,
+            Self::Steps8 => 2,
+            Self::Steps6 => 3,
+            Self::Steps4 => 4,
+            Self::Steps3 => 5,
+            Self::Steps2 => 6,
+            Self::StepsOneAndHalf => 7,
+            Self::Step1 => 8,
+            Self::StepTwoThirds => 9,
+            Self::StepOneHalf => 10,
+            Self::StepOneThird => 11,
+            Self::StepOneQuarter => 12,
+            Self::StepOneSixth => 13,
+            Self::StepOneEighth => 14,
+            Self::StepOneSixteenth => 15,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Steps32 => "32 Steps",
+            Self::Steps16 => "16 Steps",
+            Self::Steps8 => "8 Steps",
+            Self::Steps6 => "6 Steps",
+            Self::Steps4 => "4 Steps",
+            Self::Steps3 => "3 Steps",
+            Self::Steps2 => "2 Steps",
+            Self::StepsOneAndHalf => "1.5 Steps",
+            Self::Step1 => "1 Step",
+            Self::StepTwoThirds => "2/3 Step",
+            Self::StepOneHalf => "1/2 Step",
+            Self::StepOneThird => "1/3 Step",
+            Self::StepOneQuarter => "1/4 Step",
+            Self::StepOneSixth => "1/6 Step",
+            Self::StepOneEighth => "1/8 Step",
+            Self::StepOneSixteenth => "1/16 Step",
+        }
+    }
+
+    pub const fn cycles_per_step(self) -> f32 {
+        match self {
+            Self::Steps32 => 1.0 / 32.0,
+            Self::Steps16 => 1.0 / 16.0,
+            Self::Steps8 => 1.0 / 8.0,
+            Self::Steps6 => 1.0 / 6.0,
+            Self::Steps4 => 1.0 / 4.0,
+            Self::Steps3 => 1.0 / 3.0,
+            Self::Steps2 => 1.0 / 2.0,
+            Self::StepsOneAndHalf => 2.0 / 3.0,
+            Self::Step1 => 1.0,
+            Self::StepTwoThirds => 3.0 / 2.0,
+            Self::StepOneHalf => 2.0,
+            Self::StepOneThird => 3.0,
+            Self::StepOneQuarter => 4.0,
+            Self::StepOneSixth => 6.0,
+            Self::StepOneEighth => 8.0,
+            Self::StepOneSixteenth => 16.0,
+        }
+    }
+
+    pub fn rate_hz(self, bpm: f32, clock_division: ClockDivision) -> f32 {
+        bpm.clamp(30.0, 250.0) / 60.0 * clock_division.steps_per_quarter() * self.cycles_per_step()
+    }
+
+    pub const fn from_rev2_raw(raw: u16) -> Self {
+        Self::from_index(if raw >= 128 { 15 } else { raw as usize / 8 })
+    }
+
+    pub const fn rev2_raw(self) -> u16 {
+        self.index() as u16 * 8
+    }
+
+    pub const fn from_p08_raw(raw: u16) -> Self {
+        let index = raw.saturating_sub(151);
+        Self::from_index(if index > 15 { 15 } else { index } as usize)
+    }
+
+    pub const fn p08_raw(self) -> u16 {
+        151 + self.index() as u16
+    }
+}
+
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy)]
 pub struct LfoParams {
     pub rate_hz: f32,
+    pub sync_division: LfoSyncDivision,
     pub depth: f32,
     pub waveform: LfoWaveform,
     pub destination: ModDestination,
@@ -529,6 +787,7 @@ impl Default for LfoParams {
     fn default() -> Self {
         Self {
             rate_hz: MIN_LFO_RATE_HZ,
+            sync_division: LfoSyncDivision::default(),
             depth: 0.0,
             waveform: LfoWaveform::Triangle,
             destination: ModDestination::Off,
@@ -924,7 +1183,7 @@ pub struct Patch {
     #[cfg_attr(feature = "serde", serde(default))]
     pub unison_chord: ChordMemory,
     pub bpm: f32,
-    pub clock_divide: f32,
+    pub clock_divide: ClockDivision,
     pub filter: FilterParams,
     pub amplifier: AmplifierParams,
     pub aux_envelope: AuxEnvelopeParams,
@@ -958,7 +1217,7 @@ impl Default for Patch {
             unison_detune: 0.0,
             unison_chord: ChordMemory::default(),
             bpm: crate::DEFAULT_TEMPO_BPM,
-            clock_divide: 1.0,
+            clock_divide: ClockDivision::default(),
             filter: FilterParams {
                 cutoff: 20_000.0,
                 ..FilterParams::default()
@@ -976,7 +1235,11 @@ impl Default for Patch {
 
 impl Patch {
     fn bool_f32(b: bool) -> f32 {
-        if b { 1.0 } else { 0.0 }
+        if b {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     fn lfo_waveform_index(lfo_waveform: LfoWaveform) -> f32 {
@@ -1023,7 +1286,7 @@ impl Patch {
         f(ParamId::UnisonMode, self.unison_mode.index() as f32);
         f(ParamId::UnisonDetune, self.unison_detune);
         f(ParamId::Bpm, self.bpm);
-        f(ParamId::ClockDivide, self.clock_divide);
+        f(ParamId::ClockDivide, self.clock_divide.index() as f32);
 
         f(ParamId::FilterCutoff, self.filter.cutoff);
         f(ParamId::FilterResonance, self.filter.resonance);
@@ -1095,6 +1358,12 @@ impl Patch {
             ParamId::Lfo3ClockSync,
             ParamId::Lfo4ClockSync,
         ];
+        let sync_division = [
+            ParamId::Lfo1SyncDivision,
+            ParamId::Lfo2SyncDivision,
+            ParamId::Lfo3SyncDivision,
+            ParamId::Lfo4SyncDivision,
+        ];
         let key = [
             ParamId::Lfo1KeySync,
             ParamId::Lfo2KeySync,
@@ -1109,6 +1378,7 @@ impl Patch {
             f(waveform[i], wi(lfo.waveform));
             f(destination[i], lfo.destination.index() as f32);
             f(clock[i], s(lfo.clock_sync));
+            f(sync_division[i], lfo.sync_division.index() as f32);
             f(key[i], s(lfo.key_sync));
         }
 
@@ -1177,7 +1447,7 @@ impl Patch {
             ParamId::UnisonMode => self.unison_mode = UnisonMode::from_index(value as usize),
             ParamId::UnisonDetune => self.unison_detune = value.clamp(0.0, 16.0),
             ParamId::Bpm => self.bpm = value.clamp(30.0, 250.0),
-            ParamId::ClockDivide => self.clock_divide = value,
+            ParamId::ClockDivide => self.clock_divide = ClockDivision::from_index(value as usize),
             ParamId::FilterCutoff => self.filter.cutoff = value,
             ParamId::FilterResonance => self.filter.resonance = value,
             ParamId::FilterPoles => self.filter.poles = if flag { 4 } else { 2 },
@@ -1220,6 +1490,9 @@ impl Patch {
                 self.lfos[0].destination = ModDestination::from_index(value as usize)
             }
             ParamId::Lfo1ClockSync => self.lfos[0].clock_sync = flag,
+            ParamId::Lfo1SyncDivision => {
+                self.lfos[0].sync_division = LfoSyncDivision::from_index(value as usize)
+            }
             ParamId::Lfo1KeySync => self.lfos[0].key_sync = flag,
             ParamId::Lfo2Rate => self.lfos[1].rate_hz = value,
             ParamId::Lfo2Depth => self.lfos[1].depth = value,
@@ -1230,6 +1503,9 @@ impl Patch {
                 self.lfos[1].destination = ModDestination::from_index(value as usize)
             }
             ParamId::Lfo2ClockSync => self.lfos[1].clock_sync = flag,
+            ParamId::Lfo2SyncDivision => {
+                self.lfos[1].sync_division = LfoSyncDivision::from_index(value as usize)
+            }
             ParamId::Lfo2KeySync => self.lfos[1].key_sync = flag,
             ParamId::Lfo3Rate => self.lfos[2].rate_hz = value,
             ParamId::Lfo3Depth => self.lfos[2].depth = value,
@@ -1240,6 +1516,9 @@ impl Patch {
                 self.lfos[2].destination = ModDestination::from_index(value as usize)
             }
             ParamId::Lfo3ClockSync => self.lfos[2].clock_sync = flag,
+            ParamId::Lfo3SyncDivision => {
+                self.lfos[2].sync_division = LfoSyncDivision::from_index(value as usize)
+            }
             ParamId::Lfo3KeySync => self.lfos[2].key_sync = flag,
             ParamId::Lfo4Rate => self.lfos[3].rate_hz = value,
             ParamId::Lfo4Depth => self.lfos[3].depth = value,
@@ -1250,6 +1529,9 @@ impl Patch {
                 self.lfos[3].destination = ModDestination::from_index(value as usize)
             }
             ParamId::Lfo4ClockSync => self.lfos[3].clock_sync = flag,
+            ParamId::Lfo4SyncDivision => {
+                self.lfos[3].sync_division = LfoSyncDivision::from_index(value as usize)
+            }
             ParamId::Lfo4KeySync => self.lfos[3].key_sync = flag,
             ParamId::EffectEnabled => self.effects.enabled = flag,
             ParamId::EffectType => {
@@ -1310,6 +1592,70 @@ mod tests {
         let encoded = serde_json::to_value(&patch).unwrap();
         let decoded: Patch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.name.as_str(), "LosVangelis2041");
+    }
+
+    #[test]
+    fn clock_divisions_have_stable_indices_and_nominal_rates() {
+        let expected = [
+            0.5, 1.0, 2.0, 2.0, 2.0, 3.0, 4.0, 4.0, 4.0, 6.0, 8.0, 12.0, 16.0,
+        ];
+        for (index, division) in ClockDivision::ALL.iter().copied().enumerate() {
+            assert_eq!(division.index(), index);
+            assert_eq!(ClockDivision::from_index(index), division);
+            assert_eq!(division.steps_per_quarter(), expected[index]);
+        }
+    }
+
+    #[test]
+    fn lfo_sync_divisions_have_stable_hardware_ratios() {
+        let expected = [
+            1.0 / 32.0,
+            1.0 / 16.0,
+            1.0 / 8.0,
+            1.0 / 6.0,
+            1.0 / 4.0,
+            1.0 / 3.0,
+            1.0 / 2.0,
+            2.0 / 3.0,
+            1.0,
+            3.0 / 2.0,
+            2.0,
+            3.0,
+            4.0,
+            6.0,
+            8.0,
+            16.0,
+        ];
+        for (index, division) in LfoSyncDivision::ALL.iter().copied().enumerate() {
+            assert_eq!(division.index(), index);
+            assert_eq!(LfoSyncDivision::from_index(index), division);
+            assert_eq!(division.cycles_per_step(), expected[index]);
+            assert_eq!(LfoSyncDivision::from_rev2_raw((index * 8) as u16), division);
+            assert_eq!(LfoSyncDivision::from_p08_raw(151 + index as u16), division);
+            assert_eq!(division.rev2_raw(), (index * 8) as u16);
+            assert_eq!(division.p08_raw(), 151 + index as u16);
+        }
+        for raw in 0..=150 {
+            assert_eq!(
+                LfoSyncDivision::from_rev2_raw(raw),
+                LfoSyncDivision::from_index((usize::from(raw) / 8).min(15))
+            );
+        }
+    }
+
+    #[test]
+    fn typed_clock_fields_round_trip_through_serde() {
+        let mut patch = Patch::default();
+        patch.clock_divide = ClockDivision::SixteenthTriplet;
+        patch.lfos[2].clock_sync = true;
+        patch.lfos[2].sync_division = LfoSyncDivision::StepTwoThirds;
+        let encoded = serde_json::to_value(&patch).unwrap();
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.clock_divide, ClockDivision::SixteenthTriplet);
+        assert_eq!(
+            decoded.lfos[2].sync_division,
+            LfoSyncDivision::StepTwoThirds
+        );
     }
 
     #[test]

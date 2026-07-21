@@ -4,16 +4,16 @@ use eframe::egui;
 
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
-    KNOB_SIZE, framed_selectable, framed_selectable_sized, master_volume, param_knob_bipolar,
-    param_knob_f32, param_knob_f32_offset, param_knob_log_hz, param_knob_note, param_toggle,
-    param_toggle_sized,
+    framed_selectable, framed_selectable_sized, master_volume, param_knob_bipolar,
+    param_knob_discrete, param_knob_f32, param_knob_f32_offset, param_knob_log_hz, param_knob_note,
+    param_toggle, param_toggle_sized, KNOB_SIZE,
 };
 use synth_core::{
-    ChordMemory, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
-    DEFAULT_SUSTAIN_LEVEL, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType,
-    FilterType, GlideMode, KeyMode, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModMatrix,
-    ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
-    Patch, UnisonMode,
+    ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType,
+    FilterType, GlideMode, KeyMode, LfoSyncDivision, ModDestination, ModMatrix, ModMatrixSlot,
+    ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
+    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
+    MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -139,6 +139,7 @@ pub struct UiState {
     pub lfo_waveforms: [usize; 4],
     pub lfo_destinations: [usize; 4],
     pub lfo_clock_sync: [bool; 4],
+    pub lfo_sync_divisions: [usize; 4],
     pub lfo_key_sync: [bool; 4],
     pub selected_mod_route: usize,
     pub mod_enabled: [bool; 8],
@@ -192,7 +193,7 @@ impl Default for UiState {
             unison_detune: 0.0,
             unison_chord: ChordMemory::default(),
             bpm: 120.0,
-            clock_divide: 1,
+            clock_divide: ClockDivision::default().index(),
             sub_level: 0.0,
             noise_level: 0.0,
             filter_cutoff: 20_000.0,
@@ -232,6 +233,7 @@ impl Default for UiState {
             lfo_waveforms: [0; 4],
             lfo_destinations: [0; 4],
             lfo_clock_sync: [false; 4],
+            lfo_sync_divisions: [LfoSyncDivision::default().index(); 4],
             lfo_key_sync: [true; 4],
             selected_mod_route: 0,
             mod_enabled: [false; 8],
@@ -286,7 +288,7 @@ impl UiState {
         self.unison_detune = patch.unison_detune;
         self.unison_chord = patch.unison_chord;
         self.bpm = patch.bpm;
-        self.clock_divide = patch.clock_divide as usize;
+        self.clock_divide = patch.clock_divide.index();
         self.sub_level = patch.sub_osc_level;
         self.noise_level = patch.noise_level;
         self.filter_cutoff = patch.filter.cutoff;
@@ -327,6 +329,7 @@ impl UiState {
             self.lfo_waveforms[i] = lfo_waveform_usize(lfo.waveform);
             self.lfo_destinations[i] = lfo.destination.index();
             self.lfo_clock_sync[i] = lfo.clock_sync;
+            self.lfo_sync_divisions[i] = lfo.sync_division.index();
             self.lfo_key_sync[i] = lfo.key_sync;
         }
         for i in 0..8 {
@@ -432,24 +435,28 @@ impl UiState {
             ParamId::Lfo1Waveform => self.lfo_waveforms[0] = value as usize,
             ParamId::Lfo1Destination => self.lfo_destinations[0] = value as usize,
             ParamId::Lfo1ClockSync => self.lfo_clock_sync[0] = enabled,
+            ParamId::Lfo1SyncDivision => self.lfo_sync_divisions[0] = value as usize,
             ParamId::Lfo1KeySync => self.lfo_key_sync[0] = enabled,
             ParamId::Lfo2Rate => self.lfo_rates[1] = value,
             ParamId::Lfo2Depth => self.lfo_depths[1] = value,
             ParamId::Lfo2Waveform => self.lfo_waveforms[1] = value as usize,
             ParamId::Lfo2Destination => self.lfo_destinations[1] = value as usize,
             ParamId::Lfo2ClockSync => self.lfo_clock_sync[1] = enabled,
+            ParamId::Lfo2SyncDivision => self.lfo_sync_divisions[1] = value as usize,
             ParamId::Lfo2KeySync => self.lfo_key_sync[1] = enabled,
             ParamId::Lfo3Rate => self.lfo_rates[2] = value,
             ParamId::Lfo3Depth => self.lfo_depths[2] = value,
             ParamId::Lfo3Waveform => self.lfo_waveforms[2] = value as usize,
             ParamId::Lfo3Destination => self.lfo_destinations[2] = value as usize,
             ParamId::Lfo3ClockSync => self.lfo_clock_sync[2] = enabled,
+            ParamId::Lfo3SyncDivision => self.lfo_sync_divisions[2] = value as usize,
             ParamId::Lfo3KeySync => self.lfo_key_sync[2] = enabled,
             ParamId::Lfo4Rate => self.lfo_rates[3] = value,
             ParamId::Lfo4Depth => self.lfo_depths[3] = value,
             ParamId::Lfo4Waveform => self.lfo_waveforms[3] = value as usize,
             ParamId::Lfo4Destination => self.lfo_destinations[3] = value as usize,
             ParamId::Lfo4ClockSync => self.lfo_clock_sync[3] = enabled,
+            ParamId::Lfo4SyncDivision => self.lfo_sync_divisions[3] = value as usize,
             ParamId::Lfo4KeySync => self.lfo_key_sync[3] = enabled,
             ParamId::EffectEnabled => self.effect_enabled = enabled,
             ParamId::EffectType => self.select_effect((value as usize).min(EFFECT_TYPE_COUNT - 1)),
@@ -588,7 +595,7 @@ impl From<&UiState> for Patch {
             unison_detune: state.unison_detune,
             unison_chord: state.unison_chord,
             bpm: state.bpm,
-            clock_divide: state.clock_divide as f32,
+            clock_divide: ClockDivision::from_index(state.clock_divide),
             filter: synth_core::FilterParams {
                 cutoff: state.filter_cutoff,
                 resonance: state.filter_resonance,
@@ -629,6 +636,7 @@ impl From<&UiState> for Patch {
             lfos: [
                 synth_core::LfoParams {
                     rate_hz: state.lfo_rates[0],
+                    sync_division: LfoSyncDivision::from_index(state.lfo_sync_divisions[0]),
                     depth: state.lfo_depths[0],
                     waveform: lfo_wf(0),
                     destination: ModDestination::from_index(state.lfo_destinations[0]),
@@ -637,6 +645,7 @@ impl From<&UiState> for Patch {
                 },
                 synth_core::LfoParams {
                     rate_hz: state.lfo_rates[1],
+                    sync_division: LfoSyncDivision::from_index(state.lfo_sync_divisions[1]),
                     depth: state.lfo_depths[1],
                     waveform: lfo_wf(1),
                     destination: ModDestination::from_index(state.lfo_destinations[1]),
@@ -645,6 +654,7 @@ impl From<&UiState> for Patch {
                 },
                 synth_core::LfoParams {
                     rate_hz: state.lfo_rates[2],
+                    sync_division: LfoSyncDivision::from_index(state.lfo_sync_divisions[2]),
                     depth: state.lfo_depths[2],
                     waveform: lfo_wf(2),
                     destination: ModDestination::from_index(state.lfo_destinations[2]),
@@ -653,6 +663,7 @@ impl From<&UiState> for Patch {
                 },
                 synth_core::LfoParams {
                     rate_hz: state.lfo_rates[3],
+                    sync_division: LfoSyncDivision::from_index(state.lfo_sync_divisions[3]),
                     depth: state.lfo_depths[3],
                     waveform: lfo_wf(3),
                     destination: ModDestination::from_index(state.lfo_destinations[3]),
@@ -978,21 +989,15 @@ fn command_row(
                 response.on_hover_text("Beats per minute (30–250)");
 
                 ui.label("Div:");
-                let divide_names = [
-                    "1/2", "1/4", "1/8", "1/8h", "1/8s", "1/8t", "1/16", "1/16h", "1/16s", "1/16t",
-                    "1/32", "1/32t", "1/64t",
-                ];
-                let current_label = divide_names
-                    .get(state.clock_divide)
-                    .copied()
-                    .unwrap_or("1/4");
+                let current_label = ClockDivision::from_index(state.clock_divide).name();
                 egui::ComboBox::from_id_salt("clock_divide")
-                    .width(52.0)
+                    .width(72.0)
                     .selected_text(current_label)
                     .show_ui(ui, |ui| {
-                        for (index, label) in divide_names.iter().enumerate() {
+                        for division in ClockDivision::ALL {
+                            let index = division.index();
                             if ui
-                                .selectable_label(state.clock_divide == index, *label)
+                                .selectable_label(state.clock_divide == index, division.name())
                                 .clicked()
                             {
                                 state.clock_divide = index;
@@ -1587,16 +1592,29 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
             let index = state.selected_lfo;
             ui.vertical(|ui| {
                 control_cell(ui, |ui| {
-                    param_knob_log_hz(
-                        ui,
-                        "Freq",
-                        &mut state.lfo_rates[index],
-                        MIN_LFO_RATE_HZ,
-                        MAX_LFO_RATE_HZ,
-                        1.0,
-                        lfo_rate_param(index),
-                        control,
-                    );
+                    if state.lfo_clock_sync[index] {
+                        let names = LfoSyncDivision::ALL.map(LfoSyncDivision::name);
+                        param_knob_discrete(
+                            ui,
+                            "Freq",
+                            &mut state.lfo_sync_divisions[index],
+                            &names,
+                            LfoSyncDivision::default().index(),
+                            lfo_sync_division_param(index),
+                            control,
+                        );
+                    } else {
+                        param_knob_log_hz(
+                            ui,
+                            "Freq",
+                            &mut state.lfo_rates[index],
+                            MIN_LFO_RATE_HZ,
+                            MAX_LFO_RATE_HZ,
+                            1.0,
+                            lfo_rate_param(index),
+                            control,
+                        );
+                    }
                 });
                 ui.add_space(10.0);
                 control_cell(ui, |ui| {
@@ -1617,14 +1635,28 @@ fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineContr
             ui.vertical(|ui| {
                 lfo_destination_selector(ui, state, control);
                 ui.add_space(8.0);
-                param_toggle_sized(
+                if framed_selectable_sized(
                     ui,
                     LFO_SYNC_BUTTON_SIZE,
+                    state.lfo_clock_sync[index],
                     "Clk Sync",
-                    &mut state.lfo_clock_sync[index],
-                    lfo_clock_sync_param(index),
-                    control,
-                );
+                )
+                .clicked()
+                {
+                    state.lfo_clock_sync[index] = !state.lfo_clock_sync[index];
+                    control.set_param(
+                        lfo_clock_sync_param(index),
+                        f32::from(state.lfo_clock_sync[index]),
+                    );
+                    if state.lfo_clock_sync[index] {
+                        control.set_param(
+                            lfo_sync_division_param(index),
+                            state.lfo_sync_divisions[index] as f32,
+                        );
+                    } else {
+                        control.set_param(lfo_rate_param(index), state.lfo_rates[index]);
+                    }
+                }
                 param_toggle_sized(
                     ui,
                     LFO_SYNC_BUTTON_SIZE,
@@ -2728,6 +2760,15 @@ fn lfo_clock_sync_param(index: usize) -> ParamId {
     }
 }
 
+fn lfo_sync_division_param(index: usize) -> ParamId {
+    match index {
+        0 => ParamId::Lfo1SyncDivision,
+        1 => ParamId::Lfo2SyncDivision,
+        2 => ParamId::Lfo3SyncDivision,
+        _ => ParamId::Lfo4SyncDivision,
+    }
+}
+
 fn lfo_key_sync_param(index: usize) -> ParamId {
     match index {
         0 => ParamId::Lfo1KeySync,
@@ -2988,6 +3029,24 @@ mod tests {
         assert_eq!(state.effect_type, 3);
         assert_eq!(state.effect_mix, 0.75);
         assert_eq!(state.effect_runtime_params[3].mix, 0.75);
+    }
+
+    #[test]
+    fn clock_and_lfo_rate_modes_round_trip_between_patch_and_ui() {
+        let mut patch = Patch::default();
+        patch.bpm = 93.0;
+        patch.clock_divide = ClockDivision::EighthTriplet;
+        patch.lfos[0].rate_hz = 4.5;
+        patch.lfos[0].clock_sync = true;
+        patch.lfos[0].sync_division = LfoSyncDivision::StepOneThird;
+        let mut state = UiState::default();
+        state.apply_from_patch(&patch);
+        let decoded = Patch::from(&state);
+        assert_eq!(decoded.bpm, 93.0);
+        assert_eq!(decoded.clock_divide, ClockDivision::EighthTriplet);
+        assert_eq!(decoded.lfos[0].rate_hz, 4.5);
+        assert!(decoded.lfos[0].clock_sync);
+        assert_eq!(decoded.lfos[0].sync_division, LfoSyncDivision::StepOneThird);
     }
 
     #[test]

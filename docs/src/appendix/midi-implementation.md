@@ -223,7 +223,7 @@ each group. LFO 1 starts at NRPN 37, LFO 2 at 42, LFO 3 at 47, LFO 4 at 52.
 
 | Offset | Parameter | Raw Range | Max |
 |---|---|---|---|
-| +0 | LFO Rate | 0–150 → 0.022–500 Hz (log) | 150 |
+| +0 | LFO Rate | Unsynced: 0–150 → 0.022–500 Hz (log). Synced: buckets of 8 select 32 steps through 1/16 step; 128–150 clamp to 1/16 step. | 150 |
 | +1 | LFO Waveform | 0=triangle, 1=saw, 2=reverse saw, 3=square, 4=random | 4 |
 | +2 | LFO Depth | 0–127 → 0%–100% | 127 |
 | +3 | LFO Destination | 0–52 (53 destinations) | 52 |
@@ -231,6 +231,11 @@ each group. LFO 1 starts at NRPN 37, LFO 2 at 42, LFO 3 at 47, LFO 4 at 52.
 
 LFO Key Sync uses separate NRPNs: 105 (LFO 1), 106 (LFO 2), 107 (LFO 3),
 108 (LFO 4). All are 0=off, 1=on.
+
+In clock-sync mode the bucket starts 0, 8, 16, …, 120 select: 32, 16, 8,
+6, 4, 3, 2, 1.5, 1, 2/3, 1/2, 1/3, 1/4, 1/6, 1/8, and 1/16 step.
+The effective LFO frequency is BPM / 60 × Clock Divide steps per quarter ×
+cycles per selected step.
 
 ### Free Modulation Slots 1–8
 
@@ -404,7 +409,7 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 50 | Filter Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
 | 51 | Amp Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
 | 52 | Aux Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
-| 53 | LFO 1 Rate | 0–150 (unsynced LFO rate when decoded) |
+| 53 | LFO 1 Rate | 0–150; interpreted as free rate or a synchronized bucket according to byte 69 |
 | 54 | LFO 2 Rate | same as LFO 1 |
 | 55 | LFO 3 Rate | same as LFO 1 |
 | 56 | LFO 4 Rate | same as LFO 1 |

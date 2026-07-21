@@ -94,36 +94,36 @@ pub use analog_sub_oscillator::AnalogSubOscillator;
 pub use effects::{EffectModulation, Effects, EffectsWithMemory};
 pub use engine::{SynthEngine, SynthEngineWithMemory};
 pub use envelope::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DadsrEnvelope,
+    DadsrEnvelope, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
+    DEFAULT_SUSTAIN_LEVEL,
 };
 pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use midi_program::{MidiProgramImport, MidiProgramSource};
 pub use noise::WhiteNoise;
 pub use p08_midi::{
-    P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN, P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
+    P08MidiDecoder, P08ProgramData, P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN,
+    P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN, P08_PROGRAM_PACKED_LEN,
 };
 pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, ChordMemory, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LfoParams, ModDestination,
-    ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName,
-    UnisonMode,
+    AmplifierParams, AuxEnvelopeParams, ChordMemory, ClockDivision, DedicatedModSlot,
+    DedicatedModSource, EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LfoParams,
+    LfoSyncDivision, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
+    OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
 };
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};
 pub use rev2_midi::{
+    Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData, Rev2SysexError,
     REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,
-    Rev2SysexError,
+    REV2_PROGRAM_PACKED_LEN,
 };
 pub use tuning::midi_to_hz;
-pub use voice::{PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, voice_pan_position};
+pub use voice::{voice_pan_position, PerformanceModulation, VoiceBlock, REV2_VOICE_PAN_POSITIONS};
 pub use voices::{ActiveNotes, Voices};
 pub use wavetable::{
-    WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
-    generate_wavetable_bank,
+    generate_wavetable_bank, WavetableBank, WavetableBankError, WavetableBankReport,
+    WAVETABLE_BANK_SAMPLES,
 };
 
 pub trait F32x4Ext {
@@ -214,24 +214,28 @@ pub enum ParamId {
     Lfo1Waveform,
     Lfo1Destination,
     Lfo1ClockSync,
+    Lfo1SyncDivision,
     Lfo1KeySync,
     Lfo2Rate,
     Lfo2Depth,
     Lfo2Waveform,
     Lfo2Destination,
     Lfo2ClockSync,
+    Lfo2SyncDivision,
     Lfo2KeySync,
     Lfo3Rate,
     Lfo3Depth,
     Lfo3Waveform,
     Lfo3Destination,
     Lfo3ClockSync,
+    Lfo3SyncDivision,
     Lfo3KeySync,
     Lfo4Rate,
     Lfo4Depth,
     Lfo4Waveform,
     Lfo4Destination,
     Lfo4ClockSync,
+    Lfo4SyncDivision,
     Lfo4KeySync,
     EffectEnabled,
     EffectType,
@@ -317,24 +321,28 @@ impl ParamId {
             Self::Lfo1Waveform => "LFO 1 Waveform",
             Self::Lfo1Destination => "LFO 1 Destination",
             Self::Lfo1ClockSync => "LFO 1 Clock Sync",
+            Self::Lfo1SyncDivision => "LFO 1 Sync Division",
             Self::Lfo1KeySync => "LFO 1 Key Sync",
             Self::Lfo2Rate => "LFO 2 Rate",
             Self::Lfo2Depth => "LFO 2 Depth",
             Self::Lfo2Waveform => "LFO 2 Waveform",
             Self::Lfo2Destination => "LFO 2 Destination",
             Self::Lfo2ClockSync => "LFO 2 Clock Sync",
+            Self::Lfo2SyncDivision => "LFO 2 Sync Division",
             Self::Lfo2KeySync => "LFO 2 Key Sync",
             Self::Lfo3Rate => "LFO 3 Rate",
             Self::Lfo3Depth => "LFO 3 Depth",
             Self::Lfo3Waveform => "LFO 3 Waveform",
             Self::Lfo3Destination => "LFO 3 Destination",
             Self::Lfo3ClockSync => "LFO 3 Clock Sync",
+            Self::Lfo3SyncDivision => "LFO 3 Sync Division",
             Self::Lfo3KeySync => "LFO 3 Key Sync",
             Self::Lfo4Rate => "LFO 4 Rate",
             Self::Lfo4Depth => "LFO 4 Depth",
             Self::Lfo4Waveform => "LFO 4 Waveform",
             Self::Lfo4Destination => "LFO 4 Destination",
             Self::Lfo4ClockSync => "LFO 4 Clock Sync",
+            Self::Lfo4SyncDivision => "LFO 4 Sync Division",
             Self::Lfo4KeySync => "LFO 4 Key Sync",
             Self::EffectEnabled => "Effect Enabled",
             Self::EffectType => "Effect Type",
@@ -368,7 +376,7 @@ pub enum ControlMessage {
     SetParam(ParamId, f32),
     /// Replaces the native chord-memory voicing used by unison Chord mode.
     SetUnisonChord(ChordMemory),
-    /// Updates the engine tempo used by clock-synchronized effects.
+    /// Updates the engine tempo used by clock-synchronized voices and effects.
     SetTempoBpm {
         bpm: f32,
     },

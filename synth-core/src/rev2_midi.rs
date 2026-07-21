@@ -2,8 +2,8 @@
 
 use crate::patch::decode_patch_name;
 use crate::{
-    DedicatedModSource, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination, ModRoute, ModSource,
-    ModulationParam, ParamId, Patch,
+    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, Patch, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
@@ -51,6 +51,8 @@ struct NrpnChannelState {
     current_value: Option<u16>,
     rpn_msb: Option<u8>,
     rpn_lsb: Option<u8>,
+    lfo_rate_raw: [Option<u16>; 4],
+    lfo_clock_sync: [bool; 4],
 }
 
 impl NrpnChannelState {
@@ -137,9 +139,10 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
     let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
     unpack_program_data(packed, &mut raw);
     let mut patch = Patch::default();
+    let mut state = NrpnChannelState::default();
     for number in 0..=179 {
         if let Some(value) = program_nrpn_value(&raw, number, 0) {
-            map_nrpn(number, value, &mut |update| match update {
+            map_nrpn_stateful(number, value, &mut state, &mut |update| match update {
                 Rev2MidiUpdate::Param(param, value) => patch.set_param(param, value),
                 Rev2MidiUpdate::Modulation { route, parameter } => {
                     patch.set_modulation_param(route, parameter);
@@ -190,7 +193,7 @@ impl Rev2MidiDecoder {
                 if let (Some(number), Some(msb)) = (state.number(), state.data_msb) {
                     let raw = clamp_nrpn_value(number, u16::from(msb) * 128 + u16::from(value));
                     state.current_value = Some(raw);
-                    map_nrpn(number, raw, &mut emit);
+                    map_nrpn_stateful(number, raw, state, &mut emit);
                 }
                 true
             }
@@ -203,7 +206,7 @@ impl Rev2MidiDecoder {
                     };
                     let next = clamp_nrpn_value(number, next);
                     state.current_value = Some(next);
-                    map_nrpn(number, next, &mut emit);
+                    map_nrpn_stateful(number, next, state, &mut emit);
                 }
                 true
             }
@@ -348,6 +351,9 @@ impl Rev2MidiEncoder {
                 37,
                 quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
             ),
+            ParamId::Lfo1SyncDivision => {
+                (37, LfoSyncDivision::from_index(value as usize).rev2_raw())
+            }
             ParamId::Lfo1Waveform => (38, quantize(value, 0.0, 4.0, 4)),
             ParamId::Lfo1Depth => (39, quantize(value, 0.0, 1.0, 127)),
             ParamId::Lfo1Destination => (40, quantize(value, 0.0, 52.0, 52)),
@@ -357,6 +363,9 @@ impl Rev2MidiEncoder {
                 42,
                 quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
             ),
+            ParamId::Lfo2SyncDivision => {
+                (42, LfoSyncDivision::from_index(value as usize).rev2_raw())
+            }
             ParamId::Lfo2Waveform => (43, quantize(value, 0.0, 4.0, 4)),
             ParamId::Lfo2Depth => (44, quantize(value, 0.0, 1.0, 127)),
             ParamId::Lfo2Destination => (45, quantize(value, 0.0, 52.0, 52)),
@@ -366,6 +375,9 @@ impl Rev2MidiEncoder {
                 47,
                 quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
             ),
+            ParamId::Lfo3SyncDivision => {
+                (47, LfoSyncDivision::from_index(value as usize).rev2_raw())
+            }
             ParamId::Lfo3Waveform => (48, quantize(value, 0.0, 4.0, 4)),
             ParamId::Lfo3Depth => (49, quantize(value, 0.0, 1.0, 127)),
             ParamId::Lfo3Destination => (50, quantize(value, 0.0, 52.0, 52)),
@@ -375,6 +387,9 @@ impl Rev2MidiEncoder {
                 52,
                 quantize_log(value, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ, 150),
             ),
+            ParamId::Lfo4SyncDivision => {
+                (52, LfoSyncDivision::from_index(value as usize).rev2_raw())
+            }
             ParamId::Lfo4Waveform => (53, quantize(value, 0.0, 4.0, 4)),
             ParamId::Lfo4Depth => (54, quantize(value, 0.0, 1.0, 127)),
             ParamId::Lfo4Destination => (55, quantize(value, 0.0, 52.0, 52)),
@@ -457,6 +472,20 @@ impl Rev2MidiEncoder {
 fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
     let mut encoder = Rev2MidiEncoder::default();
     patch.for_each_param(|param, value| {
+        let inactive_lfo_rate = match param {
+            ParamId::Lfo1Rate => patch.lfos[0].clock_sync,
+            ParamId::Lfo2Rate => patch.lfos[1].clock_sync,
+            ParamId::Lfo3Rate => patch.lfos[2].clock_sync,
+            ParamId::Lfo4Rate => patch.lfos[3].clock_sync,
+            ParamId::Lfo1SyncDivision => !patch.lfos[0].clock_sync,
+            ParamId::Lfo2SyncDivision => !patch.lfos[1].clock_sync,
+            ParamId::Lfo3SyncDivision => !patch.lfos[2].clock_sync,
+            ParamId::Lfo4SyncDivision => !patch.lfos[3].clock_sync,
+            _ => false,
+        };
+        if inactive_lfo_rate {
+            return;
+        }
         let mut messages = [[0_u8; 3]; 4];
         let mut len = 0;
         if encoder.param(0, param, value, |message| {
@@ -803,6 +832,72 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
     true
 }
 
+fn map_nrpn_stateful(
+    number: u16,
+    raw: u16,
+    state: &mut NrpnChannelState,
+    emit: &mut impl FnMut(Rev2MidiUpdate),
+) {
+    if (37..=56).contains(&number) {
+        let lfo = usize::from((number - 37) / 5);
+        match (number - 37) % 5 {
+            0 => {
+                state.lfo_rate_raw[lfo] = Some(raw);
+                emit_rev2_lfo_rate(lfo, raw, state.lfo_clock_sync[lfo], emit);
+                return;
+            }
+            4 => {
+                let synced = raw != 0;
+                state.lfo_clock_sync[lfo] = synced;
+                emit_param(emit, lfo_clock_sync_param(lfo), f32::from(synced));
+                if let Some(rate_raw) = state.lfo_rate_raw[lfo] {
+                    emit_rev2_lfo_rate(lfo, rate_raw, synced, emit);
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+    map_nrpn(number, raw, emit);
+}
+
+fn emit_rev2_lfo_rate(lfo: usize, raw: u16, synced: bool, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+    const RATE: [ParamId; 4] = [
+        ParamId::Lfo1Rate,
+        ParamId::Lfo2Rate,
+        ParamId::Lfo3Rate,
+        ParamId::Lfo4Rate,
+    ];
+    const SYNC_DIVISION: [ParamId; 4] = [
+        ParamId::Lfo1SyncDivision,
+        ParamId::Lfo2SyncDivision,
+        ParamId::Lfo3SyncDivision,
+        ParamId::Lfo4SyncDivision,
+    ];
+    if synced {
+        emit_param(
+            emit,
+            SYNC_DIVISION[lfo],
+            LfoSyncDivision::from_rev2_raw(raw).index() as f32,
+        );
+    } else {
+        emit_param(
+            emit,
+            RATE[lfo],
+            logarithmic(raw, 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
+        );
+    }
+}
+
+const fn lfo_clock_sync_param(lfo: usize) -> ParamId {
+    match lfo {
+        1 => ParamId::Lfo2ClockSync,
+        2 => ParamId::Lfo3ClockSync,
+        3 => ParamId::Lfo4ClockSync,
+        _ => ParamId::Lfo1ClockSync,
+    }
+}
+
 fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
     match number {
         0 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
@@ -1026,6 +1121,49 @@ mod tests {
             decoded,
             Some(Rev2MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
         );
+    }
+
+    #[test]
+    fn synced_lfo_nrpn_decodes_for_either_rate_and_sync_order() {
+        for sync_first in [false, true] {
+            let mut decoder = Rev2MidiDecoder::default();
+            let mut decoded_division = None;
+            let mut send = |number, value| {
+                emit_nrpn(0, number, value, &mut |message| {
+                    decoder.control_change(0, message[1], message[2], |update| {
+                        if let Rev2MidiUpdate::Param(ParamId::Lfo1SyncDivision, value) = update {
+                            decoded_division = Some(value as usize);
+                        }
+                    });
+                });
+            };
+            if sync_first {
+                send(41, 1);
+                send(37, 72);
+            } else {
+                send(37, 72);
+                send(41, 1);
+            }
+            assert_eq!(
+                decoded_division,
+                Some(LfoSyncDivision::StepTwoThirds.index())
+            );
+        }
+    }
+
+    #[test]
+    fn synced_lfo_program_round_trips_active_division() {
+        for division in LfoSyncDivision::ALL {
+            let mut source = Patch::default();
+            source.lfos[1].rate_hz = 7.25;
+            source.lfos[1].clock_sync = true;
+            source.lfos[1].sync_division = division;
+            let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+            Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+            let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+            assert!(decoded.lfos[1].clock_sync);
+            assert_eq!(decoded.lfos[1].sync_division, division);
+        }
     }
 
     #[test]
