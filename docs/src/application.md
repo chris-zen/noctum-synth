@@ -14,8 +14,9 @@ feedback from the callback for spectrum and signal inspection.
 
 - **Parameters** edits the sound: oscillators, filter, envelopes, LFOs,
   modulation, effects, and master volume.
-- **Settings** selects MIDI input/output, audio output and optional audio input
-  devices, sample rate, filter oversampling, and theme-related preferences.
+- **Settings** selects MIDI input/output, MIDI clock mode and source, audio
+  output and optional audio input devices, sample rate, filter oversampling,
+  and theme-related preferences.
 
 The application lists available audio devices on startup. It chooses a named
 device when supplied, otherwise the system default. An optional input can be
@@ -24,6 +25,14 @@ the output device, input device, or sample rate in Settings and clicking
 **Apply audio changes** rebuilds the CPAL streams at runtime (with a brief
 interruption). The current patch parameters are reloaded after a successful
 apply.
+
+The **MIDI Clock** settings group sits below the MIDI input/output selectors.
+It exposes all five Prophet Rev2 clock modes; Master and Slave Thru are visible
+but disabled until their output paths are implemented. Slave and Slave No S/S
+require one configured MIDI input as the clock source. Live/lost state and the
+effective external BPM are shown without overwriting the patch's editable BPM.
+Clock messages from that selected source are consumed locally and excluded
+from generic **Forward**; true low-jitter Slave Thru remains future work.
 
 ## Threading model
 

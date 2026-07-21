@@ -751,6 +751,7 @@ struct Renderer {
     input_enabled: Arc<AtomicBool>,
     sample_rate: f32,
     channels: usize,
+    last_midi_clock_status: synth_core::MidiClockStatus,
 }
 
 impl Renderer {
@@ -771,6 +772,7 @@ impl Renderer {
             filter_oversampling,
             filter_oversampling.factor(sample_rate)
         ));
+        let last_midi_clock_status = engine.midi_clock_status();
         Self {
             engine_audio,
             engine,
@@ -779,6 +781,7 @@ impl Renderer {
             input_enabled,
             sample_rate,
             channels,
+            last_midi_clock_status,
         }
     }
 
@@ -832,6 +835,13 @@ impl Renderer {
             .set_active_voices(self.engine.active_voice_count());
 
         self.engine_audio.feedback.push_audio_block(analysis_block);
+
+        let clock_status = self.engine.midi_clock_status();
+        if clock_status != self.last_midi_clock_status
+            && self.engine_audio.feedback.push_midi_clock(clock_status)
+        {
+            self.last_midi_clock_status = clock_status;
+        }
 
         if let Some(metrics) =
             self.timing

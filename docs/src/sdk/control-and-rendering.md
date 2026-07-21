@@ -19,12 +19,20 @@ transport. `synth-app` demonstrates that pattern with `rtrb`.
 | `PitchBend`, `ModWheel`, `Pressure` | Send normalized performance-source values. |
 | `SustainPedal` | Hold released notes while pressed. |
 | `ControlChange` | Forward a normalized MIDI controller value. |
+| `SetMidiClockMode` | Select the device-global Rev2 clock policy. Master and Slave Thru are represented but currently inactive. |
+| `MidiRealtime` | Deliver timestamped Timing Clock, Start, or Stop input. |
 
 Convenience methods on `SynthEngine` exist for applying a complete `Patch`,
 parameter updates, notes, all notes off, pitch bend, mod wheel, pressure,
 sustain pedal, and generic control changes. They forward to the same message
 handling path. The engine consumes only the generic patch representation and
 has no dependency on MIDI or device-specific protocols.
+
+`MidiClockStatus` reports configured and effective modes, live state, learned
+and effective BPM, transport state, and pulse position. Hosts must timestamp
+Timing Clock at receipt using a monotonic microsecond clock. The core derives
+tempo at 24 PPQN and advances its clock-loss timer from rendered output frames,
+so it remains `no_std` and independent of a platform timer.
 
 ## Parameter values
 

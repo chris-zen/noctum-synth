@@ -19,17 +19,44 @@ official Sequential factory sound banks.
 
 ## Protocol Overview
 
-The synth accepts three categories of MIDI input on any channel:
+The synth accepts four categories of MIDI input. Channel messages are accepted
+on any channel; System Real-Time messages have no MIDI channel.
 
 | Protocol | Purpose |
 |---|---|
 | **CC** (Control Change) | Coarse 7-bit control of a subset of parameters |
 | **NRPN** (Non-Registered Parameter Number) | High-resolution 14-bit access to every parameter |
 | **SysEx** (System Exclusive) | Bulk patch import/export and Program Data library imports |
+| **System Real-Time** | External timing clock plus transport Start and Stop |
 
 CC and NRPN assignments in this appendix describe the **Prophet Rev2** live
 control protocol. Prophet '08 programs are imported via SysEx only; see
 [Prophet '08 Compatibility](#prophet-08-compatibility).
+
+## MIDI Clock
+
+The clock mode is a device/application setting rather than part of a patch. It
+preserves the five Prophet Rev2 choices:
+
+| Mode | Current behavior |
+|---|---|
+| Off | Ignore MIDI clock and use the patch BPM |
+| Master | Reserved for future outbound clock generation |
+| Slave | Receive Timing Clock (`F8`), Start (`FA`), and Stop (`FC`) |
+| Slave Thru | Reserved for future low-jitter clock forwarding |
+| Slave No S/S | Receive Timing Clock but ignore Start and Stop |
+
+Incoming clock is measured at the MIDI standard rate of 24 pulses per quarter
+note. Until a tempo is acquired, the patch BPM remains effective. If pulses
+stop for 500 ms, clock status changes to lost and transport stops, while
+clock-synchronized LFOs and effects retain the last learned tempo. Selecting
+Off restores the latest patch BPM.
+
+The desktop app selects one configured MIDI input as its clock source. Daisy
+firmware currently receives clock from USB MIDI and starts in Slave mode. MIDI
+Continue (`FB`), Song Position Pointer, Master, Slave Thru, and Rev2 global
+NRPNs 4099/4100 remain future work. Continue is ignored rather than treated as
+malformed input.
 
 ## RPN / NRPN Reset
 

@@ -60,6 +60,7 @@ pub mod lfo;
 pub(crate) mod math;
 #[cfg(feature = "embedded-math")]
 mod micromath;
+mod midi_clock;
 pub(crate) mod midi_program;
 pub mod noise;
 mod output_limiter;
@@ -99,6 +100,7 @@ pub use envelope::{
 };
 pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
+pub use midi_clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent, MidiTransportState};
 pub use midi_program::{MidiProgramImport, MidiProgramSource};
 pub use noise::WhiteNoise;
 pub use p08_midi::{
@@ -374,10 +376,12 @@ pub enum ControlMessage {
     SetParam(ParamId, f32),
     /// Replaces the native chord-memory voicing used by unison Chord mode.
     SetUnisonChord(ChordMemory),
-    /// Updates the engine tempo used by clock-synchronized voices and effects.
+    /// Updates the local tempo used when an external MIDI clock is not active.
     SetTempoBpm {
         bpm: f32,
     },
+    SetMidiClockMode(MidiClockMode),
+    MidiRealtime(MidiRealtimeEvent),
     SetModulation {
         route: ModRoute,
         enabled: bool,

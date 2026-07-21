@@ -1,6 +1,6 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use synth_core::{FilterOversampling, FilterType, Patch};
+use synth_core::{FilterOversampling, FilterType, MidiClockMode, MidiTransportState, Patch};
 
 use crate::audio::{AppliedAudioConfig, AudioConfig, AudioManager};
 use crate::engine::SynthEngineControl;
@@ -40,6 +40,10 @@ pub struct Settings {
     midi_port: Option<String>,
     #[serde(default)]
     pub midi_output_port: Option<String>,
+    #[serde(default)]
+    pub midi_clock_mode: MidiClockMode,
+    #[serde(default)]
+    pub midi_clock_source: Option<String>,
     pub audio_device: Option<String>,
     #[serde(default)]
     pub audio_input: Option<String>,
@@ -59,6 +63,13 @@ impl Settings {
         } else {
             self.midi_port = None;
         }
+        if self
+            .midi_clock_source
+            .as_ref()
+            .is_some_and(|source| !self.midi_inputs.iter().any(|entry| entry.port == *source))
+        {
+            self.midi_clock_source = None;
+        }
     }
 }
 
@@ -68,6 +79,8 @@ impl Default for Settings {
             midi_inputs: Vec::new(),
             midi_port: None,
             midi_output_port: None,
+            midi_clock_mode: MidiClockMode::Off,
+            midi_clock_source: None,
             audio_device: None,
             audio_input: None,
             sample_rate: None,
@@ -117,6 +130,8 @@ pub fn show(
     current_patch: &Patch,
     muted: bool,
 ) {
+    let previous_clock_mode = settings.midi_clock_mode;
+    let previous_clock_source = settings.midi_clock_source.clone();
     let midi_input_ports = midi::list_input_ports();
     let midi_output_ports = midi::list_output_ports();
     midi_inputs.refresh_available_ports();
@@ -150,6 +165,9 @@ pub fn show(
             });
             ui.add_space(PANEL_SPACING);
 
+            midi_clock_panel(ui, full_width, settings, control);
+            ui.add_space(PANEL_SPACING);
+
             audio_settings_panel(
                 ui,
                 full_width,
@@ -169,7 +187,83 @@ pub fn show(
             general_panel(ui, full_width, settings);
         });
 
-    midi_inputs.sync(&settings.midi_inputs);
+    let active_clock_source = settings
+        .midi_clock_mode
+        .receives_clock()
+        .then_some(settings.midi_clock_source.as_deref())
+        .flatten();
+    midi_inputs.sync(&settings.midi_inputs, active_clock_source);
+    if settings.midi_clock_mode != previous_clock_mode {
+        control.set_midi_clock_mode(settings.midi_clock_mode);
+    } else if settings.midi_clock_source != previous_clock_source
+        && settings.midi_clock_mode.receives_clock()
+    {
+        control.set_midi_clock_mode(MidiClockMode::Off);
+        control.set_midi_clock_mode(settings.midi_clock_mode);
+    }
+}
+
+fn midi_clock_panel(
+    ui: &mut egui::Ui,
+    width: f32,
+    settings: &mut Settings,
+    control: &SynthEngineControl,
+) {
+    let frame = egui::Frame::group(ui.style());
+    ui.set_width(width);
+    frame.show(ui, |ui| {
+        ui.set_width((width - frame.total_margin().sum().x).max(0.0));
+        ui.strong("MIDI Clock");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Mode");
+            egui::ComboBox::from_id_salt("midi_clock_mode")
+                .selected_text(settings.midi_clock_mode.name())
+                .show_ui(ui, |ui| {
+                    for mode in MidiClockMode::ALL {
+                        let label = if mode.is_supported() {
+                            mode.name().to_owned()
+                        } else {
+                            format!("{} (Future)", mode.name())
+                        };
+                        ui.add_enabled_ui(mode.is_supported(), |ui| {
+                            ui.selectable_value(&mut settings.midi_clock_mode, mode, label);
+                        });
+                    }
+                });
+
+            ui.separator();
+            let source_enabled = settings.midi_clock_mode.receives_clock();
+            if !settings.midi_clock_mode.is_supported() {
+                ui.label("Unsupported (effective mode: Off)");
+            } else if settings.midi_clock_mode == MidiClockMode::Off {
+                ui.label("Using patch BPM");
+            } else if source_enabled && settings.midi_clock_source.is_none() {
+                ui.label("Select a clock source");
+            } else if let Some(status) = control.clock_status_for_ui() {
+                if status.live {
+                    if settings.midi_clock_mode.receives_start_stop() {
+                        let transport = match status.transport {
+                            MidiTransportState::Running => "Running",
+                            MidiTransportState::Stopped => "Stopped",
+                        };
+                        ui.label(format!(
+                            "Live · {:.1} BPM · {transport}",
+                            status.effective_bpm
+                        ));
+                    } else {
+                        ui.label(format!("Live · {:.1} BPM", status.effective_bpm));
+                    }
+                } else if status.learned_bpm.is_some() {
+                    ui.label(format!("Lost · {:.1} BPM", status.effective_bpm));
+                } else {
+                    ui.label("Waiting for clock");
+                }
+            } else {
+                ui.label("Waiting for clock");
+            }
+        });
+    });
 }
 
 /// Renders a fixed-height settings group whose frame fits within `width`. The
@@ -249,8 +343,10 @@ fn midi_input_panel(
             }
             for port in &merged_ports {
                 let selected = settings.midi_inputs.iter().any(|entry| entry.port == *port);
+                let clock_selected = settings.midi_clock_source.as_deref() == Some(port.as_str());
                 let unavailable = selected
                     && midi_inputs.connection_state(port) != midi::PortConnectionState::Connected;
+                let mut clock_change = None;
 
                 ui.horizontal(|ui| {
                     let label = if unavailable {
@@ -261,6 +357,9 @@ fn midi_input_panel(
                     if ui.selectable_label(selected, label).clicked() {
                         if selected {
                             settings.midi_inputs.retain(|entry| entry.port != *port);
+                            if settings.midi_clock_source.as_deref() == Some(port.as_str()) {
+                                settings.midi_clock_source = None;
+                            }
                         } else {
                             settings.midi_inputs.push(MidiInputEntry::new(port.clone()));
                         }
@@ -277,10 +376,27 @@ fn midi_input_panel(
                                 ui.toggle_value(&mut entry.forward, "Forward");
                                 ui.toggle_value(&mut entry.patches, "Patches");
                                 ui.toggle_value(&mut entry.control, "Control");
+                                let mut clock = clock_selected;
+                                if ui
+                                    .add_enabled(
+                                        settings.midi_clock_mode.receives_clock(),
+                                        egui::Button::selectable(clock, "Clock"),
+                                    )
+                                    .clicked()
+                                {
+                                    clock = !clock;
+                                    clock_change = Some(clock);
+                                }
                             });
                         }
                     });
                 });
+
+                match clock_change {
+                    Some(true) => settings.midi_clock_source = Some(port.clone()),
+                    Some(false) if clock_selected => settings.midi_clock_source = None,
+                    _ => {}
+                }
             }
         });
     });

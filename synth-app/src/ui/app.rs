@@ -77,7 +77,16 @@ impl App {
             }
         }
         config.settings.migrate_legacy_midi_port();
-        midi_inputs.sync(&config.settings.midi_inputs);
+        let active_clock_source = config
+            .settings
+            .midi_clock_mode
+            .receives_clock()
+            .then_some(config.settings.midi_clock_source.as_deref())
+            .flatten();
+        midi_inputs.sync(&config.settings.midi_inputs, active_clock_source);
+        engine
+            .control
+            .set_midi_clock_mode(config.settings.midi_clock_mode);
         engine
             .control
             .set_midi_output_port(config.settings.midi_output_port.as_deref());
@@ -149,6 +158,9 @@ impl App {
             self.engine
                 .control
                 .set_filter_type(*self.filter_type.lock());
+            self.engine
+                .control
+                .set_midi_clock_mode(self.config.settings.midi_clock_mode);
         }
     }
 

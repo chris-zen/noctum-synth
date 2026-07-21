@@ -1,7 +1,7 @@
 use synth_core::{
-    ClockDivision, ControlMessage, DedicatedModSource, EffectType, FilterOversampling,
-    ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine, DEFAULT_SAMPLE_RATE,
-    DEFAULT_TEMPO_BPM,
+    ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
+    EffectType, FilterOversampling, MidiClockMode, MidiRealtimeEvent, MidiTransportState,
+    ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine,
 };
 
 fn left_rms(buffer: &[f32]) -> f32 {
@@ -32,6 +32,48 @@ fn tempo_control_updates_and_clamps_the_engine_parameter() {
     assert_eq!(engine.tempo_bpm(), 98.0);
     engine.set_tempo_bpm(500.0);
     assert_eq!(engine.tempo_bpm(), 250.0);
+}
+
+#[test]
+fn external_clock_overrides_but_does_not_replace_local_tempo() {
+    let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+    engine.set_tempo_bpm(90.0);
+    engine.set_midi_clock_mode(MidiClockMode::Slave);
+    for timestamp in [0, 25_000, 50_000, 75_000, 100_000, 125_000] {
+        engine.handle_midi_realtime(MidiRealtimeEvent::TimingClock {
+            timestamp_micros: timestamp,
+        });
+    }
+    assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
+    engine.set_tempo_bpm(72.0);
+    assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
+    let mut patch = Patch::default();
+    patch.bpm = 60.0;
+    engine.apply_patch(&patch);
+    assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
+    assert_eq!(engine.local_tempo_bpm(), 60.0);
+    engine.set_midi_clock_mode(MidiClockMode::Off);
+    assert_eq!(engine.tempo_bpm(), 60.0);
+}
+
+#[test]
+fn slave_transport_tracks_start_and_stop() {
+    let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+    engine.set_midi_clock_mode(MidiClockMode::Slave);
+    engine.handle_midi_realtime(MidiRealtimeEvent::Start);
+    engine.handle_midi_realtime(MidiRealtimeEvent::TimingClock {
+        timestamp_micros: 1,
+    });
+    assert_eq!(
+        engine.midi_clock_status().transport,
+        MidiTransportState::Running
+    );
+    assert_eq!(engine.midi_clock_status().pulse_position, 1);
+    engine.handle_midi_realtime(MidiRealtimeEvent::Stop);
+    assert_eq!(
+        engine.midi_clock_status().transport,
+        MidiTransportState::Stopped
+    );
 }
 
 #[test]

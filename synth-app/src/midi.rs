@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use parking_lot::Mutex;
 use synth_core::{
-    MidiProgramImport, ModDestination, ModRoute, ModSource, P08MidiDecoder, ParamId, Patch,
-    REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate,
+    MidiProgramImport, MidiRealtimeEvent, ModDestination, ModRoute, ModSource, P08MidiDecoder,
+    ParamId, Patch, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN, Rev2MidiDecoder, Rev2MidiEncoder,
+    Rev2MidiUpdate,
 };
 use wmidi::MidiMessage;
 
@@ -29,21 +30,24 @@ pub struct MidiInputFlags {
     control: AtomicBool,
     patches: AtomicBool,
     forward: AtomicBool,
+    clock: AtomicBool,
 }
 
 impl MidiInputFlags {
-    fn from_entry(entry: &MidiInputEntry) -> Arc<Self> {
+    fn from_entry(entry: &MidiInputEntry, clock: bool) -> Arc<Self> {
         Arc::new(Self {
             control: AtomicBool::new(entry.control),
             patches: AtomicBool::new(entry.patches),
             forward: AtomicBool::new(entry.forward),
+            clock: AtomicBool::new(clock),
         })
     }
 
-    fn sync(&self, entry: &MidiInputEntry) {
+    fn sync(&self, entry: &MidiInputEntry, clock: bool) {
         self.control.store(entry.control, Ordering::Relaxed);
         self.patches.store(entry.patches, Ordering::Relaxed);
         self.forward.store(entry.forward, Ordering::Relaxed);
+        self.clock.store(clock, Ordering::Relaxed);
     }
 }
 
@@ -75,8 +79,17 @@ impl MidiInputManager {
         }
     }
 
-    pub fn sync(&mut self, entries: &[MidiInputEntry]) {
+    pub fn sync(&mut self, entries: &[MidiInputEntry], clock_source: Option<&str>) {
         let configured: HashSet<&str> = entries.iter().map(|entry| entry.port.as_str()).collect();
+
+        // Clear the old source first so changing ports never creates a window
+        // where two callback threads both feed the clock follower.
+        for managed in self.connections.values() {
+            managed.flags.clock.store(false, Ordering::Relaxed);
+        }
+        for flags in self.pending.values() {
+            flags.clock.store(false, Ordering::Relaxed);
+        }
 
         self.connections.retain(|port, managed| {
             if configured.contains(port.as_str()) {
@@ -89,8 +102,9 @@ impl MidiInputManager {
         });
 
         for entry in entries {
+            let is_clock_source = clock_source == Some(entry.port.as_str());
             if let Some(managed) = self.connections.get(&entry.port) {
-                managed.flags.sync(entry);
+                managed.flags.sync(entry, is_clock_source);
                 self.pending
                     .insert(entry.port.clone(), managed.flags.clone());
                 continue;
@@ -100,8 +114,8 @@ impl MidiInputManager {
                 .pending
                 .get(&entry.port)
                 .cloned()
-                .unwrap_or_else(|| MidiInputFlags::from_entry(entry));
-            flags.sync(entry);
+                .unwrap_or_else(|| MidiInputFlags::from_entry(entry, is_clock_source));
+            flags.sync(entry, is_clock_source);
             self.pending.insert(entry.port.clone(), flags.clone());
 
             if let Some(connection) = connect_input_port(
@@ -191,8 +205,8 @@ fn connect_input_port(
         .connect(
             &port,
             &format!("midi-in-{port_name}"),
-            move |_timestamp, message, _| {
-                handle_midi_with_flags(message, &control, &mut decoder, &output, &flags);
+            move |timestamp, message, _| {
+                handle_midi_with_flags(timestamp, message, &control, &mut decoder, &output, &flags);
             },
             (),
         )
@@ -217,12 +231,26 @@ pub fn merged_port_list(available: &[String], configured: &[String]) -> Vec<Stri
 }
 
 fn handle_midi_with_flags(
+    timestamp_micros: u64,
     message: &[u8],
     control: &SynthEngineControl,
     decoder: &mut Rev2MidiDecoder,
     output: &MidiOutputHandle,
     flags: &MidiInputFlags,
 ) {
+    if flags.clock.load(Ordering::Relaxed) {
+        let event = match message {
+            [0xf8] => Some(MidiRealtimeEvent::TimingClock { timestamp_micros }),
+            [0xfa] => Some(MidiRealtimeEvent::Start),
+            [0xfc] => Some(MidiRealtimeEvent::Stop),
+            _ => None,
+        };
+        if let Some(event) = event {
+            control.midi_realtime(event);
+            return;
+        }
+    }
+
     if output.consume_echo(message) {
         return;
     }
@@ -691,6 +719,7 @@ mod tests {
             control: AtomicBool::new(true),
             patches: AtomicBool::new(true),
             forward: AtomicBool::new(false),
+            clock: AtomicBool::new(false),
         })
     }
 
@@ -790,6 +819,7 @@ mod tests {
         let mut decoder = Rev2MidiDecoder::default();
 
         handle_midi_with_flags(
+            0,
             &message,
             &bridge.control,
             &mut decoder,
@@ -866,9 +896,49 @@ mod tests {
             control: AtomicBool::new(false),
             patches: AtomicBool::new(true),
             forward: AtomicBool::new(false),
+            clock: AtomicBool::new(false),
         });
         handle_midi_with_flags(
+            0,
             &[0x90, 60, 100],
+            &bridge.control,
+            &mut decoder,
+            &MidiOutputHandle::default(),
+            &flags,
+        );
+        assert!(audio.control.0.pop().is_err());
+    }
+
+    #[test]
+    fn selected_clock_source_routes_realtime_with_midir_timestamp() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let mut decoder = Rev2MidiDecoder::default();
+        let flags = Arc::new(MidiInputFlags {
+            control: AtomicBool::new(false),
+            patches: AtomicBool::new(false),
+            forward: AtomicBool::new(false),
+            clock: AtomicBool::new(true),
+        });
+        handle_midi_with_flags(
+            123_456,
+            &[0xf8],
+            &bridge.control,
+            &mut decoder,
+            &MidiOutputHandle::default(),
+            &flags,
+        );
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(ControlMessage::MidiRealtime(
+                MidiRealtimeEvent::TimingClock {
+                    timestamp_micros: 123_456
+                }
+            ))
+        ));
+
+        handle_midi_with_flags(
+            0,
+            &[0xfb],
             &bridge.control,
             &mut decoder,
             &MidiOutputHandle::default(),
@@ -885,9 +955,11 @@ mod tests {
             control: AtomicBool::new(true),
             patches: AtomicBool::new(false),
             forward: AtomicBool::new(false),
+            clock: AtomicBool::new(false),
         });
         let message = stored_program_message(4, 0);
         handle_midi_with_flags(
+            0,
             &message,
             &bridge.control,
             &mut decoder,
@@ -916,6 +988,7 @@ mod tests {
         let mut decoder = Rev2MidiDecoder::default();
         let output = MidiOutputHandle::default();
         handle_midi_with_flags(
+            0,
             &[0x90, 60, 100],
             &bridge.control,
             &mut decoder,

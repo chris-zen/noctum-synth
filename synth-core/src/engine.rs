@@ -1,15 +1,16 @@
 //! Top-level synthesis engine and audio render entry point.
 
+use crate::EffectType;
 use crate::effects::EngineEffects;
+use crate::midi_clock::MidiClockFollower;
 use crate::output_limiter::OutputLimiter;
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::render_rate::EngineRateAdapter;
 use crate::voices::Voices;
-use crate::EffectType;
 use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, FilterOversampling, FilterType, ParamId, Patch,
-    DEFAULT_TEMPO_BPM, VOICE_PACKS,
+    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, FilterOversampling, FilterType,
+    MidiClockMode, MidiClockStatus, MidiRealtimeEvent, ParamId, Patch, VOICE_PACKS,
 };
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
@@ -30,7 +31,9 @@ pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize =
 pub struct SynthEngineWithMemory<const PACKS: usize, Memory> {
     voices: Voices<PACKS>,
     effects: EngineEffects<Memory>,
+    local_tempo_bpm: f32,
     tempo_bpm: f32,
+    midi_clock: MidiClockFollower,
     clock_division: ClockDivision,
     master_volume: f32,
     output_limiter: OutputLimiter,
@@ -46,7 +49,9 @@ impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [
         Self {
             voices: Voices::<PACKS>::new(internal_sample_rate),
             effects,
+            local_tempo_bpm: DEFAULT_TEMPO_BPM,
             tempo_bpm: DEFAULT_TEMPO_BPM,
+            midi_clock: MidiClockFollower::new(sample_rate),
             clock_division: ClockDivision::default(),
             master_volume: 0.8,
             output_limiter: OutputLimiter::new(internal_sample_rate),
@@ -67,7 +72,9 @@ where
         Self {
             voices: Voices::<PACKS>::new(internal_sample_rate),
             effects,
+            local_tempo_bpm: DEFAULT_TEMPO_BPM,
             tempo_bpm: DEFAULT_TEMPO_BPM,
+            midi_clock: MidiClockFollower::new(sample_rate),
             clock_division: ClockDivision::default(),
             master_volume: 0.8,
             output_limiter: OutputLimiter::new(internal_sample_rate),
@@ -101,6 +108,8 @@ where
                 self.effects.set_param2(value);
             }
             ControlMessage::SetTempoBpm { bpm } => self.set_tempo_bpm(bpm),
+            ControlMessage::SetMidiClockMode(mode) => self.set_midi_clock_mode(mode),
+            ControlMessage::MidiRealtime(event) => self.handle_midi_realtime(event),
             ControlMessage::SetParam(ParamId::Bpm, value) => self.set_tempo_bpm(value),
             ControlMessage::SetParam(ParamId::ClockDivide, value) => {
                 self.set_clock_division(ClockDivision::from_index(value as usize));
@@ -120,14 +129,25 @@ where
     /// Applies every parameter and modulation route in a patch.
     pub fn apply_patch(&mut self, patch: &Patch) {
         self.set_tempo_bpm(patch.bpm);
+        let effective_tempo_bpm = self.tempo_bpm;
         self.set_clock_division(patch.clock_divide);
         self.voices.apply_patch(patch);
         self.effects.set_params(patch.effects);
+        // Voice patch application carries the saved BPM. Restore the external
+        // runtime override when a MIDI clock has already been acquired.
+        self.apply_effective_tempo(effective_tempo_bpm);
         self.master_volume = patch.master_volume.clamp(0.0, 1.0);
     }
 
     /// Updates the global tempo and propagates it to clock-synchronized consumers.
     pub fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
+        self.local_tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
+        if self.midi_clock.learned_bpm().is_none() {
+            self.apply_effective_tempo(self.local_tempo_bpm);
+        }
+    }
+
+    fn apply_effective_tempo(&mut self, tempo_bpm: f32) {
         self.tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
         self.effects.set_tempo_bpm(self.tempo_bpm);
         self.voices.set_tempo_bpm(self.tempo_bpm);
@@ -135,6 +155,26 @@ where
 
     pub fn tempo_bpm(&self) -> f32 {
         self.tempo_bpm
+    }
+
+    pub fn local_tempo_bpm(&self) -> f32 {
+        self.local_tempo_bpm
+    }
+
+    pub fn set_midi_clock_mode(&mut self, mode: MidiClockMode) {
+        if self.midi_clock.set_mode(mode) {
+            self.apply_effective_tempo(self.local_tempo_bpm);
+        }
+    }
+
+    pub fn handle_midi_realtime(&mut self, event: MidiRealtimeEvent) {
+        if let Some(bpm) = self.midi_clock.handle(event) {
+            self.apply_effective_tempo(bpm);
+        }
+    }
+
+    pub fn midi_clock_status(&self) -> MidiClockStatus {
+        self.midi_clock.status(self.tempo_bpm)
     }
 
     pub fn set_clock_division(&mut self, division: ClockDivision) {
@@ -223,6 +263,8 @@ where
         if channels == 0 {
             return;
         }
+
+        self.midi_clock.advance(buffer.len() / channels);
 
         for frame in buffer.chunks_exact_mut(channels) {
             if self.output_rate.needs_render() {

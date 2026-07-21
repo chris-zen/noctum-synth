@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use synth_core::{
-    ChordMemory, ControlMessage, FilterOversampling, FilterType, MidiProgramImport, ModDestination,
-    ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    ChordMemory, ControlMessage, FilterOversampling, FilterType, MidiClockMode, MidiClockStatus,
+    MidiProgramImport, MidiRealtimeEvent, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, Patch,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -68,6 +69,7 @@ pub struct AudioMetrics {
 pub enum FeedbackMessage {
     Audio(AudioBlock),
     Metrics(AudioMetrics),
+    MidiClock(MidiClockStatus),
 }
 
 pub struct SynthEngineFeedback {
@@ -87,6 +89,10 @@ impl SynthEngineFeedback {
     pub fn push_metrics(&mut self, metrics: AudioMetrics) {
         let _ = self.sender.push(FeedbackMessage::Metrics(metrics));
     }
+
+    pub fn push_midi_clock(&mut self, status: MidiClockStatus) -> bool {
+        self.sender.push(FeedbackMessage::MidiClock(status)).is_ok()
+    }
 }
 
 /// Read-only view of engine state for the UI (active voices, captured audio).
@@ -95,6 +101,7 @@ pub struct SynthEngineView {
     active_voices: Arc<AtomicUsize>,
     audio_blocks: Arc<RwLock<VecDeque<AudioBlock>>>,
     metrics: Arc<RwLock<Option<AudioMetrics>>>,
+    midi_clock: Arc<RwLock<Option<MidiClockStatus>>>,
     feedback_receiver: Arc<Mutex<rtrb::Consumer<FeedbackMessage>>>,
     midi_ui_receiver: Arc<Mutex<rtrb::Consumer<MidiUiUpdate>>>,
     midi_program_receiver: Arc<Mutex<rtrb::Consumer<Box<MidiProgramImport>>>>,
@@ -127,6 +134,9 @@ impl SynthEngineView {
                 }
                 FeedbackMessage::Metrics(m) => {
                     *self.metrics.write() = Some(m);
+                }
+                FeedbackMessage::MidiClock(status) => {
+                    *self.midi_clock.write() = Some(status);
                 }
             }
         }
@@ -161,6 +171,7 @@ pub struct SynthEngineControl {
     midi_ui_sender: Arc<Mutex<rtrb::Producer<MidiUiUpdate>>>,
     midi_program_sender: Arc<Mutex<rtrb::Producer<Box<MidiProgramImport>>>>,
     midi_output: MidiOutputHandle,
+    midi_clock_status: Arc<RwLock<Option<MidiClockStatus>>>,
     input_enabled: Arc<AtomicBool>,
     held_notes: Arc<Mutex<[bool; 128]>>,
 }
@@ -212,6 +223,18 @@ impl SynthEngineControl {
 
     pub fn set_filter_type(&self, filter_type: FilterType) {
         self.send(ControlMessage::SetFilterType(filter_type));
+    }
+
+    pub fn set_midi_clock_mode(&self, mode: MidiClockMode) {
+        self.send(ControlMessage::SetMidiClockMode(mode));
+    }
+
+    pub fn midi_realtime(&self, event: MidiRealtimeEvent) {
+        self.send(ControlMessage::MidiRealtime(event));
+    }
+
+    pub fn clock_status_for_ui(&self) -> Option<MidiClockStatus> {
+        *self.midi_clock_status.read()
     }
 
     pub fn note_on(&self, note: u8, velocity: f32) {
@@ -398,6 +421,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
     let active_voices = Arc::new(AtomicUsize::new(0));
     let audio_blocks = Arc::new(RwLock::new(VecDeque::new()));
     let metrics = Arc::new(RwLock::new(None));
+    let midi_clock = Arc::new(RwLock::new(None));
     let input_enabled = Arc::new(AtomicBool::new(true));
     let feedback_receiver = Arc::new(Mutex::new(feedback_receiver));
 
@@ -407,6 +431,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             midi_ui_sender: Arc::new(Mutex::new(midi_ui_sender)),
             midi_program_sender: Arc::new(Mutex::new(midi_program_sender)),
             midi_output: MidiOutputHandle::default(),
+            midi_clock_status: midi_clock.clone(),
             input_enabled: input_enabled.clone(),
             held_notes: Arc::new(Mutex::new([false; 128])),
         },
@@ -414,6 +439,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             active_voices: active_voices.clone(),
             audio_blocks,
             metrics,
+            midi_clock,
             feedback_receiver,
             midi_ui_receiver: Arc::new(Mutex::new(midi_ui_receiver)),
             midi_program_receiver: Arc::new(Mutex::new(midi_program_receiver)),

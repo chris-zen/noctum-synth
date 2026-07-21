@@ -278,6 +278,7 @@ impl<const PACKS: usize> Voices<PACKS> {
             }
             ControlMessage::SetParam(id, value) => self.set_param(id, value),
             ControlMessage::SetFilterType(filter_type) => self.set_filter_type(filter_type),
+            ControlMessage::SetMidiClockMode(_) | ControlMessage::MidiRealtime(_) => {}
             ControlMessage::SetModulation {
                 route,
                 enabled,
