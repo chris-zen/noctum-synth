@@ -213,6 +213,7 @@ impl MidiClockFollower {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn learned_bpm(&self) -> Option<f32> {
         self.learned_bpm
     }

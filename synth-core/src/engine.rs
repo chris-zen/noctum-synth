@@ -133,18 +133,23 @@ where
         self.set_clock_division(patch.clock_divide);
         self.voices.apply_patch(patch);
         self.effects.set_params(patch.effects);
-        // Voice patch application carries the saved BPM. Restore the external
-        // runtime override when a MIDI clock has already been acquired.
+        // Voices::apply_patch sets its own BPM on each block (including
+        // tempo/clock division). The engine's effective tempo was already
+        // applied by set_tempo_bpm above and has not been changed, so this
+        // is a no-op for BPM — it still propagates any incidental tempo
+        // updates that may have occurred during patch application.
         self.apply_effective_tempo(effective_tempo_bpm);
         self.master_volume = patch.master_volume.clamp(0.0, 1.0);
     }
 
     /// Updates the global tempo and propagates it to clock-synchronized consumers.
+    ///
+    /// Explicit tempo changes always take effect immediately, even when a MIDI
+    /// clock BPM has been learned. Incoming MIDI clock pulses will re-override
+    /// the tempo on the next tick.
     pub fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
         self.local_tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
-        if self.midi_clock.learned_bpm().is_none() {
-            self.apply_effective_tempo(self.local_tempo_bpm);
-        }
+        self.apply_effective_tempo(self.local_tempo_bpm);
     }
 
     fn apply_effective_tempo(&mut self, tempo_bpm: f32) {

@@ -238,17 +238,17 @@ fn handle_midi_with_flags(
     output: &MidiOutputHandle,
     flags: &MidiInputFlags,
 ) {
-    if flags.clock.load(Ordering::Relaxed) {
-        let event = match message {
-            [0xf8] => Some(MidiRealtimeEvent::TimingClock { timestamp_micros }),
-            [0xfa] => Some(MidiRealtimeEvent::Start),
-            [0xfc] => Some(MidiRealtimeEvent::Stop),
-            _ => None,
-        };
-        if let Some(event) = event {
-            control.midi_realtime(event);
+    let event = match message {
+        [0xf8] => Some(MidiRealtimeEvent::TimingClock { timestamp_micros }),
+        [0xfa] => Some(MidiRealtimeEvent::Start),
+        [0xfc] => Some(MidiRealtimeEvent::Stop),
+        _ => None,
+    };
+    if let Some(event) = event {
+        if !flags.clock.load(Ordering::Relaxed) {
             return;
         }
+        control.midi_realtime(event);
     }
 
     if output.consume_echo(message) {
