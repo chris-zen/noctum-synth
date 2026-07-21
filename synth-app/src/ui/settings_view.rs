@@ -94,6 +94,7 @@ const SAMPLE_RATE_OPTIONS: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 
 const PANEL_HEIGHT: f32 = 180.0;
 const AUDIO_PANEL_HEIGHT: f32 = PANEL_HEIGHT + 36.0;
+const MIDI_PANEL_HEIGHT: f32 = PANEL_HEIGHT + 84.0;
 const PANEL_SPACING: f32 = 12.0;
 const COLUMN_LIST_HEIGHT: f32 = PANEL_HEIGHT - 56.0;
 const SAMPLE_RATE_COLUMN_WIDTH: f32 = 160.0;
@@ -149,23 +150,17 @@ pub fn show(
         .show(ui, |ui| {
             let full_width = ui.available_width();
 
-            let gap = ui.spacing().item_spacing.x;
-            let midi_width = ((full_width - gap) / 2.0).max(0.0);
-            ui.horizontal_top(|ui| {
-                midi_input_panel(ui, midi_width, settings, midi_inputs, &midi_input_ports);
-                midi_output_panel(
-                    ui,
-                    midi_width,
-                    settings,
-                    control,
-                    &midi_output_ports,
-                    current_patch,
-                    muted,
-                );
-            });
-            ui.add_space(PANEL_SPACING);
-
-            midi_clock_panel(ui, full_width, settings, control);
+            midi_settings_panel(
+                ui,
+                full_width,
+                settings,
+                midi_inputs,
+                control,
+                &midi_input_ports,
+                &midi_output_ports,
+                current_patch,
+                muted,
+            );
             ui.add_space(PANEL_SPACING);
 
             audio_settings_panel(
@@ -203,65 +198,236 @@ pub fn show(
     }
 }
 
-fn midi_clock_panel(
+fn midi_settings_panel(
     ui: &mut egui::Ui,
     width: f32,
     settings: &mut Settings,
+    midi_inputs: &mut midi::MidiInputManager,
     control: &SynthEngineControl,
+    midi_input_ports: &[String],
+    midi_output_ports: &[String],
+    current_patch: &Patch,
+    muted: bool,
 ) {
     let frame = egui::Frame::group(ui.style());
+    let content_width = (width - frame.total_margin().sum().x).max(0.0);
     ui.set_width(width);
     frame.show(ui, |ui| {
-        ui.set_width((width - frame.total_margin().sum().x).max(0.0));
-        ui.strong("MIDI Clock");
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Mode");
-            egui::ComboBox::from_id_salt("midi_clock_mode")
-                .selected_text(settings.midi_clock_mode.name())
-                .show_ui(ui, |ui| {
-                    for mode in MidiClockMode::ALL {
-                        let label = if mode.is_supported() {
-                            mode.name().to_owned()
-                        } else {
-                            format!("{} (Future)", mode.name())
-                        };
-                        ui.add_enabled_ui(mode.is_supported(), |ui| {
-                            ui.selectable_value(&mut settings.midi_clock_mode, mode, label);
-                        });
-                    }
-                });
+        ui.vertical(|ui| {
+            ui.set_width(content_width);
+            ui.set_max_width(content_width);
+            ui.set_height(MIDI_PANEL_HEIGHT);
+            ui.strong("MIDI");
+            ui.separator();
+
+            let gap = ui.spacing().item_spacing.x;
+            let col_width = ((content_width - gap) / 2.0).max(0.0);
+
+            ui.horizontal_top(|ui| {
+                let configured_inputs: Vec<String> = settings
+                    .midi_inputs
+                    .iter()
+                    .map(|entry| entry.port.clone())
+                    .collect();
+                let merged_inputs =
+                    midi::merged_port_list(midi_input_ports, &configured_inputs);
+
+                settings_column(
+                    ui,
+                    col_width,
+                    "Input Devices",
+                    "midi_input_list_scroll",
+                    COLUMN_LIST_HEIGHT,
+                    |ui| {
+                        if merged_inputs.is_empty() {
+                            ui.label("No MIDI input devices detected.");
+                        }
+                        for port in &merged_inputs {
+                            let selected = settings
+                                .midi_inputs
+                                .iter()
+                                .any(|entry| entry.port == *port);
+                            let clock_selected =
+                                settings.midi_clock_source.as_deref() == Some(port.as_str());
+                            let unavailable = selected
+                                && midi_inputs.connection_state(port)
+                                    != midi::PortConnectionState::Connected;
+                            let mut clock_change = None;
+
+                            ui.horizontal(|ui| {
+                                let label = if unavailable {
+                                    egui::RichText::new(port).color(UNAVAILABLE_PORT_COLOR)
+                                } else {
+                                    egui::RichText::new(port)
+                                };
+                                if ui.selectable_label(selected, label).clicked() {
+                                    if selected {
+                                        settings.midi_inputs.retain(|entry| entry.port != *port);
+                                        if settings.midi_clock_source.as_deref()
+                                            == Some(port.as_str())
+                                        {
+                                            settings.midi_clock_source = None;
+                                        }
+                                    } else {
+                                        settings
+                                            .midi_inputs
+                                            .push(MidiInputEntry::new(port.clone()));
+                                    }
+                                }
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if let Some(entry) = settings
+                                            .midi_inputs
+                                            .iter_mut()
+                                            .find(|entry| entry.port == *port)
+                                        {
+                                            let enabled = !unavailable;
+                                            ui.add_enabled_ui(enabled, |ui| {
+                                                ui.toggle_value(&mut entry.forward, "Forward");
+                                                ui.toggle_value(&mut entry.patches, "Patches");
+                                                ui.toggle_value(&mut entry.control, "Control");
+                                                let mut clock = clock_selected;
+                                                if ui
+                                                    .add_enabled(
+                                                        settings
+                                                            .midi_clock_mode
+                                                            .receives_clock(),
+                                                        egui::Button::selectable(clock, "Clock"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    clock = !clock;
+                                                    clock_change = Some(clock);
+                                                }
+                                            });
+                                        }
+                                    },
+                                );
+                            });
+
+                            match clock_change {
+                                Some(true) => {
+                                    settings.midi_clock_source = Some(port.clone())
+                                }
+                                Some(false) if clock_selected => {
+                                    settings.midi_clock_source = None
+                                }
+                                _ => {}
+                            }
+                        }
+                    },
+                );
+
+                ui.separator();
+
+                let configured_outputs = settings
+                    .midi_output_port
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let merged_outputs =
+                    midi::merged_port_list(midi_output_ports, &configured_outputs);
+
+                settings_column(
+                    ui,
+                    col_width,
+                    "Output Device",
+                    "midi_output_list_scroll",
+                    COLUMN_LIST_HEIGHT,
+                    |ui| {
+                        if merged_outputs.is_empty() {
+                            ui.label("No MIDI output devices detected.");
+                        }
+                        for port in &merged_outputs {
+                            let selected =
+                                settings.midi_output_port.as_deref() == Some(port.as_str());
+                            let unavailable = selected
+                                && control.midi_output().connection_state()
+                                    != midi::PortConnectionState::Connected;
+
+                            let label = if unavailable {
+                                egui::RichText::new(port).color(UNAVAILABLE_PORT_COLOR)
+                            } else {
+                                egui::RichText::new(port)
+                            };
+                            if ui.selectable_label(selected, label).clicked()
+                                && (!selected || !control.midi_output_connected())
+                            {
+                                settings.midi_output_port = Some(port.clone());
+                                if control.set_midi_output_port(Some(port)) {
+                                    control.load_patch_respecting_mute(
+                                        current_patch,
+                                        muted,
+                                    );
+                                }
+                            }
+                        }
+                        let none_selected = settings.midi_output_port.is_none();
+                        if ui
+                            .selectable_label(none_selected, "None (disconnect)")
+                            .clicked()
+                            && !none_selected
+                        {
+                            settings.midi_output_port = None;
+                            control.set_midi_output_port(None);
+                        }
+                    },
+                );
+            });
 
             ui.separator();
-            let source_enabled = settings.midi_clock_mode.receives_clock();
-            if !settings.midi_clock_mode.is_supported() {
-                ui.label("Unsupported (effective mode: Off)");
-            } else if settings.midi_clock_mode == MidiClockMode::Off {
-                ui.label("Using patch BPM");
-            } else if source_enabled && settings.midi_clock_source.is_none() {
-                ui.label("Select a clock source");
-            } else if let Some(status) = control.clock_status_for_ui() {
-                if status.live {
-                    if settings.midi_clock_mode.receives_start_stop() {
-                        let transport = match status.transport {
-                            MidiTransportState::Running => "Running",
-                            MidiTransportState::Stopped => "Stopped",
-                        };
-                        ui.label(format!(
-                            "Live · {:.1} BPM · {transport}",
-                            status.effective_bpm
-                        ));
+
+            ui.horizontal(|ui| {
+                ui.label("Clock Mode");
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for mode in MidiClockMode::ALL {
+                    let supported = mode.is_supported();
+                    ui.add_enabled_ui(supported, |ui| {
+                        if ui
+                            .add(egui::Button::selectable(
+                                settings.midi_clock_mode == mode,
+                                mode.name(),
+                            ))
+                            .clicked()
+                        {
+                            settings.midi_clock_mode = mode;
+                        }
+                    });
+                }
+
+                ui.separator();
+                let source_enabled = settings.midi_clock_mode.receives_clock();
+                if !settings.midi_clock_mode.is_supported() {
+                    ui.label("Unsupported (effective mode: Off)");
+                } else if settings.midi_clock_mode == MidiClockMode::Off {
+                    ui.label("Using patch BPM");
+                } else if source_enabled && settings.midi_clock_source.is_none() {
+                    ui.label("Select a clock source");
+                } else if let Some(status) = control.clock_status_for_ui() {
+                    if status.live {
+                        if settings.midi_clock_mode.receives_start_stop() {
+                            let transport = match status.transport {
+                                MidiTransportState::Running => "Running",
+                                MidiTransportState::Stopped => "Stopped",
+                            };
+                            ui.label(format!(
+                                "Live · {:.1} BPM · {transport}",
+                                status.effective_bpm
+                            ));
+                        } else {
+                            ui.label(format!("Live · {:.1} BPM", status.effective_bpm));
+                        }
+                    } else if status.learned_bpm.is_some() {
+                        ui.label(format!("Lost · {:.1} BPM", status.effective_bpm));
                     } else {
-                        ui.label(format!("Live · {:.1} BPM", status.effective_bpm));
+                        ui.label("Waiting for clock");
                     }
-                } else if status.learned_bpm.is_some() {
-                    ui.label(format!("Lost · {:.1} BPM", status.effective_bpm));
                 } else {
                     ui.label("Waiting for clock");
                 }
-            } else {
-                ui.label("Waiting for clock");
-            }
+            });
         });
     });
 }
@@ -322,145 +488,6 @@ fn settings_column(
     });
 }
 
-fn midi_input_panel(
-    ui: &mut egui::Ui,
-    width: f32,
-    settings: &mut Settings,
-    midi_inputs: &mut midi::MidiInputManager,
-    ports: &[String],
-) {
-    let configured_ports: Vec<String> = settings
-        .midi_inputs
-        .iter()
-        .map(|entry| entry.port.clone())
-        .collect();
-    let merged_ports = midi::merged_port_list(ports, &configured_ports);
-
-    settings_panel(ui, width, "MIDI Input Devices", |ui, width| {
-        settings_list(ui, "midi_list_scroll", width, COLUMN_LIST_HEIGHT, |ui| {
-            if merged_ports.is_empty() {
-                ui.label("No MIDI input devices detected.");
-            }
-            for port in &merged_ports {
-                let selected = settings.midi_inputs.iter().any(|entry| entry.port == *port);
-                let clock_selected = settings.midi_clock_source.as_deref() == Some(port.as_str());
-                let unavailable = selected
-                    && midi_inputs.connection_state(port) != midi::PortConnectionState::Connected;
-                let mut clock_change = None;
-
-                ui.horizontal(|ui| {
-                    let label = if unavailable {
-                        egui::RichText::new(port).color(UNAVAILABLE_PORT_COLOR)
-                    } else {
-                        egui::RichText::new(port)
-                    };
-                    if ui.selectable_label(selected, label).clicked() {
-                        if selected {
-                            settings.midi_inputs.retain(|entry| entry.port != *port);
-                            if settings.midi_clock_source.as_deref() == Some(port.as_str()) {
-                                settings.midi_clock_source = None;
-                            }
-                        } else {
-                            settings.midi_inputs.push(MidiInputEntry::new(port.clone()));
-                        }
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(entry) = settings
-                            .midi_inputs
-                            .iter_mut()
-                            .find(|entry| entry.port == *port)
-                        {
-                            let enabled = !unavailable;
-                            ui.add_enabled_ui(enabled, |ui| {
-                                ui.toggle_value(&mut entry.forward, "Forward");
-                                ui.toggle_value(&mut entry.patches, "Patches");
-                                ui.toggle_value(&mut entry.control, "Control");
-                                let mut clock = clock_selected;
-                                if ui
-                                    .add_enabled(
-                                        settings.midi_clock_mode.receives_clock(),
-                                        egui::Button::selectable(clock, "Clock"),
-                                    )
-                                    .clicked()
-                                {
-                                    clock = !clock;
-                                    clock_change = Some(clock);
-                                }
-                            });
-                        }
-                    });
-                });
-
-                match clock_change {
-                    Some(true) => settings.midi_clock_source = Some(port.clone()),
-                    Some(false) if clock_selected => settings.midi_clock_source = None,
-                    _ => {}
-                }
-            }
-        });
-    });
-}
-
-fn midi_output_panel(
-    ui: &mut egui::Ui,
-    width: f32,
-    settings: &mut Settings,
-    control: &SynthEngineControl,
-    ports: &[String],
-    current_patch: &Patch,
-    muted: bool,
-) {
-    let configured_ports = settings
-        .midi_output_port
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let merged_ports = midi::merged_port_list(ports, &configured_ports);
-
-    settings_panel(ui, width, "MIDI Output Device", |ui, width| {
-        settings_list(
-            ui,
-            "midi_output_list_scroll",
-            width,
-            COLUMN_LIST_HEIGHT,
-            |ui| {
-                if merged_ports.is_empty() {
-                    ui.label("No MIDI output devices detected.");
-                }
-                for port in &merged_ports {
-                    let selected = settings.midi_output_port.as_deref() == Some(port.as_str());
-                    let unavailable = selected
-                        && control.midi_output().connection_state()
-                            != midi::PortConnectionState::Connected;
-
-                    let label = if unavailable {
-                        egui::RichText::new(port).color(UNAVAILABLE_PORT_COLOR)
-                    } else {
-                        egui::RichText::new(port)
-                    };
-                    if ui.selectable_label(selected, label).clicked()
-                        && (!selected || !control.midi_output_connected())
-                    {
-                        settings.midi_output_port = Some(port.clone());
-                        if control.set_midi_output_port(Some(port)) {
-                            control.load_patch_respecting_mute(current_patch, muted);
-                        }
-                    }
-                }
-                let none_selected = settings.midi_output_port.is_none();
-                if ui
-                    .selectable_label(none_selected, "None (disconnect)")
-                    .clicked()
-                    && !none_selected
-                {
-                    settings.midi_output_port = None;
-                    control.set_midi_output_port(None);
-                }
-            },
-        );
-    });
-}
 
 fn truncated_selectable(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
     ui.add(

@@ -28,9 +28,10 @@ apply.
 
 The **MIDI Clock** settings group sits below the MIDI input/output selectors.
 It exposes all five Prophet Rev2 clock modes; Master and Slave Thru are visible
-but disabled until their output paths are implemented. Slave and Slave No S/S
-require one configured MIDI input as the clock source. Live/lost state and the
-effective external BPM are shown without overwriting the patch's editable BPM.
+but disabled until their output paths are implemented. In Slave and Slave No
+S/S modes, use the exclusive **Clock** toggle beside a configured MIDI input to
+select the clock source. Live/lost state and the effective external BPM are
+shown without overwriting the patch's editable BPM.
 Clock messages from that selected source are consumed locally and excluded
 from generic **Forward**; true low-jitter Slave Thru remains future work.
 
