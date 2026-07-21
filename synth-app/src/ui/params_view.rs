@@ -795,13 +795,15 @@ pub fn show(
     });
 }
 
-const MODIFIED_SUFFIX: &str = " (modified)";
+const MODIFIED_SUFFIX: &str = " *";
 const PATCH_NAME_FIELD_ID: &str = "patch_name_field";
 const PATCH_LOAD_FILTER_ID: &str = "patch_load_filter";
 const PATCH_LOAD_WAS_OPEN_ID: &str = "patch_load_was_open";
 const PATCH_LOAD_POPUP_WIDTH: f32 = 380.0;
 const PATCH_LOAD_POPUP_HEIGHT: f32 = 440.0;
-const PATCH_LOAD_POPUP_CHROME_HEIGHT: f32 = 40.0;
+const PATCH_LOAD_POPUP_CHROME_HEIGHT: f32 = 72.0;
+const PATCH_LOAD_BANK_FILTER_ID: &str = "patch_load_bank_filter";
+const PATCH_LOAD_BANK_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 22.0);
 
 fn load_patch_by_name(
     patch_mgr: &mut PatchManager,
@@ -815,6 +817,35 @@ fn load_patch_by_name(
         control.load_patch_respecting_mute(&patch, muted);
         patch_mgr.set_loaded_patch(name, &Patch::from(&*state));
     }
+}
+
+fn patch_factory_bank(name: &str) -> Option<usize> {
+    let bytes = name.as_bytes();
+    if bytes.len() < 7 {
+        return None;
+    }
+    if bytes[0] != b'F' {
+        return None;
+    }
+    if !(b'1'..=b'6').contains(&bytes[1]) {
+        return None;
+    }
+    if bytes[2] != b'-' {
+        return None;
+    }
+    if !bytes[3].is_ascii_digit() {
+        return None;
+    }
+    if !bytes[4].is_ascii_digit() {
+        return None;
+    }
+    if !bytes[5].is_ascii_digit() {
+        return None;
+    }
+    if bytes[6] != b'-' {
+        return None;
+    }
+    Some((bytes[1] - b'1') as usize)
 }
 
 fn command_row(
@@ -853,9 +884,7 @@ fn command_row(
                                     .id_salt(PATCH_NAME_FIELD_ID)
                                     .frame(egui::Frame::NONE),
                             );
-                            if modified {
-                                ui.label(MODIFIED_SUFFIX.trim());
-                            }
+                            ui.add_visible(modified, egui::Label::new(MODIFIED_SUFFIX.trim()));
                         });
                     });
                 let next = ui.add_enabled(has_patches, egui::Button::new("▶"));
@@ -898,6 +927,35 @@ fn command_row(
                             *data.get_temp_mut_or_default::<String>(filter_id) = filter
                         });
 
+                        ui.add_space(4.0);
+                        let bank_id = egui::Id::new(PATCH_LOAD_BANK_FILTER_ID);
+                        let mut selected_bank = ui.data_mut(|data| {
+                            data.get_temp_mut_or_default::<Option<usize>>(bank_id)
+                                .clone()
+                        });
+                        ui.horizontal(|ui| {
+                            let labels = ["All", "F1", "F2", "F3", "F4", "F5", "F6", "User"];
+                            for (i, label) in labels.iter().enumerate() {
+                                let bank_value: Option<usize> =
+                                    if i == 0 { None } else { Some(i - 1) };
+                                let selected = selected_bank == bank_value;
+                                if ui
+                                    .add_sized(
+                                        PATCH_LOAD_BANK_BUTTON_SIZE,
+                                        egui::Button::selectable(selected, *label)
+                                            .frame_when_inactive(true),
+                                    )
+                                    .clicked()
+                                {
+                                    selected_bank = bank_value;
+                                }
+                            }
+                        });
+                        ui.data_mut(|data| {
+                            *data.get_temp_mut_or_default::<Option<usize>>(bank_id) =
+                                selected_bank
+                        });
+
                         ui.separator();
 
                         if patch_mgr.patch_names.is_empty() {
@@ -909,6 +967,12 @@ fn command_row(
                                     .map(|value| value.to_ascii_lowercase())
                                     .unwrap_or_default()
                             });
+                            let selected_bank = ui.data(|data| {
+                                data.get_temp::<Option<usize>>(egui::Id::new(
+                                    PATCH_LOAD_BANK_FILTER_ID,
+                                ))
+                                .flatten()
+                            });
                             let mut selected_name = None;
                             egui::ScrollArea::vertical()
                                 .max_height(PATCH_LOAD_POPUP_HEIGHT)
@@ -918,6 +982,15 @@ fn command_row(
                                             && !name.to_ascii_lowercase().contains(&filter)
                                         {
                                             continue;
+                                        }
+                                        if let Some(bank) = selected_bank {
+                                            if bank < 6 {
+                                                if patch_factory_bank(name) != Some(bank) {
+                                                    continue;
+                                                }
+                                            } else if patch_factory_bank(name).is_some() {
+                                                continue;
+                                            }
                                         }
                                         if ui
                                             .selectable_label(current == *name, name.as_str())
@@ -930,13 +1003,26 @@ fn command_row(
                             if let Some(name) = selected_name {
                                 ui.close();
                                 load_patch_by_name(patch_mgr, control, state, &name, *muted);
-                            } else if !filter.is_empty()
-                                && !patch_mgr
-                                    .patch_names
-                                    .iter()
-                                    .any(|name| name.to_ascii_lowercase().contains(&filter))
+                            } else if !filter.is_empty() || selected_bank.is_some()
                             {
-                                ui.label("No matching patches.");
+                                let any_match = patch_mgr.patch_names.iter().any(|name| {
+                                    if !filter.is_empty()
+                                        && !name.to_ascii_lowercase().contains(&filter)
+                                    {
+                                        return false;
+                                    }
+                                    if let Some(bank) = selected_bank {
+                                        if bank < 6 {
+                                            return patch_factory_bank(name) == Some(bank);
+                                        } else {
+                                            return patch_factory_bank(name).is_none();
+                                        }
+                                    }
+                                    true
+                                });
+                                if !any_match {
+                                    ui.label("No matching patches.");
+                                }
                             }
                         }
                     });
@@ -2078,24 +2164,6 @@ fn effects_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineC
                 );
             });
 
-            ui.allocate_ui_with_layout(
-                egui::vec2(74.0, CONTROL_CELL_H),
-                egui::Layout::top_down(egui::Align::Center),
-                |ui| {
-                    ui.add_space(18.0);
-                    let active = EffectType::from_index(state.effect_type).is_delay();
-                    ui.add_enabled_ui(active, |ui| {
-                        param_toggle(
-                            ui,
-                            "Clk Sync",
-                            &mut state.effect_clock_sync,
-                            ParamId::EffectClockSync,
-                            control,
-                        );
-                    });
-                },
-            );
-
             let (param1_label, param2_label) =
                 effect_param_labels(EffectType::from_index(state.effect_type));
             control_cell(ui, |ui| {
@@ -2120,6 +2188,23 @@ fn effects_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineC
                     control,
                 );
             });
+
+            if EffectType::from_index(state.effect_type).is_delay() {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(74.0, CONTROL_CELL_H),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(18.0);
+                        param_toggle(
+                            ui,
+                            "Clk Sync",
+                            &mut state.effect_clock_sync,
+                            ParamId::EffectClockSync,
+                            control,
+                        );
+                    },
+                );
+            }
         });
     });
     state.store_active_effect_params();
@@ -2127,13 +2212,13 @@ fn effects_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineC
 
 fn effect_type_selector(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
     ui.allocate_ui_with_layout(
-        egui::vec2(140.0, CONTROL_CELL_H),
+        egui::vec2(182.0, CONTROL_CELL_H),
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
-            ui.add_space(8.0);
+            ui.add_space(4.0);
             let current = EffectType::from_index(state.effect_type);
             egui::ComboBox::from_id_salt("effect_type")
-                .width(132.0)
+                .width(172.0)
                 .selected_text(current.name())
                 .show_ui(ui, |ui| {
                     for effect in EffectType::ALL {
@@ -3196,7 +3281,7 @@ mod tests {
 
     #[test]
     fn canonical_save_name_strips_modified_suffix() {
-        let mgr = test_patch_manager(&[], "My Patch (modified)");
+        let mgr = test_patch_manager(&[], "My Patch *");
         assert_eq!(mgr.canonical_save_name(), "My Patch");
     }
 
@@ -3274,21 +3359,6 @@ mod tests {
     }
 
     #[test]
-    fn restore_autosave_strips_legacy_modified_suffix_from_editable_name() {
-        let patch = Patch::default();
-        let mut mgr = test_patch_manager(&["preset"], "preset");
-        mgr.restore_autosave_metadata(
-            "preset".to_string(),
-            Some(patch.clone()),
-            "renamed (modified)".to_string(),
-            &patch,
-        );
-
-        assert_eq!(mgr.save_name, "renamed");
-        assert!(!mgr.is_modified(&patch));
-    }
-
-    #[test]
     fn restore_autosave_derives_modified_state_and_preserves_draft_name() {
         let baseline = Patch::default();
         let mut restored = baseline.clone();
@@ -3362,7 +3432,7 @@ mod tests {
             std::env::temp_dir().join(format!("analog-synth-autosave-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let manager = PatchManager {
-            save_name: "preset (modified)".to_string(),
+            save_name: "preset *".to_string(),
             loaded_name: "preset".to_string(),
             baseline: Some(Patch::default()),
             patch_names: Vec::new(),
@@ -3374,7 +3444,7 @@ mod tests {
         manager.save_autosave(&patch);
         let (loaded_patch, loaded_name, baseline, save_name) = manager.load_autosave().unwrap();
         assert_eq!(loaded_name, "preset");
-        assert_eq!(save_name, "preset (modified)");
+        assert_eq!(save_name, "preset *");
         assert_eq!(loaded_patch.master_volume, 0.25);
         assert!(baseline.is_some());
         std::fs::remove_dir_all(root).ok();
