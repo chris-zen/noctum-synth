@@ -183,7 +183,9 @@ impl GainLimitedTpt {
                 // only this band so oscillator content does not turn the whole
                 // voice into a distortion stage.
                 let resonance_band = (y2 - y3) * makeup;
-                output + self_oscillation_color(resonance_band, amount) - resonance_band
+                let colored =
+                    output + self_oscillation_color(resonance_band, amount) - resonance_band;
+                nonlinear.blend(colored, output)
             } else {
                 output
             }

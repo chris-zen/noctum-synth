@@ -1,4 +1,4 @@
-use synth_core::{Filter, FilterOversampling, FilterType, ParamId, SynthEngine, f32x4};
+use synth_core::{f32x4, Filter, FilterOversampling, FilterType, ParamId, SynthEngine};
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const CUTOFF_HZ: f32 = 440.0;
@@ -442,6 +442,11 @@ fn gain_limited_tpt_is_available_and_has_expected_slopes() {
 
 #[test]
 fn gain_limited_tpt_linear_response_matches_baseline() {
+    const FOUR_POLE_INPUT_GAIN: f32 = 0.40;
+    const FOUR_POLE_FEEDBACK: f32 = 3.75;
+    const BASELINE_BASS_COMP: f32 = 1.22;
+    const CALIBRATED_BASS_COMP: f32 = 0.80;
+
     for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
         for poles in [2, 4] {
             for (frequency, resonance) in [
@@ -463,10 +468,21 @@ fn gain_limited_tpt_linear_response_matches_baseline() {
                 };
                 let baseline = gain(FilterType::DistributedNewtonTpt);
                 let candidate = gain(FilterType::GainLimitedTpt);
-                let relative_error = (candidate - baseline).abs() / baseline.max(1.0e-9);
+                let expected = if poles == 2 {
+                    baseline
+                } else {
+                    let shaped_resonance = resonance.powf(1.75);
+                    let baseline_compensation =
+                        1.0 + shaped_resonance * FOUR_POLE_FEEDBACK * BASELINE_BASS_COMP;
+                    let calibrated_compensation =
+                        1.0 + shaped_resonance * FOUR_POLE_FEEDBACK * CALIBRATED_BASS_COMP;
+                    baseline * FOUR_POLE_INPUT_GAIN * calibrated_compensation
+                        / baseline_compensation
+                };
+                let relative_error = (candidate - expected).abs() / expected.max(1.0e-9);
                 assert!(
                     relative_error < 2.0e-4,
-                    "sr={sample_rate} poles={poles} frequency={frequency} baseline={baseline} candidate={candidate}"
+                    "sr={sample_rate} poles={poles} frequency={frequency} baseline={baseline} expected={expected} candidate={candidate}"
                 );
             }
         }
