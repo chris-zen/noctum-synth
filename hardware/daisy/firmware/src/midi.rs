@@ -402,6 +402,23 @@ mod tests {
     }
 
     #[test]
+    fn wmidi_decoder_preserves_sysex_around_realtime_clock() {
+        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+        decoder.handle(MidiEventPacket::new([0x04, 0xf0, 0x7e, 0x7f]));
+        decoder.handle(MidiEventPacket::new([0x0f, 0xf8, 0, 0]));
+        decoder.handle(MidiEventPacket::new([0x06, 0x01, 0xf7, 0]));
+
+        assert_eq!(
+            decoder.handler.messages,
+            [
+                (0, std::vec![0xf8]),
+                (0, std::vec![0xf0, 0x7e, 0x7f, 0x01, 0xf7])
+            ]
+        );
+        assert!(decoder.handler.errors.is_empty());
+    }
+
+    #[test]
     fn wmidi_decoder_reassembles_full_rev2_edit_buffer() {
         let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
         synth_core::Rev2MidiEncoder::program_edit_buffer(

@@ -7,7 +7,7 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use synth_core::{FilterOversampling, FilterType};
+use synth_core::{FilterOversampling, FilterType, MidiClockMode};
 
 use analog_synth_daisy_firmware::audio::{ControlQueue, HardwareSynth, PatchQueue};
 use analog_synth_daisy_firmware::synth::SynthMidiHandler;
@@ -17,6 +17,7 @@ const SAMPLE_RATE_HZ: f32 = 48_000.0;
 const EFFECTS_SAMPLES: usize = 48_000;
 const FIRMWARE_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
 const FIRMWARE_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
+const FIRMWARE_MIDI_CLOCK_MODE: MidiClockMode = MidiClockMode::Slave;
 
 static ENGINE: StaticCell<HardwareSynth> = StaticCell::new();
 static CONTROLS: ControlQueue = Channel::new();
@@ -55,6 +56,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
         engine.set_filter_type(FIRMWARE_FILTER_TYPE);
         engine.set_filter_oversampling(FIRMWARE_FILTER_OVERSAMPLING);
+        engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
         engine
     });
 

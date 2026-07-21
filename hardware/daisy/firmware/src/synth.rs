@@ -2,7 +2,20 @@
 
 use wmidi::MidiMessage;
 
-use synth_core::{ControlMessage, Patch, Rev2MidiDecoder, Rev2MidiUpdate};
+use synth_core::{ControlMessage, MidiRealtimeEvent, Patch, Rev2MidiDecoder, Rev2MidiUpdate};
+
+pub fn realtime_to_control(
+    message: &MidiMessage<'_>,
+    timestamp_micros: u64,
+) -> Option<ControlMessage> {
+    let event = match message {
+        MidiMessage::TimingClock => MidiRealtimeEvent::TimingClock { timestamp_micros },
+        MidiMessage::Start => MidiRealtimeEvent::Start,
+        MidiMessage::Stop => MidiRealtimeEvent::Stop,
+        _ => return None,
+    };
+    Some(ControlMessage::MidiRealtime(event))
+}
 
 /// Convert a supported MIDI message into one real-time synth command.
 ///
@@ -128,6 +141,13 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MidiMessageHandler
 {
     fn handle(&mut self, _cable: u8, message: MidiMessage<'_>) {
         self.indicator.notify_midi();
+
+        if let Some(command) =
+            realtime_to_control(&message, embassy_time::Instant::now().as_micros())
+        {
+            self.enqueue(command);
+            return;
+        }
 
         #[cfg(feature = "diagnostics")]
         let completed_nrpn = if let MidiMessage::ControlChange(channel, controller, value) = message
@@ -313,8 +333,8 @@ impl NrpnMonitor {
 mod tests {
     #[cfg(feature = "diagnostics")]
     use super::{CompletedNrpn, NrpnMonitor};
-    use super::{message_to_control, message_to_controls};
-    use synth_core::{ControlMessage, ParamId, Rev2MidiDecoder};
+    use super::{message_to_control, message_to_controls, realtime_to_control};
+    use synth_core::{ControlMessage, MidiRealtimeEvent, ParamId, Rev2MidiDecoder};
     use wmidi::MidiMessage;
 
     fn command(bytes: &[u8]) -> Option<ControlMessage> {
@@ -394,6 +414,29 @@ mod tests {
     fn ignores_messages_without_synth_commands() {
         assert!(command(&[0xc0, 5]).is_none());
         assert!(command(&[0xf8]).is_none());
+    }
+
+    #[test]
+    fn maps_supported_system_realtime_messages() {
+        assert!(matches!(
+            realtime_to_control(&MidiMessage::try_from([0xf8].as_slice()).unwrap(), 42),
+            Some(ControlMessage::MidiRealtime(
+                MidiRealtimeEvent::TimingClock {
+                    timestamp_micros: 42
+                }
+            ))
+        ));
+        assert!(matches!(
+            realtime_to_control(&MidiMessage::try_from([0xfa].as_slice()).unwrap(), 0),
+            Some(ControlMessage::MidiRealtime(MidiRealtimeEvent::Start))
+        ));
+        assert!(
+            realtime_to_control(&MidiMessage::try_from([0xfb].as_slice()).unwrap(), 0).is_none()
+        );
+        assert!(matches!(
+            realtime_to_control(&MidiMessage::try_from([0xfc].as_slice()).unwrap(), 0),
+            Some(ControlMessage::MidiRealtime(MidiRealtimeEvent::Stop))
+        ));
     }
 
     #[test]
