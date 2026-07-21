@@ -9,10 +9,10 @@ use crate::fixed_index_list::FixedIndexList;
 use crate::profiling::NoopProfiler;
 #[cfg(feature = "profiling")]
 use crate::profiling::RenderProfiler;
-use crate::voice::PerformanceModulation;
+use crate::voice::{NoteGlide, PerformanceModulation};
 use crate::{
-    voice_pan_position, ChordMemory, ClockDivision, ControlMessage, FilterOversampling, FilterType,
-    KeyMode, ParamId, Patch, UnisonMode, VoiceBlock, LANES, VOICE_PACKS,
+    ChordMemory, ClockDivision, ControlMessage, FilterOversampling, FilterType, GlideMode, KeyMode,
+    LANES, ParamId, Patch, UnisonMode, VOICE_PACKS, VoiceBlock, voice_pan_position,
 };
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
@@ -191,6 +191,9 @@ pub struct Voices<const PACKS: usize = VOICE_PACKS> {
     sustain_pressed: bool,
     next_voice: usize,
     pressed_keys: PressedKeys,
+    last_played_note: Option<u8>,
+    glide_enabled: bool,
+    glide_mode: GlideMode,
     unison_enabled: bool,
     unison_mode: UnisonMode,
     unison_detune: f32,
@@ -216,6 +219,9 @@ impl<const PACKS: usize> Voices<PACKS> {
             sustain_pressed: false,
             next_voice: 0,
             pressed_keys: PressedKeys::default(),
+            last_played_note: None,
+            glide_enabled: false,
+            glide_mode: GlideMode::default(),
             unison_enabled: false,
             unison_mode: UnisonMode::default(),
             unison_detune: 0.0,
@@ -233,6 +239,8 @@ impl<const PACKS: usize> Voices<PACKS> {
             block.apply_patch(patch);
         }
         self.key_mode = patch.key_mode;
+        self.glide_enabled = patch.glide_enabled;
+        self.glide_mode = patch.glide_mode;
         self.unison_enabled = patch.unison_enabled;
         self.unison_mode = patch.unison_mode;
         self.unison_detune = patch.unison_detune.clamp(0.0, 16.0);
@@ -327,12 +335,17 @@ impl<const PACKS: usize> Voices<PACKS> {
             return;
         }
         let first_key = self.pressed_keys.is_empty();
+        let glide_start = self.last_played_note;
+        let should_glide = self.glide_enabled
+            && glide_start.is_some()
+            && (!self.glide_mode.is_auto() || !first_key);
         self.pressed_keys.press(note, velocity);
+        self.last_played_note = Some(note);
         if first_key {
             self.reset_key_synced_lfos();
         }
         if !self.unison_enabled {
-            self.poly_note_on(note, velocity);
+            self.poly_note_on(note, velocity, glide_start, should_glide);
             return;
         }
         let Some((selected, selected_velocity)) = self.pressed_keys.selected(self.key_mode) else {
@@ -342,6 +355,8 @@ impl<const PACKS: usize> Voices<PACKS> {
             selected,
             selected_velocity,
             first_key || key_mode_retriggers(self.key_mode),
+            glide_start,
+            should_glide,
         );
     }
 
@@ -355,25 +370,50 @@ impl<const PACKS: usize> Voices<PACKS> {
             return;
         }
         if let Some((selected, velocity)) = self.pressed_keys.selected(self.key_mode) {
-            self.update_unison_group(selected, velocity, false);
+            self.update_unison_group(selected, velocity, false, None, self.glide_enabled);
         } else if !self.sustain_pressed {
             self.release_unison_group();
         }
     }
 
-    fn poly_note_on(&mut self, note: u8, velocity: f32) {
+    fn poly_note_on(
+        &mut self,
+        note: u8,
+        velocity: f32,
+        glide_start: Option<u8>,
+        should_glide: bool,
+    ) {
         let active_voice_idx = self.find_active_voice(note);
         let voice_idx = active_voice_idx.unwrap_or_else(|| self.allocate_voice());
         let (block_idx, lane) = self.voice_location(voice_idx);
         self.sustained_voices[block_idx][lane] = false;
         let block = &mut self.blocks[block_idx];
-        block.set_tuning_cents([0.0; LANES]);
         if block.is_lane_silent(lane)
             || (active_voice_idx.is_some() && !block.has_pending_note(lane))
         {
-            block.note_on(lane, note, velocity, false);
+            block.note_on_tuned_with_glide(
+                lane,
+                note,
+                velocity,
+                false,
+                [0.0; LANES],
+                NoteGlide {
+                    start_note: glide_start,
+                    enabled: should_glide,
+                },
+            );
         } else {
-            block.schedule_note_on(lane, note, velocity, false);
+            block.schedule_note_on_tuned_with_glide(
+                lane,
+                note,
+                velocity,
+                false,
+                [0.0; LANES],
+                NoteGlide {
+                    start_note: glide_start,
+                    enabled: should_glide,
+                },
+            );
         }
         self.mark_held_voice(voice_idx);
         self.next_voice = (voice_idx + 1) % Self::VOICE_COUNT;
@@ -407,7 +447,14 @@ impl<const PACKS: usize> Voices<PACKS> {
         (targets, len)
     }
 
-    fn update_unison_group(&mut self, root: u8, velocity: f32, retrigger: bool) {
+    fn update_unison_group(
+        &mut self,
+        root: u8,
+        velocity: f32,
+        retrigger: bool,
+        glide_start: Option<u8>,
+        should_glide: bool,
+    ) {
         let (targets, target_len) = self.unison_targets(root);
 
         for voice_idx in target_len..Self::VOICE_COUNT {
@@ -425,6 +472,7 @@ impl<const PACKS: usize> Voices<PACKS> {
             self.sustained_voices[block_idx][lane] = false;
             let was_active = self.held_voices.contains(voice_idx)
                 && self.blocks[block_idx].active_note(lane).is_some();
+            let lane_glide_start = if was_active { None } else { glide_start };
             let tuning_cents = core::array::from_fn(|block_lane| {
                 let index = block_idx * LANES + block_lane;
                 if index < target_len {
@@ -435,11 +483,31 @@ impl<const PACKS: usize> Voices<PACKS> {
             });
             let block = &mut self.blocks[block_idx];
             if !retrigger && was_active {
-                block.retune_lane(lane, note, velocity, tuning_cents);
+                block.retune_lane(lane, note, velocity, tuning_cents, should_glide);
             } else if block.is_lane_silent(lane) {
-                block.note_on_tuned(lane, note, velocity, false, tuning_cents);
+                block.note_on_tuned_with_glide(
+                    lane,
+                    note,
+                    velocity,
+                    false,
+                    tuning_cents,
+                    NoteGlide {
+                        start_note: lane_glide_start,
+                        enabled: should_glide,
+                    },
+                );
             } else {
-                block.schedule_note_on_tuned(lane, note, velocity, false, tuning_cents);
+                block.schedule_note_on_tuned_with_glide(
+                    lane,
+                    note,
+                    velocity,
+                    false,
+                    tuning_cents,
+                    NoteGlide {
+                        start_note: lane_glide_start,
+                        enabled: should_glide,
+                    },
+                );
             }
             self.mark_held_voice(voice_idx);
         }
@@ -489,12 +557,12 @@ impl<const PACKS: usize> Voices<PACKS> {
 
         if self.unison_enabled {
             if let Some((note, velocity)) = self.pressed_keys.selected(self.key_mode) {
-                self.update_unison_group(note, velocity, true);
+                self.update_unison_group(note, velocity, true, None, false);
             }
         } else {
             let pressed = self.pressed_keys.clone();
             for (note, velocity) in pressed.iter() {
-                self.poly_note_on(note, velocity);
+                self.poly_note_on(note, velocity, None, false);
             }
         }
     }
@@ -624,11 +692,13 @@ impl<const PACKS: usize> Voices<PACKS> {
                 self.key_mode = KeyMode::from_index(value as usize);
                 if self.unison_enabled {
                     if let Some((note, velocity)) = self.pressed_keys.selected(self.key_mode) {
-                        self.update_unison_group(note, velocity, false);
+                        self.update_unison_group(note, velocity, false, None, false);
                     }
                 }
                 return;
             }
+            ParamId::GlideEnabled => self.glide_enabled = value >= 0.5,
+            ParamId::GlideMode => self.glide_mode = GlideMode::from_index(value as usize),
             _ => {}
         }
         for block in &mut self.blocks {
@@ -810,6 +880,92 @@ mod tests {
             mode.index() as f32,
         ));
         voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 1.0));
+    }
+
+    fn configure_glide(voices: &mut Voices, mode: GlideMode) {
+        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Glide, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::GlideMode,
+            mode.index() as f32,
+        ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::GlideEnabled, 1.0));
+    }
+
+    fn gated_note_frequency(voices: &Voices, note: u8) -> f32 {
+        let (block, lane) = find_gated_note(voices, note).expect("note should be gated");
+        voices[block].test_osc1_frequency_hz().to_array()[lane]
+    }
+
+    #[test]
+    fn auto_glide_requires_a_physically_held_key() {
+        let mut staccato = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        configure_glide(&mut staccato, GlideMode::FixedTimeAuto);
+        staccato.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        staccato.handle_control(ControlMessage::NoteOff { note: 60 });
+        staccato.handle_control(ControlMessage::SustainPedal { pressed: true });
+        staccato.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        assert!((gated_note_frequency(&staccato, 72) - crate::midi_to_hz(72)).abs() < 0.1);
+
+        let mut legato = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        configure_glide(&mut legato, GlideMode::FixedTimeAuto);
+        legato.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        legato.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        assert!((gated_note_frequency(&legato, 72) - crate::midi_to_hz(60)).abs() < 0.1);
+    }
+
+    #[test]
+    fn non_auto_glide_uses_the_previous_staccato_note() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        configure_glide(&mut voices, GlideMode::FixedTime);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+
+        assert!((gated_note_frequency(&voices, 72) - crate::midi_to_hz(60)).abs() < 0.1);
+    }
+
+    #[test]
+    fn polyphonic_note_on_does_not_cancel_a_sibling_lane_glide() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        configure_glide(&mut voices, GlideMode::FixedTime);
+        for note in [60, 72] {
+            voices.handle_control(ControlMessage::NoteOn {
+                note,
+                velocity: 1.0,
+            });
+        }
+        process_frames(&mut voices, 1_000);
+        let before = gated_note_frequency(&voices, 72);
+        assert!(before > crate::midi_to_hz(60));
+        assert!(before < crate::midi_to_hz(72));
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 76,
+            velocity: 1.0,
+        });
+
+        let after = gated_note_frequency(&voices, 72);
+        assert!((after - before).abs() < 0.001);
+        process_frames(&mut voices, 1);
+        assert!(gated_note_frequency(&voices, 72) > after);
     }
 
     #[test]

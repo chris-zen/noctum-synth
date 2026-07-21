@@ -4,16 +4,16 @@ use eframe::egui;
 
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
-    framed_selectable, framed_selectable_sized, master_volume, param_knob_bipolar,
-    param_knob_discrete, param_knob_f32, param_knob_f32_offset, param_knob_log_hz, param_knob_note,
-    param_toggle, param_toggle_sized, KNOB_SIZE,
+    KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32, master_volume,
+    param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_offset,
+    param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
 };
 use synth_core::{
-    ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType,
-    FilterType, GlideMode, KeyMode, LfoSyncDivision, ModDestination, ModMatrix, ModMatrixSlot,
-    ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+    ChordMemory, ClockDivision, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS,
+    DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL, DedicatedModSlot, DedicatedModSource,
+    EffectParams, EffectType, FilterType, GlideMode, KeyMode, LfoSyncDivision, MAX_LFO_RATE_HZ,
+    MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
+    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -91,7 +91,7 @@ pub struct UiState {
     pub osc2_keyboard_on: bool,
     pub glide_mode: usize,
     pub glide_enabled: bool,
-    pub glide_time: f32,
+    pub glide_rate: f32,
     pub pitch_bend_range: f32,
     pub key_mode: usize,
     pub unison_enabled: bool,
@@ -185,7 +185,7 @@ impl Default for UiState {
             osc2_keyboard_on: true,
             glide_mode: 0,
             glide_enabled: false,
-            glide_time: 0.0,
+            glide_rate: 0.0,
             pitch_bend_range: 2.0,
             key_mode: 0,
             unison_enabled: false,
@@ -280,7 +280,7 @@ impl UiState {
         self.osc2_keyboard_on = patch.osc2.keyboard_on;
         self.glide_mode = patch.glide_mode.index();
         self.glide_enabled = patch.glide_enabled;
-        self.glide_time = patch.glide_time;
+        self.glide_rate = (patch.osc1.glide + patch.osc2.glide) * 0.5;
         self.pitch_bend_range = patch.pitch_bend_range;
         self.key_mode = patch.key_mode.index();
         self.unison_enabled = patch.unison_enabled;
@@ -387,11 +387,16 @@ impl UiState {
             ParamId::Osc2NoteReset => self.osc2_note_reset = enabled,
             ParamId::Osc1KeyboardOn => self.osc1_keyboard_on = enabled,
             ParamId::Osc2KeyboardOn => self.osc2_keyboard_on = enabled,
-            ParamId::Osc1Glide => self.osc1_glide = value,
-            ParamId::Osc2Glide => self.osc2_glide = value,
+            ParamId::Osc1Glide => {
+                self.osc1_glide = value;
+                self.glide_rate = (self.osc1_glide + self.osc2_glide) * 0.5;
+            }
+            ParamId::Osc2Glide => {
+                self.osc2_glide = value;
+                self.glide_rate = (self.osc1_glide + self.osc2_glide) * 0.5;
+            }
             ParamId::GlideMode => self.glide_mode = value as usize,
             ParamId::GlideEnabled => self.glide_enabled = enabled,
-            ParamId::GlideTime => self.glide_time = value,
             ParamId::PitchBendRange => self.pitch_bend_range = value,
             ParamId::KeyMode => self.key_mode = value as usize,
             ParamId::UnisonEnabled => self.unison_enabled = enabled,
@@ -585,7 +590,6 @@ impl From<&UiState> for Patch {
             noise_level: state.noise_level,
             hard_sync: state.sync,
             osc_slop: state.osc_slop,
-            glide_time: state.glide_time,
             glide_mode: GlideMode::from_index(state.glide_mode),
             glide_enabled: state.glide_enabled,
             pitch_bend_range: state.pitch_bend_range,
@@ -1540,15 +1544,18 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     egui::vec2(GLIDE_COLUMN_W, GLIDE_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        param_knob_f32(
+                        if linked_param_knob_f32(
                             ui,
-                            "Glide",
-                            &mut state.glide_time,
-                            0.0..=16.0,
+                            "Rate",
+                            &mut state.glide_rate,
+                            0.0..=1.0,
                             0.0,
-                            ParamId::GlideTime,
+                            [ParamId::Osc1Glide, ParamId::Osc2Glide],
                             control,
-                        );
+                        ) {
+                            state.osc1_glide = state.glide_rate;
+                            state.osc2_glide = state.glide_rate;
+                        }
                     },
                 );
                 ui.allocate_ui_with_layout(
@@ -3068,13 +3075,14 @@ mod tests {
     #[test]
     fn performance_parameters_load_into_ui_state() {
         let mut patch = Patch::default();
-        patch.glide_time = 3.25;
+        patch.osc1.glide = 0.25;
+        patch.osc2.glide = 0.75;
         patch.pitch_bend_range = 7.0;
         let mut state = UiState::default();
 
         state.apply_from_patch(&patch);
 
-        assert_eq!(state.glide_time, 3.25);
+        assert_eq!(state.glide_rate, 0.5);
         assert_eq!(state.pitch_bend_range, 7.0);
     }
 

@@ -116,7 +116,9 @@ directory:
 ## Notes
 
 - The synth decodes only **Layer A** of each program. Layer B, sequencer,
-  arpeggiator, unison, glide, and global settings are ignored.
+  arpeggiator, and global settings are ignored. Rev2 and Prophet '08 Glide
+  settings are imported; Prophet '08 Glide is enabled when either oscillator
+  has a nonzero rate.
 - Imported patches do **not** change the active sound — they are saved to disk
   as a library only.
 - If the MIDI program import queue fills up, a message is printed to the

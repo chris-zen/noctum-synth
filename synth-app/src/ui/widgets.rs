@@ -96,6 +96,54 @@ pub(crate) fn param_knob_f32_offset(
     param: ParamId,
     control: &SynthEngineControl,
 ) {
+    if param_knob_f32_offset_inner(
+        ui,
+        label,
+        value,
+        range,
+        reset_value,
+        display_offset,
+        knob_edit_id(param),
+    ) {
+        control.set_param(param, *value);
+    }
+}
+
+pub(crate) fn linked_param_knob_f32(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    params: [ParamId; 2],
+    control: &SynthEngineControl,
+) -> bool {
+    let changed = param_knob_f32_offset_inner(
+        ui,
+        label,
+        value,
+        range,
+        reset_value,
+        0.0,
+        egui::Id::new("knob_txt_linked_glide_rate"),
+    );
+    if changed {
+        for param in params {
+            control.set_param(param, *value);
+        }
+    }
+    changed
+}
+
+fn param_knob_f32_offset_inner(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    display_offset: f32,
+    edit_id: egui::Id,
+) -> bool {
     let min = *range.start();
     let max = *range.end();
     let text_color = ui.visuals().text_color();
@@ -128,7 +176,6 @@ pub(crate) fn param_knob_f32_offset(
             .color(text_color),
     );
 
-    let edit_id = knob_edit_id(param);
     let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
 
     let edited = knob_value_edit(
@@ -143,9 +190,7 @@ pub(crate) fn param_knob_f32_offset(
         text_color,
     );
 
-    if edited || response.changed() {
-        control.set_param(param, *value);
-    }
+    edited || response.changed()
 }
 
 pub fn param_knob_bipolar(

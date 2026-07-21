@@ -1,8 +1,8 @@
 //! Patch parameter bundles and modulation routing targets.
 
 use crate::{
-    LfoWaveform, ParamId, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
-    DEFAULT_SUSTAIN_LEVEL, MIN_LFO_RATE_HZ,
+    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
+    LfoWaveform, MIN_LFO_RATE_HZ, ParamId,
 };
 
 #[cfg(feature = "serde")]
@@ -948,6 +948,14 @@ impl GlideMode {
         Self::ALL.iter().position(|m| *m == self).unwrap_or(0)
     }
 
+    pub const fn is_fixed_time(self) -> bool {
+        matches!(self, Self::FixedTime | Self::FixedTimeAuto)
+    }
+
+    pub const fn is_auto(self) -> bool {
+        matches!(self, Self::FixedRateAuto | Self::FixedTimeAuto)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::FixedRate => "Fixed Rate",
@@ -1172,7 +1180,6 @@ pub struct Patch {
     pub noise_level: f32,
     pub hard_sync: bool,
     pub osc_slop: f32,
-    pub glide_time: f32,
     pub glide_mode: GlideMode,
     pub glide_enabled: bool,
     pub pitch_bend_range: f32,
@@ -1207,7 +1214,6 @@ impl Default for Patch {
             noise_level: 0.0,
             hard_sync: false,
             osc_slop: 0.0,
-            glide_time: 0.0,
             glide_mode: GlideMode::default(),
             glide_enabled: false,
             pitch_bend_range: 2.0,
@@ -1235,11 +1241,7 @@ impl Default for Patch {
 
 impl Patch {
     fn bool_f32(b: bool) -> f32 {
-        if b {
-            1.0
-        } else {
-            0.0
-        }
+        if b { 1.0 } else { 0.0 }
     }
 
     fn lfo_waveform_index(lfo_waveform: LfoWaveform) -> f32 {
@@ -1277,7 +1279,6 @@ impl Patch {
         f(ParamId::NoiseLevel, self.noise_level);
         f(ParamId::HardSync, s(self.hard_sync));
         f(ParamId::OscSlop, self.osc_slop);
-        f(ParamId::GlideTime, self.glide_time);
         f(ParamId::GlideMode, self.glide_mode.index() as f32);
         f(ParamId::GlideEnabled, s(self.glide_enabled));
         f(ParamId::PitchBendRange, self.pitch_bend_range);
@@ -1438,7 +1439,6 @@ impl Patch {
             ParamId::NoiseLevel => self.noise_level = value,
             ParamId::HardSync => self.hard_sync = flag,
             ParamId::OscSlop | ParamId::AnalogDrift => self.osc_slop = value,
-            ParamId::GlideTime => self.glide_time = value,
             ParamId::GlideMode => self.glide_mode = GlideMode::from_index(value as usize),
             ParamId::GlideEnabled => self.glide_enabled = flag,
             ParamId::PitchBendRange => self.pitch_bend_range = value.clamp(0.0, 12.0),
@@ -1592,6 +1592,20 @@ mod tests {
         let encoded = serde_json::to_value(&patch).unwrap();
         let decoded: Patch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.name.as_str(), "LosVangelis2041");
+    }
+
+    #[test]
+    fn obsolete_glide_time_field_is_ignored_when_loading_old_patches() {
+        let mut encoded = serde_json::to_value(Patch::default()).unwrap();
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .insert("glide_time".into(), serde_json::json!(8.0));
+
+        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+
+        assert_eq!(decoded.osc1.glide, 0.0);
+        assert_eq!(decoded.osc2.glide, 0.0);
     }
 
     #[test]

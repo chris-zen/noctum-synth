@@ -14,7 +14,7 @@ the Rust parameter identifiers used by hosts.
 | Sub oscillator and noise | Add bass weight or noisy texture. |
 | Hard sync | Reset oscillator 2 from oscillator 1 for harmonically intense sweep sounds. |
 | Slop | Introduce analog-style pitch variation. |
-| Glide | Slide pitched notes into their next pitch. |
+| Glide | Slide from the previously played pitch. Rate sets both oscillators; the individual oscillator controls can then diverge. Fixed Rate scales duration with interval, Fixed Time does not, and the two Auto modes glide only while playing legato. |
 | Note reset and keyboard tracking | Choose repeatable phase starts and whether oscillator pitch follows the keyboard. |
 
 ## Filter

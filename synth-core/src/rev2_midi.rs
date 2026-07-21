@@ -2,8 +2,8 @@
 
 use crate::patch::decode_patch_name;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId, Patch, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+    DedicatedModSource, LfoSyncDivision, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
+    ModRoute, ModSource, ModulationParam, ParamId, Patch,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
@@ -564,6 +564,7 @@ fn program_field(number: u16, layer_offset: usize) -> Option<ProgramField> {
         104 => 13,
         105..=108 => 73 + usize::from(number - 105),
         110 => 15,
+        111 => 19,
         116..=125 => 101 + usize::from(number - 116),
         153 => 116,
         154 => 115,
@@ -1344,6 +1345,10 @@ mod tests {
         source.osc2.waveform = 2;
         source.osc2.enabled = true;
         source.osc1.shape_mod = 0.42;
+        source.osc1.glide = 0.25;
+        source.osc2.glide = 0.75;
+        source.glide_mode = crate::GlideMode::FixedTimeAuto;
+        source.glide_enabled = true;
         source.filter.cutoff = 1_234.0;
         source.filter.env_amount = -0.5;
         source.lfos[2].destination = ModDestination::FilterCutoff;
@@ -1368,6 +1373,10 @@ mod tests {
         assert!(decoded.osc1.enabled);
         assert_eq!(decoded.osc2.waveform, 2);
         assert!(decoded.osc2.enabled);
+        assert!((decoded.osc1.glide - 0.25).abs() < 0.01);
+        assert!((decoded.osc2.glide - 0.75).abs() < 0.01);
+        assert_eq!(decoded.glide_mode, crate::GlideMode::FixedTimeAuto);
+        assert!(decoded.glide_enabled);
         assert!((decoded.osc1.shape_mod - source.osc1.shape_mod).abs() < 0.02);
         assert!((decoded.filter.cutoff - source.filter.cutoff).abs() < 50.0);
         assert!((decoded.filter.env_amount - source.filter.env_amount).abs() < 0.01);

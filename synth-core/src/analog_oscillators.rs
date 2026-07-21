@@ -5,13 +5,50 @@ use crate::f32x4;
 
 #[cfg(feature = "profiling")]
 use crate::profiling::NoopProfiler;
-use crate::{AnalogSubOscillator, Waveform, WhiteNoise, midi_to_hz};
+use crate::{AnalogSubOscillator, GlideMode, LANES, Waveform, WhiteNoise};
 #[cfg(feature = "profiling")]
 use crate::{RenderProfiler, RenderStage};
 
 // Give unassigned, keyboard-tracked lanes a real pitch so their
 // phases advance before the first note when note reset is off.
 const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
+// The guides specify direction and mode semantics but not measured timing.
+// Keep this musical logarithmic curve isolated for future hardware calibration.
+const MIN_GLIDE_SECONDS: f32 = 0.001;
+const MAX_GLIDE_SECONDS: f32 = 16.0;
+const MIDI_GLIDE_STEP: f32 = 1.0 / 127.0;
+const GLIDE_PITCH_SCALE: f32 = 65_536.0;
+
+#[derive(Clone, Copy)]
+struct GlideState {
+    current: [f32; LANES],
+    target: [f32; LANES],
+    current_pitch_q16: [i32; LANES],
+    target_pitch_q16: [i32; LANES],
+    step_q16: [i32; LANES],
+    remainder_q16: [i32; LANES],
+    error_q16: [i32; LANES],
+    total: [u32; LANES],
+    remaining: [u32; LANES],
+    active_mask: u8,
+}
+
+impl Default for GlideState {
+    fn default() -> Self {
+        Self {
+            current: [CENTER_FREQUENCY_SEMITONES; LANES],
+            target: [CENTER_FREQUENCY_SEMITONES; LANES],
+            current_pitch_q16: [60 * 65_536; LANES],
+            target_pitch_q16: [60 * 65_536; LANES],
+            step_q16: [0; LANES],
+            remainder_q16: [0; LANES],
+            error_q16: [0; LANES],
+            total: [0; LANES],
+            remaining: [0; LANES],
+            active_mask: 0,
+        }
+    }
+}
 
 /// Oscillator section for one [`crate::VoiceBlock`]: two analog oscillators, sub, and noise.
 pub struct Oscillators {
@@ -20,7 +57,7 @@ pub struct Oscillators {
     sub_osc: AnalogSubOscillator,
     noise: WhiteNoise,
     params: OscillatorsParams,
-    note_frequency_hz: f32x4,
+    glide: [GlideState; 2],
     last_frequency_modulation: [f32x4; 2],
     last_shape_modulation: [f32; 2],
     sample_rate: f32,
@@ -34,7 +71,7 @@ impl Oscillators {
             sub_osc: AnalogSubOscillator::default(),
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
-            note_frequency_hz: f32x4::splat(midi_to_hz(CENTER_FREQUENCY_SEMITONES as u8)),
+            glide: [GlideState::default(); 2],
             last_frequency_modulation: [f32x4::splat(0.0); 2],
             last_shape_modulation: [0.0; 2],
             sample_rate,
@@ -118,11 +155,45 @@ impl Oscillators {
 
     pub fn set_osc1_keyboard_on(&mut self, keyboard_on: bool) {
         self.params.osc1.keyboard_on = keyboard_on;
+        if !keyboard_on {
+            self.snap_glide(0);
+        }
         self.update_frequencies();
     }
 
     pub fn set_osc2_keyboard_on(&mut self, keyboard_on: bool) {
         self.params.osc2.keyboard_on = keyboard_on;
+        if !keyboard_on {
+            self.snap_glide(1);
+        }
+        self.update_frequencies();
+    }
+
+    pub fn set_osc1_glide(&mut self, amount: f32) {
+        self.params.osc1.glide = amount.clamp(0.0, 1.0);
+        self.retime_glide(0);
+    }
+
+    pub fn set_osc2_glide(&mut self, amount: f32) {
+        self.params.osc2.glide = amount.clamp(0.0, 1.0);
+        self.retime_glide(1);
+    }
+
+    pub fn set_glide_mode(&mut self, mode: GlideMode) {
+        self.params.glide_mode = mode;
+        self.retime_glide(0);
+        self.retime_glide(1);
+    }
+
+    pub fn set_glide_enabled(&mut self, enabled: bool) {
+        self.params.glide_enabled = enabled;
+        if enabled {
+            self.retime_glide(0);
+            self.retime_glide(1);
+        } else {
+            self.snap_glide(0);
+            self.snap_glide(1);
+        }
         self.update_frequencies();
     }
 
@@ -149,18 +220,200 @@ impl Oscillators {
     }
 
     pub fn set_note_frequency(&mut self, note_frequency_hz: f32x4) {
-        self.note_frequency_hz = note_frequency_hz;
+        let semitones = note_frequency_hz.to_array().map(frequency_to_semitones);
+        let pitches_q16 = semitones.map(pitch_to_q16);
+        for state in &mut self.glide {
+            state.current = semitones;
+            state.target = semitones;
+            state.current_pitch_q16 = pitches_q16;
+            state.target_pitch_q16 = pitches_q16;
+            state.step_q16 = [0; LANES];
+            state.remainder_q16 = [0; LANES];
+            state.error_q16 = [0; LANES];
+            state.total = [0; LANES];
+            state.remaining = [0; LANES];
+            state.active_mask = 0;
+        }
+        self.update_frequencies();
+    }
+
+    pub(crate) fn set_note_semitones_preserving_glide(&mut self, target_semitones: [f32; LANES]) {
+        for state in &mut self.glide {
+            for (lane, &target) in target_semitones.iter().enumerate() {
+                let target_q16 = pitch_to_q16(target);
+                if state.remaining[lane] == 0 {
+                    state.current[lane] = target;
+                    state.current_pitch_q16[lane] = target_q16;
+                } else {
+                    let shift_q16 = target_q16 - state.target_pitch_q16[lane];
+                    state.current_pitch_q16[lane] += shift_q16;
+                    state.current[lane] = q16_to_pitch(state.current_pitch_q16[lane]);
+                }
+                state.target[lane] = target;
+                state.target_pitch_q16[lane] = target_q16;
+            }
+        }
         self.update_frequencies();
     }
 
     pub fn note_on(&mut self, lane: usize, note_frequency_hz: f32x4) {
-        self.note_frequency_hz = note_frequency_hz;
-        self.update_frequencies();
+        let target = note_frequency_hz.to_array().map(frequency_to_semitones);
+        self.note_on_with_glide(lane, target, None, false);
+    }
+
+    pub(crate) fn note_on_with_glide(
+        &mut self,
+        lane: usize,
+        target_semitones: [f32; LANES],
+        start_semitones: Option<f32>,
+        glide: bool,
+    ) {
+        self.set_glide_target(lane, target_semitones, start_semitones, glide);
         self.osc1.trigger_lane(lane, self.params.osc1.note_reset);
         self.osc2.trigger_lane(lane, self.params.osc2.note_reset);
         if self.params.osc1.note_reset {
             self.sub_osc.reset_lane(lane);
         }
+    }
+
+    pub(crate) fn retune_with_glide(
+        &mut self,
+        lane: usize,
+        target_semitones: [f32; LANES],
+        glide: bool,
+    ) {
+        self.set_glide_target(lane, target_semitones, None, glide);
+    }
+
+    fn set_glide_target(
+        &mut self,
+        lane: usize,
+        target_semitones: [f32; LANES],
+        start_semitones: Option<f32>,
+        should_glide: bool,
+    ) {
+        for oscillator in 0..2 {
+            let keyboard_on = self.oscillator_params(oscillator).keyboard_on;
+            let enabled = self.params.glide_enabled && should_glide && keyboard_on;
+            let state = &mut self.glide[oscillator];
+            state.target[lane] = target_semitones[lane];
+            state.target_pitch_q16[lane] = pitch_to_q16(target_semitones[lane]);
+            if let Some(start) = start_semitones {
+                state.current[lane] = start;
+                state.current_pitch_q16[lane] = pitch_to_q16(start);
+            }
+            if enabled {
+                self.configure_glide_lane(oscillator, lane);
+            } else {
+                state.current[lane] = target_semitones[lane];
+                state.current_pitch_q16[lane] = state.target_pitch_q16[lane];
+                clear_glide_progress(state, lane);
+                state.active_mask &= !(1 << lane);
+            }
+        }
+        self.update_frequencies();
+    }
+
+    fn oscillator_params(&self, oscillator: usize) -> &OscillatorParams {
+        if oscillator == 0 {
+            &self.params.osc1
+        } else {
+            &self.params.osc2
+        }
+    }
+
+    fn configure_glide_lane(&mut self, oscillator: usize, lane: usize) {
+        let amount = self.oscillator_params(oscillator).glide;
+        let fixed_time = self.params.glide_mode.is_fixed_time();
+        let state = &mut self.glide[oscillator];
+        let distance_q16 = state.target_pitch_q16[lane] - state.current_pitch_q16[lane];
+        let distance = (distance_q16 as f32 / GLIDE_PITCH_SCALE).abs();
+        if amount <= 0.0 || distance_q16 == 0 {
+            state.current[lane] = state.target[lane];
+            state.current_pitch_q16[lane] = state.target_pitch_q16[lane];
+            clear_glide_progress(state, lane);
+            state.active_mask &= !(1 << lane);
+            return;
+        }
+        let base_seconds = glide_seconds(amount);
+        let seconds = if fixed_time {
+            base_seconds
+        } else {
+            base_seconds * distance / 12.0
+        };
+        let max_samples = i32::MAX as f32 - 128.0;
+        let samples = crate::math::round(seconds * self.sample_rate).clamp(1.0, max_samples) as u32;
+        let samples_i32 = samples as i32;
+        state.step_q16[lane] = distance_q16 / samples_i32;
+        state.remainder_q16[lane] = distance_q16 % samples_i32;
+        state.error_q16[lane] = 0;
+        state.total[lane] = samples;
+        state.remaining[lane] = samples;
+        state.active_mask |= 1 << lane;
+    }
+
+    fn retime_glide(&mut self, oscillator: usize) {
+        for lane in 0..LANES {
+            if !self.params.glide_enabled || !self.oscillator_params(oscillator).keyboard_on {
+                self.snap_glide_lane(oscillator, lane);
+            } else if self.glide[oscillator].remaining[lane] > 0 {
+                self.configure_glide_lane(oscillator, lane);
+            }
+        }
+        self.update_frequencies();
+    }
+
+    fn snap_glide(&mut self, oscillator: usize) {
+        for lane in 0..LANES {
+            self.snap_glide_lane(oscillator, lane);
+        }
+    }
+
+    fn snap_glide_lane(&mut self, oscillator: usize, lane: usize) {
+        let state = &mut self.glide[oscillator];
+        state.current[lane] = state.target[lane];
+        state.current_pitch_q16[lane] = state.target_pitch_q16[lane];
+        clear_glide_progress(state, lane);
+        state.active_mask &= !(1 << lane);
+    }
+
+    fn advance_glide(&mut self) -> bool {
+        let mut changed = false;
+        for state in &mut self.glide {
+            if state.active_mask == 0 {
+                continue;
+            }
+            for lane in 0..LANES {
+                if state.active_mask & (1 << lane) == 0 {
+                    continue;
+                }
+                state.remaining[lane] -= 1;
+                if state.remaining[lane] == 0 {
+                    state.current[lane] = state.target[lane];
+                    state.current_pitch_q16[lane] = state.target_pitch_q16[lane];
+                    clear_glide_progress(state, lane);
+                    state.active_mask &= !(1 << lane);
+                    changed = true;
+                } else {
+                    let previous_q16 = state.current_pitch_q16[lane];
+                    state.current_pitch_q16[lane] += state.step_q16[lane];
+                    state.error_q16[lane] += state.remainder_q16[lane];
+                    let total = state.total[lane] as i32;
+                    if state.error_q16[lane] >= total {
+                        state.current_pitch_q16[lane] += 1;
+                        state.error_q16[lane] -= total;
+                    } else if state.error_q16[lane] <= -total {
+                        state.current_pitch_q16[lane] -= 1;
+                        state.error_q16[lane] += total;
+                    }
+                    if state.current_pitch_q16[lane] != previous_q16 {
+                        state.current[lane] = q16_to_pitch(state.current_pitch_q16[lane]);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
     }
 
     pub fn update_frequencies(&mut self) {
@@ -208,7 +461,7 @@ impl Oscillators {
             modulation.osc1_frequency_semitones,
             modulation.osc2_frequency_semitones,
         ];
-        if frequency_modulation != self.last_frequency_modulation {
+        if self.advance_glide() || frequency_modulation != self.last_frequency_modulation {
             self.update_frequencies_modulated(frequency_modulation[0], frequency_modulation[1]);
         }
 
@@ -297,12 +550,12 @@ impl Oscillators {
         self.last_frequency_modulation =
             [osc1_frequency_mod_semitones, osc2_frequency_mod_semitones];
         let osc1 = oscillator_frequency(
-            self.note_frequency_hz,
+            f32x4::new(self.glide[0].current),
             &self.params.osc1,
             osc1_frequency_mod_semitones,
         );
         let osc2 = oscillator_frequency(
-            self.note_frequency_hz,
+            f32x4::new(self.glide[1].current),
             &self.params.osc2,
             osc2_frequency_mod_semitones,
         );
@@ -367,6 +620,8 @@ pub struct OscillatorsParams {
     pub sub_octave: f32,
     pub noise: f32,
     pub osc_slop: f32,
+    pub glide_mode: GlideMode,
+    pub glide_enabled: bool,
 }
 
 impl Default for OscillatorsParams {
@@ -381,6 +636,8 @@ impl Default for OscillatorsParams {
             sub_octave: 0.0,
             noise: 0.0,
             osc_slop: 0.0,
+            glide_mode: GlideMode::default(),
+            glide_enabled: false,
         }
     }
 }
@@ -419,19 +676,47 @@ fn apply_shape_mod(osc: &mut EngineOscillator, params: &OscillatorParams) {
 }
 
 fn oscillator_frequency(
-    note_frequency_hz: f32x4,
+    note_semitones: f32x4,
     params: &OscillatorParams,
     mod_semitones: f32x4,
 ) -> f32x4 {
-    let keyboard_base = if params.keyboard_on {
-        note_frequency_hz
+    let keyboard_semitones = if params.keyboard_on {
+        note_semitones
     } else {
-        f32x4::splat(midi_to_hz(CENTER_FREQUENCY_SEMITONES as u8))
+        f32x4::splat(CENTER_FREQUENCY_SEMITONES)
     };
     let semitone_offset = params.frequency_semitones - CENTER_FREQUENCY_SEMITONES;
     let scalar_semitones = semitone_offset + params.fine_tune_cents / 100.0;
-    let total_semitones = f32x4::splat(scalar_semitones) + mod_semitones;
-    keyboard_base * (total_semitones * f32x4::splat(1.0 / 12.0)).exp2()
+    let total_semitones = keyboard_semitones + f32x4::splat(scalar_semitones) + mod_semitones;
+    f32x4::splat(440.0) * ((total_semitones - f32x4::splat(69.0)) * f32x4::splat(1.0 / 12.0)).exp2()
+}
+
+fn frequency_to_semitones(frequency_hz: f32) -> f32 {
+    69.0 + 12.0 * crate::math::ln(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
+        / crate::math::ln(2.0)
+}
+
+fn pitch_to_q16(semitones: f32) -> i32 {
+    crate::math::round(semitones * GLIDE_PITCH_SCALE) as i32
+}
+
+fn q16_to_pitch(pitch_q16: i32) -> f32 {
+    pitch_q16 as f32 / GLIDE_PITCH_SCALE
+}
+
+fn clear_glide_progress(state: &mut GlideState, lane: usize) {
+    state.step_q16[lane] = 0;
+    state.remainder_q16[lane] = 0;
+    state.error_q16[lane] = 0;
+    state.total[lane] = 0;
+    state.remaining[lane] = 0;
+}
+
+fn glide_seconds(amount: f32) -> f32 {
+    let normalized = ((amount.clamp(MIDI_GLIDE_STEP, 1.0) - MIDI_GLIDE_STEP)
+        / (1.0 - MIDI_GLIDE_STEP))
+        .clamp(0.0, 1.0);
+    MIN_GLIDE_SECONDS * crate::math::powf(MAX_GLIDE_SECONDS / MIN_GLIDE_SECONDS, normalized)
 }
 
 fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
@@ -444,8 +729,8 @@ fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::{OscillatorModulation, Oscillators, Waveform, osc_mix_to_gains};
-    use crate::f32x4;
     use crate::midi_to_hz;
+    use crate::{GlideMode, f32x4};
 
     const SAMPLE_RATE: f32 = 44_100.0;
 
@@ -453,6 +738,159 @@ mod tests {
         for _ in 0..frames {
             oscillators.next(OscillatorModulation::default());
         }
+    }
+
+    fn configured_glide(mode: GlideMode, osc1: f32, osc2: f32) -> Oscillators {
+        let mut oscillators = Oscillators::new(1_000.0);
+        oscillators.set_osc1_glide(osc1);
+        oscillators.set_osc2_glide(osc2);
+        oscillators.set_glide_mode(mode);
+        oscillators.set_glide_enabled(true);
+        oscillators
+    }
+
+    #[test]
+    fn fixed_time_duration_is_independent_of_interval() {
+        let mut octave = configured_glide(GlideMode::FixedTime, 0.5, 0.5);
+        octave.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        let octave_samples = octave.glide[0].remaining[0];
+
+        let mut two_octaves = configured_glide(GlideMode::FixedTime, 0.5, 0.5);
+        two_octaves.note_on_with_glide(0, [84.0; 4], Some(60.0), true);
+
+        assert_eq!(two_octaves.glide[0].remaining[0], octave_samples);
+    }
+
+    #[test]
+    fn fixed_rate_duration_scales_with_interval() {
+        let mut octave = configured_glide(GlideMode::FixedRate, 0.5, 0.5);
+        octave.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        let octave_samples = octave.glide[0].remaining[0];
+
+        let mut two_octaves = configured_glide(GlideMode::FixedRate, 0.5, 0.5);
+        two_octaves.note_on_with_glide(0, [84.0; 4], Some(60.0), true);
+
+        let expected = octave_samples * 2;
+        assert!(two_octaves.glide[0].remaining[0].abs_diff(expected) <= 1);
+    }
+
+    #[test]
+    fn oscillator_glide_amounts_are_independent() {
+        let mut oscillators = configured_glide(GlideMode::FixedTime, 0.25, 0.75);
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+
+        assert!(oscillators.glide[0].remaining[0] < oscillators.glide[1].remaining[0]);
+    }
+
+    #[test]
+    fn glide_duration_is_sample_rate_independent() {
+        let mut low_rate = configured_glide(GlideMode::FixedTime, 0.5, 0.5);
+        low_rate.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+
+        let mut high_rate = Oscillators::new(2_000.0);
+        high_rate.set_osc1_glide(0.5);
+        high_rate.set_glide_mode(GlideMode::FixedTime);
+        high_rate.set_glide_enabled(true);
+        high_rate.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+
+        assert!(high_rate.glide[0].remaining[0].abs_diff(low_rate.glide[0].remaining[0] * 2) <= 1);
+    }
+
+    #[test]
+    fn keyboard_tracking_off_bypasses_glide_for_that_oscillator() {
+        let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
+        oscillators.set_osc1_keyboard_on(false);
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+
+        assert_eq!(oscillators.glide[0].remaining[0], 0);
+        assert!(oscillators.glide[1].remaining[0] > 0);
+    }
+
+    #[test]
+    fn disabling_glide_snaps_an_active_transition_to_target() {
+        let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        settle(&mut oscillators, 10);
+        assert!(oscillators.glide[0].current[0] < 72.0);
+
+        oscillators.set_glide_enabled(false);
+
+        assert_eq!(oscillators.glide[0].current[0], 72.0);
+        assert_eq!(oscillators.glide[0].remaining[0], 0);
+    }
+
+    #[test]
+    fn interrupted_glide_continues_from_current_pitch() {
+        let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        settle(&mut oscillators, 100);
+        let before = oscillators.glide[0].current[0];
+
+        oscillators.retune_with_glide(0, [48.0; 4], true);
+
+        assert_eq!(oscillators.glide[0].current[0], before);
+        assert!(oscillators.glide[0].step_q16[0] < 0);
+    }
+
+    #[test]
+    fn longest_one_semitone_glides_make_progress_in_both_directions() {
+        for target in [70.0, 68.0] {
+            let mut oscillators = Oscillators::new(96_000.0);
+            oscillators.set_osc1_glide(1.0);
+            oscillators.set_glide_mode(GlideMode::FixedTime);
+            oscillators.set_glide_enabled(true);
+            oscillators.note_on_with_glide(0, [target; 4], Some(69.0), true);
+            let duration = oscillators.glide[0].remaining[0];
+
+            for _ in 0..duration / 2 {
+                oscillators.advance_glide();
+            }
+
+            let halfway = oscillators.glide[0].current[0];
+            let expected = (69.0 + target) * 0.5;
+            assert!(
+                (halfway - expected).abs() < 0.001,
+                "glide toward {target} stalled or drifted: {halfway}"
+            );
+
+            for _ in duration / 2..duration {
+                oscillators.advance_glide();
+            }
+            assert_eq!(oscillators.glide[0].current[0], target);
+            assert_eq!(oscillators.glide[0].remaining[0], 0);
+        }
+    }
+
+    #[test]
+    fn starting_another_lane_does_not_retarget_an_active_glide() {
+        let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        settle(&mut oscillators, 100);
+        let current = oscillators.glide[0].current[0];
+        let remaining = oscillators.glide[0].remaining[0];
+
+        oscillators.note_on_with_glide(1, [84.0, 67.0, 60.0, 60.0], Some(64.0), true);
+
+        assert_eq!(oscillators.glide[0].target[0], 72.0);
+        assert_eq!(oscillators.glide[0].current[0], current);
+        assert_eq!(oscillators.glide[0].remaining[0], remaining);
+        oscillators.advance_glide();
+        assert!(oscillators.glide[0].current[0] > current);
+    }
+
+    #[test]
+    fn tuning_updates_shift_active_glides_without_cancelling_them() {
+        let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        settle(&mut oscillators, 100);
+        let current = oscillators.glide[0].current[0];
+        let remaining = oscillators.glide[0].remaining[0];
+
+        oscillators.set_note_semitones_preserving_glide([72.25, 60.0, 60.0, 60.0]);
+
+        assert_eq!(oscillators.glide[0].remaining[0], remaining);
+        assert!((oscillators.glide[0].current[0] - (current + 0.25)).abs() < 0.000_02);
+        assert_eq!(oscillators.glide[0].target[0], 72.25);
     }
 
     #[test]

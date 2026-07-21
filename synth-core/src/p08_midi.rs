@@ -3,8 +3,8 @@
 use crate::patch::decode_patch_name;
 use crate::rev2_midi::Rev2SysexError;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId, Patch, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+    DedicatedModSource, LfoSyncDivision, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
+    ModRoute, ModSource, ModulationParam, ParamId, Patch,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
@@ -97,6 +97,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
             });
         }
     }
+    patch.glide_enabled = patch.osc1.glide > 0.0 || patch.osc2.glide > 0.0;
     patch.name = decode_patch_name(&raw[LAYER_A_NAME_RANGE]);
     Ok(patch)
 }
@@ -307,6 +308,7 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             f32::from(raw.min(100)) - 50.0,
         )),
         2 => emit_osc_shape(emit, true, raw.min(103)),
+        3 => emit(P08MidiUpdate::Param(ParamId::Osc1Glide, unit(raw, 127))),
         4 => emit(P08MidiUpdate::Param(
             ParamId::Osc1KeyboardOn,
             f32::from(raw != 0),
@@ -320,11 +322,16 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
             f32::from(raw.min(100)) - 50.0,
         )),
         7 => emit_osc_shape(emit, false, raw.min(103)),
+        8 => emit(P08MidiUpdate::Param(ParamId::Osc2Glide, unit(raw, 127))),
         9 => emit(P08MidiUpdate::Param(
             ParamId::Osc2KeyboardOn,
             f32::from(raw != 0),
         )),
         10 => emit(P08MidiUpdate::Param(ParamId::HardSync, f32::from(raw != 0))),
+        11 => emit(P08MidiUpdate::Param(
+            ParamId::GlideMode,
+            f32::from(raw.min(3)),
+        )),
         12 => emit(P08MidiUpdate::Param(ParamId::OscSlop, unit(raw, 5))),
         13 => emit(P08MidiUpdate::Param(ParamId::OscMix, unit(raw, 127))),
         14 => emit(P08MidiUpdate::Param(ParamId::NoiseLevel, unit(raw, 127))),
@@ -703,6 +710,31 @@ mod tests {
             assert_eq!(update, Some(expected));
             assert_eq!(nrpn_max(number), Some(1));
         }
+    }
+
+    #[test]
+    fn glide_parameters_map_to_the_shared_patch_model() {
+        for (number, raw, expected) in [
+            (
+                3,
+                64,
+                P08MidiUpdate::Param(ParamId::Osc1Glide, 64.0 / 127.0),
+            ),
+            (8, 127, P08MidiUpdate::Param(ParamId::Osc2Glide, 1.0)),
+            (11, 3, P08MidiUpdate::Param(ParamId::GlideMode, 3.0)),
+        ] {
+            let mut update = None;
+            map_nrpn(number, raw, &mut |value| update = Some(value));
+            assert_eq!(update, Some(expected));
+        }
+
+        let decoded = (0..256)
+            .map(|program| {
+                P08MidiDecoder::program_data(factory_message(program / 128, program % 128)).unwrap()
+            })
+            .find(|program| program.patch.osc1.glide > 0.0 || program.patch.osc2.glide > 0.0)
+            .expect("factory bank should contain a glide program");
+        assert!(decoded.patch.glide_enabled);
     }
 
     #[test]

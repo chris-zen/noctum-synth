@@ -11,8 +11,9 @@ use crate::patch::{
 #[cfg(feature = "profiling")]
 use crate::profiling::{NoopProfiler, RenderProfiler, RenderStage};
 use crate::{
-    midi_to_hz, DadsrEnvelope, Filter, FilterOversampling, FilterType, Lfo, LfoWaveform, ModSource,
-    ModulationParam, ParamId, Waveform, DEFAULT_TEMPO_BPM, LANES, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+    DEFAULT_TEMPO_BPM, DadsrEnvelope, Filter, FilterOversampling, FilterType, GlideMode, LANES,
+    Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModSource, ModulationParam, ParamId,
+    Waveform,
 };
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
@@ -81,6 +82,13 @@ struct PendingNote {
     velocity: f32,
     reset_key_synced_lfos: bool,
     tuning_cents: [f32; LANES],
+    glide: NoteGlide,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NoteGlide {
+    pub start_note: Option<u8>,
+    pub enabled: bool,
 }
 
 /// Four-lane subtractive voice: oscillators → filter → amplifier.
@@ -200,6 +208,25 @@ impl VoiceBlock {
         reset_key_synced_lfos: bool,
         tuning_cents: [f32; LANES],
     ) {
+        self.note_on_tuned_with_glide(
+            lane,
+            note,
+            velocity,
+            reset_key_synced_lfos,
+            tuning_cents,
+            NoteGlide::default(),
+        );
+    }
+
+    pub(crate) fn note_on_tuned_with_glide(
+        &mut self,
+        lane: usize,
+        note: u8,
+        velocity: f32,
+        reset_key_synced_lfos: bool,
+        tuning_cents: [f32; LANES],
+        glide: NoteGlide,
+    ) {
         self.pending_notes[lane] = None;
         self.pending_note_mask &= !(1 << lane);
         self.activate_lifecycle_lane(lane);
@@ -214,8 +241,12 @@ impl VoiceBlock {
         if reset_key_synced_lfos {
             self.reset_key_synced_lfos();
         }
+        let semitones = self.note_semitones(tuning_cents);
+        let start = glide
+            .start_note
+            .map(|start| f32::from(start) + tuning_cents[lane] / 100.0);
         self.oscillators
-            .note_on(lane, self.note_frequencies_hz(tuning_cents));
+            .note_on_with_glide(lane, semitones, start, glide.enabled);
         self.filter.reset_lane(lane);
     }
 
@@ -226,24 +257,27 @@ impl VoiceBlock {
         note: u8,
         velocity: f32,
         tuning_cents: [f32; LANES],
+        should_glide: bool,
     ) {
         if let Some(pending) = &mut self.pending_notes[lane] {
             pending.note = note;
             pending.velocity = velocity;
             pending.tuning_cents = tuning_cents;
+            pending.glide.enabled = should_glide;
             return;
         }
         self.notes[lane] = note;
         self.velocities[lane] = velocity;
         self.oscillators
-            .set_note_frequency(self.note_frequencies_hz(tuning_cents));
+            .retune_with_glide(lane, self.note_semitones(tuning_cents), should_glide);
     }
 
     pub(crate) fn set_tuning_cents(&mut self, tuning_cents: [f32; LANES]) {
         self.oscillators
-            .set_note_frequency(self.note_frequencies_hz(tuning_cents));
+            .set_note_semitones_preserving_glide(self.note_semitones(tuning_cents));
     }
 
+    #[cfg(test)]
     pub(crate) fn schedule_note_on(
         &mut self,
         lane: usize,
@@ -251,16 +285,24 @@ impl VoiceBlock {
         velocity: f32,
         reset_key_synced_lfos: bool,
     ) {
-        self.schedule_note_on_tuned(lane, note, velocity, reset_key_synced_lfos, [0.0; LANES]);
+        self.schedule_note_on_tuned_with_glide(
+            lane,
+            note,
+            velocity,
+            reset_key_synced_lfos,
+            [0.0; LANES],
+            NoteGlide::default(),
+        );
     }
 
-    pub(crate) fn schedule_note_on_tuned(
+    pub(crate) fn schedule_note_on_tuned_with_glide(
         &mut self,
         lane: usize,
         note: u8,
         velocity: f32,
         reset_key_synced_lfos: bool,
         tuning_cents: [f32; LANES],
+        glide: NoteGlide,
     ) {
         let shutdown_in_progress = self.pending_notes[lane].is_some();
         self.pending_notes[lane] = Some(PendingNote {
@@ -268,6 +310,7 @@ impl VoiceBlock {
             velocity,
             reset_key_synced_lfos,
             tuning_cents,
+            glide,
         });
         self.pending_note_mask |= 1 << lane;
         if shutdown_in_progress {
@@ -557,10 +600,8 @@ impl VoiceBlock {
         self.advance_lfos(lfo_control);
     }
 
-    fn note_frequencies_hz(&self, tuning_cents: [f32; LANES]) -> f32x4 {
-        let base = f32x4::new(self.notes.map(midi_to_hz));
-        let cents = f32x4::new(tuning_cents);
-        base * (cents * f32x4::splat(1.0 / 1_200.0)).exp2()
+    fn note_semitones(&self, tuning_cents: [f32; LANES]) -> [f32; LANES] {
+        core::array::from_fn(|lane| f32::from(self.notes[lane]) + tuning_cents[lane] / 100.0)
     }
 
     fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
@@ -645,12 +686,13 @@ impl VoiceBlock {
             self.amp_env.reset_lane(lane);
             self.filter_env.reset_lane(lane);
             self.aux_env.reset_lane(lane);
-            self.note_on_tuned(
+            self.note_on_tuned_with_glide(
                 lane,
                 pending.note,
                 pending.velocity,
                 pending.reset_key_synced_lfos,
                 pending.tuning_cents,
+                pending.glide,
             );
         }
     }
@@ -790,6 +832,22 @@ impl VoiceBlock {
 
     pub fn set_osc2_keyboard_on(&mut self, keyboard_on: bool) {
         self.oscillators.set_osc2_keyboard_on(keyboard_on);
+    }
+
+    pub fn set_osc1_glide(&mut self, amount: f32) {
+        self.oscillators.set_osc1_glide(amount);
+    }
+
+    pub fn set_osc2_glide(&mut self, amount: f32) {
+        self.oscillators.set_osc2_glide(amount);
+    }
+
+    pub fn set_glide_mode(&mut self, mode: GlideMode) {
+        self.oscillators.set_glide_mode(mode);
+    }
+
+    pub fn set_glide_enabled(&mut self, enabled: bool) {
+        self.oscillators.set_glide_enabled(enabled);
     }
 
     pub fn set_osc_mix(&mut self, mix: f32) {
@@ -1194,6 +1252,10 @@ impl VoiceBlock {
             ParamId::Osc2NoteReset => self.set_osc2_note_reset(value >= 0.5),
             ParamId::Osc1KeyboardOn => self.set_osc1_keyboard_on(value >= 0.5),
             ParamId::Osc2KeyboardOn => self.set_osc2_keyboard_on(value >= 0.5),
+            ParamId::Osc1Glide => self.set_osc1_glide(value),
+            ParamId::Osc2Glide => self.set_osc2_glide(value),
+            ParamId::GlideMode => self.set_glide_mode(GlideMode::from_index(value as usize)),
+            ParamId::GlideEnabled => self.set_glide_enabled(value >= 0.5),
             ParamId::FilterCutoff => self.set_filter_cutoff(value),
             ParamId::FilterResonance => self.set_filter_resonance(value),
             ParamId::FilterPoles => self.set_filter_poles(if value < 0.5 { 2 } else { 4 }),
@@ -1281,11 +1343,6 @@ impl VoiceBlock {
             ParamId::Lfo4KeySync => self.set_lfo_key_sync(3, value >= 0.5),
             ParamId::PitchBendRange => self.set_pitch_bend_range(value),
             ParamId::MasterVolume
-            | ParamId::Osc1Glide
-            | ParamId::Osc2Glide
-            | ParamId::GlideTime
-            | ParamId::GlideMode
-            | ParamId::GlideEnabled
             | ParamId::KeyMode
             | ParamId::UnisonEnabled
             | ParamId::UnisonMode

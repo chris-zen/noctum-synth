@@ -94,16 +94,16 @@ pub use analog_sub_oscillator::AnalogSubOscillator;
 pub use effects::{EffectModulation, Effects, EffectsWithMemory};
 pub use engine::{SynthEngine, SynthEngineWithMemory};
 pub use envelope::{
-    DadsrEnvelope, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
-    DEFAULT_SUSTAIN_LEVEL,
+    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
+    DadsrEnvelope,
 };
 pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use midi_program::{MidiProgramImport, MidiProgramSource};
 pub use noise::WhiteNoise;
 pub use p08_midi::{
-    P08MidiDecoder, P08ProgramData, P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN,
-    P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN, P08_PROGRAM_PACKED_LEN,
+    P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN, P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
+    P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
 };
 pub use patch::{
     AmplifierParams, AuxEnvelopeParams, ChordMemory, ClockDivision, DedicatedModSlot,
@@ -114,16 +114,16 @@ pub use patch::{
 #[cfg(feature = "profiling")]
 pub use profiling::{RenderProfiler, RenderStage};
 pub use rev2_midi::{
-    Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData, Rev2SysexError,
     REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    REV2_PROGRAM_PACKED_LEN,
+    REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,
+    Rev2SysexError,
 };
 pub use tuning::midi_to_hz;
-pub use voice::{voice_pan_position, PerformanceModulation, VoiceBlock, REV2_VOICE_PAN_POSITIONS};
+pub use voice::{PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, voice_pan_position};
 pub use voices::{ActiveNotes, Voices};
 pub use wavetable::{
-    generate_wavetable_bank, WavetableBank, WavetableBankError, WavetableBankReport,
-    WAVETABLE_BANK_SAMPLES,
+    WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
+    generate_wavetable_bank,
 };
 
 pub trait F32x4Ext {
@@ -171,7 +171,6 @@ pub enum ParamId {
     Osc2KeyboardOn,
     Osc1Glide,
     Osc2Glide,
-    GlideTime,
     FilterCutoff,
     FilterResonance,
     FilterPoles,
@@ -278,7 +277,6 @@ impl ParamId {
             Self::Osc2KeyboardOn => "Osc 2 Keyboard",
             Self::Osc1Glide => "Osc 1 Glide",
             Self::Osc2Glide => "Osc 2 Glide",
-            Self::GlideTime => "Glide Time",
             Self::FilterCutoff => "Filter Cutoff",
             Self::FilterResonance => "Filter Resonance",
             Self::FilterPoles => "Filter Poles",

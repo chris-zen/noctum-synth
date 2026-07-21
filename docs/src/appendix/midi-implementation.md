@@ -707,8 +707,9 @@ The synth decodes voice parameters at offsets 0–36, 37–56 (LFOs), 57–64
 modulation). Byte 27 (VCA Initial Level) is decoded directly. It also reads the
 program name from bytes 184–199. Key mode and the Prophet '08 unison fields are
 also applied: the three fixed detune modes translate to eight Rev2-style voices
-at progressively larger detune values. Glide, sequencer, arpeggiator, tempo,
-and split settings are present in the image but not applied.
+at progressively larger detune values. The two oscillator Glide rates and Glide
+mode are imported, with Glide enabled when either rate is nonzero. Sequencer,
+arpeggiator, tempo, and split settings are present in the image but not applied.
 
 #### Layer B (bytes 200–383)
 
@@ -723,7 +724,6 @@ The following Prophet '08 systems are not implemented:
 - Live MIDI control of Prophet '08 parameters (SysEx import only)
 - Sequencer and arpeggiator
 - Split and stack program modes
-- Glide / portamento
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)
 
@@ -747,7 +747,6 @@ The following Prophet Rev2 systems are not implemented by this synth:
 - Layer B parameter control
 - Sequencer and arpeggiator
 - Rev2 SysEx import/export of the undocumented chord-memory voicing bytes
-- Glide / portamento
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)
 - Alternate tunings

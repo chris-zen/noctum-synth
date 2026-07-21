@@ -41,9 +41,18 @@ The sub oscillator adds low-frequency weight. White noise can add breath,
 percussion, or texture. Oscillator mix balances the two primary oscillators;
 the sub and noise levels are independent additions.
 
-Glide moves pitched oscillators between notes. Note reset controls whether a
-new note begins at a repeatable oscillator phase. Keyboard tracking keeps pitch
-following the played key, while slop introduces subtle analog-style drift.
+Glide moves each pitched oscillator from the previously played note to its new
+target. Fixed Rate uses a constant pitch rate, so wider intervals take longer;
+Fixed Time gives every interval the same duration. The Auto variants apply the
+same behavior only to overlapping, legato key presses. Note reset controls
+whether a new note begins at a repeatable oscillator phase. Keyboard tracking
+keeps pitch following the played key, while slop introduces subtle analog-style
+drift.
+
+The hardware guides do not publish the timing curve. This implementation maps
+values 1–127 logarithmically from approximately 1 ms to 16 seconds; value 0
+bypasses Glide. The curve is isolated so measured Rev2 timings can replace it
+without changing patch or MIDI behavior.
 
 ## Filter and amplifier
 
