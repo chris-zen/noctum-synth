@@ -50,7 +50,6 @@ const EFFECT_TYPE_COUNT: usize = 13;
 
 #[derive(Clone, Copy)]
 struct EffectRuntimeParams {
-    mix: f32,
     clock_sync: bool,
     param1: f32,
     param2: f32,
@@ -60,7 +59,6 @@ impl Default for EffectRuntimeParams {
     fn default() -> Self {
         let params = EffectParams::default();
         Self {
-            mix: params.mix,
             clock_sync: params.clock_sync,
             param1: params.param1,
             param2: params.param2,
@@ -522,7 +520,6 @@ impl UiState {
 
     fn store_active_effect_params(&mut self) {
         self.effect_runtime_params[self.effect_type] = EffectRuntimeParams {
-            mix: self.effect_mix,
             clock_sync: self.effect_clock_sync,
             param1: self.effect_param1,
             param2: self.effect_param2,
@@ -533,7 +530,6 @@ impl UiState {
         self.store_active_effect_params();
         self.effect_type = effect_type;
         let params = self.effect_runtime_params[effect_type];
-        self.effect_mix = params.mix;
         self.effect_clock_sync = params.clock_sync;
         self.effect_param1 = params.param1;
         self.effect_param2 = params.param2;
@@ -2148,7 +2144,6 @@ fn effect_type_selector(ui: &mut egui::Ui, state: &mut UiState, control: &SynthE
                         {
                             state.select_effect(index);
                             control.set_param(ParamId::EffectType, index as f32);
-                            control.set_param(ParamId::EffectMix, state.effect_mix);
                             control.set_param(
                                 ParamId::EffectClockSync,
                                 f32::from(state.effect_clock_sync),
@@ -3035,7 +3030,6 @@ mod tests {
         assert!(state.osc2_enabled);
         assert_eq!(state.effect_type, 3);
         assert_eq!(state.effect_mix, 0.75);
-        assert_eq!(state.effect_runtime_params[3].mix, 0.75);
     }
 
     #[test]

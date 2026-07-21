@@ -130,7 +130,6 @@ impl From<EffectType> for SelectedEffect {
 
 #[derive(Clone, Copy, Debug)]
 struct RuntimeParams {
-    mix: f32,
     clock_sync: bool,
     param1: f32,
     param2: f32,
@@ -146,7 +145,6 @@ impl Default for RuntimeParams {
 impl RuntimeParams {
     fn from_patch(params: EffectParams) -> Self {
         Self {
-            mix: params.mix.clamp(0.0, 1.0),
             clock_sync: params.clock_sync,
             param1: params.param1.clamp(0.0, 1.0),
             param2: params.param2.clamp(0.0, 1.0),
@@ -172,6 +170,7 @@ struct ProcessContext {
 pub struct EffectsWithMemory<Memory> {
     sample_rate: f32,
     tempo_bpm: f32,
+    mix: f32,
     enabled: bool,
     selected: SelectedEffect,
     modulation_smoother: EffectModulationSmoother,
@@ -208,6 +207,7 @@ impl<const SAMPLES: usize> EffectsWithMemory<[f32; SAMPLES]> {
         Self {
             sample_rate: sample_rate.max(1.0),
             tempo_bpm: DEFAULT_TEMPO_BPM,
+            mix: 0.0,
             enabled: false,
             selected: SelectedEffect::DelayMono,
             modulation_smoother: EffectModulationSmoother::new(sample_rate),
@@ -239,6 +239,7 @@ where
         Self {
             sample_rate: sample_rate.max(1.0),
             tempo_bpm: DEFAULT_TEMPO_BPM,
+            mix: 0.0,
             enabled: false,
             selected: SelectedEffect::DelayMono,
             modulation_smoother: EffectModulationSmoother::new(sample_rate),
@@ -262,6 +263,7 @@ where
     pub fn set_params(&mut self, params: EffectParams) {
         let selected = SelectedEffect::from(params.effect_type);
         let changed = self.enabled != params.enabled || self.selected != selected;
+        self.mix = params.mix.clamp(0.0, 1.0);
         self.enabled = params.enabled;
         self.selected = selected;
         *self.selected_params_mut() = RuntimeParams::from_patch(params);
@@ -275,7 +277,7 @@ where
         EffectParams {
             enabled: self.enabled,
             effect_type: self.selected.effect_type(),
-            mix: params.mix,
+            mix: self.mix,
             clock_sync: params.clock_sync,
             param1: params.param1,
             param2: params.param2,
@@ -306,7 +308,7 @@ where
     }
 
     pub fn set_mix(&mut self, mix: f32) {
-        self.selected_params_mut().mix = mix.clamp(0.0, 1.0);
+        self.mix = mix.clamp(0.0, 1.0);
     }
 
     pub fn set_clock_sync(&mut self, clock_sync: bool) {
@@ -362,7 +364,7 @@ where
         #[cfg(feature = "profiling")]
         profiler.begin(RenderStage::EffectsPreparation);
         let params = self.selected_params();
-        let mix = (params.mix + modulation.mix).clamp(0.0, 1.0);
+        let mix = (self.mix + modulation.mix).clamp(0.0, 1.0);
         let context = ProcessContext {
             sample_rate: self.sample_rate,
             tempo_bpm: self.tempo_bpm,

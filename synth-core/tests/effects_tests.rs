@@ -223,7 +223,6 @@ fn switching_effects_restores_runtime_params_without_changing_patch_shape() {
     effects.set_param2(0.4);
 
     effects.set_type(EffectType::Distortion);
-    effects.set_mix(0.8);
     effects.set_param1(0.9);
     effects.set_param2(0.7);
     effects.set_type(EffectType::DelayMono);
