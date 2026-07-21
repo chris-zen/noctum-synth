@@ -9,20 +9,25 @@ use {defmt_rtt as _, panic_probe as _};
 
 use synth_core::{FilterOversampling, FilterType, MidiClockMode};
 
-use analog_synth_daisy_firmware::audio::{ControlQueue, HardwareSynth, PatchQueue};
-use analog_synth_daisy_firmware::synth::SynthMidiHandler;
-use analog_synth_daisy_firmware::{audio, diagnostics, indicator, midi};
+use analog_synth_daisy_firmware::audio::{
+    ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,
+};
+use analog_synth_daisy_firmware::pending_releases::PendingReleases;
+use analog_synth_daisy_firmware::{audio, diagnostics, indicator, midi, usb_audio};
 
-const SAMPLE_RATE_HZ: f32 = 48_000.0;
-const EFFECTS_SAMPLES: usize = 48_000;
+const SAMPLE_RATE_HZ: f32 = usb_audio::SAMPLE_RATE_HZ as f32;
+const EFFECTS_SAMPLES: usize = usb_audio::SAMPLE_RATE_HZ;
 const FIRMWARE_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
 const FIRMWARE_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
 const FIRMWARE_MIDI_CLOCK_MODE: MidiClockMode = MidiClockMode::Slave;
 
 static ENGINE: StaticCell<HardwareSynth> = StaticCell::new();
-static CONTROLS: ControlQueue = Channel::new();
+static CONTROLS: ControlQueue = ControlQueue::new();
+static PERFORMANCE: PerformanceQueue = PerformanceQueue::new();
+static PENDING_RELEASES: PendingReleases = PendingReleases::new();
 static PATCHES: PatchQueue = Channel::new();
 static INDICATOR: indicator::Indicator = indicator::Indicator::new();
+static USB_AUDIO: usb_audio::UsbAudioBuffer = usb_audio::UsbAudioBuffer::new();
 
 #[embassy_executor::main]
 async fn main(spawner: embassy_executor::Spawner) {
@@ -69,14 +74,32 @@ async fn main(spawner: embassy_executor::Spawner) {
     #[cfg(feature = "diagnostics")]
     spawner.spawn(diagnostics::run_task().expect("failed to spawn diagnostics reporter"));
 
-    let midi_handler = SynthMidiHandler::new(CONTROLS.sender(), PATCHES.sender(), indicator_tx);
-
-    // Any interrupt preempts thread mode. P1 leaves the DMA/USB handlers at
-    // their default P0 while guaranteeing that blocking diagnostics cannot
-    // delay audio rendering or SAI servicing.
+    // Hardware DMA/USB handlers stay at P0. Audio rendering runs at P1, and
+    // USB class/packet work runs at P2 so both preempt thread-mode diagnostics.
     interrupt::I2C4_EV.set_priority(Priority::P1);
-    audio::spawn(parts.audio, engine, &CONTROLS, &PATCHES, indicator_tx)
-        .expect("failed to spawn audio task");
+    interrupt::I2C4_ER.set_priority(Priority::P2);
+    audio::spawn(
+        parts.audio,
+        engine,
+        &CONTROLS,
+        &PERFORMANCE,
+        &PENDING_RELEASES,
+        &PATCHES,
+        indicator_tx,
+        &USB_AUDIO,
+    )
+    .expect("failed to spawn audio task");
 
-    midi::run(parts.usb, midi_handler).await;
+    midi::spawn(
+        parts.usb,
+        &CONTROLS,
+        &PERFORMANCE,
+        &PENDING_RELEASES,
+        &PATCHES,
+        indicator_tx,
+        &USB_AUDIO,
+    )
+    .expect("failed to spawn USB task");
+
+    core::future::pending().await
 }

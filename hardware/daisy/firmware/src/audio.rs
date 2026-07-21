@@ -18,6 +18,7 @@ use crate::pending_releases::PendingReleases;
 use crate::patch_transition::PatchTransition;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
+use crate::usb_audio::UsbAudioBuffer;
 use crate::{diagnostics, indicator};
 #[cfg(feature = "audio-profiling")]
 use synth_core::{RenderProfiler, RenderStage};
@@ -154,10 +155,18 @@ pub fn spawn(
     pending_releases: &'static PendingReleases,
     patches: &'static PatchQueue,
     indicator: indicator::Sender<'static>,
+    usb_audio: &'static UsbAudioBuffer,
 ) -> Result<(), embassy_executor::SpawnError> {
-    EXECUTOR
-        .start(interrupt::I2C4_EV)
-        .spawn(run_task(resources, engine, controls, patches, indicator)?);
+    EXECUTOR.start(interrupt::I2C4_EV).spawn(run_task(
+        resources,
+        engine,
+        controls,
+        performance,
+        pending_releases,
+        patches,
+        indicator,
+        usb_audio,
+    )?);
     Ok(())
 }
 
@@ -170,6 +179,7 @@ pub async fn run_task(
     pending_releases: &'static PendingReleases,
     patches: &'static PatchQueue,
     indicator: indicator::Sender<'static>,
+    usb_audio: &'static UsbAudioBuffer,
 ) -> ! {
     let mut audio = Audio::output(resources).expect("WM8731/SAI initialization failed");
     yield_now().await;
@@ -268,6 +278,7 @@ pub async fn run_task(
         #[cfg(feature = "audio-profiling")]
         profiler.begin(RenderStage::OutputCopy);
         copy_output(&interleaved, &mut output);
+        usb_audio.push_block(&output);
         #[cfg(feature = "audio-profiling")]
         {
             profiler.end(RenderStage::OutputCopy);

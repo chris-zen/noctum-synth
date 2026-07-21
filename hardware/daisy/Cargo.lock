@@ -313,11 +313,14 @@ dependencies = [
  "defmt 1.1.1",
  "defmt-rtt",
  "embassy-stm32",
+ "embassy-sync",
  "embassy-time",
+ "embassy-usb",
  "embedded-test",
  "panic-probe",
  "static_cell",
  "stm32-fmc",
+ "stm32-metapac",
 ]
 
 [[package]]

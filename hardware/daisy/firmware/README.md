@@ -36,10 +36,10 @@ shareable memory.
 
 ## USB MIDI development identity
 
-The firmware currently enumerates as a bidirectional USB-MIDI device and
-decodes USB event packets with the no-std `wmidi` crate. The decoder honors
-each packet's code-index-number length and reassembles SysEx into a fixed
-buffer sized for the larger Rev2 stored-program envelope without allocation.
+The firmware enumerates as a composite bidirectional USB-MIDI device and UAC1
+audio source. The MIDI decoder honors each packet's code-index-number length
+and reassembles SysEx into a fixed buffer sized for the larger Rev2
+stored-program envelope without allocation.
 It uses
 temporary VID/PID
 `0xC0DE:0xCAFE` for local development only. Do not distribute firmware or
@@ -59,6 +59,58 @@ Before the first public binary or hardware release:
 3. Verify the release identity on every supported host operating system.
 
 Allocation requirements: <https://pid.codes/howto/>.
+
+## USB audio
+
+The analog DAC is always active. When a host opens the USB audio capture
+interface, the firmware additionally mirrors the same post-effects,
+post-master-volume signal as stereo packed 24-bit PCM at 48 kHz. Merely
+attaching a cable or opening USB MIDI does not start audio streaming.
+
+SAI remains the synth clock and never waits for USB. A lock-free frame ring
+bridges the 32-frame render blocks to 1 ms USB packets; the USB packetizer uses
+47, 48, or 49 frames to absorb clock drift. It primes with silence before a
+5 ms fade-in. USB class and packet work runs on a P2 software-interrupt
+executor, below P1 audio rendering but above thread-mode diagnostics. USB
+disconnects, underruns, resets, and suspend/resume transitions flush and
+re-prime only the USB copy and cannot mute or restart the DAC.
+
+While the capture interface is active, the firmware enables the Synopsys OTG
+end-of-periodic-frame recovery path. This prevents a missed isochronous frame
+from leaving the endpoint writer blocked indefinitely; it is disabled again
+when streaming stops.
+
+The buffering and packed-PCM logic has host tests. Because the Daisy workspace
+defaults to the Cortex-M target, supply the development machine's host target
+explicitly, for example on Apple Silicon:
+
+```sh
+cargo test -p analog-synth-daisy-firmware --lib \
+  --target aarch64-apple-darwin
+```
+
+`tools/usb-audio-smoke.sh` opens the CoreAudio input, sends three USB-MIDI
+notes, records a WAV, prints signal statistics, and fails if the capture is
+silent. For transport-only diagnosis, build with `usb-audio-test-tone`; that
+feature substitutes a USB-only 1 kHz reference signal without changing DAC
+output and is not enabled in normal firmware builds.
+
+macOS can open a CoreAudio input while returning only zero-filled samples when
+microphone privacy is denied. The smoke test probes the default input after an
+all-zero capture and reports that condition separately.
+
+For a privacy-independent raw USB transport check, build the diagnostic
+firmware so AppleUSBAudio does not claim its streaming interface, then run the
+libusb harness:
+
+```sh
+cargo build --release -p analog-synth-daisy-firmware \
+  --features diagnostics,usb-audio-test-tone,usb-audio-raw-test
+tools/usb-audio-raw-smoke.sh
+```
+
+`usb-audio-raw-test` is diagnostic-only: normal firmware omits it and binds to
+the operating system USB Audio Class driver.
 
 The MIDI component terminates at a synchronous typed-message handler. The
 firmware maps performance messages into `synth_core::ControlMessage`, enqueues

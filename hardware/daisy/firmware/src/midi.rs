@@ -1,8 +1,14 @@
 //! USB-MIDI transport and its application-facing event boundary.
 
+use embassy_executor::InterruptExecutor;
+use embassy_stm32::interrupt;
 use wmidi::{FromBytesError, MidiMessage};
 
 use synth_core::REV2_PROGRAM_DATA_SYSEX_LEN;
+
+use crate::audio::{ControlQueue, PatchQueue, PerformanceQueue};
+use crate::pending_releases::PendingReleases;
+use crate::synth::SynthMidiHandler;
 
 // Use the larger stored-program envelope even though the firmware currently
 // applies only Program Edit Buffer dumps. This keeps transport assembly
@@ -19,8 +25,10 @@ pub const DEVELOPMENT_VID: u16 = 0xc0de;
 pub const DEVELOPMENT_PID: u16 = 0xcafe;
 
 const MANUFACTURER: &str = "chris-zen";
-const PRODUCT: &str = "Analog Synth USB MIDI (development)";
+const PRODUCT: &str = "Analog Synth (development)";
 const CONTROL_BUFFER_SIZE: usize = 128;
+
+static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
 
 /// Failure while converting a USB-MIDI event stream into MIDI messages.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -222,11 +230,56 @@ fn dispatch_events(bytes: &[u8], handler: &mut impl MidiEventHandler) -> usize {
     bytes.len() - complete_len
 }
 
-pub async fn run(
+pub fn spawn(
+    resources: embassy_daisy::usb::UsbResources,
+    controls: &'static ControlQueue,
+    performance: &'static PerformanceQueue,
+    pending_releases: &'static PendingReleases,
+    patches: &'static PatchQueue,
+    indicator: crate::indicator::Sender<'static>,
+    audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
+) -> Result<(), embassy_executor::SpawnError> {
+    EXECUTOR.start(interrupt::I2C4_ER).spawn(run_task(
+        resources,
+        controls,
+        performance,
+        pending_releases,
+        patches,
+        indicator,
+        audio_buffer,
+    )?);
+    Ok(())
+}
+
+#[embassy_executor::task]
+async fn run_task(
+    resources: embassy_daisy::usb::UsbResources,
+    controls: &'static ControlQueue,
+    performance: &'static PerformanceQueue,
+    pending_releases: &'static PendingReleases,
+    patches: &'static PatchQueue,
+    indicator: crate::indicator::Sender<'static>,
+    audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
+) -> ! {
+    let handler = SynthMidiHandler::new(
+        controls,
+        performance,
+        pending_releases,
+        patches.sender(),
+        indicator,
+    );
+    run(resources, handler, audio_buffer).await
+}
+
+async fn run(
     resources: embassy_daisy::usb::UsbResources,
     handler: impl MidiMessageHandler,
+    audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
 ) -> ! {
-    use embassy_futures::join::join;
+    use embassy_daisy::usb_audio::{
+        Channel, HostBinding, InputTerminalType, Microphone, SampleWidth, State as AudioState,
+    };
+    use embassy_futures::join::join3;
     use embassy_usb::class::midi::MidiClass;
     use embassy_usb::driver::EndpointError;
     use embassy_usb::{Builder, Config};
@@ -238,23 +291,33 @@ pub async fn run(
     // Embassy enables interface association descriptors by default. The USB-IF
     // IAD convention requires this class triplet on the device descriptor;
     // MidiClass supplies the Audio/MIDI class values on its own interfaces.
-    // Keeping IAD mode also leaves room for additional USB functions later.
+    // Keep IAD mode for the separate MIDI and audio functions. Together they
+    // consume Embassy USB's four default interface slots; another function
+    // must raise the max_interface_count compile-time setting.
     config.device_class = 0xef;
     config.device_sub_class = 0x02;
     config.device_protocol = 0x01;
     config.manufacturer = Some(MANUFACTURER);
     config.product = Some(PRODUCT);
     config.serial_number = None;
+    config.device_release = if cfg!(feature = "usb-audio-raw-test") {
+        0x00f0
+    } else {
+        0x0025
+    };
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
-    let mut config_descriptor = [0u8; 256];
+    let mut config_descriptor = [0u8; 512];
     let mut bos_descriptor = [0u8; 256];
     let mut msos_descriptor = [];
     // String descriptors are UTF-16LE with a two-byte header. Keep enough
     // room for the complete product string, not only an EP0 packet.
     let mut control_buffer = [0u8; CONTROL_BUFFER_SIZE];
 
+    // Class state must outlive the builder because the builder stores its
+    // control handler until `build` transfers that handler into the device.
+    let mut audio_state = AudioState::new();
     let mut builder = Builder::new(
         driver,
         config,
@@ -264,6 +327,20 @@ pub async fn run(
         &mut control_buffer,
     );
     let mut class = MidiClass::new(&mut builder, 1, 1, 64);
+    let mut audio_stream = Microphone::new(
+        &mut builder,
+        &mut audio_state,
+        crate::usb_audio::MAX_PACKET_BYTES as u16,
+        SampleWidth::Bits24,
+        &[crate::usb_audio::SAMPLE_RATE_HZ as u32],
+        &[Channel::LeftFront, Channel::RightFront],
+        InputTerminalType::LineConnector,
+        if cfg!(feature = "usb-audio-raw-test") {
+            HostBinding::VendorSpecific
+        } else {
+            HostBinding::AudioClass
+        },
+    );
     let mut device = builder.build();
 
     let device_fut = device.run();
@@ -302,8 +379,18 @@ pub async fn run(
         }
     };
 
-    join(device_fut, receive_fut).await;
+    let audio_fut = crate::usb_audio::run(&mut audio_stream, audio_buffer);
+    join3(device_fut, receive_fut, audio_fut).await;
     unreachable!()
+}
+
+// I2C4 is not used by the Daisy BSP. Its error vector is reserved as a
+// software-pended executor below deadline-critical audio but above thread-mode
+// diagnostics and UI work.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn I2C4_ER() {
+    unsafe { EXECUTOR.on_interrupt() }
 }
 
 #[cfg(test)]

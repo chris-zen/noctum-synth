@@ -86,6 +86,9 @@ pub enum Event {
         count: u8,
     },
     UsbMidiBufferOverflow,
+    UsbAudioStarted,
+    UsbAudioPrimed,
+    UsbAudioStopped,
 }
 
 #[cfg(feature = "diagnostics")]
@@ -384,6 +387,9 @@ mod enabled {
                 Event::UsbMidiBufferOverflow => {
                     defmt::error!("USB MIDI endpoint buffer overflow")
                 }
+                Event::UsbAudioStarted => defmt::info!("USB audio capture opened; priming"),
+                Event::UsbAudioPrimed => defmt::info!("USB audio capture primed"),
+                Event::UsbAudioStopped => defmt::info!("USB audio capture closed"),
             }
 
             let dropped = take_dropped_events();

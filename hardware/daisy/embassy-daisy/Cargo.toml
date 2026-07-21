@@ -30,7 +30,10 @@ block_length_64 = []
 cortex-m.workspace = true
 embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32h750ib", "time-driver-any", "memory-x"] }
 embassy-time.workspace = true
+embassy-usb.workspace = true
+embassy-sync.workspace = true
 static_cell.workspace = true
+stm32-metapac = "21"
 stm32-fmc.workspace = true
 
 [dev-dependencies]

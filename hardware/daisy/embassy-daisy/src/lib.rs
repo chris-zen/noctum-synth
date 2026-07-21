@@ -57,6 +57,7 @@ pub mod pwm;
 pub mod qspi;
 pub mod sdram;
 pub mod usb;
+pub mod usb_audio;
 
 pub use board::{Board, BoardParts, TakeError};
 pub use led::{PwmUserLed, UserLed, UserLedPin};

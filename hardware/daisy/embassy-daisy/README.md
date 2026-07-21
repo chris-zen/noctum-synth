@@ -11,9 +11,10 @@ embassy-daisy = { version = "0.1", features = ["seed_1_1"] }
 ```
 
 The crate owns Daisy-specific clocking, connector pin names, codec setup, audio
-transport, USB hardware resources, external SDRAM, and QSPI flash. USB classes,
-memory partition policy, and application behavior remain in the consuming
-firmware.
+transport, USB hardware resources, external SDRAM, and QSPI flash. It also
+provides a generic Embassy UAC1 device-to-host audio class; USB identity,
+buffering policy, memory partition policy, and application behavior remain in
+the consuming firmware.
 
 ## Status
 
@@ -25,6 +26,27 @@ firmware.
 - 8 MiB IS25LP064 QSPI: explicit read/program/erase access with the bootloader
   and maximum BOOT_SRAM image window protected from writes
 - 96 kHz and 64-frame blocks: reserved, not implemented
+
+## USB audio source
+
+`usb_audio::Microphone` adds an asynchronous UAC1 device-to-host PCM stream to
+an `embassy_usb::Builder`. The caller supplies the sample width, rates, channel
+map, terminal type, and maximum packet size, then owns the returned stream and
+its scheduling policy. Rates must be nonzero and unique, channels use canonical
+UAC bitmap order, and the full-speed packet must hold a whole number of frames
+at the highest advertised rate plus one frame of positive asynchronous drift
+margin. The stream exposes the selected rate and USB suspend state. The class
+contains no VID/PID, product strings, or Daisy application behavior.
+`HostBinding::AudioClass` is the normal UAC binding;
+`HostBinding::VendorSpecific` leaves the interface unclaimed for raw USB
+transport diagnostics without adding any application identity to this crate.
+
+`usb::set_isochronous_in_recovery` controls the Synopsys OTG
+end-of-periodic-frame recovery needed by isochronous IN streams with the pinned
+USB driver. On a missed frame, the board support layer drops the expired packet,
+flushes its dedicated FIFO, and wakes the endpoint writer so the next frame can
+be queued immediately. Enable it only while a stream is active because it adds
+one USB interrupt per frame.
 
 ## Audio modes
 

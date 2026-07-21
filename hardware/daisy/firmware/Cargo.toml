@@ -13,6 +13,8 @@ diagnostics = []
 embedded-math = ["synth-core/embedded-math"]
 daisy-full-rate = ["synth-core/daisy-full-rate"]
 oscillator-polyblep = ["synth-core/oscillator-polyblep"]
+usb-audio-test-tone = []
+usb-audio-raw-test = []
 
 [dependencies]
 embassy-sync.workspace = true
