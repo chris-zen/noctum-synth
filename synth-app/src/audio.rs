@@ -19,9 +19,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use synth_core::{
-    ControlMessage, FilterOversampling, FilterType, SynthEngine, VOICE_PACKS, VoiceTraceSnapshot,
-};
+use synth_core::{ControlMessage, FilterOversampling, FilterType, SynthEngine, VOICE_PACKS};
 
 /// How long to wait for `cpal` to switch the device sample rate and build a
 /// stream. CoreAudio rate changes can take longer than the default, so give
@@ -31,134 +29,8 @@ const STREAM_BUILD_TIMEOUT: Duration = Duration::from_secs(5);
 /// settle before input devices (e.g. BlackHole) are opened or started.
 const DEVICE_SETTLE_DELAY: Duration = Duration::from_millis(200);
 const RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
-const VOICE_TRACE_QUEUE_CAPACITY: usize = 4_096;
-
 fn log_audio(message: impl AsRef<str>) {
     eprintln!("[audio] {}", message.as_ref());
-}
-
-#[derive(Clone, Copy)]
-struct DesktopVoiceTraceRecord {
-    sequence: u64,
-    kind: u8,
-    note: u8,
-    snapshot: VoiceTraceSnapshot,
-}
-
-struct DesktopVoiceTrace {
-    producer: Option<rtrb::Producer<DesktopVoiceTraceRecord>>,
-    sequence: u64,
-    dropped: Arc<AtomicU64>,
-}
-
-impl DesktopVoiceTrace {
-    fn new() -> Self {
-        let enabled = cfg!(debug_assertions)
-            || std::env::var_os("ANALOG_SYNTH_VOICE_TRACE").is_some_and(|value| value != "0");
-        let dropped = Arc::new(AtomicU64::new(0));
-        if !enabled {
-            return Self {
-                producer: None,
-                sequence: 0,
-                dropped,
-            };
-        }
-
-        let (producer, mut consumer) = RingBuffer::new(VOICE_TRACE_QUEUE_CAPACITY);
-        let logger_dropped = dropped.clone();
-        let _ = thread::Builder::new()
-            .name("voice-trace".into())
-            .spawn(move || loop {
-                match consumer.pop() {
-                    Ok(record) => log_desktop_voice_trace(record),
-                    Err(_) => {
-                        let count = logger_dropped.swap(0, Ordering::Relaxed);
-                        if count != 0 {
-                            eprintln!("[voice-trace] dropped={count}");
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                }
-            });
-        Self {
-            producer: Some(producer),
-            sequence: 0,
-            dropped,
-        }
-    }
-
-    fn record(&mut self, kind: u8, note: u8, snapshot: VoiceTraceSnapshot) {
-        let Some(producer) = self.producer.as_mut() else {
-            return;
-        };
-        self.sequence = self.sequence.wrapping_add(1);
-        if producer
-            .push(DesktopVoiceTraceRecord {
-                sequence: self.sequence,
-                kind,
-                note,
-                snapshot,
-            })
-            .is_err()
-        {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-fn log_desktop_voice_trace(record: DesktopVoiceTraceRecord) {
-    let state = record.snapshot.lifecycle;
-    let trace = record.snapshot;
-    eprintln!(
-        "VOICE TRACE: seq={} kind={} note={} sounding={:x}:{:x} pressed={:x}:{:x} sustain={} unison={} unison_mode={} key_mode={} rendering={:x} gated={:x} pending={:x}",
-        record.sequence,
-        record.kind,
-        record.note,
-        state.sounding_high,
-        state.sounding_low,
-        state.pressed_high,
-        state.pressed_low,
-        state.sustain_pressed,
-        state.unison_enabled,
-        state.unison_mode,
-        state.key_mode,
-        trace.rendering_lanes,
-        trace.gated_lanes,
-        trace.pending_lanes,
-    );
-    eprintln!(
-        "VOICE STATE: seq={} notes={:x}:{:x} pending_notes={:x}:{:x} amp_stages={:x} probe={}/{}/{} amp={} gain={} glide1={}:{}/{} rem={} glide2={}:{}/{} rem={}",
-        record.sequence,
-        trace.lane_notes_high,
-        trace.lane_notes_low,
-        trace.pending_notes_high,
-        trace.pending_notes_low,
-        trace.amp_stages,
-        trace.probe_lane,
-        trace.probe_note,
-        trace.probe_pending_note,
-        trace.probe_amp_value,
-        trace.probe_lifecycle_gain,
-        trace.osc1_glide_active,
-        trace.osc1_glide_current,
-        trace.osc1_glide_target,
-        trace.osc1_glide_remaining,
-        trace.osc2_glide_active,
-        trace.osc2_glide_current,
-        trace.osc2_glide_target,
-        trace.osc2_glide_remaining,
-    );
-}
-
-fn performance_trace_event(message: &ControlMessage) -> Option<(u8, u8)> {
-    match message {
-        ControlMessage::NoteOn { note, velocity } if *velocity > 0.0 => Some((1, *note)),
-        ControlMessage::NoteOn { note, .. } | ControlMessage::NoteOff { note } => Some((2, *note)),
-        ControlMessage::AllNotesOff => Some((3, 0xff)),
-        ControlMessage::SustainPedal { pressed: true } => Some((4, 0xff)),
-        ControlMessage::SustainPedal { pressed: false } => Some((5, 0xff)),
-        _ => None,
-    }
 }
 
 fn wait_for_device_settle() {
@@ -328,25 +200,16 @@ fn run_audio_thread(
                                 last_good_config = effective_config(&config, &info);
                             }
                             Err(err) => {
-                                log_audio(&format!(
-                                    "Failed to apply audio config: {err}"
-                                ));
+                                log_audio(&format!("Failed to apply audio config: {err}"));
                                 engine_audio = rebind_audio_channels(&bridge);
                                 session_generation.fetch_add(1, Ordering::SeqCst);
                                 let rec = options(SessionMode::Recovery, true);
-                                match start_session(
-                                    &host,
-                                    engine_audio,
-                                    &last_good_config,
-                                    &rec,
-                                ) {
+                                match start_session(&host, engine_audio, &last_good_config, &rec) {
                                     Ok((recovered, info)) => {
                                         generation += 1;
                                         let mut applied_state = applied_audio_config(
                                             &info,
-                                            Some(format!(
-                                                "{err} (reverted to previous settings)"
-                                            )),
+                                            Some(format!("{err} (reverted to previous settings)")),
                                         );
                                         applied_state.generation = generation;
                                         *applied.write() = applied_state;
@@ -384,9 +247,7 @@ fn run_audio_thread(
                             Err(recover_err) => {
                                 *applied.write() = AppliedAudioConfig {
                                     applying: false,
-                                    error: Some(format!(
-                                        "{err}; recovery failed: {recover_err}"
-                                    )),
+                                    error: Some(format!("{err}; recovery failed: {recover_err}")),
                                     generation,
                                     ..applied.read().clone()
                                 };
@@ -434,8 +295,7 @@ fn run_audio_thread(
                                             applied_state.generation = generation;
                                             *applied.write() = applied_state;
                                             session = Some(new_session);
-                                            last_good_config =
-                                                effective_config(&config, &info);
+                                            last_good_config = effective_config(&config, &info);
                                             break;
                                         }
                                         Err(err) => {
@@ -453,13 +313,12 @@ fn run_audio_thread(
                                             ) {
                                                 Ok((recovered, info)) => {
                                                     generation += 1;
-                                                    let mut applied_state =
-                                                        applied_audio_config(
-                                                            &info,
-                                                            Some(format!(
-                                                                "{err} (reverted to previous settings)"
-                                                            )),
-                                                        );
+                                                    let mut applied_state = applied_audio_config(
+                                                        &info,
+                                                        Some(format!(
+                                                            "{err} (reverted to previous settings)"
+                                                        )),
+                                                    );
                                                     applied_state.generation = generation;
                                                     *applied.write() = applied_state;
                                                     session = Some(recovered);
@@ -481,9 +340,7 @@ fn run_audio_thread(
                                     }
                                 }
                                 Err(err) => {
-                                    log_audio(&format!(
-                                        "Audio config probe failed: {err}"
-                                    ));
+                                    log_audio(&format!("Audio config probe failed: {err}"));
                                     session_generation.fetch_add(1, Ordering::SeqCst);
                                     let rec = options(SessionMode::Recovery, true);
                                     match start_session(
@@ -522,16 +379,10 @@ fn run_audio_thread(
                             engine_audio = rebind_audio_channels(&bridge);
                             session_generation.fetch_add(1, Ordering::SeqCst);
                             let rec = options(SessionMode::Recovery, false);
-                            match start_session(
-                                &host,
-                                engine_audio,
-                                &last_good_config,
-                                &rec,
-                            ) {
+                            match start_session(&host, engine_audio, &last_good_config, &rec) {
                                 Ok((new_session, info)) => {
                                     generation += 1;
-                                    let mut applied_state =
-                                        applied_audio_config(&info, None);
+                                    let mut applied_state = applied_audio_config(&info, None);
                                     applied_state.generation = generation;
                                     *applied.write() = applied_state;
                                     session = Some(new_session);
@@ -1114,7 +965,6 @@ struct Renderer {
     sample_rate: f32,
     channels: usize,
     last_midi_clock_status: synth_core::MidiClockStatus,
-    voice_trace: DesktopVoiceTrace,
 }
 
 impl Renderer {
@@ -1145,7 +995,6 @@ impl Renderer {
             sample_rate,
             channels,
             last_midi_clock_status,
-            voice_trace: DesktopVoiceTrace::new(),
         }
     }
 
@@ -1162,8 +1011,6 @@ impl Renderer {
         let mut pending_oversampling = None;
         let mut pending_filter_type = None;
 
-        let engine = &mut self.engine;
-        let voice_trace = &mut self.voice_trace;
         self.engine_audio.control.drain(|message| match message {
             ControlMessage::SetFilterOversampling(oversampling) => {
                 pending_oversampling = Some(oversampling);
@@ -1171,13 +1018,7 @@ impl Renderer {
             ControlMessage::SetFilterType(filter_type) => {
                 pending_filter_type = Some(filter_type);
             }
-            message => {
-                let trace_event = performance_trace_event(&message);
-                engine.handle_control(message);
-                if let Some((kind, note)) = trace_event {
-                    voice_trace.record(kind, note, engine.voice_trace_snapshot());
-                }
-            }
+            message => self.engine.handle_control(message),
         });
 
         if let Some(oversampling) = pending_oversampling {

@@ -16,6 +16,7 @@ oscillator-polyblep = ["synth-core/oscillator-polyblep"]
 
 [dependencies]
 embassy-sync.workspace = true
+heapless = "0.9"
 synth-core.workspace = true
 wmidi.workspace = true
 

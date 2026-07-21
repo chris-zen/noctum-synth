@@ -72,13 +72,10 @@ pub fn message_to_controls(
     }
 }
 
-pub struct SynthMidiHandler<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize> {
-    controls: embassy_sync::channel::Sender<
-        'a,
-        embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        ControlMessage,
-        CONTROL_CAPACITY,
-    >,
+pub struct SynthMidiHandler<'a, const PATCH_CAPACITY: usize> {
+    controls: &'a crate::audio::ControlQueue,
+    performance: &'a crate::audio::PerformanceQueue,
+    pending_releases: &'a crate::pending_releases::PendingReleases,
     patches: embassy_sync::channel::Sender<
         'a,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
@@ -91,16 +88,11 @@ pub struct SynthMidiHandler<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPAC
     nrpn_monitor: NrpnMonitor,
 }
 
-impl<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize>
-    SynthMidiHandler<'a, CONTROL_CAPACITY, PATCH_CAPACITY>
-{
+impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
     pub fn new(
-        controls: embassy_sync::channel::Sender<
-            'a,
-            embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-            ControlMessage,
-            CONTROL_CAPACITY,
-        >,
+        controls: &'a crate::audio::ControlQueue,
+        performance: &'a crate::audio::PerformanceQueue,
+        pending_releases: &'a crate::pending_releases::PendingReleases,
         patches: embassy_sync::channel::Sender<
             'a,
             embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
@@ -111,6 +103,8 @@ impl<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize>
     ) -> Self {
         Self {
             controls,
+            performance,
+            pending_releases,
             patches,
             indicator,
             decoder: Rev2MidiDecoder::default(),
@@ -118,10 +112,19 @@ impl<'a, const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize>
             nrpn_monitor: NrpnMonitor::default(),
         }
     }
+
+    fn enqueue(&self, command: ControlMessage) {
+        enqueue_command(
+            self.controls,
+            self.performance,
+            self.pending_releases,
+            command,
+        );
+    }
 }
 
-impl<const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize> crate::midi::MidiMessageHandler
-    for SynthMidiHandler<'_, CONTROL_CAPACITY, PATCH_CAPACITY>
+impl<const PATCH_CAPACITY: usize> crate::midi::MidiMessageHandler
+    for SynthMidiHandler<'_, PATCH_CAPACITY>
 {
     fn handle(&mut self, _cable: u8, message: MidiMessage<'_>) {
         self.indicator.notify_midi();
@@ -136,11 +139,11 @@ impl<const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize> crate::midi::Mi
             None
         };
 
-        let sender = self.controls;
+        let controls = self.controls;
+        let performance = self.performance;
+        let pending_releases = self.pending_releases;
         message_to_controls(message, &mut self.decoder, |command| {
-            if sender.try_send(command).is_err() {
-                crate::diagnostics::emit(crate::diagnostics::Event::ControlQueueFull);
-            }
+            enqueue_command(controls, performance, pending_releases, command);
         });
 
         #[cfg(feature = "diagnostics")]
@@ -211,6 +214,38 @@ impl<const CONTROL_CAPACITY: usize, const PATCH_CAPACITY: usize> crate::midi::Mi
         crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
         if self.patches.try_send(patch).is_err() {
             crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
+        }
+    }
+}
+
+fn enqueue_command(
+    controls: &crate::audio::ControlQueue,
+    performance: &crate::audio::PerformanceQueue,
+    pending_releases: &crate::pending_releases::PendingReleases,
+    command: ControlMessage,
+) {
+    let is_replaceable = matches!(
+        &command,
+        ControlMessage::SetParam(..) | ControlMessage::SetModulationParam { .. }
+    );
+    let result = if is_replaceable {
+        controls.try_send(command)
+    } else {
+        performance.try_send(command)
+    };
+
+    match result {
+        Ok(()) => {}
+        Err(embassy_sync::channel::TrySendError::Full(command)) => {
+            match command {
+                ControlMessage::NoteOn { note, velocity } if velocity <= 0.0 => {
+                    pending_releases.note_off(note)
+                }
+                ControlMessage::NoteOff { note } => pending_releases.note_off(note),
+                ControlMessage::AllNotesOff => pending_releases.all_notes_off(),
+                _ => {}
+            }
+            crate::diagnostics::emit(crate::diagnostics::Event::ControlQueueFull);
         }
     }
 }

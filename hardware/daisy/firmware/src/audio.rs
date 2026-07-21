@@ -1,5 +1,6 @@
 //! Real-time audio rendering on the interrupt executor.
 
+use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m::peripheral::DWT;
@@ -7,10 +8,13 @@ use embassy_daisy::audio::{Audio, AudioResources, BLOCK_LENGTH, Block, Error as 
 use embassy_executor::InterruptExecutor;
 use embassy_futures::yield_now;
 use embassy_stm32::interrupt;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
+use heapless::Deque;
 use synth_core::{ControlMessage, Patch, SynthEngineWithMemory};
 
+use crate::pending_releases::PendingReleases;
 use crate::patch_transition::PatchTransition;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
@@ -18,26 +22,136 @@ use crate::{diagnostics, indicator};
 #[cfg(feature = "audio-profiling")]
 use synth_core::{RenderProfiler, RenderStage};
 
-pub const CONTROL_QUEUE_CAPACITY: usize = 256;
+// Parameter traffic is isolated from performance events and coalesced by key.
+// Keep this small so the bounded in-place scan spends negligible time in its
+// critical section even under an NRPN flood.
+pub const CONTROL_QUEUE_CAPACITY: usize = 32;
+pub const PERFORMANCE_QUEUE_CAPACITY: usize = 32;
 pub const PATCH_QUEUE_CAPACITY: usize = 2;
-// Bound non-audio work between DMA transfers. Four commands per block still
-// sustains 6,000 parameter updates/second at 48 kHz with 32-frame blocks.
-const MAX_CONTROLS_PER_BLOCK: usize = 4;
 const BLOCK_CYCLE_BUDGET: u32 =
     embassy_daisy::clocks::SYSCLK_HZ / embassy_daisy::audio::SAMPLE_RATE_HZ * BLOCK_LENGTH as u32;
+// Reserve measured render headroom by limiting patch/control work to ten
+// percent of one audio-block deadline. Unlike a message-count cap, cheap
+// commands can drain a burst quickly while expensive commands remain bounded.
+const CONTROL_CYCLE_BUDGET: u32 = BLOCK_CYCLE_BUDGET / 10;
 
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
 static OVERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 static UNDERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
-pub type ControlQueue = Channel<CriticalSectionRawMutex, ControlMessage, CONTROL_QUEUE_CAPACITY>;
+pub struct ControlQueue {
+    queue: Mutex<CriticalSectionRawMutex, RefCell<Deque<ControlMessage, CONTROL_QUEUE_CAPACITY>>>,
+}
+
+impl ControlQueue {
+    pub const fn new() -> Self {
+        Self {
+            queue: Mutex::new(RefCell::new(Deque::new())),
+        }
+    }
+
+    /// Enqueue a control, replacing an older queued update to the same
+    /// parameter or modulation-route field when possible.
+    pub fn try_send(
+        &self,
+        command: ControlMessage,
+    ) -> Result<(), embassy_sync::channel::TrySendError<ControlMessage>> {
+        self.queue.lock(|queue| {
+            let mut queue = queue.borrow_mut();
+            if let Some(existing) = queue
+                .iter_mut()
+                .find(|existing| replaceable_same_field(existing, &command))
+            {
+                *existing = command;
+                return Ok(());
+            }
+            queue
+                .push_back(command)
+                .map_err(embassy_sync::channel::TrySendError::Full)
+        })
+    }
+
+    pub fn try_receive(&self) -> Result<ControlMessage, embassy_sync::channel::TryReceiveError> {
+        self.queue.lock(|queue| {
+            queue
+                .borrow_mut()
+                .pop_front()
+                .ok_or(embassy_sync::channel::TryReceiveError::Empty)
+        })
+    }
+
+}
+
+fn replaceable_same_field(existing: &ControlMessage, incoming: &ControlMessage) -> bool {
+    match (existing, incoming) {
+        (ControlMessage::SetParam(left, _), ControlMessage::SetParam(right, _)) => left == right,
+        (
+            ControlMessage::SetModulationParam {
+                route: left_route,
+                parameter: left_parameter,
+            },
+            ControlMessage::SetModulationParam {
+                route: right_route,
+                parameter: right_parameter,
+            },
+        ) => {
+            left_route == right_route
+                && core::mem::discriminant(left_parameter)
+                    == core::mem::discriminant(right_parameter)
+        }
+        _ => false,
+    }
+}
+pub struct PerformanceQueue {
+    queue:
+        Mutex<CriticalSectionRawMutex, RefCell<Deque<ControlMessage, PERFORMANCE_QUEUE_CAPACITY>>>,
+}
+
+impl PerformanceQueue {
+    pub const fn new() -> Self {
+        Self {
+            queue: Mutex::new(RefCell::new(Deque::new())),
+        }
+    }
+
+    pub fn try_send(
+        &self,
+        command: ControlMessage,
+    ) -> Result<(), embassy_sync::channel::TrySendError<ControlMessage>> {
+        self.queue.lock(|queue| {
+            let mut queue = queue.borrow_mut();
+            if matches!(&command, ControlMessage::AllNotesOff)
+                && queue
+                    .iter()
+                    .any(|queued| matches!(queued, ControlMessage::AllNotesOff))
+            {
+                return Ok(());
+            }
+            queue
+                .push_back(command)
+                .map_err(embassy_sync::channel::TrySendError::Full)
+        })
+    }
+
+    pub fn try_receive(&self) -> Result<ControlMessage, embassy_sync::channel::TryReceiveError> {
+        self.queue.lock(|queue| {
+            queue
+                .borrow_mut()
+                .pop_front()
+                .ok_or(embassy_sync::channel::TryReceiveError::Empty)
+        })
+    }
+
+}
 pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
 
 pub fn spawn(
     resources: AudioResources,
     engine: &'static mut HardwareSynth,
     controls: &'static ControlQueue,
+    performance: &'static PerformanceQueue,
+    pending_releases: &'static PendingReleases,
     patches: &'static PatchQueue,
     indicator: indicator::Sender<'static>,
 ) -> Result<(), embassy_executor::SpawnError> {
@@ -52,6 +166,8 @@ pub async fn run_task(
     resources: AudioResources,
     engine: &'static mut HardwareSynth,
     controls: &'static ControlQueue,
+    performance: &'static PerformanceQueue,
+    pending_releases: &'static PendingReleases,
     patches: &'static PatchQueue,
     indicator: indicator::Sender<'static>,
 ) -> ! {
@@ -122,12 +238,21 @@ pub async fn run_task(
         if let Some(patch) = transition_action.patch {
             engine.apply_patch(&patch);
         }
-        for _ in 0..MAX_CONTROLS_PER_BLOCK {
-            let Ok(command) = controls.try_receive() else {
-                break;
-            };
-            queue_midi_parameter_applied(&command);
-            engine.handle_control(command);
+        // Releases that overflowed the performance queue are correctness
+        // critical and do not wait behind replaceable parameter traffic.
+        apply_pending_releases(engine, pending_releases);
+
+        while DWT::cycle_count().wrapping_sub(work_started) < CONTROL_CYCLE_BUDGET {
+            if let Ok(command) = performance.try_receive() {
+                apply_control(engine, command);
+                continue;
+            }
+            if let Ok(command) = controls.try_receive() {
+                queue_midi_parameter_applied(&command);
+                apply_control(engine, command);
+                continue;
+            }
+            break;
         }
         #[cfg(feature = "audio-profiling")]
         profiler.end(RenderStage::ControlDrain);
@@ -152,6 +277,23 @@ pub async fn run_task(
         let work_cycles = DWT::cycle_count().wrapping_sub(work_started);
         if let Some(event) = perf_monitor.observe(work_cycles) {
             diagnostics::emit(event);
+        }
+    }
+}
+
+fn apply_control(engine: &mut HardwareSynth, command: ControlMessage) {
+    engine.handle_control(command);
+}
+
+fn apply_pending_releases(engine: &mut HardwareSynth, pending: &PendingReleases) {
+    if pending.take_all_notes_off() {
+        apply_control(engine, ControlMessage::AllNotesOff);
+    }
+    for (word_index, mut word) in pending.take().into_iter().enumerate() {
+        while word != 0 {
+            let note = word_index as u8 * 32 + word.trailing_zeros() as u8;
+            word &= word - 1;
+            apply_control(engine, ControlMessage::NoteOff { note });
         }
     }
 }

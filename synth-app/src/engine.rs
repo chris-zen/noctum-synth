@@ -1,7 +1,7 @@
 //! Lock-free bridge between the UI/MIDI threads and the audio thread.
 
 use parking_lot::{Mutex, RwLock};
-use rtrb::RingBuffer;
+use rtrb::{PushError, RingBuffer};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -257,10 +257,8 @@ impl SynthEngineControl {
         *self.held_notes.lock() = [false; 128];
         self.send(ControlMessage::AllNotesOff);
         for channel in 0..16 {
-            self.midi_output
-                .send_raw(&[0xB0 | channel, 123, 0]);
-            self.midi_output
-                .send_raw(&[0xB0 | channel, 120, 0]);
+            self.midi_output.send_raw(&[0xB0 | channel, 123, 0]);
+            self.midi_output.send_raw(&[0xB0 | channel, 120, 0]);
         }
     }
 
@@ -384,7 +382,30 @@ impl SynthEngineControl {
     }
 
     fn send(&self, message: ControlMessage) {
-        let _ = self.sender.lock().push(message);
+        let performance_event = matches!(
+            &message,
+            ControlMessage::NoteOn { .. }
+                | ControlMessage::NoteOff { .. }
+                | ControlMessage::AllNotesOff
+                | ControlMessage::SustainPedal { .. }
+        );
+        let mut pending = message;
+        loop {
+            let result = {
+                let mut sender = self.sender.lock();
+                sender.push(pending)
+            };
+            match result {
+                Ok(()) => return,
+                Err(PushError::Full(message)) if performance_event => {
+                    pending = message;
+                    // Drop the producer lock before yielding so audio-session
+                    // rebind can replace a queue whose consumer has stopped.
+                    std::thread::yield_now();
+                }
+                Err(PushError::Full(_)) => return,
+            }
+        }
     }
 
     fn send_midi_ui(&self, update: MidiUiUpdate) {
@@ -521,6 +542,32 @@ mod tests {
             }
             _ => panic!("patch load must queue chord memory first"),
         }
+    }
+
+    #[test]
+    fn note_event_waits_for_control_ring_capacity_instead_of_being_dropped() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        for value in 0..CONTROL_QUEUE_CAPACITY {
+            bridge
+                .control
+                .set_param_audio_only(ParamId::FilterCutoff, value as f32);
+        }
+
+        let control = bridge.control.clone();
+        let note_thread = std::thread::spawn(move || control.note_on(72, 1.0));
+        let mut first = None;
+        audio.control.drain(|message| {
+            if first.is_none() {
+                first = Some(message);
+            }
+        });
+        note_thread.join().unwrap();
+
+        let mut found_note = false;
+        audio.control.drain(|message| {
+            found_note |= matches!(message, ControlMessage::NoteOn { note: 72, .. });
+        });
+        assert!(found_note, "NoteOn must survive a saturated control ring");
     }
 
     #[test]

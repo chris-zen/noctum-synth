@@ -201,12 +201,21 @@ fn connect_input_port(
             .unwrap_or(false)
     })?;
     let mut decoder = Rev2MidiDecoder::default();
+    let input_port = port_name.to_owned();
     midi_in
         .connect(
             &port,
             &format!("midi-in-{port_name}"),
             move |timestamp, message, _| {
-                handle_midi_with_flags(timestamp, message, &control, &mut decoder, &output, &flags);
+                handle_midi_with_flags(
+                    timestamp,
+                    message,
+                    &input_port,
+                    &control,
+                    &mut decoder,
+                    &output,
+                    &flags,
+                );
             },
             (),
         )
@@ -233,6 +242,7 @@ pub fn merged_port_list(available: &[String], configured: &[String]) -> Vec<Stri
 fn handle_midi_with_flags(
     timestamp_micros: u64,
     message: &[u8],
+    input_port: &str,
     control: &SynthEngineControl,
     decoder: &mut Rev2MidiDecoder,
     output: &MidiOutputHandle,
@@ -251,7 +261,7 @@ fn handle_midi_with_flags(
         control.midi_realtime(event);
     }
 
-    if output.consume_echo(message) {
+    if output.consume_echo_from(input_port, message) {
         return;
     }
 
@@ -527,8 +537,15 @@ impl MidiOutputHandle {
         }
     }
 
-    fn consume_echo(&self, message: &[u8]) -> bool {
-        consume_midi_echo(&mut self.state.lock().recent_messages, message)
+    fn consume_echo_from(&self, input_port: &str, message: &[u8]) -> bool {
+        let mut state = self.state.lock();
+        let Some(output_port) = state.configured_port.as_deref() else {
+            return false;
+        };
+        if !midi_port_names_match(input_port, output_port) {
+            return false;
+        }
+        consume_midi_echo(&mut state.recent_messages, message)
     }
 
     pub fn send_param(&self, param: ParamId, value: f32) {
@@ -639,6 +656,12 @@ fn clear_midi_output(state: &mut MidiOutputState) {
     state.connection = None;
     state.last_nrpn_values.fill(None);
     state.recent_messages.clear();
+}
+
+fn midi_port_names_match(left: &str, right: &str) -> bool {
+    let left = left.to_lowercase();
+    let right = right.to_lowercase();
+    left == right || left.contains(&right) || right.contains(&left)
 }
 
 /// Sends only NRPN sequences whose quantized value differs from the last value
@@ -810,17 +833,59 @@ mod tests {
     }
 
     #[test]
+    fn output_echo_cache_does_not_swallow_note_off_from_another_input_port() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let output = MidiOutputHandle::default();
+        {
+            let mut state = output.state.lock();
+            state.configured_port = Some("Analog Synth USB MIDI (development)".to_owned());
+            // These model identical NoteOff messages forwarded during the
+            // immediately preceding chord, still inside the echo TTL.
+            record_midi_echo(&mut state.recent_messages, &[0x80, 64, 0]);
+            record_midi_echo(&mut state.recent_messages, &[0x80, 62, 0]);
+        }
+        let mut decoder = Rev2MidiDecoder::default();
+
+        for message in [[0x80, 64, 0], [0x80, 62, 0]] {
+            handle_midi_with_flags(
+                0,
+                &message,
+                "Arturia MiniLab mkII",
+                &bridge.control,
+                &mut decoder,
+                &output,
+                &all_flags(),
+            );
+        }
+
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(ControlMessage::NoteOff { note: 64 })
+        ));
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(ControlMessage::NoteOff { note: 62 })
+        ));
+        assert_eq!(output.state.lock().recent_messages.len(), 2);
+    }
+
+    #[test]
     fn echoed_patch_is_not_applied_to_ui() {
         let (_audio, bridge) = create_synth_engine_bridge(16);
         let output = MidiOutputHandle::default();
         let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
         Rev2MidiEncoder::program_edit_buffer(&Patch::default(), &mut message).unwrap();
-        record_midi_echo(&mut output.state.lock().recent_messages, &message);
+        {
+            let mut state = output.state.lock();
+            state.configured_port = Some("loopback".to_owned());
+            record_midi_echo(&mut state.recent_messages, &message);
+        }
         let mut decoder = Rev2MidiDecoder::default();
 
         handle_midi_with_flags(
             0,
             &message,
+            "loopback",
             &bridge.control,
             &mut decoder,
             &output,
@@ -901,6 +966,7 @@ mod tests {
         handle_midi_with_flags(
             0,
             &[0x90, 60, 100],
+            "test input",
             &bridge.control,
             &mut decoder,
             &MidiOutputHandle::default(),
@@ -922,6 +988,7 @@ mod tests {
         handle_midi_with_flags(
             123_456,
             &[0xf8],
+            "test input",
             &bridge.control,
             &mut decoder,
             &MidiOutputHandle::default(),
@@ -939,6 +1006,7 @@ mod tests {
         handle_midi_with_flags(
             0,
             &[0xfb],
+            "test input",
             &bridge.control,
             &mut decoder,
             &MidiOutputHandle::default(),
@@ -961,6 +1029,7 @@ mod tests {
         handle_midi_with_flags(
             0,
             &message,
+            "test input",
             &bridge.control,
             &mut decoder,
             &MidiOutputHandle::default(),
@@ -990,6 +1059,7 @@ mod tests {
         handle_midi_with_flags(
             0,
             &[0x90, 60, 100],
+            "test input",
             &bridge.control,
             &mut decoder,
             &output,
