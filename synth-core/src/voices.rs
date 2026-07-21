@@ -22,14 +22,14 @@ const MIDI_CC_FILTER_CUTOFF: u8 = 74;
 #[derive(Clone)]
 struct PressedKeys {
     /// Press order packed as `(note << 8) | 7-bit velocity`.
-    order: [u16; 16],
+    order: [u16; 128],
     len: usize,
 }
 
 impl Default for PressedKeys {
     fn default() -> Self {
         Self {
-            order: [0; 16],
+            order: [0; 128],
             len: 0,
         }
     }
@@ -41,10 +41,6 @@ impl PressedKeys {
             return;
         }
         self.release(note);
-        if self.len == self.order.len() {
-            self.order.copy_within(1.., 0);
-            self.len -= 1;
-        }
         let velocity = (velocity.clamp(0.0, 1.0) * 127.0 + 0.5) as u16;
         self.order[self.len] = u16::from(note) << 8 | velocity;
         self.len += 1;
@@ -483,8 +479,26 @@ impl<const PACKS: usize> Voices<PACKS> {
                 }
             });
             let block = &mut self.blocks[block_idx];
-            if !retrigger && was_active {
-                block.retune_lane(lane, note, velocity, tuning_cents, should_glide);
+            if was_active {
+                if retrigger {
+                    // This lane already belongs to the unison group. Retrigger it
+                    // in place instead of treating the transition as a voice
+                    // steal: the latter inserts a 5 ms shutdown and allows rapid
+                    // key transitions to overwrite the pending performance note.
+                    block.note_on_tuned_with_glide(
+                        lane,
+                        note,
+                        velocity,
+                        false,
+                        tuning_cents,
+                        NoteGlide {
+                            start_note: None,
+                            enabled: should_glide,
+                        },
+                    );
+                } else {
+                    block.retune_lane(lane, note, velocity, tuning_cents, should_glide);
+                }
             } else if block.is_lane_silent(lane) {
                 block.note_on_tuned_with_glide(
                     lane,
@@ -1035,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn retrigger_key_modes_restart_through_click_safe_shutdown() {
+    fn retrigger_key_modes_restart_unison_group_in_place() {
         let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(
             ParamId::KeyMode,
@@ -1052,11 +1066,37 @@ mod tests {
             note: 67,
             velocity: 0.5,
         });
-        assert!(voices[0].has_pending_note(0));
-        assert!(voices.active_notes().iter().all(|note| note == 60));
-        process_frames(&mut voices, 256);
         assert!(!voices[0].has_pending_note(0));
-        assert!(voices[0].test_age(0) < 64);
+        assert!(voices.active_notes().iter().all(|note| note == 60));
+        assert_eq!(voices[0].test_age(0), 0);
+    }
+
+    #[test]
+    fn last_retrigger_unison_glides_without_a_pending_voice_steal() {
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::KeyMode,
+            KeyMode::LastRetrigger.index() as f32,
+        ));
+        configure_glide(&mut voices, GlideMode::FixedTime);
+        enable_unison(&mut voices, UnisonMode::V4);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+
+        assert!(!voices[0].has_pending_note(0));
+        assert!(voices.active_notes().iter().all(|note| note == 72));
+        let start = gated_note_frequency(&voices, 72);
+        assert!((start - crate::midi_to_hz(60)).abs() < 0.1);
+        process_frames(&mut voices, 1_000);
+        let progressed = gated_note_frequency(&voices, 72);
+        assert!(progressed > start);
+        assert!(progressed < crate::midi_to_hz(72));
     }
 
     #[test]

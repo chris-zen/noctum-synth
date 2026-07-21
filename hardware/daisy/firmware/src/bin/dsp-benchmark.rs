@@ -10,8 +10,9 @@ use {defmt_rtt as _, panic_probe as _};
 
 use analog_synth_daisy_firmware::profiling::{AudioProfiler, Snapshot};
 use synth_core::{
-    ControlMessage, DedicatedModSource, EffectType, FilterOversampling, FilterType, ModDestination,
-    ModRoute, ModSource, ParamId, Patch, SynthEngineWithMemory, Waveform, profiling::RenderStage,
+    ControlMessage, DedicatedModSource, EffectType, FilterOversampling, FilterType, GlideMode,
+    ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngineWithMemory, Waveform,
+    profiling::RenderStage,
 };
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
@@ -42,6 +43,9 @@ fn main() -> ! {
         .expect("SDRAM data/address-line test failed");
 
     run_scenario(&mut sdram, "idle", |_| {});
+    run_scenario(&mut sdram, "four-note-dual-oscillator-glide", |engine| {
+        configure_active_glide(engine);
+    });
     run_scenario(&mut sdram, "one-note-default", |engine| {
         engine.note_on(60, 1.0);
     });
@@ -317,7 +321,6 @@ fn u1_001_patch() -> Patch {
     patch.noise_level = 0.0;
     patch.hard_sync = false;
     patch.osc_slop = 0.078_740_16;
-    patch.glide_time = 0.0;
 
     patch.filter.cutoff = 557.380_7;
     patch.filter.resonance = 0.0;
@@ -503,6 +506,24 @@ fn configure_dual_oscillator(engine: &mut HardwareSynth) {
     engine.set_param(ParamId::Osc2Enabled, 1.0);
     engine.set_param(ParamId::Osc2Waveform, Waveform::Saw as u8 as f32);
     engine.set_param(ParamId::OscMix, 0.5);
+}
+
+fn configure_active_glide(engine: &mut HardwareSynth) {
+    engine.set_param(ParamId::Osc1Enabled, 1.0);
+    engine.set_param(ParamId::Osc1Waveform, Waveform::Saw as u8 as f32);
+    engine.set_param(ParamId::Osc2Enabled, 1.0);
+    engine.set_param(ParamId::Osc2Waveform, Waveform::Saw as u8 as f32);
+    engine.set_param(ParamId::OscMix, 0.5);
+    engine.set_param(ParamId::Osc1Glide, 1.0);
+    engine.set_param(ParamId::Osc2Glide, 1.0);
+    engine.set_param(ParamId::GlideMode, GlideMode::FixedTime.index() as f32);
+    engine.set_param(ParamId::GlideEnabled, 1.0);
+
+    engine.note_on(48, 1.0);
+    engine.all_notes_off();
+    for note in [60, 64, 67, 72] {
+        engine.note_on(note, 1.0);
+    }
 }
 
 fn configure_pwm(engine: &mut HardwareSynth) {

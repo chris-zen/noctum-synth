@@ -13,7 +13,9 @@ use crate::{RenderProfiler, RenderStage};
 // phases advance before the first note when note reset is off.
 const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
 // The guides specify direction and mode semantics but not measured timing.
-// Keep this musical logarithmic curve isolated for future hardware calibration.
+// Keep this curve isolated for future hardware calibration. A quadratic mapping
+// preserves a near-instant first step without compressing low factory values
+// (such as Prophet '08 value 17) into an inaudible few milliseconds.
 const MIN_GLIDE_SECONDS: f32 = 0.001;
 const MAX_GLIDE_SECONDS: f32 = 16.0;
 const MIDI_GLIDE_STEP: f32 = 1.0 / 127.0;
@@ -716,7 +718,7 @@ fn glide_seconds(amount: f32) -> f32 {
     let normalized = ((amount.clamp(MIDI_GLIDE_STEP, 1.0) - MIDI_GLIDE_STEP)
         / (1.0 - MIDI_GLIDE_STEP))
         .clamp(0.0, 1.0);
-    MIN_GLIDE_SECONDS * crate::math::powf(MAX_GLIDE_SECONDS / MIN_GLIDE_SECONDS, normalized)
+    MIN_GLIDE_SECONDS + (MAX_GLIDE_SECONDS - MIN_GLIDE_SECONDS) * normalized * normalized
 }
 
 fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {

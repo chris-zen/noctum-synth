@@ -584,6 +584,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ControlMessage, Voices};
 
     const FACTORY_SYSEX: &[u8] =
         include_bytes!("../../Prophet_08_Programs+ReadMe/Prophet_08_Programs_v1.0.syx");
@@ -600,9 +601,235 @@ mod tests {
 
         let decoded = P08MidiDecoder::program_data(factory_message(0, 1)).unwrap();
         assert_eq!(decoded.patch.name.as_str(), "Tom Sawyer");
+        assert!(decoded.patch.unison_enabled);
+        assert_eq!(decoded.patch.unison_mode, crate::UnisonMode::V8);
+        assert_eq!(decoded.patch.key_mode, crate::KeyMode::HighRetrigger);
+        assert!(decoded.patch.glide_enabled);
+        assert_eq!(decoded.patch.glide_mode, crate::GlideMode::FixedRate);
+        assert!((decoded.patch.amplifier.eg_release - 9.291_374).abs() < 0.001);
 
         let decoded = P08MidiDecoder::program_data(factory_message(1, 0)).unwrap();
         assert_eq!(decoded.patch.name.as_str(), "AnalogWurlyRoids");
+    }
+
+    #[test]
+    fn tom_sawyer_unison_glide_releases_every_ordered_note_sequence() {
+        let patch = P08MidiDecoder::program_data(factory_message(0, 1))
+            .unwrap()
+            .patch;
+        assert_eq!(patch.name.as_str(), "Tom Sawyer");
+        assert!(patch.unison_enabled && patch.glide_enabled);
+        assert_eq!(patch.unison_mode, crate::UnisonMode::V8);
+        assert_eq!(patch.key_mode, crate::KeyMode::HighRetrigger);
+
+        let release_orders = [
+            [48, 59, 72],
+            [48, 72, 59],
+            [59, 48, 72],
+            [59, 72, 48],
+            [72, 48, 59],
+            [72, 59, 48],
+        ];
+        for frames_between_events in [0, 1, 32, 256] {
+            for release_order in release_orders {
+                let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+                voices.apply_patch(&patch);
+                for note in [59, 48, 72] {
+                    voices.handle_control(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    });
+                    for _ in 0..frames_between_events {
+                        voices.next();
+                    }
+                }
+                for note in release_order {
+                    voices.handle_control(ControlMessage::NoteOff { note });
+                    for _ in 0..frames_between_events {
+                        voices.next();
+                    }
+                }
+
+                assert!(
+                    voices.active_notes().is_empty(),
+                    "gate or pending note survived release order {release_order:?} with delay {frames_between_events}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tom_sawyer_patch_rebuild_cannot_resurrect_released_pending_notes() {
+        let patch = P08MidiDecoder::program_data(factory_message(0, 1))
+            .unwrap()
+            .patch;
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 59,
+            velocity: 1.0,
+        });
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOff { note: 72 });
+        voices.handle_control(ControlMessage::NoteOff { note: 59 });
+        for _ in 0..512 {
+            voices.next();
+        }
+
+        assert!(voices.active_notes().is_empty());
+    }
+
+    #[test]
+    fn tom_sawyer_last_retrigger_glides_in_place_without_pending_voices() {
+        let mut patch = P08MidiDecoder::program_data(factory_message(0, 1))
+            .unwrap()
+            .patch;
+        patch.key_mode = crate::KeyMode::LastRetrigger;
+        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        let before = voices[0].test_osc1_frequency_hz().to_array()[0];
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        let start = voices[0].test_osc1_frequency_hz().to_array()[0];
+        assert!((start - before).abs() < 0.01);
+        for voice in 0..8 {
+            assert!(!voices[voice / crate::LANES].has_pending_note(voice % crate::LANES));
+        }
+
+        for _ in 0..32 {
+            voices.next();
+        }
+        let progressing = voices[0].test_osc1_frequency_hz().to_array()[0];
+        assert!(progressing > start);
+        assert!(progressing < before * 2.0);
+        for _ in 32..2_400 {
+            voices.next();
+        }
+        let after_fifty_ms = voices[0].test_osc1_frequency_hz().to_array()[0];
+        for _ in 2_400..48_000 {
+            voices.next();
+        }
+        let target = voices[0].test_osc1_frequency_hz().to_array()[0];
+        assert!(
+            (target - after_fifty_ms).abs() > target * 0.001,
+            "factory glide completed in under 50 ms and is effectively inaudible"
+        );
+    }
+
+    #[test]
+    fn tom_sawyer_final_release_reaches_idle() {
+        let patch = P08MidiDecoder::program_data(factory_message(0, 1))
+            .unwrap()
+            .patch;
+        let mut voices = Voices::<2>::new(48_000.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        for _ in 0..48_000 {
+            voices.next();
+        }
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        assert!(voices.active_notes().is_empty());
+        assert!(
+            voices.active_voice_count() > 0,
+            "release tail should still render"
+        );
+
+        for _ in 0..480_000 {
+            voices.next();
+        }
+        assert_eq!(
+            voices.active_voice_count(),
+            0,
+            "Tom Sawyer release envelope never reached idle"
+        );
+    }
+
+    #[test]
+    fn tom_sawyer_unison_glide_matches_pressed_key_model_under_adversarial_ordering() {
+        let base_patch = P08MidiDecoder::program_data(factory_message(0, 1))
+            .unwrap()
+            .patch;
+        for key_mode in crate::KeyMode::ALL {
+            for glide_mode in crate::GlideMode::ALL {
+                let mut patch = base_patch.clone();
+                patch.key_mode = key_mode;
+                patch.glide_mode = glide_mode;
+                let mut voices = Voices::<2>::new(48_000.0);
+                voices.apply_patch(&patch);
+                let mut pressed = heapless::Vec::<u8, 128>::new();
+                let mut random = 0x6d2b_79f5_u32;
+
+                for event in 0..4_096 {
+                    random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let note = 48 + ((random >> 16) % 25) as u8;
+                    if random & 1 == 0 {
+                        if let Some(index) = pressed.iter().position(|held| *held == note) {
+                            pressed.remove(index);
+                        }
+                        pressed.push(note).unwrap();
+                        voices.handle_control(ControlMessage::NoteOn {
+                            note,
+                            velocity: 1.0,
+                        });
+                    } else {
+                        if let Some(index) = pressed.iter().position(|held| *held == note) {
+                            pressed.remove(index);
+                        }
+                        voices.handle_control(ControlMessage::NoteOff { note });
+                    }
+                    for _ in 0..((random >> 8) & 3) {
+                        voices.next();
+                    }
+
+                    let active = voices.active_notes();
+                    if pressed.is_empty() {
+                        assert!(
+                            active.is_empty(),
+                            "{key_mode:?}/{glide_mode:?} event {event}: unpressed note remained gated or pending"
+                        );
+                        continue;
+                    }
+                    let selected = match key_mode {
+                        crate::KeyMode::Low | crate::KeyMode::LowRetrigger => {
+                            *pressed.iter().min().unwrap()
+                        }
+                        crate::KeyMode::High | crate::KeyMode::HighRetrigger => {
+                            *pressed.iter().max().unwrap()
+                        }
+                        crate::KeyMode::Last | crate::KeyMode::LastRetrigger => {
+                            *pressed.last().unwrap()
+                        }
+                    };
+                    assert_eq!(
+                        active.len(),
+                        8,
+                        "{key_mode:?}/{glide_mode:?} event {event}: incomplete unison group"
+                    );
+                    assert!(
+                        active.iter().all(|note| note == selected),
+                        "{key_mode:?}/{glide_mode:?} event {event}: selected {selected}, active {active:?}, pressed={pressed:?}"
+                    );
+                }
+
+                voices.handle_control(ControlMessage::AllNotesOff);
+                assert!(voices.active_notes().is_empty());
+            }
+        }
     }
 
     #[test]
