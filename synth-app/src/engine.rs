@@ -256,6 +256,12 @@ impl SynthEngineControl {
     pub fn all_notes_off(&self) {
         *self.held_notes.lock() = [false; 128];
         self.send(ControlMessage::AllNotesOff);
+        for channel in 0..16 {
+            self.midi_output
+                .send_raw(&[0xB0 | channel, 123, 0]);
+            self.midi_output
+                .send_raw(&[0xB0 | channel, 120, 0]);
+        }
     }
 
     /// Captures the unique notes currently held by UI or MIDI input.
