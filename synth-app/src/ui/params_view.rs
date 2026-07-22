@@ -801,9 +801,9 @@ const PATCH_LOAD_FILTER_ID: &str = "patch_load_filter";
 const PATCH_LOAD_WAS_OPEN_ID: &str = "patch_load_was_open";
 const PATCH_LOAD_POPUP_WIDTH: f32 = 380.0;
 const PATCH_LOAD_POPUP_HEIGHT: f32 = 440.0;
-const PATCH_LOAD_POPUP_CHROME_HEIGHT: f32 = 72.0;
 const PATCH_LOAD_BANK_FILTER_ID: &str = "patch_load_bank_filter";
 const PATCH_LOAD_BANK_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 22.0);
+const PATCH_LOAD_BUTTON_SIZE: egui::Vec2 = egui::vec2(56.0, 20.0);
 
 fn load_patch_by_name(
     patch_mgr: &mut PatchManager,
@@ -898,12 +898,11 @@ fn command_row(
                 let was_open = ui
                     .data(|data| data.get_temp::<bool>(egui::Id::new(PATCH_LOAD_WAS_OPEN_ID)))
                     .unwrap_or(false);
-                let load_response = egui::ComboBox::from_id_salt("patch_load")
-                    .selected_text("Load")
-                    .width(56.0)
-                    .height(PATCH_LOAD_POPUP_HEIGHT + PATCH_LOAD_POPUP_CHROME_HEIGHT)
+                let load_button = ui.add_sized(PATCH_LOAD_BUTTON_SIZE, egui::Button::new("Load"));
+                let load_popup_open = egui::Popup::menu(&load_button)
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .show_ui(ui, |ui| {
+                    .width(PATCH_LOAD_POPUP_WIDTH)
+                    .show(|ui| {
                         patch_mgr.refresh();
                         ui.set_min_width(PATCH_LOAD_POPUP_WIDTH);
 
@@ -1003,8 +1002,7 @@ fn command_row(
                             if let Some(name) = selected_name {
                                 ui.close();
                                 load_patch_by_name(patch_mgr, control, state, &name, *muted);
-                            } else if !filter.is_empty() || selected_bank.is_some()
-                            {
+                            } else if !filter.is_empty() || selected_bank.is_some() {
                                 let any_match = patch_mgr.patch_names.iter().any(|name| {
                                     if !filter.is_empty()
                                         && !name.to_ascii_lowercase().contains(&filter)
@@ -1025,12 +1023,10 @@ fn command_row(
                                 }
                             }
                         }
-                    });
+                    })
+                    .is_some();
                 ui.data_mut(|data| {
-                    data.insert_temp(
-                        egui::Id::new(PATCH_LOAD_WAS_OPEN_ID),
-                        load_response.inner.is_some(),
-                    );
+                    data.insert_temp(egui::Id::new(PATCH_LOAD_WAS_OPEN_ID), load_popup_open);
                 });
                 if ui.button("Save").clicked() {
                     let name = patch_mgr.canonical_save_name();
