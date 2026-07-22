@@ -35,28 +35,27 @@ control protocol. Prophet '08 programs are imported via SysEx only; see
 
 ## MIDI Clock
 
-The clock mode is a device/application setting rather than part of a patch. It
-preserves the five Prophet Rev2 choices:
+Clock mode is a device setting (not part of a patch). It is selected with
+global NRPN 4099 using the Prophet Rev2 values 0–4:
 
-| Mode | Current behavior |
+| Mode | Behavior |
 |---|---|
 | Off | Ignore MIDI clock and use the patch BPM |
-| Master | Reserved for future outbound clock generation |
-| Slave | Receive Timing Clock (`F8`), Start (`FA`), and Stop (`FC`) |
-| Slave Thru | Reserved for future low-jitter clock forwarding |
-| Slave No S/S | Receive Timing Clock but ignore Start and Stop |
+| Master | Generate outbound Timing Clock at the patch BPM |
+| Slave | Follow Timing Clock (`F8`) to derive BPM and drive synchronized clocks; honor Start (`FA`) and Stop (`FC`) |
+| Slave Thru | Same as Slave, and forward Timing Clock with low jitter |
+| Slave No S/S | Follow Timing Clock (`F8`) to derive BPM and drive synchronized clocks; ignore Start and Stop |
 
-Incoming clock is measured at the MIDI standard rate of 24 pulses per quarter
-note. Until a tempo is acquired, the patch BPM remains effective. If pulses
-stop for 500 ms, clock status changes to lost and transport stops, while
-clock-synchronized LFOs and effects retain the last learned tempo. Selecting
-Off restores the latest patch BPM.
+Off and Master run from the patch BPM. Master transmits Timing Clock (`F8`) on
+MIDI output at 24 PPQN. Slave, Slave Thru, and Slave No S/S measure incoming
+Timing Clock at 24 PPQN to set the effective BPM and drive clock-synchronized
+LFOs and effects. Until a tempo is acquired, the patch BPM remains effective.
+If pulses stop for 500 ms, clock status changes to lost and transport stops,
+while synchronized destinations retain the last learned tempo. Selecting Off
+restores the latest patch BPM.
 
-The desktop app selects one configured MIDI input as its clock source. Daisy
-firmware currently receives clock from USB MIDI and starts in Slave mode. MIDI
-Continue (`FB`), Song Position Pointer, Master, Slave Thru, and Rev2 global
-NRPNs 4099/4100 remain future work. Continue is ignored rather than treated as
-malformed input.
+Slave Thru retransmits Timing Clock on MIDI output. MIDI Continue (`FB`) and
+Song Position Pointer are ignored.
 
 ## RPN / NRPN Reset
 

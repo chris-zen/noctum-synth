@@ -12,7 +12,7 @@ use synth_core::{
     ChordMemory, ClockDivision, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS,
     DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL, DedicatedModSlot, DedicatedModSource,
     EffectParams, EffectType, FilterType, GlideMode, KeyMode, LfoSyncDivision, MAX_LFO_RATE_HZ,
-    MIN_LFO_RATE_HZ, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
+    MIN_LFO_RATE_HZ, MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
     ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
 };
 
@@ -1061,18 +1061,34 @@ fn command_row(
                 ui.separator();
 
                 ui.label("BPM:");
-                let mut bpm = state.bpm;
-                let response = ui.add(
+                let clock_status = control.clock_status_for_ui();
+                let slave = clock_status.is_some_and(|status| {
+                    matches!(
+                        status.configured_mode,
+                        MidiClockMode::Slave | MidiClockMode::SlaveNoStartStop
+                    )
+                });
+                let mut bpm = if slave {
+                    clock_status.map_or(state.bpm, |status| status.effective_bpm)
+                } else {
+                    state.bpm
+                };
+                let response = ui.add_enabled(
+                    !slave,
                     egui::DragValue::new(&mut bpm)
                         .range(30.0..=250.0)
                         .speed(0.5)
                         .fixed_decimals(0),
                 );
-                if response.changed() {
+                if !slave && response.changed() {
                     state.bpm = bpm;
                     control.set_param(ParamId::Bpm, bpm);
                 }
-                response.on_hover_text("Beats per minute (30–250)");
+                response.on_hover_text(if slave {
+                    "Effective BPM estimated from MIDI clock; switch MIDI Clock away from Slave to edit"
+                } else {
+                    "Beats per minute (30–250)"
+                });
 
                 ui.label("Div:");
                 let current_label = ClockDivision::from_index(state.clock_divide).name();

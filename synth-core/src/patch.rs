@@ -1413,7 +1413,8 @@ impl Patch {
         }
     }
 
-    pub(crate) fn set_param(&mut self, id: ParamId, value: f32) {
+    /// Updates one patch parameter using the same normalization as MIDI and UI hosts.
+    pub fn set_param(&mut self, id: ParamId, value: f32) {
         let flag = value >= 0.5;
         match id {
             ParamId::Osc1Waveform => self.osc1.waveform = value as u8,

@@ -19,7 +19,7 @@ transport. `synth-app` demonstrates that pattern with `rtrb`.
 | `PitchBend`, `ModWheel`, `Pressure` | Send normalized performance-source values. |
 | `SustainPedal` | Hold released notes while pressed. |
 | `ControlChange` | Forward a normalized MIDI controller value. |
-| `SetMidiClockMode` | Select the device-global Rev2 clock policy. Master and Slave Thru are represented but currently inactive. |
+| `SetMidiClockMode` | Select the device-global Rev2 clock policy. The core receives Slave/Slave No S/S clock; a host such as `synth-app` may implement Master output. Slave Thru remains inactive. |
 | `MidiRealtime` | Deliver timestamped Timing Clock, Start, or Stop input. |
 
 Convenience methods on `SynthEngine` exist for applying a complete `Patch`,
@@ -43,7 +43,8 @@ from stored typed values to message values.
 
 The shared `rev2_midi` module translates Sequential Rev2 CC and NRPN messages
 to this host address space, encodes parameter changes back to NRPN sequences,
-and converts Program Edit Buffer SysEx messages to and from `Patch`. SysEx
+maps global clock mode NRPN 4099, and converts Program Edit Buffer SysEx
+messages to and from `Patch`. SysEx
 packing and device-specific Layer A/Layer B policy remain at this boundary.
 The unpacked 2,046-byte Rev2 program image is not indexed by NRPN number: the
 codec uses the program-image offset table and reconstructs bipolar or extended

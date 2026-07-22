@@ -16,7 +16,7 @@ use synth_core::{
 };
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
-const EFFECTS_SAMPLES: usize = 48_000;
+const EFFECTS_SAMPLES: usize = 48_000 * 2;
 const WARMUP_BLOCKS: usize = 128;
 const MEASURED_BLOCKS: usize = 512;
 const DEFAULT_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;

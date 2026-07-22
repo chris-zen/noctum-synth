@@ -27,13 +27,21 @@ interruption). The current patch parameters are reloaded after a successful
 apply.
 
 The **MIDI Clock** settings group sits below the MIDI input/output selectors.
-It exposes all five Prophet Rev2 clock modes; Master and Slave Thru are visible
-but disabled until their output paths are implemented. In Slave and Slave No
-S/S modes, use the exclusive **Clock** toggle beside a configured MIDI input to
-select the clock source. Live/lost state and the effective external BPM are
-shown without overwriting the patch's editable BPM.
-Clock messages from that selected source are consumed locally and excluded
-from generic **Forward**; true low-jitter Slave Thru remains future work.
+The **MIDI Clock** control offers Off, Slave, and Master. Master
+sends Timing Clock on the selected MIDI output at 24 pulses per quarter note;
+Slave derives the effective tempo from the input selected with the exclusive
+**Clock** toggle. While slaved, the Parameters view displays the live effective
+BPM in place of a disabled BPM editor without overwriting the patch's local
+BPM. Switching to Off or Master restores that editable local value.
+
+**MIDI Output Clock** independently configures a connected Rev2-compatible
+device through global NRPN 4099. All five Rev2 choices remain visible: Off,
+Slave, and Slave No S/S are active, while Master and Slave Thru are marked as
+future work and disabled for Daisy. The Clock and Forward toggles are
+orthogonal: selected realtime messages can be used locally and forwarded when
+both are enabled. In harness Master mode, incoming realtime clock is not
+forwarded, preventing a second clock stream from competing with the generated
+one. The desired output mode and patch are replayed after output reconnection.
 
 ## Threading model
 

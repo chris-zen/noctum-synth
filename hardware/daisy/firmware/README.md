@@ -27,6 +27,11 @@ The firmware runs one four-lane SIMD `SynthEngine` voice pack at 48 kHz,
 accepts USB MIDI on all channels, and applies queued controls before each
 32-frame audio block. Flashing and logging use `probe-rs` and RTT.
 
+MIDI clock defaults to Off (patch BPM). NRPN 4099 selects Off, Slave, or Slave
+No S/S; Master and Slave Thru fall back to Off. Continue is ignored. The mode
+is runtime-only. System Real-Time bytes may arrive during SysEx without
+interrupting assembly.
+
 The probe target is `STM32H750IB`, matching the STM32H750IBK6 fitted to Daisy
 Seed boards. The similarly named STM32H750VB does not expose all Seed pins.
 
@@ -46,13 +51,6 @@ It uses
 temporary VID/PID
 `0xC0DE:0xCAFE` for local development only. Do not distribute firmware or
 hardware using this identity.
-
-The firmware starts in MIDI Clock Slave mode. USB Timing Clock is timestamped
-with the monotonic Embassy clock; Start and Stop update transport state, while
-Continue is currently ignored. Slave No S/S is supported by the shared engine
-mode, but firmware does not yet expose a persistent hardware settings UI.
-Master clock generation and Slave Thru are future work. System Real-Time bytes
-may occur during SysEx and do not interrupt the fixed-buffer SysEx assembly.
 
 Before the first public binary or hardware release:
 
