@@ -7,7 +7,8 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use synth_core::{FilterOversampling, FilterType, MidiClockMode};
+use synth_core::dsp::{FilterOversampling, FilterType};
+use synth_core::{MidiClockMode};
 
 use analog_synth_daisy_firmware::audio::{
     ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,

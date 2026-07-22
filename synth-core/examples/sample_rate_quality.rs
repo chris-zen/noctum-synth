@@ -5,11 +5,11 @@
 //! 24 -> 48 kHz reconstruction currently used by the fallback rate adapter.
 
 use rustfft::{FftPlanner, num_complex::Complex32};
-use synth_core::{
-    AnalogOscillator, EffectModulation, EffectParams, EffectType, Effects, Filter,
-    FilterOversampling, FilterType, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
-    WavetableOscillator, f32x4, generate_wavetable_bank,
+use synth_core::dsp::{
+    AnalogOscillator, Filter, FilterOversampling, FilterType, SawMethod, WAVETABLE_BANK_SAMPLES,
+    Waveform, WavetableBank, WavetableOscillator, generate_wavetable_bank,
 };
+use synth_core::{EffectModulation, EffectParams, EffectType, Effects, f32x4};
 
 const RATES: [usize; 4] = [24_000, 32_000, 44_100, 48_000];
 const ANALYSIS_SECONDS: usize = 2;
@@ -124,7 +124,8 @@ fn wavetable_oscillator(rate: usize, waveform: Waveform, frequency_hz: f32) -> V
     oscillator.set_waveform(waveform);
     oscillator.set_shape(0.37);
     oscillator.set_frequency(f32x4::splat(frequency_hz));
-    collect(rate, || oscillator.next().to_array()[0])
+    let mut ctx = synth_core::create_render_context!();
+    collect(rate, || oscillator.next(&mut ctx).output.to_array()[0])
 }
 
 fn report_native_group(name: &str, fundamental_hz: f32, signals: &[Vec<f32>]) {
@@ -158,7 +159,8 @@ fn oscillator(rate: usize, waveform: Waveform, frequency_hz: f32, method: SawMet
     oscillator.set_waveform(waveform);
     oscillator.set_shape(0.37);
     oscillator.set_frequency(f32x4::splat(frequency_hz));
-    collect(rate, || oscillator.next().to_array()[0])
+    let mut ctx = synth_core::create_render_context!();
+    collect(rate, || oscillator.next(&mut ctx).output.to_array()[0])
 }
 
 fn filter_case(rate: usize, frequency_hz: f32) -> Vec<f32> {
@@ -171,8 +173,9 @@ fn filter_case(rate: usize, frequency_hz: f32) -> Vec<f32> {
     filter.set_cutoff(3_500.0);
     filter.set_resonance(0.82);
     filter.set_oversampling(FilterOversampling::Off);
+    let mut ctx = synth_core::create_render_context!();
     collect(rate, || {
-        let input = oscillator.next() * f32x4::splat(0.55);
+        let input = oscillator.next(&mut ctx).output * f32x4::splat(0.55);
         filter
             .process(
                 input,
@@ -201,11 +204,12 @@ fn distortion_case(rate: usize, frequency_hz: f32) -> Vec<f32> {
     });
     let mut phase = 0.0_f32;
     let increment = frequency_hz / rate as f32;
+    let mut ctx = synth_core::create_render_context!();
     collect(rate, || {
         let input = libm::sinf(core::f32::consts::TAU * phase) * 0.45;
         phase = (phase + increment).fract();
         effects
-            .next(input, input, EffectModulation::default(), None)
+            .next(input, input, EffectModulation::default(), None, &mut ctx)
             .0
     })
 }

@@ -8,12 +8,15 @@ use crate::ui::widgets::{
     master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
     param_knob_f32_offset, param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
 };
+use synth_core::dsp::{
+    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
+    FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+};
 use synth_core::{
-    ChordMemory, ClockDivision, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS,
-    DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, FilterType, GlideMode, KeyMode, LfoSyncDivision, MAX_LFO_RATE_HZ,
-    MIN_LFO_RATE_HZ, MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode, glide_seconds,
+    ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType,
+    GlideMode, KeyMode, LfoSyncDivision, MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot,
+    ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
+    glide_seconds,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -536,19 +539,19 @@ impl UiState {
     }
 }
 
-fn lfo_waveform_usize(w: synth_core::LfoWaveform) -> usize {
+fn lfo_waveform_usize(w: synth_core::dsp::LfoWaveform) -> usize {
     match w {
-        synth_core::LfoWaveform::Triangle => 0,
-        synth_core::LfoWaveform::Saw => 1,
-        synth_core::LfoWaveform::ReverseSaw => 2,
-        synth_core::LfoWaveform::Square => 3,
-        synth_core::LfoWaveform::SampleAndHold => 4,
+        synth_core::dsp::LfoWaveform::Triangle => 0,
+        synth_core::dsp::LfoWaveform::Saw => 1,
+        synth_core::dsp::LfoWaveform::ReverseSaw => 2,
+        synth_core::dsp::LfoWaveform::Square => 3,
+        synth_core::dsp::LfoWaveform::SampleAndHold => 4,
     }
 }
 
 impl From<&UiState> for Patch {
     fn from(state: &UiState) -> Self {
-        use synth_core::LfoWaveform;
+        use synth_core::dsp::LfoWaveform;
         let lfo_wf = |idx: usize| -> LfoWaveform {
             match state.lfo_waveforms[idx] {
                 0 => LfoWaveform::Triangle,

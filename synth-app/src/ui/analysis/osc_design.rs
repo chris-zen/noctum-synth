@@ -6,7 +6,8 @@ use eframe::egui::epaint::PathShape;
 use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::{Deserialize, Serialize};
 
-use synth_core::{AnalogOscillator, SawMethod, Waveform, f32x4};
+use synth_core::dsp::{AnalogOscillator, SawMethod, Waveform};
+use synth_core::f32x4;
 
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
@@ -403,8 +404,9 @@ fn render_oscillator(state: &mut OscillatorViewState) {
 
     state.samples.clear();
     state.samples.reserve(total_samples);
+    let mut ctx = synth_core::create_render_context!();
     for _ in 0..total_samples {
-        state.samples.push(osc.next().to_array()[0]);
+        state.samples.push(osc.next(&mut ctx).output.to_array()[0]);
     }
 
     // Generate extra samples for the FFT — as many as needed to fill fft_size
@@ -412,7 +414,7 @@ fn render_oscillator(state: &mut OscillatorViewState) {
     let mut fft_samples = Vec::with_capacity(fft_total);
     fft_samples.extend_from_slice(&state.samples);
     while fft_samples.len() < fft_total {
-        fft_samples.push(osc.next().to_array()[0]);
+        fft_samples.push(osc.next(&mut ctx).output.to_array()[0]);
     }
 
     let total_ms = state.samples.len() as f32 / sr * 1000.0;

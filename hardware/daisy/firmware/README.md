@@ -227,7 +227,7 @@ cases. Bank and program numbers are one-based and match the factory-preset list.
 
 On Daisy, the selected uniform quality tier runs the engine at 24 kHz and
 reconstructs its stereo output at the external 48 kHz rate with the fixed
-three-tap half-band interpolator owned by `render_rate`. Desktop builds retain
+three-tap half-band interpolator owned by `dsp::upsampler` via `rate_adapter`. Desktop builds retain
 the unchanged full-rate path. This preserves four voices, all modulation routes,
 and patch/MIDI/SysEx compatibility while intentionally reducing Daisy bandwidth.
 

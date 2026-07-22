@@ -1,7 +1,7 @@
 use crate::f32x4;
 
-use crate::analog_oscillator::{MAX_PHASE_INC, MIN_PHASE_INC};
-use crate::blep::{SawMethod, blep_pulse};
+use crate::dsp::analog_oscillator::{MAX_PHASE_INC, MIN_PHASE_INC};
+use crate::dsp::blep::{SawMethod, blep_pulse};
 use crate::{F32x4Ext, wrap01};
 
 /// One-octave-down square sub oscillator.

@@ -790,9 +790,7 @@ fn spawn_master_clock_worker(state: &Arc<Mutex<MidiOutputState>>) {
                 };
                 let sleep_for = {
                     let mut state = state.lock();
-                    if state.clock_mode != MidiClockMode::Master
-                        || state.connection.is_none()
-                    {
+                    if state.clock_mode != MidiClockMode::Master || state.connection.is_none() {
                         state.next_clock_deadline = None;
                         Duration::from_millis(10)
                     } else {

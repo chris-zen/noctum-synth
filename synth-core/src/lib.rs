@@ -13,9 +13,9 @@
 //! # Architecture
 //!
 //! ```text
-//! ControlMessage ──► Voices ──► [VoiceBlock; VOICE_PACKS] ──► stereo sum
-//!                         │
-//!                         └── ParamId / patch state per voice
+//! ControlMessage ──► VoiceManager ──► [VoiceBlock; VOICE_PACKS] ──► stereo sum
+//!                              │
+//!                              └── ParamId / patch state per voice
 //! ```
 //!
 //! Host applications send [`ControlMessage`] values (note events, MIDI
@@ -36,45 +36,27 @@
 //!
 //! # Modules
 //!
+//! - [`dsp`] — generic signal processing (oscillators, filter, envelopes, LFOs)
 //! - [`engine`] — top-level [`SynthEngine`] and master gain
-//! - [`voices`] — polyphony, sustain pedal, and voice stealing
-//! - [`voice`] — per-block DSP chain
-//! - [`analog_oscillator`] / [`analog_oscillators`] — waveform generation and mixing
-//! - [`filter`] — ladder low-pass with key track and audio modulation
-//! - [`envelope`] — delayed ADSR ([`DadsrEnvelope`])
-//! - [`lfo`] — low-frequency modulation
+//! - [`midi`] — MIDI clock, program import, and instrument SysEx codecs
+//! - [`voice`] — voice manager (polyphony, stealing) and per-block DSP chain
 //! - [`patch`] — parameter bundles and LFO destinations
 
 #![no_std]
 
-pub mod analog_oscillator;
-pub mod analog_oscillators;
-pub mod analog_sub_oscillator;
-pub mod blep;
+pub mod dsp;
 pub mod effects;
 pub mod engine;
-pub mod envelope;
-pub mod filter;
 pub mod fixed_index_list;
-pub mod lfo;
 pub(crate) mod math;
 #[cfg(feature = "embedded-math")]
 mod micromath;
-mod midi_clock;
-pub(crate) mod midi_program;
-pub mod noise;
-mod output_limiter;
-pub mod p08_midi;
+pub mod midi;
 pub mod patch;
-#[cfg(feature = "profiling")]
 pub mod profiling;
-mod render_rate;
-pub mod rev2_midi;
-pub(crate) mod rng;
+mod rate_adapter;
 pub mod tuning;
 pub mod voice;
-pub mod voices;
-pub mod wavetable;
 
 #[cfg(feature = "embedded-math")]
 pub use crate::micromath::f32x4;
@@ -86,48 +68,31 @@ pub(crate) use crate::micromath::i32x4;
 #[cfg(not(feature = "embedded-math"))]
 pub(crate) use wide::i32x4;
 
-pub use analog_oscillator::WavetableOscillator;
-pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
-pub use analog_oscillators::{
-    OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput, OscillatorsParams,
-    glide_seconds,
-};
-pub use analog_sub_oscillator::AnalogSubOscillator;
 pub use effects::{EffectModulation, Effects, EffectsWithMemory};
 pub use engine::{SynthEngine, SynthEngineWithMemory};
-pub use envelope::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DadsrEnvelope,
-};
-pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
-pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
-pub use midi_clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent, MidiTransportState};
-pub use midi_program::{MidiProgramImport, MidiProgramSource};
-pub use noise::WhiteNoise;
-pub use p08_midi::{
-    P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN, P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
-};
-pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, ChordMemory, ClockDivision, DedicatedModSlot,
-    DedicatedModSource, EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LfoParams,
-    LfoSyncDivision, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
-};
-#[cfg(feature = "profiling")]
-pub use profiling::{RenderProfiler, RenderStage};
-pub use rev2_midi::{
+pub use midi::{
+    MidiClockMode, MidiClockStatus, MidiProgramImport, MidiProgramSource, MidiRealtimeEvent,
+    MidiTransportState, P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN,
+    P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN, P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
     REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
     REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,
     Rev2SysexError,
 };
-pub use tuning::midi_to_hz;
-pub use voice::{PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, voice_pan_position};
-pub use voices::{ActiveNotes, Voices};
-pub use wavetable::{
-    WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
-    generate_wavetable_bank,
+pub use patch::{
+    AmplifierParams, AuxEnvelopeParams, ChordMemory, ClockDivision, DedicatedModSlot,
+    DedicatedModSource, EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LFO_COUNT,
+    LfoParams, LfoSyncDivision, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix,
+    ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
 };
+pub use profiling::{RenderContext, RenderProfiler, RenderStage};
+pub use tuning::midi_to_hz;
+pub use voice::{
+    ActiveNotes, OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput,
+    OscillatorsParams, PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, VoiceManager,
+    glide_seconds, voice_pan_position,
+};
+
+use crate::dsp::{FilterOversampling, FilterType};
 
 pub trait F32x4Ext {
     #[must_use]
@@ -147,7 +112,7 @@ impl F32x4Ext for f32x4 {
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
 ///
-/// The UI, MIDI mapping layer, and [`Voices`] voice allocator all use this enum
+/// The UI, MIDI mapping layer, and [`VoiceManager`] all use this enum
 /// to address patch state uniformly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamId {

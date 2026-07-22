@@ -14,7 +14,7 @@ flowchart TD
     Host["Host control queue"]
     Control["ControlMessage"]
     Engine["SynthEngine"]
-    Voices["Voices"]
+    VoiceManager["VoiceManager"]
     Blocks["4 VoiceBlocks x 4 SIMD lanes"]
     Sum["Stereo voice sum"]
     FX["Effects"]
@@ -22,8 +22,8 @@ flowchart TD
 
     Host --> Control
     Control --> Engine
-    Engine --> Voices
-    Voices --> Blocks
+    Engine --> VoiceManager
+    VoiceManager --> Blocks
     Blocks --> Sum
     Sum --> FX
     FX --> Output
@@ -38,17 +38,17 @@ shared across the lanes in a block.
 
 ```mermaid
 flowchart TD
-    Voices["Voices: 16 notes"]
+    VoiceManager["VoiceManager: 16 notes"]
     B0["VoiceBlock 0: lanes 0-3"]
     B1["VoiceBlock 1: lanes 4-7"]
     B2["VoiceBlock 2: lanes 8-11"]
     B3["VoiceBlock 3: lanes 12-15"]
     Mix["Stereo mix"]
 
-    Voices --> B0
-    Voices --> B1
-    Voices --> B2
-    Voices --> B3
+    VoiceManager --> B0
+    VoiceManager --> B1
+    VoiceManager --> B2
+    VoiceManager --> B3
     B0 --> Mix
     B1 --> Mix
     B2 --> Mix

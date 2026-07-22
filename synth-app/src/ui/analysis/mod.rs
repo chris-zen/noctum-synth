@@ -7,7 +7,7 @@ pub mod spectrum;
 use eframe::egui;
 use std::collections::VecDeque;
 
-use synth_core::FilterType;
+use synth_core::dsp::FilterType;
 
 use crate::engine::AudioBlock;
 use crate::engine::SynthEngineControl;

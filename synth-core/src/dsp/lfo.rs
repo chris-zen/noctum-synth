@@ -2,7 +2,7 @@
 
 use crate::f32x4;
 
-use crate::rng::DspRng;
+use super::rng::DspRng;
 use crate::{F32x4Ext, LANES};
 
 /// Minimum LFO rate in Hz.

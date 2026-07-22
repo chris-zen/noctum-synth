@@ -4,9 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use synth_core::{
-    Filter, FilterOversampling, FilterType, LANES, f32x4, filter::SELF_OSC_RESONANCE_START,
-};
+use synth_core::dsp::{Filter, FilterOversampling, FilterType, filter::SELF_OSC_RESONANCE_START};
+use synth_core::{LANES, f32x4};
 
 use crate::engine::SynthEngineControl;
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};

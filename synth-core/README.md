@@ -11,7 +11,7 @@ The underlying algorithms are based on *Designing Software Synthesizer Plugins
 in C++* by Will C. Pirkle (BLEP/polyBLEP oscillators, ladder filter, envelope
 curves, noise generation, and related techniques). They have been adapted to
 match the Prophet Rev2 voice architecture and reimplemented in Rust with
-four-wide SIMD (`wide::f32x4`) so each [`VoiceBlock`](src/voice.rs) renders
+four-wide SIMD (`wide::f32x4`) so each [`VoiceBlock`](src/voice/) renders
 four notes per sample step.
 
 The public entry point for hosts is [`SynthEngine`](src/engine.rs). Parameter
@@ -23,15 +23,10 @@ layout and defaults live under [`patch`](src/patch.rs).
 | Module | Purpose |
 |--------|---------|
 | [`engine`](src/engine.rs) | Top-level render loop and master volume |
-| [`voices`](src/voices.rs) | Polyphony, voice stealing, note routing |
-| [`voice`](src/voice.rs) | Per-block signal chain (osc → filter → amp) |
-| [`analog_oscillator`](src/analog_oscillator.rs) | Single SIMD oscillator (BLEP / polyBLEP) |
-| [`analog_oscillators`](src/analog_oscillators.rs) | Dual-osc mixer, sub, noise, sync |
-| [`filter`](src/filter.rs) | Nonlinear ladder low-pass |
-| [`envelope`](src/envelope.rs) | Delayed ADSR with linear or analog curves |
-| [`lfo`](src/lfo.rs) | Four-lane LFO |
+| [`voice`](src/voice/) | Voice manager (polyphony, stealing) and per-block signal chain |
+| [`dsp`](src/dsp/) | Generic DSP (oscillators, filter, envelopes, LFOs) |
 | [`patch`](src/patch.rs) | Parameter structs and LFO destinations |
-| [`noise`](src/noise.rs) | White (and internal pink) noise |
+| [`noise`](src/dsp/noise.rs) | White (and internal pink) noise |
 | [`tuning`](src/tuning.rs) | MIDI note → Hz conversion |
 
 ## Example

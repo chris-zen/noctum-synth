@@ -3,7 +3,8 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use synth_core::{FilterType, ParamId, Patch};
+use synth_core::dsp::FilterType;
+use synth_core::{ParamId, Patch};
 
 use crate::audio::AudioManager;
 use crate::config::Config;

@@ -1,12 +1,18 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use synth_core::voice::PatchModulation;
 use synth_core::{ModDestination, Patch, PerformanceModulation, VoiceBlock};
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 200_000;
 const BUFFER_FRAMES: usize = 512;
 const VOICE_BLOCKS_FOR_16_VOICES: usize = 4;
+
+struct BenchVoice {
+    block: VoiceBlock,
+    modulation: PatchModulation,
+}
 
 fn main() {
     eprintln!(
@@ -33,58 +39,83 @@ fn ms_per_buffer(ns_per_sample_block: f64, voice_blocks: usize) -> f64 {
     ns_per_sample_block * BUFFER_FRAMES as f64 * voice_blocks as f64 / 1_000_000.0
 }
 
-fn time_case(make_block: fn() -> VoiceBlock) -> Duration {
-    let mut block = make_block();
+fn time_case(make_block: fn() -> BenchVoice) -> Duration {
+    let mut bench = make_block();
     let start = Instant::now();
+    let mut ctx = synth_core::create_render_context!();
     for _ in 0..ITERATIONS {
-        black_box(block.next(PerformanceModulation::default()));
+        black_box(bench.block.next(
+            PerformanceModulation::default(),
+            &bench.modulation,
+            &mut ctx,
+        ));
     }
     start.elapsed()
 }
 
-fn configured_block() -> VoiceBlock {
-    let mut block = VoiceBlock::new(SAMPLE_RATE, &Patch::default());
+fn configured_block() -> BenchVoice {
+    let patch = Patch::default();
+    let mut modulation = PatchModulation::default();
+    modulation.apply_from_patch(&patch);
+    let mut block = VoiceBlock::new(SAMPLE_RATE);
+    patch.for_each_param(|id, value| block.set_param(id, value));
     for (lane, note) in [48, 55, 60, 67].into_iter().enumerate() {
         block.note_on(lane, note, 1.0, false);
     }
-    block
+    BenchVoice { block, modulation }
 }
 
-fn active_filter_block() -> VoiceBlock {
-    let mut block = configured_block();
-    block.set_filter_cutoff(1_200.0);
-    block.set_filter_resonance(0.65);
-    block
+fn active_filter_block() -> BenchVoice {
+    let mut bench = configured_block();
+    bench.block.set_filter_cutoff(1_200.0);
+    bench.block.set_filter_resonance(0.65);
+    bench
 }
 
-fn modulation_heavy_block() -> VoiceBlock {
-    let mut block = active_filter_block();
-    block.set_filter_key_track(0.5);
-    block.set_filter_env_amount(0.5);
-    block.set_filter_velocity(0.5);
-    block.set_filter_audio_mod(0.35);
-    block.set_osc2_enabled(true);
-    block.set_noise_level(0.15);
-    block.set_sub_osc_level(0.2);
-    block.set_pan_spread(1.0);
-    block.set_lfo_rate_hz(0, 0.9);
-    block.set_lfo_depth(0, 0.7);
-    block.set_lfo_destination(0, ModDestination::FilterCutoff);
-    block.set_lfo_rate_hz(1, 1.3);
-    block.set_lfo_depth(1, 0.4);
-    block.set_lfo_destination(1, ModDestination::Pan);
-    block.set_lfo_rate_hz(2, 2.1);
-    block.set_lfo_depth(2, 0.3);
-    block.set_lfo_destination(2, ModDestination::Vca);
-    block.set_lfo_rate_hz(3, 0.5);
-    block.set_lfo_depth(3, 0.25);
-    block.set_lfo_destination(3, ModDestination::OscAllFrequency);
-    block
+fn modulation_heavy_block() -> BenchVoice {
+    let mut bench = active_filter_block();
+    bench.block.set_filter_key_track(0.5);
+    bench.block.set_filter_env_amount(0.5);
+    bench.block.set_filter_velocity(0.5);
+    bench.block.set_filter_audio_mod(0.35);
+    bench.block.set_osc2_enabled(true);
+    bench.block.set_noise_level(0.15);
+    bench.block.set_sub_osc_level(0.2);
+    bench.block.set_pan_spread(1.0);
+    bench.block.set_lfo_rate_hz(0, 0.9);
+    bench.block.set_lfo_depth(0, 0.7);
+    bench
+        .block
+        .set_lfo_destination(0, ModDestination::FilterCutoff);
+    bench.modulation.set_lfo_depth(0, 0.7);
+    bench
+        .modulation
+        .set_lfo_destination(0, ModDestination::FilterCutoff);
+    bench.block.set_lfo_rate_hz(1, 1.3);
+    bench.block.set_lfo_depth(1, 0.4);
+    bench.block.set_lfo_destination(1, ModDestination::Pan);
+    bench.modulation.set_lfo_depth(1, 0.4);
+    bench.modulation.set_lfo_destination(1, ModDestination::Pan);
+    bench.block.set_lfo_rate_hz(2, 2.1);
+    bench.block.set_lfo_depth(2, 0.3);
+    bench.block.set_lfo_destination(2, ModDestination::Vca);
+    bench.modulation.set_lfo_depth(2, 0.3);
+    bench.modulation.set_lfo_destination(2, ModDestination::Vca);
+    bench.block.set_lfo_rate_hz(3, 0.5);
+    bench.block.set_lfo_depth(3, 0.25);
+    bench
+        .block
+        .set_lfo_destination(3, ModDestination::OscAllFrequency);
+    bench.modulation.set_lfo_depth(3, 0.25);
+    bench
+        .modulation
+        .set_lfo_destination(3, ModDestination::OscAllFrequency);
+    bench
 }
 
-fn self_oscillation_block() -> VoiceBlock {
-    let mut block = active_filter_block();
-    block.set_filter_cutoff(440.0);
-    block.set_filter_resonance(1.0);
-    block
+fn self_oscillation_block() -> BenchVoice {
+    let mut bench = active_filter_block();
+    bench.block.set_filter_cutoff(440.0);
+    bench.block.set_filter_resonance(1.0);
+    bench
 }

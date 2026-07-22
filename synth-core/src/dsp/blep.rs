@@ -1,7 +1,7 @@
 use crate::f32x4;
 
 use crate::LANES;
-use crate::analog_oscillator::{MAX_PULSE_WIDTH, MIN_PULSE_WIDTH};
+use crate::dsp::analog_oscillator::{MAX_PULSE_WIDTH, MIN_PULSE_WIDTH};
 #[cfg(test)]
 use crate::wrap01;
 

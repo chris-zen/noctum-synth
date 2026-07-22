@@ -2,6 +2,13 @@
 //!
 //! The module deliberately contains no clock or logging implementation. A host
 //! or firmware supplies those details through [`RenderProfiler`].
+//!
+//! Sample-path call sites use [`profiler_begin!`] / [`profiler_end!`] so the
+//! profiler calls compile out when the `profiling` feature is disabled while
+//! stage expressions remain type-checked.
+
+#[cfg(not(feature = "profiling"))]
+use core::marker::PhantomData;
 
 /// Individually measurable stages of the per-sample synthesis path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,12 +90,100 @@ pub trait RenderProfiler {
     fn end(&mut self, stage: RenderStage);
 }
 
-pub(crate) struct NoopProfiler;
+/// Per-sample render channel for optional profiling.
+///
+/// When the `profiling` feature is disabled this is a ZST and [`begin`] /
+/// [`end`] compile to nothing. Prefer [`profiler_begin!`] / [`profiler_end!`]
+/// at call sites so stage expressions are also cfg-stripped.
+///
+/// Use [`create_render_context!`] for unprofiled paths (engine, tests, tools).
+pub struct RenderContext<'a> {
+    #[cfg(feature = "profiling")]
+    profiler: Option<&'a mut dyn RenderProfiler>,
+    #[cfg(not(feature = "profiling"))]
+    _phantom: PhantomData<&'a ()>,
+}
 
-impl RenderProfiler for NoopProfiler {
+impl<'a> RenderContext<'a> {
+    #[cfg(feature = "profiling")]
     #[inline(always)]
-    fn begin(&mut self, _stage: RenderStage) {}
+    pub fn new(profiler: &'a mut dyn RenderProfiler) -> Self {
+        Self {
+            profiler: Some(profiler),
+        }
+    }
 
     #[inline(always)]
-    fn end(&mut self, _stage: RenderStage) {}
+    pub const fn unprofiled() -> RenderContext<'static> {
+        #[cfg(feature = "profiling")]
+        {
+            RenderContext { profiler: None }
+        }
+        #[cfg(not(feature = "profiling"))]
+        {
+            RenderContext {
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn begin(&mut self, stage: RenderStage) {
+        #[cfg(feature = "profiling")]
+        if let Some(profiler) = self.profiler.as_mut() {
+            profiler.begin(stage);
+        }
+        #[cfg(not(feature = "profiling"))]
+        let _ = stage;
+    }
+
+    #[inline(always)]
+    pub fn end(&mut self, stage: RenderStage) {
+        #[cfg(feature = "profiling")]
+        if let Some(profiler) = self.profiler.as_mut() {
+            profiler.end(stage);
+        }
+        #[cfg(not(feature = "profiling"))]
+        let _ = stage;
+    }
+}
+
+/// Creates an unprofiled [`RenderContext`].
+///
+/// Expands to a value suitable for `let mut ctx = create_render_context!();`.
+#[macro_export]
+macro_rules! create_render_context {
+    () => {
+        $crate::profiling::RenderContext::unprofiled()
+    };
+}
+
+/// Begins a render stage. The stage expression is always type-checked; the
+/// profiler call is compiled out when `profiling` is disabled.
+#[macro_export]
+macro_rules! profiler_begin {
+    ($ctx:expr, $stage:expr) => {{
+        #[cfg(feature = "profiling")]
+        $ctx.begin($stage);
+        #[cfg(not(feature = "profiling"))]
+        {
+            let _ = &mut *$ctx;
+            let _ = $stage;
+        }
+    }};
+}
+
+/// Ends a render stage. The stage expression is always type-checked; the
+/// profiler call is compiled out when `profiling` is disabled.
+#[macro_export]
+macro_rules! profiler_end {
+    ($ctx:expr, $stage:expr) => {{
+        #[cfg(feature = "profiling")]
+        $ctx.end($stage);
+        #[cfg(not(feature = "profiling"))]
+        {
+            let _ = &mut *$ctx;
+            let _ = $stage;
+        }
+    }};
 }

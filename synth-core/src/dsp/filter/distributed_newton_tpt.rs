@@ -2,7 +2,7 @@
 
 use crate::{LANES, f32x4};
 
-use crate::filter::{
+use crate::dsp::filter::{
     FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_PITCH_TUNING_CENTS,
     SELF_OSC_RESONANCE_START,
 };

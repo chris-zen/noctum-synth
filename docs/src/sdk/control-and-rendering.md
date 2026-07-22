@@ -41,7 +41,7 @@ description. Hosts should present user-friendly labels, units, ranges, and
 enums themselves. The `Patch` conversion helpers are the authoritative mapping
 from stored typed values to message values.
 
-The shared `rev2_midi` module translates Sequential Rev2 CC and NRPN messages
+The shared `midi::rev2` module translates Sequential Rev2 CC and NRPN messages
 to this host address space, encodes parameter changes back to NRPN sequences,
 maps global clock mode NRPN 4099, and converts Program Edit Buffer SysEx
 messages to and from `Patch`. SysEx

@@ -14,7 +14,7 @@ const RELEASE_TIME_CONSTANTS: f32 = 6.907_755_4;
 /// Normal signals pass unchanged apart from the fixed lookahead delay. When
 /// either channel exceeds the ceiling, both channels receive the same gain so
 /// the stereo image and relative note levels remain intact.
-pub(crate) struct OutputLimiter {
+pub(crate) struct LookaheadLimiter {
     left_delay: [f32; LOOKAHEAD_SAMPLES],
     right_delay: [f32; LOOKAHEAD_SAMPLES],
     write_index: usize,
@@ -25,7 +25,7 @@ pub(crate) struct OutputLimiter {
     release_coefficient: f32,
 }
 
-impl OutputLimiter {
+impl LookaheadLimiter {
     pub(crate) fn new(sample_rate: f32) -> Self {
         let release_samples = (sample_rate.max(1.0) * RELEASE_SECONDS).max(1.0);
         let release_coefficient = (RELEASE_TIME_CONSTANTS / release_samples).min(1.0);
@@ -102,13 +102,13 @@ impl OutputLimiter {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOOKAHEAD_SAMPLES, OUTPUT_CEILING, OutputLimiter};
+    use super::{LOOKAHEAD_SAMPLES, LookaheadLimiter, OUTPUT_CEILING};
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
     #[test]
     fn below_ceiling_is_unchanged_after_fixed_delay() {
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         let mut output = [(0.0, 0.0); LOOKAHEAD_SAMPLES + 4];
         let input = [(0.1, -0.2), (0.3, 0.4), (-0.5, 0.25), (0.9, -0.8)];
 
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn linked_gain_preserves_stereo_ratio_and_limits_peak() {
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         let input = (1.9, -0.475);
         limiter.next(input.0, input.1);
 
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn attack_is_spread_across_the_lookahead_window() {
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         let target_gain = 0.5;
         let input_peak = OUTPUT_CEILING / target_gain;
         let expected_step = (1.0 - target_gain) / LOOKAHEAD_SAMPLES as f32;
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn later_milder_peak_does_not_relax_an_earlier_attack_deadline() {
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         limiter.next(OUTPUT_CEILING / 0.5, 0.0);
         let original_step = limiter.attack_step;
 
@@ -204,7 +204,7 @@ mod tests {
         const SOURCE_BINS: [usize; 6] = [6, 7, 8, 38, 48, 57];
         const SETTLE_SAMPLES: usize = SAMPLE_RATE as usize * 2;
 
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         let mut real = 0.0f32;
         let mut imaginary = 0.0f32;
         let mut maximum = 0.0f32;
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn repeated_over_ceiling_samples_never_escape_during_release() {
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         let total = LOOKAHEAD_SAMPLES + SAMPLE_RATE as usize;
         let mut maximum = 0.0f32;
 
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn gain_recovers_after_release_window() {
-        let mut limiter = OutputLimiter::new(SAMPLE_RATE);
+        let mut limiter = LookaheadLimiter::new(SAMPLE_RATE);
         limiter.next(1.9, 0.0);
         assert!(limiter.gain < 1.0);
 

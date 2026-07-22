@@ -1,10 +1,11 @@
 //! Sequential Prophet '08-compatible program SysEx decoder.
 
+use super::rev2::Rev2SysexError;
+use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::patch::decode_patch_name;
-use crate::rev2_midi::Rev2SysexError;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
-    ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, Patch,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
@@ -584,10 +585,17 @@ fn nrpn_max(number: u16) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ControlMessage, Voices};
+    use crate::{ControlMessage, VoiceManager};
+
+    fn render_frames<const PACKS: usize>(voices: &mut VoiceManager<PACKS>, frames: usize) {
+        let mut ctx = crate::create_render_context!();
+        for _ in 0..frames {
+            voices.next(&mut ctx);
+        }
+    }
 
     const FACTORY_SYSEX: &[u8] =
-        include_bytes!("../../Prophet_08_Programs+ReadMe/Prophet_08_Programs_v1.0.syx");
+        include_bytes!("../../../Prophet_08_Programs+ReadMe/Prophet_08_Programs_v1.0.syx");
 
     fn factory_message(bank: usize, program: usize) -> &'static [u8] {
         let offset = (bank * 128 + program) * P08_PROGRAM_DATA_SYSEX_LEN;
@@ -632,22 +640,18 @@ mod tests {
         ];
         for frames_between_events in [0, 1, 32, 256] {
             for release_order in release_orders {
-                let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+                let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
                 voices.apply_patch(&patch);
                 for note in [59, 48, 72] {
                     voices.handle_control(ControlMessage::NoteOn {
                         note,
                         velocity: 1.0,
                     });
-                    for _ in 0..frames_between_events {
-                        voices.next();
-                    }
+                    render_frames(&mut voices, frames_between_events);
                 }
                 for note in release_order {
                     voices.handle_control(ControlMessage::NoteOff { note });
-                    for _ in 0..frames_between_events {
-                        voices.next();
-                    }
+                    render_frames(&mut voices, frames_between_events);
                 }
 
                 assert!(
@@ -663,7 +667,7 @@ mod tests {
         let patch = P08MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
             .patch;
-        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
 
         voices.handle_control(ControlMessage::NoteOn {
             note: 59,
@@ -678,7 +682,7 @@ mod tests {
         voices.handle_control(ControlMessage::NoteOff { note: 72 });
         voices.handle_control(ControlMessage::NoteOff { note: 59 });
         for _ in 0..512 {
-            voices.next();
+            render_frames(&mut voices, 1);
         }
 
         assert!(voices.active_notes().is_empty());
@@ -690,19 +694,19 @@ mod tests {
             .unwrap()
             .patch;
         patch.key_mode = crate::KeyMode::LastRetrigger;
-        let mut voices = Voices::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
         voices.apply_patch(&patch);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
         });
-        let before = voices[0].test_osc1_frequency_hz().to_array()[0];
+        let before = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
 
         voices.handle_control(ControlMessage::NoteOn {
             note: 72,
             velocity: 1.0,
         });
-        let start = voices[0].test_osc1_frequency_hz().to_array()[0];
+        let start = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
         assert!((start - before).abs() < 0.01);
         for voice in 0..8 {
             assert!(!voices[voice / crate::LANES].has_pending_note(voice % crate::LANES));
@@ -710,22 +714,22 @@ mod tests {
 
         // Glide should make progress within the first 32 samples.
         for _ in 0..32 {
-            voices.next();
+            render_frames(&mut voices, 1);
         }
-        let progressing = voices[0].test_osc1_frequency_hz().to_array()[0];
+        let progressing = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
         assert!(progressing > start);
         assert!(progressing < before * 2.0);
 
         // After the glide completes (well within 1 s) the frequency must be
         // stable — no further drift between consecutive reads.
         for _ in 0..48_000 {
-            voices.next();
+            render_frames(&mut voices, 1);
         }
-        let pre = voices[0].test_osc1_frequency_hz().to_array()[0];
+        let pre = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
         for _ in 0..1_000 {
-            voices.next();
+            render_frames(&mut voices, 1);
         }
-        let post = voices[0].test_osc1_frequency_hz().to_array()[0];
+        let post = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
         assert!(
             (post - pre).abs() / pre < 1.0e-6,
             "frequency should be stable after glide completes; pre {pre}, post {post}"
@@ -737,14 +741,14 @@ mod tests {
         let patch = P08MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
             .patch;
-        let mut voices = Voices::<2>::new(48_000.0);
+        let mut voices = VoiceManager::<2>::new(48_000.0);
         voices.apply_patch(&patch);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
         });
         for _ in 0..48_000 {
-            voices.next();
+            render_frames(&mut voices, 1);
         }
         voices.handle_control(ControlMessage::NoteOff { note: 60 });
         assert!(voices.active_notes().is_empty());
@@ -754,7 +758,7 @@ mod tests {
         );
 
         for _ in 0..480_000 {
-            voices.next();
+            render_frames(&mut voices, 1);
         }
         assert_eq!(
             voices.active_voice_count(),
@@ -773,7 +777,7 @@ mod tests {
                 let mut patch = base_patch.clone();
                 patch.key_mode = key_mode;
                 patch.glide_mode = glide_mode;
-                let mut voices = Voices::<2>::new(48_000.0);
+                let mut voices = VoiceManager::<2>::new(48_000.0);
                 voices.apply_patch(&patch);
                 let mut pressed = heapless::Vec::<u8, 128>::new();
                 let mut random = 0x6d2b_79f5_u32;
@@ -797,7 +801,7 @@ mod tests {
                         voices.handle_control(ControlMessage::NoteOff { note });
                     }
                     for _ in 0..((random >> 8) & 3) {
-                        voices.next();
+                        render_frames(&mut voices, 1);
                     }
 
                     let active = voices.active_notes();

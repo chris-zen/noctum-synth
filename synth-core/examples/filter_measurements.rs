@@ -1,7 +1,7 @@
 //! Deterministic per-model response and self-oscillation measurements.
 
+use synth_core::dsp::{Filter, FilterOversampling, FilterType};
 use synth_core::f32x4;
-use synth_core::{Filter, FilterOversampling, FilterType};
 
 const CUTOFF_HZ: f32 = 440.0;
 

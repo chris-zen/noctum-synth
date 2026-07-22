@@ -6,10 +6,10 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::{
-    ChordMemory, ControlMessage, FilterOversampling, FilterType, MidiClockMode, MidiClockStatus,
-    MidiProgramImport, MidiRealtimeEvent, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId, Patch,
+    ChordMemory, ControlMessage, MidiClockMode, MidiClockStatus, MidiProgramImport,
+    MidiRealtimeEvent, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch,
 };
 
 use crate::midi::MidiOutputHandle;

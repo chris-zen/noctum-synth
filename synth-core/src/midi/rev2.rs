@@ -1,9 +1,10 @@
 //! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
 
+use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::patch::decode_patch_name;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, MidiClockMode,
-    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    DedicatedModSource, LfoSyncDivision, MidiClockMode, ModDestination, ModRoute, ModSource,
+    ModulationParam, ParamId, Patch,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
@@ -1526,7 +1527,7 @@ mod tests {
     }
 
     const FACTORY_SYSEX: &[u8] =
-        include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
+        include_bytes!("../../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
 
     #[test]
     fn factory_program_decodes_mod_destination_indices() {

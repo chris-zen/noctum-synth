@@ -1,8 +1,9 @@
 //! Patch parameter bundles and modulation routing targets.
 
-use crate::{
+use crate::ParamId;
+use crate::dsp::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoWaveform, MIN_LFO_RATE_HZ, ParamId,
+    LfoWaveform, MIN_LFO_RATE_HZ,
 };
 
 #[cfg(feature = "serde")]
@@ -10,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 pub const PATCH_NAME_CAPACITY: usize = 20;
 pub const CHORD_MEMORY_CAPACITY: usize = 16;
+pub const LFO_COUNT: usize = 4;
+pub const MOD_MATRIX_FREE_SLOT_COUNT: usize = 8;
 
 pub type PatchName = heapless::String<PATCH_NAME_CAPACITY>;
 
@@ -320,7 +323,8 @@ pub enum DedicatedModSource {
 }
 
 impl DedicatedModSource {
-    pub const ALL: [Self; 5] = [
+    pub const COUNT: usize = 5;
+    pub const ALL: [Self; Self::COUNT] = [
         Self::ModWheel,
         Self::Pressure,
         Self::Breath,
@@ -404,15 +408,15 @@ impl Default for DedicatedModSlot {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ModMatrix {
-    pub free_slots: [ModMatrixSlot; 8],
-    pub dedicated: [DedicatedModSlot; 5],
+    pub free_slots: [ModMatrixSlot; MOD_MATRIX_FREE_SLOT_COUNT],
+    pub dedicated: [DedicatedModSlot; DedicatedModSource::COUNT],
 }
 
 impl Default for ModMatrix {
     fn default() -> Self {
         Self {
-            free_slots: [ModMatrixSlot::default(); 8],
-            dedicated: [DedicatedModSlot::default(); 5],
+            free_slots: [ModMatrixSlot::default(); MOD_MATRIX_FREE_SLOT_COUNT],
+            dedicated: [DedicatedModSlot::default(); DedicatedModSource::COUNT],
         }
     }
 }
@@ -1194,7 +1198,7 @@ pub struct Patch {
     pub filter: FilterParams,
     pub amplifier: AmplifierParams,
     pub aux_envelope: AuxEnvelopeParams,
-    pub lfos: [LfoParams; 4],
+    pub lfos: [LfoParams; LFO_COUNT],
     pub mod_matrix: ModMatrix,
     pub effects: EffectParams,
     pub master_volume: f32,
@@ -1230,7 +1234,7 @@ impl Default for Patch {
             },
             amplifier: AmplifierParams::default(),
             aux_envelope: AuxEnvelopeParams::default(),
-            lfos: [LfoParams::default(); 4],
+            lfos: [LfoParams::default(); LFO_COUNT],
             mod_matrix: ModMatrix::default(),
             effects: EffectParams::default(),
             master_volume: 0.8,

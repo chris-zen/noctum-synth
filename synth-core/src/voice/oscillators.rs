@@ -1,13 +1,11 @@
 //! Dual-oscillator mixer with sub oscillator, noise, sync, and glide.
 
-use crate::analog_oscillator::EngineOscillator;
+use crate::dsp::analog_oscillator::EngineOscillator;
+use crate::dsp::{AnalogSubOscillator, Waveform, WhiteNoise};
 use crate::f32x4;
-
-#[cfg(feature = "profiling")]
-use crate::profiling::NoopProfiler;
-use crate::{AnalogSubOscillator, GlideMode, LANES, Waveform, WhiteNoise};
-#[cfg(feature = "profiling")]
-use crate::{RenderProfiler, RenderStage};
+use crate::patch::{OscillatorPatch, Patch};
+use crate::profiling::{RenderContext, RenderStage};
+use crate::{GlideMode, LANES, ParamId};
 
 // Give unassigned, keyboard-tracked lanes a real pitch so their
 // phases advance before the first note when note reset is off.
@@ -71,7 +69,7 @@ impl Default for GlideState {
     }
 }
 
-/// Oscillator section for one [`crate::VoiceBlock`]: two analog oscillators, sub, and noise.
+/// Oscillator section for one voice block: two analog oscillators, sub, and noise.
 pub struct Oscillators {
     osc1: EngineOscillator,
     osc2: EngineOscillator,
@@ -108,6 +106,90 @@ impl Oscillators {
 
     pub fn osc1_frequency_hz(&self) -> f32x4 {
         self.osc1.frequency_hz()
+    }
+
+    pub fn apply_params(&mut self, patch: &Patch) {
+        self.apply_oscillator_patch(0, &patch.osc1);
+        self.apply_oscillator_patch(1, &patch.osc2);
+        if patch.osc1.level <= 0.0 {
+            self.set_mix(1.0);
+        }
+        if patch.osc2.level <= 0.0 {
+            self.set_mix(0.0);
+        }
+        self.set_mix(patch.osc_mix);
+        self.set_sub_octave(patch.sub_osc_level);
+        self.set_noise(patch.noise_level);
+        self.set_sync(patch.hard_sync);
+        self.set_slop(patch.osc_slop);
+        self.set_glide_mode(patch.glide_mode);
+        self.set_glide_enabled(patch.glide_enabled);
+    }
+
+    pub fn set_param(&mut self, id: ParamId, value: f32) -> bool {
+        match id {
+            ParamId::Osc1Waveform => self.set_osc1_waveform(Waveform::from_index(value as usize)),
+            ParamId::Osc1Enabled => self.set_osc1_enabled(value >= 0.5),
+            ParamId::Osc2Waveform => self.set_osc2_waveform(Waveform::from_index(value as usize)),
+            ParamId::Osc2Enabled => self.set_osc2_enabled(value >= 0.5),
+            ParamId::Osc1Frequency => self.set_osc1_frequency_semitones(value),
+            ParamId::Osc2Frequency => self.set_osc2_frequency_semitones(value),
+            ParamId::Osc1FineTune => self.set_osc1_fine_tune_cents(value),
+            ParamId::Osc2FineTune => self.set_osc2_fine_tune_cents(value),
+            ParamId::Osc1ShapeMod => self.set_osc1_shape_mod(value),
+            ParamId::Osc2ShapeMod => self.set_osc2_shape_mod(value),
+            ParamId::Osc1Level => {
+                if value <= 0.0 {
+                    self.set_mix(1.0);
+                }
+            }
+            ParamId::Osc2Level => {
+                if value <= 0.0 {
+                    self.set_mix(0.0);
+                }
+            }
+            ParamId::OscMix => self.set_mix(value),
+            ParamId::SubOscLevel => self.set_sub_octave(value),
+            ParamId::NoiseLevel => self.set_noise(value),
+            ParamId::HardSync => self.set_sync(value >= 0.5),
+            ParamId::OscSlop | ParamId::AnalogDrift => self.set_slop(value),
+            ParamId::Osc1NoteReset => self.set_osc1_note_reset(value >= 0.5),
+            ParamId::Osc2NoteReset => self.set_osc2_note_reset(value >= 0.5),
+            ParamId::Osc1KeyboardOn => self.set_osc1_keyboard_on(value >= 0.5),
+            ParamId::Osc2KeyboardOn => self.set_osc2_keyboard_on(value >= 0.5),
+            ParamId::Osc1Glide => self.set_osc1_glide(value),
+            ParamId::Osc2Glide => self.set_osc2_glide(value),
+            ParamId::GlideMode => self.set_glide_mode(GlideMode::from_index(value as usize)),
+            ParamId::GlideEnabled => self.set_glide_enabled(value >= 0.5),
+            _ => return false,
+        }
+        true
+    }
+
+    fn apply_oscillator_patch(&mut self, index: usize, patch: &OscillatorPatch) {
+        let waveform = Waveform::from_index(patch.waveform as usize);
+        match index {
+            0 => {
+                self.set_osc1_waveform(waveform);
+                self.set_osc1_enabled(patch.enabled);
+                self.set_osc1_frequency_semitones(patch.frequency);
+                self.set_osc1_fine_tune_cents(patch.fine_tune);
+                self.set_osc1_shape_mod(patch.shape_mod);
+                self.set_osc1_note_reset(patch.note_reset);
+                self.set_osc1_keyboard_on(patch.keyboard_on);
+                self.set_osc1_glide(patch.glide);
+            }
+            _ => {
+                self.set_osc2_waveform(waveform);
+                self.set_osc2_enabled(patch.enabled);
+                self.set_osc2_frequency_semitones(patch.frequency);
+                self.set_osc2_fine_tune_cents(patch.fine_tune);
+                self.set_osc2_shape_mod(patch.shape_mod);
+                self.set_osc2_note_reset(patch.note_reset);
+                self.set_osc2_keyboard_on(patch.keyboard_on);
+                self.set_osc2_glide(patch.glide);
+            }
+        }
     }
 
     pub fn set_osc1_enabled(&mut self, enabled: bool) {
@@ -441,43 +523,13 @@ impl Oscillators {
         self.update_frequencies_modulated(f32x4::splat(0.0), f32x4::splat(0.0));
     }
 
-    pub fn next(&mut self, modulation: OscillatorModulation) -> OscillatorsOutput {
-        let shape_modulation = scalar_shape_modulation(modulation);
-        #[cfg(feature = "profiling")]
-        {
-            return self.next_inner(modulation, shape_modulation, &mut NoopProfiler);
-        }
-        #[cfg(not(feature = "profiling"))]
-        self.next_inner(modulation, shape_modulation)
-    }
-
-    #[cfg(not(feature = "profiling"))]
-    pub(crate) fn next_prepared(
+    pub fn next(
         &mut self,
         modulation: OscillatorModulation,
         shape_modulation: [f32; 2],
+        ctx: &mut RenderContext<'_>,
     ) -> OscillatorsOutput {
-        self.next_inner(modulation, shape_modulation)
-    }
-
-    #[cfg(feature = "profiling")]
-    pub(crate) fn next_prepared_profiled(
-        &mut self,
-        modulation: OscillatorModulation,
-        shape_modulation: [f32; 2],
-        profiler: &mut impl RenderProfiler,
-    ) -> OscillatorsOutput {
-        self.next_inner(modulation, shape_modulation, profiler)
-    }
-
-    fn next_inner(
-        &mut self,
-        modulation: OscillatorModulation,
-        shape_modulation: [f32; 2],
-        #[cfg(feature = "profiling")] profiler: &mut impl RenderProfiler,
-    ) -> OscillatorsOutput {
-        #[cfg(feature = "profiling")]
-        profiler.begin(RenderStage::OscillatorControl);
+        crate::profiler_begin!(ctx, RenderStage::OscillatorControl);
         let frequency_modulation = [
             modulation.osc1_frequency_semitones,
             modulation.osc2_frequency_semitones,
@@ -495,25 +547,17 @@ impl Oscillators {
                 .set_shape((self.params.osc2.shape_mod + shape_modulation[1]).clamp(0.0, 1.0));
         }
         self.last_shape_modulation = shape_modulation;
-        #[cfg(feature = "profiling")]
-        profiler.end(RenderStage::OscillatorControl);
+        crate::profiler_end!(ctx, RenderStage::OscillatorControl);
 
-        #[cfg(feature = "profiling")]
-        let osc2_step = self.osc2.next_step_profiled(profiler);
-        #[cfg(not(feature = "profiling"))]
-        let osc2_step = self.osc2.next_step();
+        let osc2_step = self.osc2.next(ctx);
 
         if self.params.sync && self.params.osc2.enabled {
             self.osc1
                 .hard_sync_reset(osc2_step.wrapped, osc2_step.subsample_offset);
         }
-        #[cfg(feature = "profiling")]
-        let osc1 = self.osc1.next_profiled(profiler);
-        #[cfg(not(feature = "profiling"))]
-        let osc1 = self.osc1.next();
+        let osc1 = self.osc1.next(ctx).output;
 
-        #[cfg(feature = "profiling")]
-        profiler.begin(RenderStage::OscillatorMix);
+        crate::profiler_begin!(ctx, RenderStage::OscillatorMix);
         let osc2 = osc2_step.output;
         let sub_level = (f32x4::splat(self.params.sub_octave) + modulation.sub_level)
             .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
@@ -549,8 +593,7 @@ impl Oscillators {
                 || sub_level != f32x4::ZERO
                 || noise_level != f32x4::ZERO,
         };
-        #[cfg(feature = "profiling")]
-        profiler.end(RenderStage::OscillatorMix);
+        crate::profiler_end!(ctx, RenderStage::OscillatorMix);
         output
     }
 
@@ -585,7 +628,8 @@ impl Oscillators {
     }
 }
 
-pub fn osc_mix_to_gains(mix: f32) -> (f32, f32) {
+#[cfg(test)]
+fn osc_mix_to_gains(mix: f32) -> (f32, f32) {
     let osc2 = mix.clamp(0.0, 1.0);
     (1.0 - osc2, osc2)
 }
@@ -741,13 +785,6 @@ pub fn glide_seconds(amount: f32) -> f32 {
     MIN_GLIDE_SECONDS + (MAX_GLIDE_SECONDS - MIN_GLIDE_SECONDS) * n2 * n2
 }
 
-fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
-    [
-        modulation.osc1_shape.reduce_add() * 0.25,
-        modulation.osc2_shape.reduce_add() * 0.25,
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::{OscillatorModulation, Oscillators, Waveform, osc_mix_to_gains};
@@ -756,9 +793,25 @@ mod tests {
 
     const SAMPLE_RATE: f32 = 44_100.0;
 
+    fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
+        [
+            modulation.osc1_shape.reduce_add() * 0.25,
+            modulation.osc2_shape.reduce_add() * 0.25,
+        ]
+    }
+
+    fn next(
+        oscillators: &mut Oscillators,
+        modulation: OscillatorModulation,
+    ) -> super::OscillatorsOutput {
+        let shape_modulation = scalar_shape_modulation(modulation);
+        let mut ctx = crate::create_render_context!();
+        oscillators.next(modulation, shape_modulation, &mut ctx)
+    }
+
     fn settle(oscillators: &mut Oscillators, frames: usize) {
         for _ in 0..frames {
-            oscillators.next(OscillatorModulation::default());
+            next(oscillators, OscillatorModulation::default());
         }
     }
 
@@ -927,12 +980,10 @@ mod tests {
         immediate.note_on(0, frequency);
         delayed.note_on(0, frequency);
 
-        let immediate_sample = immediate
-            .next(OscillatorModulation::default())
+        let immediate_sample = next(&mut immediate, OscillatorModulation::default())
             .osc1
             .to_array()[0];
-        let delayed_sample = delayed
-            .next(OscillatorModulation::default())
+        let delayed_sample = next(&mut delayed, OscillatorModulation::default())
             .osc1
             .to_array()[0];
         assert!(
@@ -957,11 +1008,12 @@ mod tests {
         settle(&mut muted, 137);
         muted.set_osc2_enabled(true);
 
-        let audible_sample = audible
-            .next(OscillatorModulation::default())
+        let audible_sample = next(&mut audible, OscillatorModulation::default())
             .osc2
             .to_array()[0];
-        let muted_sample = muted.next(OscillatorModulation::default()).osc2.to_array()[0];
+        let muted_sample = next(&mut muted, OscillatorModulation::default())
+            .osc2
+            .to_array()[0];
         assert!(
             (audible_sample - muted_sample).abs() < 1e-6,
             "muting oscillator 2 must not freeze its free-running phase"
@@ -971,40 +1023,22 @@ mod tests {
     #[test]
     fn output_reports_whether_an_audio_source_drives_the_filter() {
         let mut oscillators = Oscillators::new(SAMPLE_RATE);
-        assert!(
-            oscillators
-                .next(OscillatorModulation::default())
-                .audio_source_active
-        );
+        assert!(next(&mut oscillators, OscillatorModulation::default()).audio_source_active);
 
         oscillators.set_mix(1.0);
         assert!(
-            !oscillators
-                .next(OscillatorModulation::default())
-                .audio_source_active,
+            !next(&mut oscillators, OscillatorModulation::default()).audio_source_active,
             "an enabled oscillator at zero mixer gain is not an audible source"
         );
         oscillators.set_osc2_enabled(true);
-        assert!(
-            oscillators
-                .next(OscillatorModulation::default())
-                .audio_source_active
-        );
+        assert!(next(&mut oscillators, OscillatorModulation::default()).audio_source_active);
 
         oscillators.set_osc1_enabled(false);
         oscillators.set_osc2_enabled(false);
-        assert!(
-            !oscillators
-                .next(OscillatorModulation::default())
-                .audio_source_active
-        );
+        assert!(!next(&mut oscillators, OscillatorModulation::default()).audio_source_active);
 
         oscillators.set_noise(0.1);
-        assert!(
-            oscillators
-                .next(OscillatorModulation::default())
-                .audio_source_active
-        );
+        assert!(next(&mut oscillators, OscillatorModulation::default()).audio_source_active);
     }
 
     #[test]
@@ -1019,7 +1053,7 @@ mod tests {
 
             let mut positive = 0usize;
             for _ in 0..period {
-                let output = oscillators.next(OscillatorModulation::default());
+                let output = next(&mut oscillators, OscillatorModulation::default());
                 if output.osc1.to_array()[0] > 0.0 {
                     positive += 1;
                 }
@@ -1070,7 +1104,7 @@ mod tests {
         settle(&mut oscillators, 64);
 
         oscillators.set_mix(0.0);
-        let osc1_only = oscillators.next(OscillatorModulation::default());
+        let osc1_only = next(&mut oscillators, OscillatorModulation::default());
         let osc1_audio = osc1_only.audio.to_array()[0];
         let osc1_expected = osc1_only.osc1.to_array()[0];
         assert!(
@@ -1086,7 +1120,7 @@ mod tests {
         settle(&mut oscillators, 16);
 
         oscillators.set_mix(1.0);
-        let osc2_only = oscillators.next(OscillatorModulation::default());
+        let osc2_only = next(&mut oscillators, OscillatorModulation::default());
         let osc2_audio = osc2_only.audio.to_array()[0];
         let osc2_expected = osc2_only.osc2.to_array()[0];
         assert!(
@@ -1095,7 +1129,7 @@ mod tests {
         );
 
         oscillators.set_mix(0.35);
-        let blended = oscillators.next(OscillatorModulation::default());
+        let blended = next(&mut oscillators, OscillatorModulation::default());
         let expected = blended.osc1.to_array()[0] * 0.65 + blended.osc2.to_array()[0] * 0.35;
         assert!(
             (blended.audio.to_array()[0] - expected).abs() < 1e-4,
@@ -1178,7 +1212,7 @@ mod tests {
         oscillators.set_mix(0.0);
         settle(&mut oscillators, 32);
 
-        let base = oscillators.next(OscillatorModulation::default());
+        let base = next(&mut oscillators, OscillatorModulation::default());
         assert!(
             base.sub.to_array()[0].abs() > 0.0,
             "sub octave level should contribute to sub output"
@@ -1191,7 +1225,7 @@ mod tests {
         let mut boosted = OscillatorModulation::default();
         boosted.sub_level = f32x4::splat(0.75);
         boosted.noise_level = f32x4::splat(0.75);
-        let modulated = oscillators.next(boosted);
+        let modulated = next(&mut oscillators, boosted);
 
         assert!(
             modulated.sub.to_array()[0].abs() > base.sub.to_array()[0].abs(),
@@ -1209,7 +1243,7 @@ mod tests {
 
         let mut mix_modulation = OscillatorModulation::default();
         mix_modulation.mix = f32x4::splat(1.0);
-        let osc2_only = oscillators.next(mix_modulation);
+        let osc2_only = next(&mut oscillators, mix_modulation);
         assert!(
             (osc2_only.audio.to_array()[0] - osc2_only.osc2.to_array()[0]).abs() < 1e-4,
             "mix modulation should push output to osc2 only when sub and noise are off"
@@ -1224,8 +1258,7 @@ mod tests {
         reference.set_sub_octave(1.0);
         reference.set_note_frequency(frequency);
         reference.note_on(0, frequency);
-        let phase_start = reference
-            .next(OscillatorModulation::default())
+        let phase_start = next(&mut reference, OscillatorModulation::default())
             .sub
             .to_array()[0];
 
@@ -1236,8 +1269,7 @@ mod tests {
         with_reset.note_on(0, frequency);
         settle(&mut with_reset, 300);
         with_reset.note_on(0, frequency);
-        let after_reset = with_reset
-            .next(OscillatorModulation::default())
+        let after_reset = next(&mut with_reset, OscillatorModulation::default())
             .sub
             .to_array()[0];
 
@@ -1248,8 +1280,7 @@ mod tests {
         without_reset.note_on(0, frequency);
         settle(&mut without_reset, 300);
         without_reset.note_on(0, frequency);
-        let after_continue = without_reset
-            .next(OscillatorModulation::default())
+        let after_continue = next(&mut without_reset, OscillatorModulation::default())
             .sub
             .to_array()[0];
 
@@ -1279,7 +1310,7 @@ mod tests {
 
             let mut positive = 0usize;
             for _ in 0..period {
-                let output = oscillators.next(modulation);
+                let output = next(&mut oscillators, modulation);
                 if output.osc1.to_array()[0] > 0.0 {
                     positive += 1;
                 }
@@ -1302,8 +1333,7 @@ mod tests {
         let mut gap = 0usize;
         let mut max_gap = 0usize;
         for _ in 0..samples {
-            let sample = oscillators
-                .next(OscillatorModulation::default())
+            let sample = next(oscillators, OscillatorModulation::default())
                 .osc1
                 .to_array()[0];
             // Detect the falling zero crossing rather than assuming that a
@@ -1341,7 +1371,7 @@ mod tests {
         // After one sample the frequency must change because advance_glide
         // increments the Q16.16 pitch tracker and update_frequencies_modulated
         // recomputes the oscillator Hz.
-        oscillators.next(OscillatorModulation::default());
+        next(&mut oscillators, OscillatorModulation::default());
         let freq_after_one = oscillators.osc1_frequency_hz().to_array()[0];
 
         assert_ne!(
@@ -1353,7 +1383,7 @@ mod tests {
         // FixedRate glide) and verify the frequency moves in the correct
         // direction (upward glide: note 48 → note 72).
         for _ in 0..100_000 {
-            oscillators.next(OscillatorModulation::default());
+            next(&mut oscillators, OscillatorModulation::default());
         }
         let freq_after_many = oscillators.osc1_frequency_hz().to_array()[0];
 

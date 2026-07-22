@@ -1,6 +1,7 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use synth_core::{FilterOversampling, FilterType, MidiClockMode, MidiTransportState, Patch};
+use synth_core::dsp::{FilterOversampling, FilterType};
+use synth_core::{MidiClockMode, MidiTransportState, Patch};
 
 use crate::audio::{AppliedAudioConfig, AudioConfig, AudioManager};
 use crate::engine::SynthEngineControl;
@@ -595,13 +596,8 @@ fn audio_settings_panel(
 
             ui.horizontal_top(|ui| {
                 ui.set_max_width(content_width);
-                let configured_outputs = settings
-                    .audio_device
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let merged_outputs =
-                    midi::merged_port_list(output_devices, &configured_outputs);
+                let configured_outputs = settings.audio_device.iter().cloned().collect::<Vec<_>>();
+                let merged_outputs = midi::merged_port_list(output_devices, &configured_outputs);
 
                 settings_column(
                     ui,
@@ -616,8 +612,8 @@ fn audio_settings_panel(
                         for device in &merged_outputs {
                             let selected =
                                 settings.audio_device.as_deref() == Some(device.as_str());
-                            let unavailable = selected
-                                && !output_devices.iter().any(|listed| listed == device);
+                            let unavailable =
+                                selected && !output_devices.iter().any(|listed| listed == device);
                             let label = if unavailable {
                                 egui::RichText::new(device).color(UNAVAILABLE_PORT_COLOR)
                             } else {
@@ -630,13 +626,8 @@ fn audio_settings_panel(
                     },
                 );
                 ui.separator();
-                let configured_inputs = settings
-                    .audio_input
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let merged_inputs =
-                    midi::merged_port_list(input_devices, &configured_inputs);
+                let configured_inputs = settings.audio_input.iter().cloned().collect::<Vec<_>>();
+                let merged_inputs = midi::merged_port_list(input_devices, &configured_inputs);
 
                 settings_column(
                     ui,
@@ -650,8 +641,8 @@ fn audio_settings_panel(
                         }
                         for device in &merged_inputs {
                             let selected = settings.audio_input.as_deref() == Some(device.as_str());
-                            let unavailable = selected
-                                && !input_devices.iter().any(|listed| listed == device);
+                            let unavailable =
+                                selected && !input_devices.iter().any(|listed| listed == device);
                             let label = if unavailable {
                                 egui::RichText::new(device).color(UNAVAILABLE_PORT_COLOR)
                             } else {

@@ -176,7 +176,7 @@ enum WaveTable {
     Triangle,
 }
 
-/// Internal lookup state used by [`crate::WavetableOscillator`].
+/// Internal lookup state used by [`crate::dsp::WavetableOscillator`].
 #[doc(hidden)]
 pub struct WavetableOscillatorKernel {
     bank: WavetableBank,
