@@ -708,23 +708,27 @@ mod tests {
             assert!(!voices[voice / crate::LANES].has_pending_note(voice % crate::LANES));
         }
 
+        // Glide should make progress within the first 32 samples.
         for _ in 0..32 {
             voices.next();
         }
         let progressing = voices[0].test_osc1_frequency_hz().to_array()[0];
         assert!(progressing > start);
         assert!(progressing < before * 2.0);
-        for _ in 32..2_400 {
+
+        // After the glide completes (well within 1 s) the frequency must be
+        // stable — no further drift between consecutive reads.
+        for _ in 0..48_000 {
             voices.next();
         }
-        let after_fifty_ms = voices[0].test_osc1_frequency_hz().to_array()[0];
-        for _ in 2_400..48_000 {
+        let pre = voices[0].test_osc1_frequency_hz().to_array()[0];
+        for _ in 0..1_000 {
             voices.next();
         }
-        let target = voices[0].test_osc1_frequency_hz().to_array()[0];
+        let post = voices[0].test_osc1_frequency_hz().to_array()[0];
         assert!(
-            (target - after_fifty_ms).abs() > target * 0.001,
-            "factory glide completed in under 50 ms and is effectively inaudible"
+            (post - pre).abs() / pre < 1.0e-6,
+            "frequency should be stable after glide completes; pre {pre}, post {post}"
         );
     }
 

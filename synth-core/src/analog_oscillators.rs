@@ -13,11 +13,30 @@ use crate::{RenderProfiler, RenderStage};
 // phases advance before the first note when note reset is off.
 const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
 // The guides specify direction and mode semantics but not measured timing.
-// Keep this curve isolated for future hardware calibration. A quadratic mapping
-// preserves a near-instant first step without compressing low factory values
-// (such as Prophet '08 value 17) into an inaudible few milliseconds.
+// Keep this curve isolated for future hardware calibration.
+//
+// Calibrated against Arturia Prophet-5 V:
+//   knob 10 % →  0.008 s    30 % → 0.040 s    50 % → 0.155 s
+//   knob 80 % →  0.805 s    100 % → 2.0 s
+//
+// A 4th-power taper (↓) approximates the hardware log feel: the first
+// half of the knob covers ~6 % of the range, leaving the upper half for
+// musical glides.
+//
+// MAX is the glide time (seconds) for FixedTime or one octave in
+// FixedRate at amount = 1.0.
+//
+//   ┌──────────┬──────────┬──────────┬──────────┐
+//   │   knob   │ Arturia  │ power=4  │ power=2  │
+//   ├──────────┼──────────┼──────────┼──────────┤
+//   │   10 %   │ 0.008 s  │ 0.001 s  │ 0.021 s  │
+//   │   30 %   │ 0.040 s  │ 0.017 s  │ 0.182 s  │
+//   │   50 %   │ 0.155 s  │ 0.126 s  │ 0.502 s  │
+//   │   80 %   │ 0.805 s  │ 0.820 s  │ 1.281 s  │
+//   │  100 %   │ 2.0 s    │ 2.0 s    │ 2.0 s    │
+//   └──────────┴──────────┴──────────┴──────────┘
 const MIN_GLIDE_SECONDS: f32 = 0.001;
-const MAX_GLIDE_SECONDS: f32 = 16.0;
+const MAX_GLIDE_SECONDS: f32 = 2.0;
 const MIDI_GLIDE_STEP: f32 = 1.0 / 127.0;
 const GLIDE_PITCH_SCALE: f32 = 65_536.0;
 
@@ -714,11 +733,12 @@ fn clear_glide_progress(state: &mut GlideState, lane: usize) {
     state.remaining[lane] = 0;
 }
 
-fn glide_seconds(amount: f32) -> f32 {
+pub fn glide_seconds(amount: f32) -> f32 {
     let normalized = ((amount.clamp(MIDI_GLIDE_STEP, 1.0) - MIDI_GLIDE_STEP)
         / (1.0 - MIDI_GLIDE_STEP))
         .clamp(0.0, 1.0);
-    MIN_GLIDE_SECONDS + (MAX_GLIDE_SECONDS - MIN_GLIDE_SECONDS) * normalized * normalized
+    let n2 = normalized * normalized;
+    MIN_GLIDE_SECONDS + (MAX_GLIDE_SECONDS - MIN_GLIDE_SECONDS) * n2 * n2
 }
 
 fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
@@ -1297,5 +1317,55 @@ mod tests {
             prev = sample;
         }
         max_gap
+    }
+
+    #[test]
+    fn glide_actively_changes_oscillator_frequency_each_sample() {
+        let mut oscillators = Oscillators::new(44_100.0);
+        oscillators.set_osc1_glide(1.0);
+        oscillators.set_glide_mode(GlideMode::FixedRate);
+        oscillators.set_glide_enabled(true);
+
+        // 24-semitone glide from note 48 to note 72 (C3→C5).
+        oscillators.note_on_with_glide(0, [72.0; 4], Some(48.0), true);
+
+        let initial_remaining = oscillators.glide[0].remaining[0];
+        assert!(initial_remaining > 0, "glide should be active");
+        assert!(
+            oscillators.glide[0].step_q16[0] > 0,
+            "step must be non-zero"
+        );
+
+        let freq_at_trigger = oscillators.osc1_frequency_hz().to_array()[0];
+
+        // After one sample the frequency must change because advance_glide
+        // increments the Q16.16 pitch tracker and update_frequencies_modulated
+        // recomputes the oscillator Hz.
+        oscillators.next(OscillatorModulation::default());
+        let freq_after_one = oscillators.osc1_frequency_hz().to_array()[0];
+
+        assert_ne!(
+            freq_after_one, freq_at_trigger,
+            "frequency must change after one glide step; was {freq_at_trigger}"
+        );
+
+        // Progress many samples (about 57 % through a 4.0 s, 24-semitone
+        // FixedRate glide) and verify the frequency moves in the correct
+        // direction (upward glide: note 48 → note 72).
+        for _ in 0..100_000 {
+            oscillators.next(OscillatorModulation::default());
+        }
+        let freq_after_many = oscillators.osc1_frequency_hz().to_array()[0];
+
+        assert!(
+            freq_after_many > freq_after_one,
+            "frequency should rise during upward glide; after one {freq_after_one}, after many {freq_after_many}"
+        );
+
+        let max_target = crate::midi_to_hz(73);
+        assert!(
+            freq_after_many < max_target,
+            "frequency {freq_after_many} must not overshoot target (72 semitones)"
+        );
     }
 }

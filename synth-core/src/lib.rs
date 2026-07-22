@@ -90,6 +90,7 @@ pub use analog_oscillator::WavetableOscillator;
 pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
 pub use analog_oscillators::{
     OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput, OscillatorsParams,
+    glide_seconds,
 };
 pub use analog_sub_oscillator::AnalogSubOscillator;
 pub use effects::{EffectModulation, Effects, EffectsWithMemory};

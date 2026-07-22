@@ -1,4 +1,4 @@
-use synth_core::{f32x4, Filter, FilterOversampling, FilterType, ParamId, SynthEngine};
+use synth_core::{Filter, FilterOversampling, FilterType, ParamId, SynthEngine, f32x4};
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const CUTOFF_HZ: f32 = 440.0;

@@ -4,16 +4,16 @@ use eframe::egui;
 
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
-    KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32, master_volume,
-    param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_offset,
-    param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
+    KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
+    master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
+    param_knob_f32_offset, param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
 };
 use synth_core::{
     ChordMemory, ClockDivision, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS,
     DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL, DedicatedModSlot, DedicatedModSource,
     EffectParams, EffectType, FilterType, GlideMode, KeyMode, LfoSyncDivision, MAX_LFO_RATE_HZ,
     MIN_LFO_RATE_HZ, MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
+    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode, glide_seconds,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -1211,6 +1211,15 @@ fn play_midi_note(pitch_class: u8, octave: i8) -> u8 {
     note.clamp(0, 127) as u8
 }
 
+fn format_glide_display(amount: f32) -> String {
+    let seconds = glide_seconds(amount);
+    if seconds < 1.0 {
+        format!("{:.0}\u{a0}ms", seconds * 1000.0)
+    } else {
+        format!("{:.2}\u{a0}s", seconds)
+    }
+}
+
 fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     module_panel_with_header(ui, title, |_| {}, add_contents);
 }
@@ -1301,9 +1310,17 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    let mode = GlideMode::from_index(state.glide_mode);
+                    param_knob_f32_custom(
                         ui,
-                        "Glide",
+                        || {
+                            if mode.is_fixed_time() {
+                                "Time".into()
+                            } else {
+                                "Rate".into()
+                            }
+                        },
+                        |val| format_glide_display(val),
                         &mut state.osc1_glide,
                         0.0..=1.0,
                         0.0,
@@ -1547,9 +1564,17 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    let mode = GlideMode::from_index(state.glide_mode);
+                    param_knob_f32_custom(
                         ui,
-                        "Glide",
+                        || {
+                            if mode.is_fixed_time() {
+                                "Time".into()
+                            } else {
+                                "Rate".into()
+                            }
+                        },
+                        |val| format_glide_display(val),
                         &mut state.osc2_glide,
                         0.0..=1.0,
                         0.0,
@@ -1638,9 +1663,17 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     egui::vec2(GLIDE_COLUMN_W, GLIDE_CELL_H),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
-                        if linked_param_knob_f32(
+                        let mode = GlideMode::from_index(state.glide_mode);
+                        if linked_param_knob_f32_custom(
                             ui,
-                            "Rate",
+                            || {
+                                if mode.is_fixed_time() {
+                                    "Time".into()
+                                } else {
+                                    "Rate".into()
+                                }
+                            },
+                            |val| format_glide_display(val),
                             &mut state.glide_rate,
                             0.0..=1.0,
                             0.0,

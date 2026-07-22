@@ -331,14 +331,14 @@ impl<const PACKS: usize> Voices<PACKS> {
         if note >= 128 {
             return;
         }
-        let first_key = self.pressed_keys.is_empty();
+        let is_first_key = self.pressed_keys.is_empty();
         let glide_start = self.last_played_note;
         let should_glide = self.glide_enabled
             && glide_start.is_some()
-            && (!self.glide_mode.is_auto() || !first_key);
+            && (!self.glide_mode.is_auto() || !is_first_key);
         self.pressed_keys.press(note, velocity);
         self.last_played_note = Some(note);
-        if first_key {
+        if is_first_key {
             self.reset_key_synced_lfos();
         }
         if !self.unison_enabled {
@@ -351,7 +351,7 @@ impl<const PACKS: usize> Voices<PACKS> {
         self.update_unison_group(
             selected,
             selected_velocity,
-            first_key || key_mode_retriggers(self.key_mode),
+            is_first_key || key_mode_retriggers(self.key_mode),
             glide_start,
             should_glide,
         );
@@ -1813,5 +1813,58 @@ mod tests {
         );
         assert!(!voices.active_notes().contains(&61));
         assert!(voices.active_notes().contains(&76));
+    }
+
+    #[test]
+    fn staccato_c3_to_c5_triggers_glide_in_fixed_rate_mode() {
+        let mut voices = Voices::<4>::new(44_100.0);
+        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Glide, 1.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::Osc2Glide, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::GlideMode,
+            GlideMode::FixedRate.index() as f32,
+        ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::GlideEnabled, 1.0));
+
+        // Press C3 (MIDI 48), then release it.
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 48,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOff { note: 48 });
+        process_frames(&mut voices, 512);
+
+        // Press C5 (MIDI 72) — should glide from 48→72.
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        process_frames(&mut voices, 1);
+
+        let (_block_idx, _lane) =
+            find_gated_note(&voices, 72).expect("note 72 should be gated after C5 press");
+
+        let freq_after_trigger = gated_note_frequency(&voices, 72);
+        let freq_c3 = crate::midi_to_hz(48u8);
+        let freq_c5 = crate::midi_to_hz(72u8);
+
+        assert!(
+            (freq_after_trigger - freq_c3).abs() / freq_c3 < 0.01,
+            "immediately after C5 note-on, osc frequency {freq_after_trigger} should be near C3 ({freq_c3}), not C5 ({freq_c5})"
+        );
+
+        // Advance ~57 % through the 4.0 s, 24-semitone FixedRate glide.
+        process_frames(&mut voices, 100_000);
+
+        let freq_after_many = gated_note_frequency(&voices, 72);
+
+        assert!(
+            freq_after_many > freq_after_trigger,
+            "after many samples, freq {freq_after_many} should be above initial {freq_after_trigger}"
+        );
+        assert!(
+            freq_after_many < freq_c5,
+            "freq {freq_after_many} should still be below C5 ({freq_c5})"
+        );
     }
 }

@@ -378,10 +378,8 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         let synced_phase = self.phase_inc * remaining;
 
         self.phase = reset.blend(synced_phase, self.phase);
-        self.triangle_integrator = reset.blend(
-            naive_triangle(synced_phase),
-            self.triangle_integrator,
-        );
+        self.triangle_integrator =
+            reset.blend(naive_triangle(synced_phase), self.triangle_integrator);
     }
 
     /// Sets the intended (pre-slop) frequency per lane and refreshes the
@@ -622,10 +620,8 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
             return;
         }
 
-        self.triangle_integrator = wrapped.blend(
-            naive_triangle(self.phase),
-            self.triangle_integrator,
-        );
+        self.triangle_integrator =
+            wrapped.blend(naive_triangle(self.phase), self.triangle_integrator);
     }
 
     /// Recomputes the effective frequency and phase increment from the

@@ -109,32 +109,6 @@ pub(crate) fn param_knob_f32_offset(
     }
 }
 
-pub(crate) fn linked_param_knob_f32(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    reset_value: f32,
-    params: [ParamId; 2],
-    control: &SynthEngineControl,
-) -> bool {
-    let changed = param_knob_f32_offset_inner(
-        ui,
-        label,
-        value,
-        range,
-        reset_value,
-        0.0,
-        egui::Id::new("knob_txt_linked_glide_rate"),
-    );
-    if changed {
-        for param in params {
-            control.set_param(param, *value);
-        }
-    }
-    changed
-}
-
 fn param_knob_f32_offset_inner(
     ui: &mut egui::Ui,
     label: &str,
@@ -191,6 +165,90 @@ fn param_knob_f32_offset_inner(
     );
 
     edited || response.changed()
+}
+
+pub fn param_knob_f32_custom(
+    ui: &mut egui::Ui,
+    label: impl Fn() -> String,
+    display: impl Fn(f32) -> String,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
+    let changed = param_knob_f32_custom_inner(ui, &label, &display, value, range, reset_value, 0.0);
+    if changed {
+        control.set_param(param, *value);
+    }
+}
+
+pub(crate) fn linked_param_knob_f32_custom(
+    ui: &mut egui::Ui,
+    label: impl Fn() -> String,
+    display: impl Fn(f32) -> String,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    params: [ParamId; 2],
+    control: &SynthEngineControl,
+) -> bool {
+    let changed = param_knob_f32_custom_inner(ui, &label, &display, value, range, reset_value, 0.0);
+    if changed {
+        for param in params {
+            control.set_param(param, *value);
+        }
+    }
+    changed
+}
+
+fn param_knob_f32_custom_inner(
+    ui: &mut egui::Ui,
+    label: &impl Fn() -> String,
+    display: &impl Fn(f32) -> String,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    reset_value: f32,
+    _display_offset: f32,
+) -> bool {
+    let min = *range.start();
+    let max = *range.end();
+    let text_color = ui.visuals().text_color();
+    let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let accent = ui.visuals().selection.bg_fill;
+    let mut knob_value = *value;
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let response = ui.add(
+        Knob::new(&mut knob_value, min, max, KnobStyle::Wiper)
+            .with_size(KNOB_SIZE)
+            .with_stroke_width(2.0)
+            .with_colors(knob_color, accent, text_color)
+            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+            .with_double_click_reset(reset_value)
+            .with_background_arc(true)
+            .with_show_filled_segments(true),
+    );
+    if response.changed() {
+        *value = knob_value;
+    }
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+
+    ui.label(
+        egui::RichText::new(label())
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    ui.label(
+        egui::RichText::new(display(*value))
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    response.changed()
 }
 
 pub fn param_knob_bipolar(
