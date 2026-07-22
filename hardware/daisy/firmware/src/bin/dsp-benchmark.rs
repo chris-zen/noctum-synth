@@ -8,12 +8,10 @@ use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::sdram::Sdram;
 use {defmt_rtt as _, panic_probe as _};
 
+use analog_synth_daisy_firmware::audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue};
 use analog_synth_daisy_firmware::profiling::{AudioProfiler, Snapshot};
-use synth_core::{
-    ControlMessage, DedicatedModSource, EffectType, FilterOversampling, FilterType, GlideMode,
-    ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngineWithMemory, Waveform,
-    profiling::RenderStage,
-};
+use synth_core::dsp::{FilterOversampling, FilterType, Waveform};
+use synth_core::{ControlMessage, DedicatedModSource, EffectType, GlideMode, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SynthEngineWithMemory, profiling::RenderStage};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
 const EFFECTS_SAMPLES: usize = 48_000 * 2;
@@ -21,8 +19,6 @@ const WARMUP_BLOCKS: usize = 128;
 const MEASURED_BLOCKS: usize = 512;
 const DEFAULT_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
 const DEFAULT_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
-const AUDIO_BLOCK_CYCLE_BUDGET: u32 =
-    embassy_daisy::clocks::SYSCLK_HZ / embassy_daisy::audio::SAMPLE_RATE_HZ * BLOCK_LENGTH as u32;
 
 type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
 
@@ -266,6 +262,23 @@ fn main() -> ! {
         configure_worst_case(engine);
     });
 
+    for (name, count) in [
+        ("control-burst-params-1", 1),
+        ("control-burst-params-2", 2),
+        ("control-burst-params-4", 4),
+        ("control-burst-params-8", 8),
+    ] {
+        run_control_burst_scenario(&mut sdram, name, count, false);
+    }
+    for (name, count) in [
+        ("control-burst-routes-1", 1),
+        ("control-burst-routes-2", 2),
+        ("control-burst-routes-4", 4),
+        ("control-burst-routes-8", 8),
+    ] {
+        run_control_burst_scenario(&mut sdram, name, count, true);
+    }
+
     defmt::info!("Daisy DSP benchmark complete");
     loop {
         cortex_m::asm::wfi();
@@ -429,7 +442,7 @@ fn measure_case(engine: &mut HardwareSynth) -> (RawTiming, Snapshot) {
 
     let raw = measure_uninstrumented(engine, &mut output);
 
-    let mut profiler = AudioProfiler::new(AUDIO_BLOCK_CYCLE_BUDGET);
+    let mut profiler = AudioProfiler::new(BLOCK_CYCLE_BUDGET);
     for _ in 0..MEASURED_BLOCKS {
         profiler.begin_block();
         engine.process_interleaved_profiled(&mut output, 2, &mut profiler);
@@ -670,6 +683,98 @@ fn run_effect_transition_scenario(sdram: &mut Sdram) {
     report_raw_case("effect-transition-control-stress", timing);
 }
 
+fn run_control_burst_scenario(
+    sdram: &mut Sdram,
+    name: &'static str,
+    count: usize,
+    modulation_routes: bool,
+) {
+    let effects_memory = sdram
+        .allocate_f32(EFFECTS_SAMPLES)
+        .expect("SDRAM effects allocation failed");
+    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
+    configure_benchmark_defaults(&mut engine);
+    configure_route_saturation(&mut engine);
+    configure_effect(&mut engine, EffectType::Reverb);
+
+    let controls = ControlQueue::new();
+    let mut adaptive_budget = AdaptiveControlBudget::new();
+    let mut output = [0.0f32; BLOCK_LENGTH * 2];
+    for _ in 0..WARMUP_BLOCKS {
+        run_adaptive_block(&mut engine, &controls, &mut adaptive_budget, &mut output);
+    }
+
+    let params = [
+        ParamId::FilterCutoff,
+        ParamId::FilterResonance,
+        ParamId::Osc1ShapeMod,
+        ParamId::EffectParam1,
+        ParamId::EffectParam2,
+        ParamId::OscMix,
+        ParamId::PanSpread,
+        ParamId::MasterVolume,
+    ];
+    let mut timing = RawTiming::new();
+    let mut control_max = 0_u32;
+    let mut control_total = 0_u64;
+    for block in 0..MEASURED_BLOCKS {
+        let started = DWT::cycle_count();
+        let value = if block & 1 == 0 { 0.49 } else { 0.51 };
+        for index in 0..count {
+            let command = if modulation_routes {
+                ControlMessage::SetModulationParam {
+                    route: ModRoute::Free(index),
+                    parameter: ModulationParam::Amount(value),
+                }
+            } else {
+                ControlMessage::SetParam(params[index], value)
+            };
+            assert!(controls.try_send(command).is_ok());
+        }
+        let controls_started = DWT::cycle_count();
+        let drained = run_adaptive_block(&mut engine, &controls, &mut adaptive_budget, &mut output);
+        let control_cycles = DWT::cycle_count().wrapping_sub(controls_started);
+        control_total += u64::from(control_cycles);
+        control_max = control_max.max(control_cycles);
+        timing.observe(DWT::cycle_count().wrapping_sub(started));
+        black_box((output[0], drained));
+    }
+    report_raw_case(name, timing);
+    defmt::info!(
+        "control-cost {} count={} avg={} max={} per_message_avg={}",
+        name,
+        count,
+        (control_total / MEASURED_BLOCKS as u64) as u32,
+        control_max,
+        (control_total / (MEASURED_BLOCKS * count) as u64) as u32
+    );
+}
+
+fn run_adaptive_block(
+    engine: &mut HardwareSynth,
+    controls: &ControlQueue,
+    adaptive_budget: &mut AdaptiveControlBudget,
+    output: &mut [f32; BLOCK_LENGTH * 2],
+) -> u32 {
+    let work_started = DWT::cycle_count();
+    if let Ok(command) = controls.try_receive() {
+        engine.handle_control(command);
+    }
+    let extras_started = DWT::cycle_count();
+    let effective_budget = adaptive_budget.effective_budget();
+    while DWT::cycle_count().wrapping_sub(extras_started) < effective_budget {
+        let Ok(command) = controls.try_receive() else {
+            break;
+        };
+        engine.handle_control(command);
+    }
+    let adaptive_spent = DWT::cycle_count().wrapping_sub(extras_started);
+    engine.process_interleaved(output, 2);
+    let work_cycles = DWT::cycle_count().wrapping_sub(work_started);
+    adaptive_budget.observe_rendered_block(work_cycles, adaptive_spent, BLOCK_CYCLE_BUDGET);
+    work_cycles
+}
+
 fn configure_modulation_heavy(engine: &mut HardwareSynth) {
     engine.set_param(ParamId::FilterCutoff, 1_200.0);
     engine.set_param(ParamId::FilterResonance, 0.65);
@@ -712,7 +817,7 @@ fn configure_worst_case(engine: &mut HardwareSynth) {
 }
 
 const RAW_HISTOGRAM_BINS: usize = 128;
-const RAW_HISTOGRAM_RANGE: u32 = AUDIO_BLOCK_CYCLE_BUDGET * 5 / 4;
+const RAW_HISTOGRAM_RANGE: u32 = BLOCK_CYCLE_BUDGET * 5 / 4;
 
 struct RawTiming {
     total: u64,
@@ -737,7 +842,7 @@ impl RawTiming {
         self.total += u64::from(cycles);
         self.blocks += 1;
         self.maximum = self.maximum.max(cycles);
-        self.overruns += u32::from(cycles > AUDIO_BLOCK_CYCLE_BUDGET);
+        self.overruns += u32::from(cycles > BLOCK_CYCLE_BUDGET);
         let bin = ((u64::from(cycles.min(RAW_HISTOGRAM_RANGE)) * RAW_HISTOGRAM_BINS as u64)
             / u64::from(RAW_HISTOGRAM_RANGE))
         .min((RAW_HISTOGRAM_BINS - 1) as u64) as usize;
@@ -763,7 +868,7 @@ impl RawTiming {
 }
 
 fn budget_permille(cycles: u32) -> u32 {
-    (u64::from(cycles) * 1_000 / u64::from(AUDIO_BLOCK_CYCLE_BUDGET)) as u32
+    (u64::from(cycles) * 1_000 / u64::from(BLOCK_CYCLE_BUDGET)) as u32
 }
 
 fn report_case(name: &str, raw: RawTiming, snapshot: Snapshot) {
@@ -777,7 +882,7 @@ fn report_case(name: &str, raw: RawTiming, snapshot: Snapshot) {
         raw.quantile(99),
         raw.maximum,
         budget_permille(raw.maximum),
-        AUDIO_BLOCK_CYCLE_BUDGET.saturating_sub(raw.maximum),
+        BLOCK_CYCLE_BUDGET.saturating_sub(raw.maximum),
         raw.overruns
     );
     defmt::info!(
@@ -857,7 +962,7 @@ fn report_raw_case(name: &str, raw: RawTiming) {
         raw.quantile(99),
         raw.maximum,
         budget_permille(raw.maximum),
-        AUDIO_BLOCK_CYCLE_BUDGET.saturating_sub(raw.maximum),
+        BLOCK_CYCLE_BUDGET.saturating_sub(raw.maximum),
         raw.overruns
     );
 }

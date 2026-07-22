@@ -29,18 +29,16 @@ use synth_core::{RenderProfiler, RenderStage};
 pub const CONTROL_QUEUE_CAPACITY: usize = 32;
 pub const PERFORMANCE_QUEUE_CAPACITY: usize = 32;
 pub const PATCH_QUEUE_CAPACITY: usize = 2;
-const BLOCK_CYCLE_BUDGET: u32 =
+pub const BLOCK_CYCLE_BUDGET: u32 =
     embassy_daisy::clocks::SYSCLK_HZ / embassy_daisy::audio::SAMPLE_RATE_HZ * BLOCK_LENGTH as u32;
-// Reserve measured render headroom by limiting patch/control work to ten
-// percent of one audio-block deadline. Unlike a message-count cap, cheap
-// commands can drain a burst quickly while expensive commands remain bounded.
-const CONTROL_CYCLE_BUDGET: u32 = BLOCK_CYCLE_BUDGET / 10;
 
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
 static OVERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 static UNDERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
+pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
+
 pub struct ControlQueue {
     queue: Mutex<CriticalSectionRawMutex, RefCell<Deque<ControlMessage, CONTROL_QUEUE_CAPACITY>>>,
 }
@@ -103,6 +101,7 @@ fn replaceable_same_field(existing: &ControlMessage, incoming: &ControlMessage) 
         _ => false,
     }
 }
+
 pub struct PerformanceQueue {
     queue:
         Mutex<CriticalSectionRawMutex, RefCell<Deque<ControlMessage, PERFORMANCE_QUEUE_CAPACITY>>>,
@@ -143,7 +142,38 @@ impl PerformanceQueue {
         })
     }
 }
-pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
+
+pub struct AdaptiveControlBudget {
+    adaptive: Option<u32>,
+}
+
+impl AdaptiveControlBudget {
+    pub const fn new() -> Self {
+        Self { adaptive: None }
+    }
+
+    pub fn reset(&mut self) {
+        self.adaptive = None;
+    }
+
+    pub fn effective_budget(&self) -> u32 {
+        self.adaptive.map_or(0, |budget| budget * 9 / 10)
+    }
+
+    pub fn observe_rendered_block(
+        &mut self,
+        work_cycles: u32,
+        adaptive_spent: u32,
+        block_budget: u32,
+    ) {
+        let observed_headroom =
+            block_budget.saturating_sub(work_cycles.saturating_sub(adaptive_spent));
+        self.adaptive = Some(match self.adaptive {
+            Some(previous) => previous.min(observed_headroom),
+            None => observed_headroom,
+        });
+    }
+}
 
 pub fn spawn(
     resources: AudioResources,
@@ -191,6 +221,7 @@ pub async fn run_task(
     let mut profiler = profiling::AudioProfiler::new(BLOCK_CYCLE_BUDGET);
     let mut perf_monitor = diagnostics::PerfMonitor::new(BLOCK_CYCLE_BUDGET);
     let mut patch_transition = PatchTransition::default();
+    let mut adaptive_control_budget = AdaptiveControlBudget::new();
 
     // Render before starting the receive clock. The SAI input ring cannot
     // overrun while the first, comparatively expensive DSP block is prepared.
@@ -256,6 +287,9 @@ pub async fn run_task(
             patch_transition.enqueue(patch);
         }
         let transition_action = patch_transition.begin_block();
+        if transition_action.patch.is_some() {
+            adaptive_control_budget.reset();
+        }
         if let Some(patch) = transition_action.patch {
             engine.apply_patch(&patch);
         }
@@ -263,18 +297,27 @@ pub async fn run_task(
         // critical and do not wait behind replaceable parameter traffic.
         apply_pending_releases(engine, pending_releases);
 
-        while DWT::cycle_count().wrapping_sub(work_started) < CONTROL_CYCLE_BUDGET {
+        if let Ok(command) = performance.try_receive() {
+            engine.handle_control(command);
+        } else if let Ok(command) = controls.try_receive() {
+            emit_control_diagnostics(&command);
+            engine.handle_control(command);
+        }
+        let extras_started = DWT::cycle_count();
+        let effective_budget = adaptive_control_budget.effective_budget();
+        while DWT::cycle_count().wrapping_sub(extras_started) < effective_budget {
             if let Ok(command) = performance.try_receive() {
-                apply_control(engine, command);
+                engine.handle_control(command);
                 continue;
             }
             if let Ok(command) = controls.try_receive() {
-                queue_midi_parameter_applied(&command);
-                apply_control(engine, command);
+                emit_control_diagnostics(&command);
+                engine.handle_control(command);
                 continue;
             }
             break;
         }
+        let adaptive_spent = DWT::cycle_count().wrapping_sub(extras_started);
         #[cfg(feature = "audio-profiling")]
         profiler.end(RenderStage::ControlDrain);
 
@@ -297,32 +340,15 @@ pub async fn run_task(
         }
 
         let work_cycles = DWT::cycle_count().wrapping_sub(work_started);
+        if transition_action.render {
+            adaptive_control_budget.observe_rendered_block(
+                work_cycles,
+                adaptive_spent,
+                BLOCK_CYCLE_BUDGET,
+            );
+        }
         if let Some(event) = perf_monitor.observe(work_cycles) {
             diagnostics::emit(event);
-        }
-    }
-}
-
-async fn audio_unavailable(reason: &'static str) -> ! {
-    diagnostics::emit(diagnostics::Event::AudioUnavailable { reason });
-    loop {
-        embassy_time::Timer::after_secs(3_600).await;
-    }
-}
-
-fn apply_control(engine: &mut HardwareSynth, command: ControlMessage) {
-    engine.handle_control(command);
-}
-
-fn apply_pending_releases(engine: &mut HardwareSynth, pending: &PendingReleases) {
-    if pending.take_all_notes_off() {
-        apply_control(engine, ControlMessage::AllNotesOff);
-    }
-    for (word_index, mut word) in pending.take().into_iter().enumerate() {
-        while word != 0 {
-            let note = word_index as u8 * 32 + word.trailing_zeros() as u8;
-            word &= word - 1;
-            apply_control(engine, ControlMessage::NoteOff { note });
         }
     }
 }
@@ -337,29 +363,28 @@ pub(crate) fn underruns_count() -> u32 {
     UNDERRUNS_COUNT.load(Ordering::Relaxed)
 }
 
-#[inline]
-fn increment_overruns() {
-    OVERRUNS_COUNT.fetch_add(1, Ordering::Relaxed);
+async fn audio_unavailable(reason: &'static str) -> ! {
+    diagnostics::emit(diagnostics::Event::AudioUnavailable { reason });
+    loop {
+        embassy_time::Timer::after_secs(3_600).await;
+    }
 }
 
-#[inline]
-fn increment_underruns() {
-    UNDERRUNS_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-fn fade_stereo_to_silence(output: &mut [(f32, f32)]) {
-    let Some(&(left, right)) = output.last() else {
-        return;
-    };
-    let length = output.len() as f32;
-    for (index, frame) in output.iter_mut().enumerate() {
-        let gain = 1.0 - (index + 1) as f32 / length;
-        *frame = (left * gain, right * gain);
+fn apply_pending_releases(engine: &mut HardwareSynth, pending: &PendingReleases) {
+    if pending.take_all_notes_off() {
+        engine.handle_control(ControlMessage::AllNotesOff);
+    }
+    for (word_index, mut word) in pending.take().into_iter().enumerate() {
+        while word != 0 {
+            let note = word_index as u8 * 32 + word.trailing_zeros() as u8;
+            word &= word - 1;
+            engine.handle_control(ControlMessage::NoteOff { note });
+        }
     }
 }
 
 #[cfg(feature = "diagnostics")]
-fn queue_midi_parameter_applied(command: &ControlMessage) {
+fn emit_control_diagnostics(command: &ControlMessage) {
     match command {
         ControlMessage::SetParam(param, value) => diagnostics::emit(diagnostics::Event::Param {
             param: *param,
@@ -377,7 +402,18 @@ fn queue_midi_parameter_applied(command: &ControlMessage) {
 
 #[cfg(not(feature = "diagnostics"))]
 #[inline(always)]
-fn queue_midi_parameter_applied(_command: &ControlMessage) {}
+fn emit_control_diagnostics(_command: &ControlMessage) {}
+
+fn fade_stereo_to_silence(output: &mut [(f32, f32)]) {
+    let Some(&(left, right)) = output.last() else {
+        return;
+    };
+    let length = output.len() as f32;
+    for (index, frame) in output.iter_mut().enumerate() {
+        let gain = 1.0 - (index + 1) as f32 / length;
+        *frame = (left * gain, right * gain);
+    }
+}
 
 #[cfg(feature = "audio-profiling")]
 fn queue_profile(snapshot: profiling::Snapshot) {
@@ -401,6 +437,16 @@ fn copy_output(interleaved: &[f32; BLOCK_LENGTH * 2], output: &mut Block) {
     for (frame, samples) in output.iter_mut().zip(interleaved.chunks_exact(2)) {
         *frame = (samples[0], samples[1]);
     }
+}
+
+#[inline]
+fn increment_overruns() {
+    OVERRUNS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+#[inline]
+fn increment_underruns() {
+    UNDERRUNS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 // I2C4 is not used by the Daisy BSP. Its event vector is reserved as a

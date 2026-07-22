@@ -3,17 +3,17 @@
 
 use core::hint::black_box;
 
-use analog_synth_daisy_firmware::audio::{ControlQueue, PatchQueue};
+use analog_synth_daisy_firmware::audio::{
+    AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue, PatchQueue,
+};
 use analog_synth_daisy_firmware::patch_transition::PatchTransition;
 use analog_synth_daisy_firmware::profiling::{AudioProfiler, Snapshot};
 use cortex_m::peripheral::DWT;
 use embassy_daisy::Board;
 use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::qspi::QspiFlash;
-use synth_core::{
-    ControlMessage, FilterOversampling, FilterType, ModDestination, ParamId,
-    REV2_PROGRAM_DATA_SYSEX_LEN, Rev2MidiDecoder, SynthEngineWithMemory, profiling::RenderStage,
-};
+use synth_core::dsp::{FilterOversampling, FilterType};
+use synth_core::{ControlMessage, ModDestination, ParamId, REV2_PROGRAM_DATA_SYSEX_LEN, Rev2MidiDecoder, SynthEngineWithMemory, profiling::RenderStage};
 use {defmt_rtt as _, panic_probe as _};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
@@ -35,8 +35,6 @@ const CONTROL_STRESS_BLOCKS: usize = 128;
 const PROFILED_BLOCKS: usize = 256;
 const PROFILE_THRESHOLD_CYCLES: u32 = 272_000;
 const PROFILE_TRIGGER_CYCLES: u32 = PROFILE_THRESHOLD_CYCLES;
-const AUDIO_BLOCK_CYCLE_BUDGET: u32 =
-    embassy_daisy::clocks::SYSCLK_HZ / embassy_daisy::audio::SAMPLE_RATE_HZ * BLOCK_LENGTH as u32;
 
 type HardwareSynth<'a> = SynthEngineWithMemory<1, &'a mut [f32]>;
 
@@ -69,6 +67,7 @@ fn main() -> ! {
     validate_factory_bank(&mut qspi, &mut message);
 
     let mut summary = Summary::new();
+    let mut adaptive_summary = AdaptiveBudgetSummary::new();
     for index in 0..FACTORY_PRESET_COUNT {
         read_message(&mut qspi, index, &mut message);
         let program = match Rev2MidiDecoder::program_data(&message) {
@@ -91,6 +90,7 @@ fn main() -> ! {
         let mut dma_output = [(0.0_f32, 0.0_f32); BLOCK_LENGTH];
         let controls = ControlQueue::new();
         let patches = PatchQueue::new();
+        let mut adaptive_budget = AdaptiveControlBudget::new();
         let transition = measure_transition(
             &mut engine,
             &program.patch,
@@ -98,6 +98,7 @@ fn main() -> ! {
             &mut dma_output,
             &controls,
             &patches,
+            &mut adaptive_budget,
         );
         report_raw(
             program.bank,
@@ -114,7 +115,14 @@ fn main() -> ! {
 
         engine.all_notes_off();
         for note in [60, 64, 67, 72] {
-            engine.note_on(note, 1.0);
+            assert!(
+                controls
+                    .try_send(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    })
+                    .is_ok()
+            );
         }
         let attack = measure_raw(
             &mut engine,
@@ -123,6 +131,7 @@ fn main() -> ! {
             ATTACK_BLOCKS,
             &controls,
             &patches,
+            &mut adaptive_budget,
         );
         report_raw(program.bank, program.program, Scenario::Attack, attack);
         summary.observe(program.bank, program.program, Scenario::Attack, attack);
@@ -135,6 +144,7 @@ fn main() -> ! {
             RAW_BLOCKS,
             &controls,
             &patches,
+            &mut adaptive_budget,
         );
         report_raw(program.bank, program.program, Scenario::Steady, steady);
         summary.observe(program.bank, program.program, Scenario::Steady, steady);
@@ -147,6 +157,7 @@ fn main() -> ! {
             &mut dma_output,
             &controls,
             &patches,
+            &mut adaptive_budget,
         );
         report_raw(
             program.bank,
@@ -169,9 +180,18 @@ fn main() -> ! {
             let snapshot = measure_profiled(&mut engine, &mut output);
             report_profile(program.bank, program.program, snapshot);
         }
+
+        drop(engine);
+        adaptive_summary.measure(
+            &program.patch,
+            &mut *effects_memory,
+            program.bank,
+            program.program,
+        );
     }
 
     summary.report();
+    adaptive_summary.report();
     defmt::info!("factory-preset benchmark complete");
     loop {
         cortex_m::asm::wfi();
@@ -248,6 +268,7 @@ fn measure_raw(
     blocks: usize,
     controls: &ControlQueue,
     patches: &PatchQueue,
+    adaptive_budget: &mut AdaptiveControlBudget,
 ) -> RawTiming {
     let mut timing = RawTiming::new();
     let mut transition = PatchTransition::default();
@@ -260,6 +281,7 @@ fn measure_raw(
             controls,
             patches,
             &mut transition,
+            adaptive_budget,
         );
         timing.observe(DWT::cycle_count().wrapping_sub(started));
         black_box(dma_output[0]);
@@ -274,6 +296,7 @@ fn measure_transition(
     dma_output: &mut [(f32, f32); BLOCK_LENGTH],
     controls: &ControlQueue,
     patches: &PatchQueue,
+    adaptive_budget: &mut AdaptiveControlBudget,
 ) -> RawTiming {
     let mut timing = RawTiming::new();
     let mut transition = PatchTransition::default();
@@ -288,6 +311,7 @@ fn measure_transition(
             controls,
             patches,
             &mut transition,
+            adaptive_budget,
         );
         timing.observe(DWT::cycle_count().wrapping_sub(started));
         black_box(dma_output[0]);
@@ -303,6 +327,7 @@ fn measure_control_stress(
     dma_output: &mut [(f32, f32); BLOCK_LENGTH],
     controls: &ControlQueue,
     patches: &PatchQueue,
+    adaptive_budget: &mut AdaptiveControlBudget,
 ) -> RawTiming {
     let mut timing = RawTiming::new();
     let mut transition = PatchTransition::default();
@@ -337,6 +362,7 @@ fn measure_control_stress(
             controls,
             patches,
             &mut transition,
+            adaptive_budget,
         );
         timing.observe(DWT::cycle_count().wrapping_sub(started));
         black_box(dma_output[0]);
@@ -352,25 +378,135 @@ fn run_callback(
     controls: &ControlQueue,
     patches: &PatchQueue,
     transition: &mut PatchTransition,
+    adaptive_budget: &mut AdaptiveControlBudget,
 ) {
+    let work_started = DWT::cycle_count();
     if let Ok(patch) = patches.try_receive() {
         transition.enqueue(patch);
     }
     let action = transition.begin_block();
+    if action.patch.is_some() {
+        adaptive_budget.reset();
+    }
     if let Some(patch) = action.patch {
         engine.apply_patch(&patch);
     }
-    for _ in 0..4 {
+    if let Ok(command) = controls.try_receive() {
+        engine.handle_control(command);
+    }
+    let extras_started = DWT::cycle_count();
+    let effective_budget = adaptive_budget.effective_budget();
+    while DWT::cycle_count().wrapping_sub(extras_started) < effective_budget {
         let Ok(command) = controls.try_receive() else {
             break;
         };
         engine.handle_control(command);
     }
+    let adaptive_spent = DWT::cycle_count().wrapping_sub(extras_started);
     if action.render {
         engine.process_interleaved(interleaved, 2);
     }
     transition.finish_block(interleaved, action.render);
     copy_output(interleaved, dma_output);
+    let work_cycles = DWT::cycle_count().wrapping_sub(work_started);
+    if action.render {
+        adaptive_budget.observe_rendered_block(work_cycles, adaptive_spent, BLOCK_CYCLE_BUDGET);
+    }
+}
+
+struct AdaptiveBudgetSummary {
+    maximum: u32,
+    bank: u8,
+    program: u8,
+    overruns: u32,
+}
+
+impl AdaptiveBudgetSummary {
+    const fn new() -> Self {
+        Self {
+            maximum: 0,
+            bank: 0,
+            program: 0,
+            overruns: 0,
+        }
+    }
+
+    fn measure(
+        &mut self,
+        patch: &synth_core::Patch,
+        effects_memory: &mut [f32],
+        bank: u8,
+        program: u8,
+    ) {
+        let mut engine =
+            HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory);
+        engine.set_filter_type(FilterType::GainLimitedTpt);
+        engine.set_filter_oversampling(FilterOversampling::Off);
+        engine.apply_patch(patch);
+
+        let controls = ControlQueue::new();
+        for note in [60, 64, 67, 72] {
+            assert!(
+                controls
+                    .try_send(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    })
+                    .is_ok()
+            );
+        }
+        for (param, value) in [
+            (ParamId::FilterCutoff, patch.filter.cutoff),
+            (ParamId::FilterResonance, patch.filter.resonance),
+            (ParamId::Osc1ShapeMod, patch.osc1.shape_mod),
+            (ParamId::EffectParam1, patch.effects.param1),
+        ] {
+            assert!(
+                controls
+                    .try_send(ControlMessage::SetParam(param, value))
+                    .is_ok()
+            );
+        }
+        let patches = PatchQueue::new();
+        let mut transition = PatchTransition::default();
+        let mut adaptive_budget = AdaptiveControlBudget::new();
+        let mut output = [0.0_f32; BLOCK_LENGTH * 2];
+        let mut dma_output = [(0.0_f32, 0.0_f32); BLOCK_LENGTH];
+        let mut maximum = 0_u32;
+        for _ in 0..16 {
+            let started = DWT::cycle_count();
+            run_callback(
+                &mut engine,
+                &mut output,
+                &mut dma_output,
+                &controls,
+                &patches,
+                &mut transition,
+                &mut adaptive_budget,
+            );
+            maximum = maximum.max(DWT::cycle_count().wrapping_sub(started));
+            black_box(dma_output[0]);
+        }
+
+        self.overruns += u32::from(maximum > BLOCK_CYCLE_BUDGET);
+        if maximum > self.maximum {
+            self.maximum = maximum;
+            self.bank = bank;
+            self.program = program;
+        }
+    }
+
+    fn report(&self) {
+        defmt::info!(
+            "FACTORY adaptive-budget max={} max_permille={} deadline_headroom={} overrun_presets={} worst_bank={} worst_program={}",
+            self.maximum,
+            budget_permille(self.maximum),
+            BLOCK_CYCLE_BUDGET.saturating_sub(self.maximum),
+            self.overruns,
+            self.bank + 1,
+            self.program + 1
+        );
+    }
 }
 
 #[inline(always)]
@@ -384,7 +520,7 @@ fn measure_profiled(
     engine: &mut HardwareSynth<'_>,
     output: &mut [f32; BLOCK_LENGTH * 2],
 ) -> Snapshot {
-    let mut profiler = AudioProfiler::new(AUDIO_BLOCK_CYCLE_BUDGET);
+    let mut profiler = AudioProfiler::new(BLOCK_CYCLE_BUDGET);
     for _ in 0..PROFILED_BLOCKS {
         profiler.begin_block();
         engine.process_interleaved_profiled(output, 2, &mut profiler);
@@ -395,7 +531,7 @@ fn measure_profiled(
 }
 
 const RAW_HISTOGRAM_BINS: usize = 256;
-const RAW_HISTOGRAM_RANGE: u32 = AUDIO_BLOCK_CYCLE_BUDGET * 2;
+const RAW_HISTOGRAM_RANGE: u32 = BLOCK_CYCLE_BUDGET * 2;
 
 #[derive(Clone, Copy)]
 struct RawTiming {
@@ -421,7 +557,7 @@ impl RawTiming {
         self.total += u64::from(cycles);
         self.blocks += 1;
         self.maximum = self.maximum.max(cycles);
-        self.overruns += u32::from(cycles > AUDIO_BLOCK_CYCLE_BUDGET);
+        self.overruns += u32::from(cycles > BLOCK_CYCLE_BUDGET);
         let bin = ((u64::from(cycles.min(RAW_HISTOGRAM_RANGE)) * RAW_HISTOGRAM_BINS as u64)
             / u64::from(RAW_HISTOGRAM_RANGE))
         .min((RAW_HISTOGRAM_BINS - 1) as u64) as usize;
@@ -490,7 +626,7 @@ fn report_raw(bank: u8, program: u8, scenario: Scenario, raw: RawTiming) {
         raw.maximum,
         budget_permille(raw.maximum),
         PROFILE_THRESHOLD_CYCLES.saturating_sub(raw.maximum),
-        AUDIO_BLOCK_CYCLE_BUDGET.saturating_sub(raw.maximum),
+        BLOCK_CYCLE_BUDGET.saturating_sub(raw.maximum),
         raw.overruns
     );
 }
@@ -542,7 +678,7 @@ fn report_profile(bank: u8, program: u8, snapshot: Snapshot) {
 }
 
 const fn budget_permille(cycles: u32) -> u32 {
-    (cycles as u64 * 1_000 / AUDIO_BLOCK_CYCLE_BUDGET as u64) as u32
+    (cycles as u64 * 1_000 / BLOCK_CYCLE_BUDGET as u64) as u32
 }
 
 struct Summary {
@@ -579,7 +715,7 @@ impl FeatureGroup {
     fn observe(&mut self, raw: RawTiming) {
         self.presets += 1;
         self.at_or_above_target += u16::from(raw.maximum >= PROFILE_THRESHOLD_CYCLES);
-        self.over_deadline += u16::from(raw.maximum > AUDIO_BLOCK_CYCLE_BUDGET);
+        self.over_deadline += u16::from(raw.maximum > BLOCK_CYCLE_BUDGET);
         self.maximum = self.maximum.max(raw.maximum);
     }
 }
@@ -623,7 +759,7 @@ impl Summary {
         let scenario_index = scenario.index();
         self.at_or_above_target[scenario_index] +=
             u16::from(raw.maximum >= PROFILE_THRESHOLD_CYCLES);
-        self.over_deadline[scenario_index] += u16::from(raw.maximum > AUDIO_BLOCK_CYCLE_BUDGET);
+        self.over_deadline[scenario_index] += u16::from(raw.maximum > BLOCK_CYCLE_BUDGET);
         if raw.maximum > self.worst_cycles {
             self.worst_bank = bank;
             self.worst_program = program;
