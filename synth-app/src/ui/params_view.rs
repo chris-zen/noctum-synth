@@ -804,6 +804,7 @@ const PATCH_LOAD_POPUP_HEIGHT: f32 = 440.0;
 const PATCH_LOAD_BANK_FILTER_ID: &str = "patch_load_bank_filter";
 const PATCH_LOAD_BANK_BUTTON_SIZE: egui::Vec2 = egui::vec2(38.0, 22.0);
 const PATCH_LOAD_BUTTON_SIZE: egui::Vec2 = egui::vec2(56.0, 20.0);
+const PATCH_RESET_LABEL: &str = "Reset";
 
 fn load_patch_by_name(
     patch_mgr: &mut PatchManager,
@@ -976,6 +977,27 @@ fn command_row(
                             egui::ScrollArea::vertical()
                                 .max_height(PATCH_LOAD_POPUP_HEIGHT)
                                 .show(ui, |ui| {
+                                    if selected_bank.is_none() {
+                                        if filter.is_empty() || filter.contains("reset")
+                                        {
+                                            if ui
+                                                .selectable_label(false, PATCH_RESET_LABEL)
+                                                .clicked()
+                                            {
+                                                let default_patch = Patch::default();
+                                                state.apply_from_patch(&default_patch);
+                                                control.load_patch_respecting_mute(
+                                                    &default_patch,
+                                                    *muted,
+                                                );
+                                                patch_mgr.set_loaded_patch(
+                                                    "",
+                                                    &Patch::from(&*state),
+                                                );
+                                                ui.close();
+                                            }
+                                        }
+                                    }
                                     for name in &patch_mgr.patch_names {
                                         if !filter.is_empty()
                                             && !name.to_ascii_lowercase().contains(&filter)
