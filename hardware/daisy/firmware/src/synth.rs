@@ -71,6 +71,7 @@ pub fn message_to_controls(
             if decoder.control_change(channel.index(), controller, value, |update| {
                 emit(match update {
                     Rev2MidiUpdate::Param(param, value) => ControlMessage::SetParam(param, value),
+                    Rev2MidiUpdate::MidiClockMode(mode) => ControlMessage::SetMidiClockMode(mode),
                     Rev2MidiUpdate::Modulation { route, parameter } => {
                         ControlMessage::SetModulationParam { route, parameter }
                     }
@@ -334,7 +335,7 @@ mod tests {
     #[cfg(feature = "diagnostics")]
     use super::{CompletedNrpn, NrpnMonitor};
     use super::{message_to_control, message_to_controls, realtime_to_control};
-    use synth_core::{ControlMessage, MidiRealtimeEvent, ParamId, Rev2MidiDecoder};
+    use synth_core::{ControlMessage, MidiClockMode, MidiRealtimeEvent, ParamId, Rev2MidiDecoder};
     use wmidi::MidiMessage;
 
     fn command(bytes: &[u8]) -> Option<ControlMessage> {
@@ -453,6 +454,23 @@ mod tests {
         assert!(matches!(
             command,
             Some(ControlMessage::SetParam(ParamId::FilterResonance, 1.0))
+        ));
+    }
+
+    #[test]
+    fn decodes_rev2_global_clock_mode_nrpn() {
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut command = None;
+        for bytes in [[0xb0, 99, 32], [0xb0, 98, 3], [0xb0, 6, 0], [0xb0, 38, 2]] {
+            message_to_controls(
+                MidiMessage::try_from(bytes.as_slice()).unwrap(),
+                &mut decoder,
+                |next| command = Some(next),
+            );
+        }
+        assert!(matches!(
+            command,
+            Some(ControlMessage::SetMidiClockMode(MidiClockMode::Slave))
         ));
     }
 

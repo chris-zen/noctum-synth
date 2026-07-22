@@ -2,8 +2,8 @@
 
 use crate::patch::decode_patch_name;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, ModDestination,
-    ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    DedicatedModSource, LfoSyncDivision, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, MidiClockMode,
+    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
@@ -37,6 +37,7 @@ pub struct Rev2ProgramData {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Rev2MidiUpdate {
     Param(ParamId, f32),
+    MidiClockMode(MidiClockMode),
     Modulation {
         route: ModRoute,
         parameter: ModulationParam,
@@ -144,6 +145,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
         if let Some(value) = program_nrpn_value(&raw, number, 0) {
             map_nrpn_stateful(number, value, &mut state, &mut |update| match update {
                 Rev2MidiUpdate::Param(param, value) => patch.set_param(param, value),
+                Rev2MidiUpdate::MidiClockMode(_) => {}
                 Rev2MidiUpdate::Modulation { route, parameter } => {
                     patch.set_modulation_param(route, parameter);
                 }
@@ -316,7 +318,7 @@ impl Rev2MidiEncoder {
             ParamId::UnisonEnabled => (168, bool_raw(value)),
             ParamId::UnisonMode => (169, quantize(value, 0.0, 16.0, 16)),
             ParamId::UnisonDetune => (167, quantize(value, 0.0, 16.0, 16)),
-            ParamId::Bpm => (179, quantize(value, 30.0, 250.0, 220)),
+            ParamId::Bpm => (179, crate::math::round(value.clamp(30.0, 250.0)) as u16),
             ParamId::ClockDivide => (175, quantize(value, 0.0, 12.0, 12)),
             ParamId::FilterCutoff => (15, quantize_log(value, 20.0, 20_000.0, 164)),
             ParamId::FilterResonance => (16, quantize(value, 0.0, 1.0, 127)),
@@ -458,6 +460,16 @@ impl Rev2MidiEncoder {
             }
             ModRoute::Free(_) => {}
         }
+    }
+
+    /// Encode the Rev2 global MIDI Clock Mode parameter (NRPN 4099).
+    pub fn midi_clock_mode(
+        &mut self,
+        channel: u8,
+        mode: MidiClockMode,
+        mut emit: impl FnMut([u8; 3]),
+    ) {
+        emit_nrpn(channel, 4099, mode.index() as u16, &mut emit);
     }
 
     fn oscillator_shape(&self, index: usize) -> u8 {
@@ -839,6 +851,12 @@ fn map_nrpn_stateful(
     state: &mut NrpnChannelState,
     emit: &mut impl FnMut(Rev2MidiUpdate),
 ) {
+    if number == 4099 {
+        emit(Rev2MidiUpdate::MidiClockMode(MidiClockMode::from_index(
+            raw as usize,
+        )));
+        return;
+    }
     if (37..=56).contains(&number) {
         let lfo = usize::from((number - 37) / 5);
         match (number - 37) % 5 {
@@ -984,6 +1002,9 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         170 => emit_param(emit, ParamId::KeyMode, key_mode_index(raw)),
         175 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
         179 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
+        4099 => emit(Rev2MidiUpdate::MidiClockMode(MidiClockMode::from_index(
+            raw as usize,
+        ))),
         _ => {}
     }
 }
@@ -1073,6 +1094,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
         170 => 5,
         175 => 12,
         179 => 250,
+        4099 => 4,
         15 => 164,
         20 | 58 | 66 | 69 | 72 | 75 | 78 | 81 | 84 | 87 | 116 | 118 | 120 | 122 | 124 => 254,
         37 | 42 | 47 | 52 => 150,
@@ -1122,6 +1144,32 @@ mod tests {
             decoded,
             Some(Rev2MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
         );
+    }
+
+    #[test]
+    fn bpm_nrpn_uses_direct_rev2_values() {
+        for bpm in [30.0, 120.0, 250.0] {
+            let mut encoder = Rev2MidiEncoder::default();
+            let mut decoder = Rev2MidiDecoder::default();
+            let mut decoded = None;
+            assert!(encoder.param(0, ParamId::Bpm, bpm, |message| {
+                decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+            }));
+            assert_eq!(decoded, Some(Rev2MidiUpdate::Param(ParamId::Bpm, bpm)));
+        }
+    }
+
+    #[test]
+    fn global_midi_clock_mode_round_trips_as_nrpn_4099() {
+        for mode in MidiClockMode::ALL {
+            let mut encoder = Rev2MidiEncoder::default();
+            let mut decoder = Rev2MidiDecoder::default();
+            let mut decoded = None;
+            encoder.midi_clock_mode(0, mode, |message| {
+                decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+            });
+            assert_eq!(decoded, Some(Rev2MidiUpdate::MidiClockMode(mode)));
+        }
     }
 
     #[test]

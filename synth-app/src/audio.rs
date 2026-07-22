@@ -19,7 +19,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use synth_core::{ControlMessage, FilterOversampling, FilterType, SynthEngine, VOICE_PACKS};
+use synth_core::{
+    ControlMessage, FilterOversampling, FilterType, SynthEngineWithMemory, VOICE_PACKS,
+};
 
 /// How long to wait for `cpal` to switch the device sample rate and build a
 /// stream. CoreAudio rate changes can take longer than the default, so give
@@ -958,7 +960,7 @@ fn find_device(devices: &[cpal::Device], filter: &str) -> Option<cpal::Device> {
 /// spectrum blocks and timing metrics back to the UI.
 struct Renderer {
     engine_audio: SynthEngineAudio,
-    engine: SynthEngine<VOICE_PACKS>,
+    engine: SynthEngineWithMemory<VOICE_PACKS, Box<[f32]>>,
     timing: AudioTiming,
     input: Option<rtrb::Consumer<f32>>,
     input_enabled: Arc<AtomicBool>,
@@ -977,7 +979,14 @@ impl Renderer {
         filter_type: FilterType,
     ) -> Self {
         let input_enabled = engine_audio.input_enabled.clone();
-        let mut engine = SynthEngine::<VOICE_PACKS>::new(sample_rate);
+        // Stereo delays need one second of history per channel to match the
+        // Rev2's documented maximum. Heap storage avoids a large audio-thread
+        // stack object at high host sample rates.
+        let effects_memory = vec![0.0; sample_rate.max(1.0) as usize * 2].into_boxed_slice();
+        let mut engine = SynthEngineWithMemory::<VOICE_PACKS, _>::new_with_effects_memory(
+            sample_rate,
+            effects_memory,
+        );
         engine.set_filter_oversampling(filter_oversampling);
         engine.set_filter_type(filter_type);
         log_audio(&format!(

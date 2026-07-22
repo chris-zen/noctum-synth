@@ -1,0 +1,35 @@
+---
+description: Rust module layout — flow order, colocated impls
+globs: **/*.rs
+alwaysApply: true
+---
+
+# Rust module layout
+
+- `use` imports, then `const` and `type` aliases at the top of the module.
+- Order items by call flow: callers before callees. Public API and entry points before private helpers.
+- Keep each `struct`, `enum`, or `trait` immediately followed by its `impl` block(s). Do not group all type definitions before all impl blocks.
+- Put `#[cfg(test)] mod tests` at the end.
+
+Example:
+
+```rust
+const TIMEOUT: Duration = Duration::from_millis(500);
+
+pub struct Service { ... }
+
+impl Service {
+    pub fn run(&self) { self.worker.poll(); }
+}
+
+struct Worker { ... }
+
+impl Worker {
+    fn poll(&self) { helper(); }
+}
+
+fn helper() { ... }
+
+#[cfg(test)]
+mod tests { ... }
+```

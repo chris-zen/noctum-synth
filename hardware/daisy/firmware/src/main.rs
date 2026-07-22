@@ -16,10 +16,12 @@ use analog_synth_daisy_firmware::pending_releases::PendingReleases;
 use analog_synth_daisy_firmware::{audio, diagnostics, indicator, midi, usb_audio};
 
 const SAMPLE_RATE_HZ: f32 = usb_audio::SAMPLE_RATE_HZ as f32;
-const EFFECTS_SAMPLES: usize = usb_audio::SAMPLE_RATE_HZ;
+// One second of float delay history per stereo channel. The buffer remains a
+// shared pool because only one global effect is active at a time.
+const EFFECTS_SAMPLES: usize = usb_audio::SAMPLE_RATE_HZ * 2;
 const FIRMWARE_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
 const FIRMWARE_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
-const FIRMWARE_MIDI_CLOCK_MODE: MidiClockMode = MidiClockMode::Slave;
+const FIRMWARE_MIDI_CLOCK_MODE: MidiClockMode = MidiClockMode::Off;
 
 static ENGINE: StaticCell<HardwareSynth> = StaticCell::new();
 static CONTROLS: ControlQueue = ControlQueue::new();

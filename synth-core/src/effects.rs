@@ -1489,6 +1489,14 @@ mod tests {
     }
 
     #[test]
+    fn daisy_sized_pool_provides_one_second_per_stereo_channel() {
+        let mut buffer = std::vec![0.0; 96_000];
+        let (left, right) = split_stereo(&mut buffer).unwrap();
+        assert_eq!(left.len(), 48_000);
+        assert_eq!(right.len(), 48_000);
+    }
+
+    #[test]
     fn effect_modulation_steps_are_smoothed() {
         let mut smoother = EffectModulationSmoother::new(48_000.0);
         let target = EffectModulation {

@@ -17,7 +17,7 @@ use synth_core::{
 use {defmt_rtt as _, panic_probe as _};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
-const EFFECTS_SAMPLES: usize = 48_000;
+const EFFECTS_SAMPLES: usize = 48_000 * 2;
 const FACTORY_PRESET_COUNT: usize = 512;
 const PRESETS_PER_BANK: usize = 128;
 

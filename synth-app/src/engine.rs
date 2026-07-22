@@ -198,6 +198,9 @@ impl SynthEngineControl {
 
     pub fn set_param(&self, param: ParamId, value: f32) {
         self.send(ControlMessage::SetParam(param, value));
+        if param == ParamId::Bpm {
+            self.midi_output.set_master_bpm(value);
+        }
         self.midi_output.send_param(param, value);
     }
 
@@ -208,6 +211,9 @@ impl SynthEngineControl {
     /// Sends a MIDI-originated parameter change to audio and mirrors it to UI.
     pub fn set_midi_param(&self, param: ParamId, value: f32) {
         self.send(ControlMessage::SetParam(param, value));
+        if param == ParamId::Bpm {
+            self.midi_output.set_master_bpm(value);
+        }
         self.send_midi_ui(MidiUiUpdate::Param(param, value));
     }
 
@@ -227,6 +233,11 @@ impl SynthEngineControl {
 
     pub fn set_midi_clock_mode(&self, mode: MidiClockMode) {
         self.send(ControlMessage::SetMidiClockMode(mode));
+        self.midi_output.set_clock_mode(mode);
+    }
+
+    pub fn set_midi_output_clock_mode(&self, mode: MidiClockMode) -> bool {
+        self.midi_output.set_output_clock_mode(mode)
     }
 
     pub fn midi_realtime(&self, event: MidiRealtimeEvent) {
@@ -316,6 +327,7 @@ impl SynthEngineControl {
     }
 
     pub fn load_patch(&self, patch: &Patch) {
+        self.midi_output.set_master_bpm(patch.bpm);
         self.set_unison_chord(patch.unison_chord);
         patch.for_each_param(|id, value| self.send(ControlMessage::SetParam(id, value)));
         patch.for_each_modulation(|route, slot| {
@@ -344,6 +356,7 @@ impl SynthEngineControl {
 
     /// Applies a complete MIDI-originated patch without echoing it to MIDI output.
     pub fn load_midi_patch(&self, patch: &Patch) {
+        self.midi_output.set_master_bpm(patch.bpm);
         self.set_unison_chord(patch.unison_chord);
         patch.for_each_param(|id, value| self.set_midi_param(id, value));
         patch.for_each_modulation(|route, slot| {
