@@ -13,6 +13,38 @@ const KNOB_SWEEP_START: f32 = 1.0 / 12.0;
 const KNOB_SWEEP_RANGE: f32 = 10.0 / 12.0;
 const KNOB_LABEL_OVERLAP: f32 = -6.0;
 
+fn linear_gain_to_db(linear: f32) -> f32 {
+    if linear <= 0.0 {
+        f32::NEG_INFINITY
+    } else {
+        20.0 * linear.log10()
+    }
+}
+
+fn db_to_linear_gain(db: f32) -> f32 {
+    10.0f32.powf(db / 20.0).clamp(0.0, 1.0)
+}
+
+fn format_master_volume(linear: f32) -> String {
+    let db = linear_gain_to_db(linear);
+    if db.is_infinite() {
+        "-inf dB".to_string()
+    } else {
+        format!("{db:.1} dB")
+    }
+}
+
+fn parse_master_volume(input: &str) -> Option<f32> {
+    let trimmed = input.trim().to_lowercase();
+    if trimmed == "-inf" || trimmed == "-∞" {
+        Some(0.0)
+    } else if let Ok(db) = trimmed.replace("db", "").trim().parse::<f32>() {
+        Some(db_to_linear_gain(db))
+    } else {
+        None
+    }
+}
+
 fn knob_edit_id(param: ParamId) -> egui::Id {
     egui::Id::new(format!("knob_txt_{param:?}"))
 }
@@ -495,18 +527,18 @@ pub fn master_volume(
 
         let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
         if !edit_has_focus {
-            edit_text = format!("{:.2}", *value);
+            edit_text = format_master_volume(*value);
         }
 
         if edit_text.is_empty() {
-            edit_text = format!("{:.2}", *value);
+            edit_text = format_master_volume(*value);
         }
 
         let edit_response = ui.add(
             egui::TextEdit::singleline(&mut edit_text)
                 .id(edit_id)
                 .font(font_id)
-                .desired_width(36.0)
+                .desired_width(56.0)
                 .margin(egui::Margin::ZERO)
                 .horizontal_align(egui::Align::Center)
                 .frame(egui::Frame::NONE)
@@ -515,17 +547,16 @@ pub fn master_volume(
 
         let apply = edit_response.lost_focus() && !edit_text.trim().is_empty();
         if apply {
-            if let Ok(new_val) = edit_text.trim().parse::<f32>() {
-                let clamped = new_val.clamp(0.0, 1.0);
-                if (*value - clamped).abs() > f32::EPSILON {
-                    *value = clamped;
+            if let Some(new_linear) = parse_master_volume(&edit_text) {
+                if (*value - new_linear).abs() > f32::EPSILON {
+                    *value = new_linear;
                     if echo_midi {
                         control.set_param(ParamId::MasterVolume, *value);
                     }
                 }
-                edit_text = format!("{:.2}", *value);
+                edit_text = format_master_volume(*value);
             } else {
-                edit_text = format!("{:.2}", *value);
+                edit_text = format_master_volume(*value);
             }
         }
 
