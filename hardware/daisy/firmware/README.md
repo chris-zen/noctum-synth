@@ -39,7 +39,9 @@ shareable memory.
 The firmware enumerates as a composite bidirectional USB-MIDI device and UAC1
 audio source. The MIDI decoder honors each packet's code-index-number length
 and reassembles SysEx into a fixed buffer sized for the larger Rev2
-stored-program envelope without allocation.
+stored-program envelope without allocation. `embassy-daisy` owns that USB
+framing; the firmware uses `wmidi` only after a complete raw message is
+delivered.
 It uses
 temporary VID/PID
 `0xC0DE:0xCAFE` for local development only. Do not distribute firmware or

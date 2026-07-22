@@ -1,8 +1,8 @@
 //! Non-blocking mirror from the SAI-paced synth output to USB Audio Class 1.
 
-use embassy_daisy::usb_audio::Stream;
+use embassy_daisy::usb::audio::{RecoveryEndpoint, Stream};
+use embassy_daisy::usb::{EndpointError, UsbDriver};
 use embassy_time::{Duration, with_timeout};
-use embassy_usb::driver::{Driver, EndpointError};
 
 use crate::diagnostics;
 use crate::usb_audio_core::{
@@ -14,7 +14,7 @@ pub use crate::usb_audio_core::{MAX_PACKET_BYTES, SAMPLE_RATE_HZ, UsbAudioBuffer
 
 /// Serve the UAC1 IN endpoint forever. Endpoint closure only stops the USB
 /// mirror; the SAI-paced DAC producer continues independently.
-pub async fn run<'d, D: Driver<'d>>(
+pub async fn run<'d, D: UsbDriver<'d>>(
     stream: &mut Stream<'d, D>,
     buffer: &'static UsbAudioBuffer,
 ) -> ! {
@@ -26,8 +26,14 @@ pub async fn run<'d, D: Driver<'d>>(
     loop {
         stream.wait_connection().await;
         stream.wait_resumed().await;
-        let endpoint = stream.endpoint_index();
-        embassy_daisy::usb::set_isochronous_in_recovery(endpoint, true);
+        let recovery_endpoint = stream.recovery_endpoint();
+        if let Some(endpoint) = recovery_endpoint {
+            embassy_daisy::usb::audio::set_isochronous_in_recovery(endpoint, true);
+        } else {
+            diagnostics::emit(diagnostics::Event::UsbAudioRecoveryUnavailable {
+                endpoint: u8::try_from(stream.endpoint_index()).unwrap_or(u8::MAX),
+            });
+        }
         buffer.activate();
         diagnostics::emit(diagnostics::Event::UsbAudioStarted);
 
@@ -93,7 +99,9 @@ pub async fn run<'d, D: Driver<'d>>(
             let result = match write {
                 Ok(result) => result,
                 Err(_) => {
-                    embassy_daisy::usb::recover_disabled_isochronous_in(endpoint);
+                    if let Some(endpoint) = recovery_endpoint {
+                        embassy_daisy::usb::audio::recover_disabled_isochronous_in(endpoint);
+                    }
                     continue;
                 }
             };
@@ -106,7 +114,7 @@ pub async fn run<'d, D: Driver<'d>>(
                     }
                 }
                 Err(EndpointError::Disabled) => {
-                    finish_stream(endpoint, buffer);
+                    finish_stream(recovery_endpoint, buffer);
                     break;
                 }
                 Err(EndpointError::BufferOverflow) => {}
@@ -115,16 +123,15 @@ pub async fn run<'d, D: Driver<'d>>(
     }
 }
 
-fn finish_stream(endpoint: usize, buffer: &UsbAudioBuffer) {
-    embassy_daisy::usb::set_isochronous_in_recovery(endpoint, false);
+fn finish_stream(endpoint: Option<RecoveryEndpoint>, buffer: &UsbAudioBuffer) {
+    if let Some(endpoint) = endpoint {
+        embassy_daisy::usb::audio::set_isochronous_in_recovery(endpoint, false);
+    }
     buffer.deactivate();
     diagnostics::emit(diagnostics::Event::UsbAudioStopped);
 }
 
-async fn stop_for_suspend<'d, D: Driver<'d>>(
-    stream: &Stream<'d, D>,
-    buffer: &UsbAudioBuffer,
-) {
-    finish_stream(stream.endpoint_index(), buffer);
+async fn stop_for_suspend<'d, D: UsbDriver<'d>>(stream: &Stream<'d, D>, buffer: &UsbAudioBuffer) {
+    finish_stream(stream.recovery_endpoint(), buffer);
     stream.wait_resumed().await;
 }

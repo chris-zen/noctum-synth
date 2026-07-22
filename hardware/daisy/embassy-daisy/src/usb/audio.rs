@@ -9,6 +9,8 @@ use embassy_usb::descriptor::{SynchronizationType, UsageType};
 use embassy_usb::driver::{Driver, Endpoint, EndpointError, EndpointIn, EndpointType};
 use embassy_usb::{Builder, Handler};
 
+const ENDPOINT_COUNT: usize = 9;
+
 const USB_AUDIO_CLASS: u8 = 0x01;
 const VENDOR_SPECIFIC_CLASS: u8 = 0xff;
 const AUDIOCONTROL_SUBCLASS: u8 = 0x01;
@@ -31,6 +33,129 @@ const INPUT_TERMINAL_ID: u8 = 0x01;
 const OUTPUT_TERMINAL_ID: u8 = 0x02;
 const USB_STREAMING_TERMINAL: u16 = 0x0101;
 const MAX_SAMPLE_RATES: usize = 10;
+
+static ACTIVE_ISOCHRONOUS_IN_ENDPOINTS: AtomicU32 = AtomicU32::new(0);
+
+/// Validated Synopsys OTG isochronous IN endpoint index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveryEndpoint(usize);
+
+impl RecoveryEndpoint {
+    fn from_index(index: usize) -> Option<Self> {
+        (index < ENDPOINT_COUNT).then_some(Self(index))
+    }
+
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+pub(super) struct IsochronousInterruptObserver;
+pub(super) struct IsochronousInterruptAcknowledger;
+
+impl embassy_stm32::interrupt::typelevel::Handler<embassy_stm32::interrupt::typelevel::OTG_FS>
+    for IsochronousInterruptObserver
+{
+    unsafe fn on_interrupt() {
+        let registers = stm32_metapac::USB_OTG_FS;
+        if registers.gintsts().read().eopf() {
+            resynchronize_missed_isochronous_in(registers);
+        }
+    }
+}
+
+/// Drop an isochronous packet whose scheduled frame has passed and make its
+/// endpoint writable again.
+fn resynchronize_missed_isochronous_in(registers: stm32_metapac::otg::Otg) {
+    let frame_is_odd = registers.dsts().read().fnsof() & 1 != 0;
+    let mut endpoints = ACTIVE_ISOCHRONOUS_IN_ENDPOINTS.load(Ordering::Relaxed);
+    let mut endpoint = 0usize;
+
+    while endpoints != 0 {
+        if endpoints & 1 != 0 {
+            let control = registers.diepctl(endpoint).read();
+            if control.usbaep() && control.epena() && control.eonum_dpid() == frame_is_odd {
+                let interrupt = registers.diepint(endpoint);
+                registers
+                    .diepctl(endpoint)
+                    .modify(|register| register.set_snak(true));
+                while !interrupt.read().inepne() {}
+
+                registers.diepctl(endpoint).modify(|register| {
+                    register.set_snak(true);
+                    register.set_epdis(true);
+                });
+                while !interrupt.read().epdisd() {}
+
+                registers.grstctl().modify(|register| {
+                    register.set_txfnum(endpoint as u8);
+                    register.set_txfflsh(true);
+                });
+                while registers.grstctl().read().txfflsh() {}
+            }
+        }
+        endpoints >>= 1;
+        endpoint += 1;
+    }
+}
+
+impl embassy_stm32::interrupt::typelevel::Handler<embassy_stm32::interrupt::typelevel::OTG_FS>
+    for IsochronousInterruptAcknowledger
+{
+    unsafe fn on_interrupt() {
+        let registers = stm32_metapac::USB_OTG_FS;
+        if registers.gintsts().read().eopf() {
+            // GINTSTS is write-one-to-clear. A read-modify-write could also
+            // acknowledge unrelated USB events that arrived concurrently.
+            registers
+                .gintsts()
+                .write(|register| register.set_eopf(true));
+        }
+    }
+}
+
+/// Flush data stranded in a disabled isochronous IN endpoint's dedicated TX
+/// FIFO. Returns `false` without changing hardware if the endpoint is active.
+pub fn recover_disabled_isochronous_in(endpoint: RecoveryEndpoint) -> bool {
+    let endpoint_index = endpoint.index();
+    cortex_m::interrupt::free(|_| {
+        let registers = stm32_metapac::USB_OTG_FS;
+        let control = registers.diepctl(endpoint_index).read();
+        if control.epena() {
+            return false;
+        }
+
+        registers.grstctl().modify(|register| {
+            register.set_txfnum(endpoint_index as u8);
+            register.set_txfflsh(true);
+        });
+        while registers.grstctl().read().txfflsh() {}
+
+        let pending = registers.diepint(endpoint_index).read();
+        registers.diepint(endpoint_index).write_value(pending);
+        true
+    })
+}
+
+/// Enable or disable recovery of an isochronous IN transfer that was not
+/// consumed in its scheduled USB frame.
+///
+/// Keep recovery enabled only while a stream is active because it adds one USB
+/// interrupt per frame.
+pub fn set_isochronous_in_recovery(endpoint: RecoveryEndpoint, enabled: bool) {
+    let endpoint_index = endpoint.index();
+    cortex_m::interrupt::free(|_| {
+        let endpoint = 1u32 << endpoint_index;
+        let active = if enabled {
+            ACTIVE_ISOCHRONOUS_IN_ENDPOINTS.fetch_or(endpoint, Ordering::AcqRel) | endpoint
+        } else {
+            ACTIVE_ISOCHRONOUS_IN_ENDPOINTS.fetch_and(!endpoint, Ordering::AcqRel) & !endpoint
+        };
+        stm32_metapac::USB_OTG_FS
+            .gintmsk()
+            .modify(|register| register.set_eopfm(active != 0));
+    });
+}
 
 /// Audio channel positions supported by the UAC1 channel bitmap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,6 +219,129 @@ pub enum HostBinding {
     VendorSpecific,
 }
 
+/// Invalid USB Audio Class descriptor configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigError {
+    InvalidMaxPacketSize(u16),
+    MissingSampleRates,
+    TooManySampleRates(usize),
+    MissingChannels,
+    TooManyChannels(usize),
+    DuplicateChannel(Channel),
+    NonCanonicalChannelOrder,
+    InvalidSampleRate(u32),
+    DuplicateSampleRate(u32),
+    PacketTooSmall { provided: u16, required: u32 },
+    PacketNotFrameAligned { packet: u16, frame_bytes: u32 },
+}
+
+impl ConfigError {
+    pub const fn category(self) -> &'static str {
+        match self {
+            Self::InvalidMaxPacketSize(_) => "invalid-max-packet-size",
+            Self::MissingSampleRates => "missing-sample-rates",
+            Self::TooManySampleRates(_) => "too-many-sample-rates",
+            Self::MissingChannels => "missing-channels",
+            Self::TooManyChannels(_) => "too-many-channels",
+            Self::DuplicateChannel(_) => "duplicate-channel",
+            Self::NonCanonicalChannelOrder => "noncanonical-channel-order",
+            Self::InvalidSampleRate(_) => "invalid-sample-rate",
+            Self::DuplicateSampleRate(_) => "duplicate-sample-rate",
+            Self::PacketTooSmall { .. } => "packet-too-small",
+            Self::PacketNotFrameAligned { .. } => "packet-not-frame-aligned",
+        }
+    }
+}
+
+/// Validated UAC1 source configuration.
+pub struct AudioConfig<'d> {
+    max_packet_size: u16,
+    sample_width: SampleWidth,
+    sample_rates_hz: &'d [u32],
+    channels: &'d [Channel],
+    channel_bitmap: u16,
+    terminal_type: InputTerminalType,
+    host_binding: HostBinding,
+}
+
+impl<'d> AudioConfig<'d> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        max_packet_size: u16,
+        sample_width: SampleWidth,
+        sample_rates_hz: &'d [u32],
+        channels: &'d [Channel],
+        terminal_type: InputTerminalType,
+        host_binding: HostBinding,
+    ) -> Result<Self, ConfigError> {
+        if max_packet_size == 0 || max_packet_size > 1_023 {
+            return Err(ConfigError::InvalidMaxPacketSize(max_packet_size));
+        }
+        if sample_rates_hz.is_empty() {
+            return Err(ConfigError::MissingSampleRates);
+        }
+        if sample_rates_hz.len() > MAX_SAMPLE_RATES {
+            return Err(ConfigError::TooManySampleRates(sample_rates_hz.len()));
+        }
+        if channels.is_empty() {
+            return Err(ConfigError::MissingChannels);
+        }
+        if channels.len() > u8::MAX as usize {
+            return Err(ConfigError::TooManyChannels(channels.len()));
+        }
+
+        let mut channel_bitmap = 0u16;
+        let mut previous_channel_bit = 0u16;
+        for channel in channels {
+            let bit = channel.bit();
+            if channel_bitmap & bit != 0 {
+                return Err(ConfigError::DuplicateChannel(*channel));
+            }
+            if bit <= previous_channel_bit {
+                return Err(ConfigError::NonCanonicalChannelOrder);
+            }
+            channel_bitmap |= bit;
+            previous_channel_bit = bit;
+        }
+
+        let mut highest_sample_rate_hz = 0u32;
+        for (index, rate) in sample_rates_hz.iter().copied().enumerate() {
+            if rate == 0 || rate > 0x00ff_ffff {
+                return Err(ConfigError::InvalidSampleRate(rate));
+            }
+            if sample_rates_hz[..index].contains(&rate) {
+                return Err(ConfigError::DuplicateSampleRate(rate));
+            }
+            highest_sample_rate_hz = highest_sample_rate_hz.max(rate);
+        }
+
+        let bytes_per_frame = channels.len() as u32 * u32::from(sample_width.bytes());
+        let required_packet_bytes = (highest_sample_rate_hz.div_ceil(1_000) + 1) * bytes_per_frame;
+        if u32::from(max_packet_size) < required_packet_bytes {
+            return Err(ConfigError::PacketTooSmall {
+                provided: max_packet_size,
+                required: required_packet_bytes,
+            });
+        }
+        if u32::from(max_packet_size) % bytes_per_frame != 0 {
+            return Err(ConfigError::PacketNotFrameAligned {
+                packet: max_packet_size,
+                frame_bytes: bytes_per_frame,
+            });
+        }
+
+        Ok(Self {
+            max_packet_size,
+            sample_width,
+            sample_rates_hz,
+            channels,
+            channel_bitmap,
+            terminal_type,
+            host_binding,
+        })
+    }
+}
+
 struct Shared {
     sample_rate_hz: AtomicU32,
     suspended: AtomicBool,
@@ -147,57 +395,20 @@ pub struct Microphone;
 impl Microphone {
     /// Add a single asynchronous full-speed PCM capture stream to an Embassy
     /// USB builder.
-    #[allow(clippy::too_many_arguments)]
     pub fn new<'d, D: Driver<'d>>(
         builder: &mut Builder<'d, D>,
         state: &'d mut State<'d>,
-        max_packet_size: u16,
-        sample_width: SampleWidth,
-        sample_rates_hz: &'d [u32],
-        channels: &'d [Channel],
-        terminal_type: InputTerminalType,
-        host_binding: HostBinding,
+        config: AudioConfig<'d>,
     ) -> Stream<'d, D> {
-        assert!(max_packet_size != 0 && max_packet_size <= 1_023);
-        assert!(!sample_rates_hz.is_empty());
-        assert!(sample_rates_hz.len() <= MAX_SAMPLE_RATES);
-        assert!(!channels.is_empty() && channels.len() <= u8::MAX as usize);
-
-        let mut channel_bitmap = 0u16;
-        let mut previous_channel_bit = 0u16;
-        for channel in channels {
-            let bit = channel.bit();
-            assert_eq!(channel_bitmap & bit, 0, "duplicate USB audio channel");
-            assert!(
-                bit > previous_channel_bit,
-                "USB audio channels must be in canonical bitmap order"
-            );
-            channel_bitmap |= bit;
-            previous_channel_bit = bit;
-        }
-
-        let mut highest_sample_rate_hz = 0u32;
-        for (index, rate) in sample_rates_hz.iter().copied().enumerate() {
-            assert!(rate != 0 && rate <= 0x00ff_ffff);
-            assert!(
-                !sample_rates_hz[..index].contains(&rate),
-                "duplicate USB audio sample rate"
-            );
-            highest_sample_rate_hz = highest_sample_rate_hz.max(rate);
-        }
-        let bytes_per_frame = channels.len() as u32 * u32::from(sample_width.bytes());
-        // An asynchronous source must be able to send one frame above the
-        // nominal full-speed interval to correct positive source-clock drift.
-        let required_packet_bytes = (highest_sample_rate_hz.div_ceil(1_000) + 1) * bytes_per_frame;
-        assert!(
-            u32::from(max_packet_size) >= required_packet_bytes,
-            "USB audio packet lacks format or asynchronous drift capacity"
-        );
-        assert_eq!(
-            u32::from(max_packet_size) % bytes_per_frame,
-            0,
-            "USB audio packet must contain a whole number of frames"
-        );
+        let AudioConfig {
+            max_packet_size,
+            sample_width,
+            sample_rates_hz,
+            channels,
+            channel_bitmap,
+            terminal_type,
+            host_binding,
+        } = config;
 
         let (function_class, control_subclass, streaming_subclass) = match host_binding {
             HostBinding::AudioClass => (
@@ -321,12 +532,12 @@ impl Microphone {
             .shared
             .sample_rate_hz
             .store(sample_rates_hz[0], Ordering::Relaxed);
-        state.control = Some(Control {
+        let control = state.control.insert(Control {
             endpoint_address: endpoint.info().addr.into(),
             sample_rates_hz,
             shared: &state.shared,
         });
-        builder.handler(state.control.as_mut().unwrap());
+        builder.handler(control);
 
         Stream {
             endpoint,
@@ -345,6 +556,11 @@ impl<'d, D: Driver<'d>> Stream<'d, D> {
     /// Hardware endpoint index allocated for this stream.
     pub fn endpoint_index(&self) -> usize {
         self.endpoint.info().addr.index()
+    }
+
+    /// Return the validated endpoint handle used by the Daisy OTG recovery path.
+    pub fn recovery_endpoint(&self) -> Option<RecoveryEndpoint> {
+        RecoveryEndpoint::from_index(self.endpoint_index())
     }
 
     pub async fn wait_connection(&mut self) {

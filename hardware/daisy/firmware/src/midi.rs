@@ -1,8 +1,11 @@
 //! USB-MIDI transport and its application-facing event boundary.
 
+use embassy_daisy::usb::midi::{Decoder, MidiClass, dispatch_events};
+use embassy_daisy::usb::{Builder, Config, EndpointError};
 use embassy_executor::InterruptExecutor;
 use embassy_stm32::interrupt;
-use wmidi::{FromBytesError, MidiMessage};
+
+pub use embassy_daisy::usb::midi::{DecodeError, MessageHandler};
 
 use synth_core::REV2_PROGRAM_DATA_SYSEX_LEN;
 
@@ -29,206 +32,6 @@ const PRODUCT: &str = "Analog Synth (development)";
 const CONTROL_BUFFER_SIZE: usize = 128;
 
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
-
-/// Failure while converting a USB-MIDI event stream into MIDI messages.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DecodeError {
-    /// The endpoint currently exposes only cable zero.
-    UnsupportedCable(u8),
-    /// USB-MIDI CIN values zero and one are reserved.
-    UnsupportedCodeIndex(u8),
-    /// A SysEx continuation arrived without a preceding `0xf0` start byte.
-    UnexpectedSysExContinuation,
-    /// A new SysEx start arrived before the current message ended.
-    NestedSysExStart,
-    /// The fixed-capacity SysEx assembly buffer was exhausted.
-    SysExTooLong,
-    /// `wmidi` rejected the assembled MIDI bytes.
-    InvalidMessage(FromBytesError),
-}
-
-/// One USB-MIDI 1.0 event packet.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MidiEventPacket([u8; 4]);
-
-impl MidiEventPacket {
-    pub const fn new(bytes: [u8; 4]) -> Self {
-        Self(bytes)
-    }
-
-    pub const fn as_bytes(&self) -> &[u8; 4] {
-        &self.0
-    }
-
-    pub const fn cable_number(&self) -> u8 {
-        self.0[0] >> 4
-    }
-
-    pub const fn code_index_number(&self) -> u8 {
-        self.0[0] & 0x0f
-    }
-
-    pub const fn midi_bytes(&self) -> [u8; 3] {
-        [self.0[1], self.0[2], self.0[3]]
-    }
-}
-
-/// Application-facing boundary for typed MIDI messages.
-///
-/// Implementations run synchronously in the USB receive task and must not
-/// block. A future synth handler should translate relevant messages into
-/// `synth_core::ControlMessage` values and enqueue them for the audio task.
-pub trait MidiMessageHandler {
-    fn handle(&mut self, cable: u8, message: MidiMessage<'_>);
-
-    fn handle_sysex(&mut self, cable: u8, message: &[u8]) {
-        let _ = (cable, message);
-    }
-
-    fn decode_error(&mut self, cable: u8, error: DecodeError) {
-        let _ = (cable, error);
-    }
-}
-
-/// Synchronous, allocation-free boundary between USB transport and MIDI
-/// behavior.
-///
-/// A future synth integration can replace the logging implementation with a
-/// decoder that pushes `synth_core::ControlMessage` values into a bounded
-/// queue. Handlers must remain non-blocking.
-pub trait MidiEventHandler {
-    fn handle(&mut self, event: MidiEventPacket);
-}
-
-/// Stateful USB-MIDI event decoder backed by `wmidi`.
-///
-/// It handles the USB code-index-number lengths and reassembles fragmented
-/// SysEx messages without allocation.
-pub struct WmidiDecoder<H> {
-    handler: H,
-    sysex: [u8; SYSEX_CAPACITY],
-    sysex_len: usize,
-}
-
-impl<H: MidiMessageHandler> WmidiDecoder<H> {
-    pub const fn new(handler: H) -> Self {
-        Self {
-            handler,
-            sysex: [0; SYSEX_CAPACITY],
-            sysex_len: 0,
-        }
-    }
-
-    pub fn into_inner(self) -> H {
-        self.handler
-    }
-
-    fn reset_sysex(&mut self) {
-        self.sysex_len = 0;
-    }
-
-    fn decode(&mut self, cable: u8, bytes: &[u8]) {
-        match MidiMessage::try_from(bytes) {
-            Ok(message) => self.handler.handle(cable, message),
-            Err(error) => self
-                .handler
-                .decode_error(cable, DecodeError::InvalidMessage(error)),
-        }
-    }
-
-    fn append_sysex(&mut self, cable: u8, bytes: &[u8], ends_message: bool) {
-        if self.sysex_len == 0 {
-            if bytes.first() != Some(&0xf0) {
-                self.handler
-                    .decode_error(cable, DecodeError::UnexpectedSysExContinuation);
-                return;
-            }
-        } else if bytes.first() == Some(&0xf0) {
-            self.sysex_len = 0;
-            self.handler
-                .decode_error(cable, DecodeError::NestedSysExStart);
-        }
-
-        let Some(end) = self.sysex_len.checked_add(bytes.len()) else {
-            self.sysex_len = 0;
-            self.handler.decode_error(cable, DecodeError::SysExTooLong);
-            return;
-        };
-        if end > self.sysex.len() {
-            self.sysex_len = 0;
-            self.handler.decode_error(cable, DecodeError::SysExTooLong);
-            return;
-        }
-
-        self.sysex[self.sysex_len..end].copy_from_slice(bytes);
-        self.sysex_len = end;
-
-        // F7, rather than a USB transfer boundary or CIN alone, terminates a
-        // SysEx message. Some CoreMIDI paths deliver that byte as a separate
-        // event, so retain the assembly until the byte actually arrives.
-        if ends_message && self.sysex.get(self.sysex_len.wrapping_sub(1)) == Some(&0xf7) {
-            self.handler
-                .handle_sysex(cable, &self.sysex[..self.sysex_len]);
-            self.sysex_len = 0;
-        }
-    }
-}
-
-impl<H: MidiMessageHandler> MidiEventHandler for WmidiDecoder<H> {
-    fn handle(&mut self, event: MidiEventPacket) {
-        let cable = event.cable_number();
-        if cable != 0 {
-            self.handler
-                .decode_error(cable, DecodeError::UnsupportedCable(cable));
-            return;
-        }
-
-        let bytes = event.midi_bytes();
-        match event.code_index_number() {
-            0x2 => self.decode(cable, &bytes[..2]),
-            0x3 => self.decode(cable, &bytes),
-            0x4 => self.append_sysex(cable, &bytes, false),
-            0x5 => {
-                if self.sysex_len != 0 || bytes[0] == 0xf0 || bytes[0] == 0xf7 {
-                    self.append_sysex(cable, &bytes[..1], true);
-                } else {
-                    self.decode(cable, &bytes[..1]);
-                }
-            }
-            0x6 => self.append_sysex(cable, &bytes[..2], true),
-            0x7 => self.append_sysex(cable, &bytes, true),
-            0x8..=0xb | 0xe => self.decode(cable, &bytes),
-            0xc..=0xd => self.decode(cable, &bytes[..2]),
-            0xf if bytes[0] == 0xf7 => {
-                if self.sysex_len != 0 {
-                    self.append_sysex(cable, &bytes[..1], true);
-                }
-            }
-            // Some CoreMIDI USB paths emit a single 7-bit SysEx data byte
-            // using CIN F. Outside SysEx it is invalid MIDI data; inside an
-            // active assembly it belongs to that message.
-            0xf if self.sysex_len != 0 && bytes[0] < 0x80 => {
-                self.append_sysex(cable, &bytes[..1], false);
-            }
-            0xf => self.decode(cable, &bytes[..1]),
-            cin => self
-                .handler
-                .decode_error(cable, DecodeError::UnsupportedCodeIndex(cin)),
-        }
-    }
-}
-
-/// Deliver all complete four-byte events and return the number of malformed
-/// trailing bytes.
-fn dispatch_events(bytes: &[u8], handler: &mut impl MidiEventHandler) -> usize {
-    let complete_len = bytes.len() - bytes.len() % 4;
-    for chunk in bytes[..complete_len].chunks_exact(4) {
-        handler.handle(MidiEventPacket::new([
-            chunk[0], chunk[1], chunk[2], chunk[3],
-        ]));
-    }
-    bytes.len() - complete_len
-}
 
 pub fn spawn(
     resources: embassy_daisy::usb::UsbResources,
@@ -273,16 +76,14 @@ async fn run_task(
 
 async fn run(
     resources: embassy_daisy::usb::UsbResources,
-    handler: impl MidiMessageHandler,
+    handler: impl MessageHandler,
     audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
 ) -> ! {
-    use embassy_daisy::usb_audio::{
-        Channel, HostBinding, InputTerminalType, Microphone, SampleWidth, State as AudioState,
+    use embassy_daisy::usb::audio::{
+        AudioConfig, Channel, HostBinding, InputTerminalType, Microphone, SampleWidth,
+        State as AudioState,
     };
     use embassy_futures::join::join3;
-    use embassy_usb::class::midi::MidiClass;
-    use embassy_usb::driver::EndpointError;
-    use embassy_usb::{Builder, Config};
 
     let mut endpoint_out_buffer = [0u8; 256];
     let driver = resources.driver(&mut endpoint_out_buffer);
@@ -318,6 +119,20 @@ async fn run(
     // Class state must outlive the builder because the builder stores its
     // control handler until `build` transfers that handler into the device.
     let mut audio_state = AudioState::new();
+    let audio_sample_rates = [crate::usb_audio::SAMPLE_RATE_HZ as u32];
+    let audio_channels = [Channel::LeftFront, Channel::RightFront];
+    let audio_config = AudioConfig::new(
+        crate::usb_audio::MAX_PACKET_BYTES as u16,
+        SampleWidth::Bits24,
+        &audio_sample_rates,
+        &audio_channels,
+        InputTerminalType::LineConnector,
+        if cfg!(feature = "usb-audio-raw-test") {
+            HostBinding::VendorSpecific
+        } else {
+            HostBinding::AudioClass
+        },
+    );
     let mut builder = Builder::new(
         driver,
         config,
@@ -327,29 +142,24 @@ async fn run(
         &mut control_buffer,
     );
     let mut class = MidiClass::new(&mut builder, 1, 1, 64);
-    let mut audio_stream = Microphone::new(
-        &mut builder,
-        &mut audio_state,
-        crate::usb_audio::MAX_PACKET_BYTES as u16,
-        SampleWidth::Bits24,
-        &[crate::usb_audio::SAMPLE_RATE_HZ as u32],
-        &[Channel::LeftFront, Channel::RightFront],
-        InputTerminalType::LineConnector,
-        if cfg!(feature = "usb-audio-raw-test") {
-            HostBinding::VendorSpecific
-        } else {
-            HostBinding::AudioClass
-        },
-    );
+    let mut audio_stream = match audio_config {
+        Ok(config) => Some(Microphone::new(&mut builder, &mut audio_state, config)),
+        Err(error) => {
+            crate::diagnostics::emit(crate::diagnostics::Event::UsbAudioConfigurationInvalid {
+                reason: error.category(),
+            });
+            None
+        }
+    };
     let mut device = builder.build();
 
     let device_fut = device.run();
     let receive_fut = async {
-        let mut decoder = WmidiDecoder::new(handler);
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(handler);
         let mut packet = [0u8; 64];
         loop {
             class.wait_connection().await;
-            decoder.reset_sysex();
+            decoder.reset();
             crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiConnected);
 
             loop {
@@ -365,12 +175,12 @@ async fn run(
                         }
                     }
                     Err(EndpointError::Disabled) => {
-                        decoder.reset_sysex();
+                        decoder.reset();
                         crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiDisconnected);
                         break;
                     }
                     Err(EndpointError::BufferOverflow) => {
-                        decoder.reset_sysex();
+                        decoder.reset();
                         crate::diagnostics::emit(crate::diagnostics::Event::UsbMidiBufferOverflow);
                         break;
                     }
@@ -379,7 +189,12 @@ async fn run(
         }
     };
 
-    let audio_fut = crate::usb_audio::run(&mut audio_stream, audio_buffer);
+    let audio_fut = async {
+        match audio_stream.as_mut() {
+            Some(stream) => crate::usb_audio::run(stream, audio_buffer).await,
+            None => core::future::pending().await,
+        }
+    };
     join3(device_fut, receive_fut, audio_fut).await;
     unreachable!()
 }
@@ -395,11 +210,10 @@ unsafe extern "C" fn I2C4_ER() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CONTROL_BUFFER_SIZE, DecodeError, MidiEventHandler, MidiEventPacket, MidiMessageHandler,
-        PRODUCT, SYSEX_CAPACITY, WmidiDecoder, dispatch_events,
+    use super::{CONTROL_BUFFER_SIZE, PRODUCT, SYSEX_CAPACITY};
+    use embassy_daisy::usb::midi::{
+        DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket, dispatch_events,
     };
-    use wmidi::MidiMessage;
 
     #[derive(Default)]
     struct Collector {
@@ -418,11 +232,9 @@ mod tests {
         errors: std::vec::Vec<(u8, DecodeError)>,
     }
 
-    impl MidiMessageHandler for DecodedCollector {
-        fn handle(&mut self, cable: u8, message: MidiMessage<'_>) {
-            let mut bytes = [0; SYSEX_CAPACITY];
-            let length = message.copy_to_slice(&mut bytes).unwrap();
-            self.messages.push((cable, bytes[..length].to_vec()));
+    impl MessageHandler for DecodedCollector {
+        fn handle_message(&mut self, cable: u8, message: &[u8]) {
+            self.messages.push((cable, message.to_vec()));
         }
 
         fn decode_error(&mut self, cable: u8, error: DecodeError) {
@@ -462,77 +274,77 @@ mod tests {
     }
 
     #[test]
-    fn wmidi_decoder_uses_cin_message_lengths() {
-        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+    fn decoder_uses_cin_message_lengths() {
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         decoder.handle(MidiEventPacket::new([0x09, 0x90, 60, 100]));
         decoder.handle(MidiEventPacket::new([0x0c, 0xc0, 12, 0]));
 
         assert_eq!(
-            decoder.handler.messages,
+            decoder.handler().messages,
             [(0, std::vec![0x90, 60, 100]), (0, std::vec![0xc0, 12])]
         );
-        assert!(decoder.handler.errors.is_empty());
+        assert!(decoder.handler().errors.is_empty());
     }
 
     #[test]
-    fn wmidi_decoder_reassembles_fragmented_sysex() {
-        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+    fn decoder_reassembles_fragmented_sysex() {
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         decoder.handle(MidiEventPacket::new([0x04, 0xf0, 0x7e, 0x7f]));
         decoder.handle(MidiEventPacket::new([0x04, 0x06, 0x01, 0x02]));
         decoder.handle(MidiEventPacket::new([0x06, 0x03, 0xf7, 0]));
 
         assert_eq!(
-            decoder.handler.messages,
+            decoder.handler().messages,
             [(0, std::vec![0xf0, 0x7e, 0x7f, 0x06, 0x01, 0x02, 0x03, 0xf7])]
         );
-        assert!(decoder.handler.errors.is_empty());
+        assert!(decoder.handler().errors.is_empty());
     }
 
     #[test]
-    fn wmidi_decoder_preserves_sysex_around_realtime_clock() {
-        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+    fn decoder_preserves_sysex_around_realtime_clock() {
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         decoder.handle(MidiEventPacket::new([0x04, 0xf0, 0x7e, 0x7f]));
         decoder.handle(MidiEventPacket::new([0x0f, 0xf8, 0, 0]));
         decoder.handle(MidiEventPacket::new([0x06, 0x01, 0xf7, 0]));
 
         assert_eq!(
-            decoder.handler.messages,
+            decoder.handler().messages,
             [
                 (0, std::vec![0xf8]),
                 (0, std::vec![0xf0, 0x7e, 0x7f, 0x01, 0xf7])
             ]
         );
-        assert!(decoder.handler.errors.is_empty());
+        assert!(decoder.handler().errors.is_empty());
     }
 
     #[test]
-    fn wmidi_decoder_reassembles_full_rev2_edit_buffer() {
+    fn decoder_reassembles_full_rev2_edit_buffer() {
         let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
         synth_core::Rev2MidiEncoder::program_edit_buffer(
             &synth_core::Patch::default(),
             &mut message,
         )
         .unwrap();
-        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         let complete = message.len() - 1;
         for chunk in message[..complete].chunks_exact(3) {
             decoder.handle(MidiEventPacket::new([0x04, chunk[0], chunk[1], chunk[2]]));
         }
         decoder.handle(MidiEventPacket::new([0x05, 0xf7, 0, 0]));
 
-        assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
-        assert!(decoder.handler.errors.is_empty());
+        assert_eq!(decoder.handler().messages, [(0, message.to_vec())]);
+        assert!(decoder.handler().errors.is_empty());
     }
 
     #[test]
-    fn wmidi_decoder_waits_for_detached_f7_after_usb_end_marker() {
+    fn decoder_waits_for_detached_f7_after_usb_end_marker() {
         let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
         synth_core::Rev2MidiEncoder::program_edit_buffer(
             &synth_core::Patch::default(),
             &mut message,
         )
         .unwrap();
-        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         let chunks = message[..message.len() - 1].chunks_exact(3);
         let chunk_count = chunks.len();
         for (index, chunk) in chunks.enumerate() {
@@ -540,25 +352,25 @@ mod tests {
             decoder.handle(MidiEventPacket::new([cin, chunk[0], chunk[1], chunk[2]]));
         }
 
-        assert!(decoder.handler.messages.is_empty());
-        assert!(decoder.handler.errors.is_empty());
+        assert!(decoder.handler().messages.is_empty());
+        assert!(decoder.handler().errors.is_empty());
 
         // The detached terminator completes the still-active assembly.
         decoder.handle(MidiEventPacket::new([0x0f, 0xf7, 0, 0]));
 
-        assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
-        assert!(decoder.handler.errors.is_empty());
+        assert_eq!(decoder.handler().messages, [(0, message.to_vec())]);
+        assert!(decoder.handler().errors.is_empty());
     }
 
     #[test]
-    fn wmidi_decoder_keeps_single_cin_f_data_byte_in_active_sysex() {
+    fn decoder_keeps_single_cin_f_data_byte_in_active_sysex() {
         let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
         synth_core::Rev2MidiEncoder::program_edit_buffer(
             &synth_core::Patch::default(),
             &mut message,
         )
         .unwrap();
-        let mut decoder = WmidiDecoder::new(DecodedCollector::default());
+        let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
 
         decoder.handle(MidiEventPacket::new([
             0x04, message[0], message[1], message[2],
@@ -571,7 +383,7 @@ mod tests {
             decoder.handle(MidiEventPacket::new([cin, chunk[0], chunk[1], chunk[2]]));
         }
 
-        assert_eq!(decoder.handler.messages, [(0, message.to_vec())]);
-        assert!(decoder.handler.errors.is_empty());
+        assert_eq!(decoder.handler().messages, [(0, message.to_vec())]);
+        assert!(decoder.handler().errors.is_empty());
     }
 }

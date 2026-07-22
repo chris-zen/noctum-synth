@@ -136,11 +136,22 @@ impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
     }
 }
 
-impl<const PATCH_CAPACITY: usize> crate::midi::MidiMessageHandler
+impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
     for SynthMidiHandler<'_, PATCH_CAPACITY>
 {
-    fn handle(&mut self, _cable: u8, message: MidiMessage<'_>) {
+    fn handle_message(&mut self, cable: u8, bytes: &[u8]) {
         self.indicator.notify_midi();
+        let message = match MidiMessage::try_from(bytes) {
+            Ok(message) => message,
+            Err(_) => {
+                crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
+                    cable,
+                    reason: crate::diagnostics::InvalidMidiReason::InvalidMessage,
+                    length: bytes.len() as u16,
+                });
+                return;
+            }
+        };
 
         if let Some(command) =
             realtime_to_control(&message, embassy_time::Instant::now().as_micros())
@@ -189,7 +200,6 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MidiMessageHandler
             }
             crate::midi::DecodeError::NestedSysExStart => InvalidMidiReason::NestedSysExStart,
             crate::midi::DecodeError::SysExTooLong => InvalidMidiReason::SysExTooLong,
-            crate::midi::DecodeError::InvalidMessage(_) => InvalidMidiReason::InvalidMessage,
         };
         crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
             cable,

@@ -14,8 +14,8 @@ use embassy_sync::channel::Channel;
 use heapless::Deque;
 use synth_core::{ControlMessage, Patch, SynthEngineWithMemory};
 
-use crate::pending_releases::PendingReleases;
 use crate::patch_transition::PatchTransition;
+use crate::pending_releases::PendingReleases;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
 use crate::usb_audio::UsbAudioBuffer;
@@ -81,7 +81,6 @@ impl ControlQueue {
                 .ok_or(embassy_sync::channel::TryReceiveError::Empty)
         })
     }
-
 }
 
 fn replaceable_same_field(existing: &ControlMessage, incoming: &ControlMessage) -> bool {
@@ -143,7 +142,6 @@ impl PerformanceQueue {
                 .ok_or(embassy_sync::channel::TryReceiveError::Empty)
         })
     }
-
 }
 pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
 
@@ -181,7 +179,10 @@ pub async fn run_task(
     indicator: indicator::Sender<'static>,
     usb_audio: &'static UsbAudioBuffer,
 ) -> ! {
-    let mut audio = Audio::output(resources).expect("WM8731/SAI initialization failed");
+    let mut audio = match Audio::output(resources) {
+        Ok(audio) => audio,
+        Err(error) => audio_unavailable(error.category()).await,
+    };
     yield_now().await;
 
     let mut output: Block = [(0.0, 0.0); BLOCK_LENGTH];
@@ -197,16 +198,16 @@ pub async fn run_task(
     copy_output(&interleaved, &mut output);
     yield_now().await;
 
-    audio
-        .start(&output)
-        .await
-        .expect("SAI stream failed to start");
+    if let Err(error) = audio.start(&output).await {
+        audio_unavailable(error.category()).await;
+    }
 
     diagnostics::emit(diagnostics::Event::AudioStarted);
+    let mut unexpected_transfer_error_reported = false;
 
     loop {
         match audio.transfer(&output).await {
-            Ok(()) => {}
+            Ok(()) => unexpected_transfer_error_reported = false,
             Err(AudioError::SaiReceive(_)) => {
                 increment_overruns();
                 diagnostics::emit_xrun(overruns_count(), underruns_count());
@@ -224,8 +225,18 @@ pub async fn run_task(
                 continue;
             }
             Err(error) => {
-                let _ = error;
-                panic!("unrecoverable audio transfer failure");
+                if !unexpected_transfer_error_reported {
+                    diagnostics::emit(diagnostics::Event::AudioUnavailable {
+                        reason: error.category(),
+                    });
+                    unexpected_transfer_error_reported = true;
+                }
+                increment_underruns();
+                diagnostics::emit_xrun(overruns_count(), underruns_count());
+                indicator.notify_xrun();
+                fade_stereo_to_silence(&mut output);
+                embassy_time::Timer::after_millis(1).await;
+                continue;
             }
         }
 
@@ -289,6 +300,13 @@ pub async fn run_task(
         if let Some(event) = perf_monitor.observe(work_cycles) {
             diagnostics::emit(event);
         }
+    }
+}
+
+async fn audio_unavailable(reason: &'static str) -> ! {
+    diagnostics::emit(diagnostics::Event::AudioUnavailable { reason });
+    loop {
+        embassy_time::Timer::after_secs(3_600).await;
     }
 }
 

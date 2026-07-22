@@ -35,6 +35,9 @@ pub use disabled::{PerfMonitor, emit, emit_xrun, init};
 #[derive(Clone, Copy)]
 pub enum Event {
     AudioStarted,
+    AudioUnavailable {
+        reason: &'static str,
+    },
     Param {
         param: ParamId,
         value: f32,
@@ -89,6 +92,12 @@ pub enum Event {
     UsbAudioStarted,
     UsbAudioPrimed,
     UsbAudioStopped,
+    UsbAudioConfigurationInvalid {
+        reason: &'static str,
+    },
+    UsbAudioRecoveryUnavailable {
+        endpoint: u8,
+    },
 }
 
 #[cfg(feature = "diagnostics")]
@@ -248,6 +257,9 @@ mod enabled {
                 Event::AudioStarted => {
                     defmt::info!("running four-voice synth engine at 48 kHz")
                 }
+                Event::AudioUnavailable { reason } => {
+                    defmt::error!("DAC audio unavailable: {=str}", reason)
+                }
                 Event::Param { param, value } => {
                     defmt::info!("PARAM: {=str} v={=f32}", param.name(), value)
                 }
@@ -390,6 +402,12 @@ mod enabled {
                 Event::UsbAudioStarted => defmt::info!("USB audio capture opened; priming"),
                 Event::UsbAudioPrimed => defmt::info!("USB audio capture primed"),
                 Event::UsbAudioStopped => defmt::info!("USB audio capture closed"),
+                Event::UsbAudioConfigurationInvalid { reason } => {
+                    defmt::error!("USB audio disabled: invalid configuration ({=str})", reason)
+                }
+                Event::UsbAudioRecoveryUnavailable { endpoint } => {
+                    defmt::error!("USB audio recovery disabled: invalid endpoint {}", endpoint)
+                }
             }
 
             let dropped = take_dropped_events();

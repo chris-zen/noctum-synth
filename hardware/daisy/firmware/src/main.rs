@@ -35,7 +35,9 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     diagnostics::init();
 
-    let mut core = cortex_m::Peripherals::take().expect("Cortex-M peripherals already initialized");
+    let Some(mut core) = cortex_m::Peripherals::take() else {
+        fatal("Cortex-M peripherals already initialized");
+    };
     core.DCB.enable_trace();
     core.DWT.enable_cycle_counter();
     // Do not inherit cache state from whichever bootloader version launched
@@ -44,41 +46,54 @@ async fn main(spawner: embassy_executor::Spawner) {
     core.SCB.disable_dcache(&mut core.CPUID);
     core.SCB.enable_icache();
 
-    let parts = Board::take().expect("Daisy board already initialized");
-    let mut sdram = parts
+    let parts = match Board::take() {
+        Ok(parts) => parts,
+        Err(_) => fatal("Daisy board already initialized"),
+    };
+    let mut sdram = match parts
         .sdram
         .init(&mut core.MPU, &mut core.SCB, &mut core.CPUID)
-        .expect("SDRAM data/address-line test failed");
-    let effects_memory = sdram
-        .allocate_f32(EFFECTS_SAMPLES)
-        .expect("SDRAM effects allocation failed");
+    {
+        Ok(sdram) => sdram,
+        Err(_) => fatal("SDRAM data/address-line test failed"),
+    };
+    let effects_memory = match sdram.allocate_f32(EFFECTS_SAMPLES) {
+        Ok(memory) => memory,
+        Err(_) => fatal("SDRAM effects allocation failed"),
+    };
     defmt::info!(
         "initialized SDRAM; reserved {} effect samples",
         EFFECTS_SAMPLES
     );
 
-    let engine = ENGINE.init_with(|| {
+    let Some(engine) = ENGINE.try_init_with(|| {
         let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
         engine.set_filter_type(FIRMWARE_FILTER_TYPE);
         engine.set_filter_oversampling(FIRMWARE_FILTER_OVERSAMPLING);
         engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
         engine
-    });
+    }) else {
+        fatal("synth engine already initialized");
+    };
 
     let pwm_channels = PwmChannels::new(parts.tim3, PwmFrequency::khz(1));
     let status_led = parts.user_led_pin.into_pwm_led(pwm_channels.ch2);
     let (indicator_tx, indicator_rx) = INDICATOR.split();
-    spawner.spawn(
-        indicator::run_task(status_led, indicator_rx).expect("failed to spawn status LED task"),
-    );
+    match indicator::run_task(status_led, indicator_rx) {
+        Ok(task) => spawner.spawn(task),
+        Err(_) => defmt::error!("status LED task unavailable"),
+    }
     #[cfg(feature = "diagnostics")]
-    spawner.spawn(diagnostics::run_task().expect("failed to spawn diagnostics reporter"));
+    match diagnostics::run_task() {
+        Ok(task) => spawner.spawn(task),
+        Err(_) => defmt::error!("diagnostics task unavailable"),
+    }
 
     // Hardware DMA/USB handlers stay at P0. Audio rendering runs at P1, and
     // USB class/packet work runs at P2 so both preempt thread-mode diagnostics.
     interrupt::I2C4_EV.set_priority(Priority::P1);
     interrupt::I2C4_ER.set_priority(Priority::P2);
-    audio::spawn(
+    if audio::spawn(
         parts.audio,
         engine,
         &CONTROLS,
@@ -88,9 +103,12 @@ async fn main(spawner: embassy_executor::Spawner) {
         indicator_tx,
         &USB_AUDIO,
     )
-    .expect("failed to spawn audio task");
+    .is_err()
+    {
+        fatal("failed to spawn audio task");
+    }
 
-    midi::spawn(
+    if midi::spawn(
         parts.usb,
         &CONTROLS,
         &PERFORMANCE,
@@ -99,7 +117,17 @@ async fn main(spawner: embassy_executor::Spawner) {
         indicator_tx,
         &USB_AUDIO,
     )
-    .expect("failed to spawn USB task");
+    .is_err()
+    {
+        defmt::error!("USB MIDI/audio task unavailable; DAC remains active");
+    }
 
     core::future::pending().await
+}
+
+fn fatal(reason: &'static str) -> ! {
+    defmt::error!("fatal firmware initialization failure: {=str}", reason);
+    loop {
+        cortex_m::asm::wfi();
+    }
 }

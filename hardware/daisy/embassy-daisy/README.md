@@ -12,9 +12,9 @@ embassy-daisy = { version = "0.1", features = ["seed_1_1"] }
 
 The crate owns Daisy-specific clocking, connector pin names, codec setup, audio
 transport, USB hardware resources, external SDRAM, and QSPI flash. It also
-provides a generic Embassy UAC1 device-to-host audio class; USB identity,
-buffering policy, memory partition policy, and application behavior remain in
-the consuming firmware.
+provides generic Embassy UAC1 device-to-host audio and allocation-free
+USB-MIDI framing; USB identity, buffering policy, MIDI interpretation, memory
+partition policy, and application behavior remain in the consuming firmware.
 
 ## Status
 
@@ -27,26 +27,36 @@ the consuming firmware.
   and maximum BOOT_SRAM image window protected from writes
 - 96 kHz and 64-frame blocks: reserved, not implemented
 
-## USB audio source
+## USB MIDI and audio
 
-`usb_audio::Microphone` adds an asynchronous UAC1 device-to-host PCM stream to
-an `embassy_usb::Builder`. The caller supplies the sample width, rates, channel
-map, terminal type, and maximum packet size, then owns the returned stream and
-its scheduling policy. Rates must be nonzero and unique, channels use canonical
-UAC bitmap order, and the full-speed packet must hold a whole number of frames
-at the highest advertised rate plus one frame of positive asynchronous drift
-margin. The stream exposes the selected rate and USB suspend state. The class
-contains no VID/PID, product strings, or Daisy application behavior.
+`usb::audio::Microphone` adds an asynchronous UAC1 device-to-host PCM stream to
+an `embassy_usb::Builder`. The caller first creates an `AudioConfig`, which
+returns a typed error for invalid sample rates, channel maps, or packet sizes
+instead of panicking. The validated configuration is then passed to
+`Microphone::new`, and the caller owns the returned stream and its scheduling
+policy. The full-speed packet must hold a whole number of frames at the highest
+advertised rate plus one frame of positive asynchronous drift margin. The
+stream exposes the selected rate and USB suspend state. The class contains no
+VID/PID, product strings, or Daisy application behavior.
 `HostBinding::AudioClass` is the normal UAC binding;
 `HostBinding::VendorSpecific` leaves the interface unclaimed for raw USB
 transport diagnostics without adding any application identity to this crate.
 
-`usb::set_isochronous_in_recovery` controls the Synopsys OTG
+`usb::audio::set_isochronous_in_recovery` controls the Synopsys OTG
 end-of-periodic-frame recovery needed by isochronous IN streams with the pinned
 USB driver. On a missed frame, the board support layer drops the expired packet,
 flushes its dedicated FIFO, and wakes the endpoint writer so the next frame can
 be queued immediately. Enable it only while a stream is active because it adds
 one USB interrupt per frame.
+
+`usb::midi` re-exports Embassy's USB-MIDI class and provides an allocation-free
+USB-MIDI 1.0 decoder. Applications select the fixed SysEx capacity as a const
+generic and implement `MessageHandler` to receive complete raw MIDI byte
+slices. The decoder handles CIN lengths, realtime messages, and fragmented
+SysEx, but deliberately does not depend on or select a semantic MIDI library.
+USB identity, descriptor strings, task scheduling, and application behavior
+remain outside this crate. Common Embassy builder, config, driver, and endpoint
+error types are re-exported from `usb` for composing MIDI/audio devices.
 
 ## Audio modes
 
