@@ -1457,13 +1457,30 @@ mod tests {
         block.set_lfo_clock_sync(0, true);
         modulation.test_plan_mut().rate_target_mask = 1;
         modulation.test_plan_mut().active_lfo_mask = 1;
+
+        // Advance once with rate_mod=1.0 (would 4× the rate if applied)
         let mut control = LfoControlModulation::default();
         control.rate_mod[0] = 1.0;
         block.advance_lfos_for_test(control, &modulation);
-        let mut control = LfoControlModulation::default();
-        control.rate_mod[0] = 1.0;
-        block.advance_lfos_for_test(control, &modulation);
-        assert!((block.lfos()[0].output().to_array()[0] - 0.008).abs() < 1.0e-6);
+
+        // Capture the output after rate-modulated advance
+        let modulated_output = block.lfos()[0].output();
+
+        // Reset a fresh block and advance once WITHOUT rate modulation
+        let (mut block2, mut modulation2) = test_block(1_000.0, &Patch::default());
+        block2.set_lfo_depth(0, 1.0);
+        block2.set_lfo_sync_division(0, LfoSyncDivision::Step1);
+        block2.set_lfo_clock_sync(0, true);
+        modulation2.test_plan_mut().rate_target_mask = 1;
+        modulation2.test_plan_mut().active_lfo_mask = 1;
+        block2.advance_lfos_for_test(LfoControlModulation::default(), &modulation2);
+
+        let clean_output = block2.lfos()[0].output();
+
+        assert_eq!(
+            modulated_output, clean_output,
+            "synced LFO rate must be unaffected by rate modulation"
+        );
     }
 
     fn modulation_context(sample: usize) -> ModSignalContext {

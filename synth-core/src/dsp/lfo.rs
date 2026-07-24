@@ -11,6 +11,7 @@ pub const MIN_LFO_RATE_HZ: f32 = 0.022;
 pub const MAX_LFO_RATE_HZ: f32 = 500.0;
 /// Lowest internal rate required by 30 BPM, half-note clock, 32-step sync.
 pub(crate) const MIN_SYNCED_LFO_RATE_HZ: f32 = 1.0 / 128.0;
+const LFO_SMOOTHING_SECONDS: f32 = 0.005;
 
 /// LFO waveform shape.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -56,6 +57,8 @@ pub struct Lfo {
     sample_and_hold: f32x4,
     rng: [DspRng; LANES],
     sample_rate: f32,
+    smoothed: f32x4,
+    smoothing_coeff: f32x4,
 }
 
 impl Default for Lfo {
@@ -81,8 +84,12 @@ impl Lfo {
                 DspRng::new(0x4c46_4f04, 0x5148_0004),
             ],
             sample_rate,
+            smoothed: f32x4::splat(0.0),
+            smoothing_coeff: f32x4::splat(0.0),
         };
         lfo.set_rate_hz(MIN_LFO_RATE_HZ);
+        let coeff = (1.0 / (sample_rate.max(1.0) * LFO_SMOOTHING_SECONDS)).min(1.0);
+        lfo.smoothing_coeff = f32x4::splat(coeff);
         lfo.refresh_sample_and_hold();
         lfo
     }
@@ -91,6 +98,8 @@ impl Lfo {
         self.sample_rate = sample_rate.max(1.0);
         let rate = self.phase_inc.to_array()[0] * self.sample_rate;
         self.set_rate_hz(rate);
+        let coeff = (1.0 / (self.sample_rate * LFO_SMOOTHING_SECONDS)).min(1.0);
+        self.smoothing_coeff = f32x4::splat(coeff);
     }
 
     pub fn set_rate_hz(&mut self, rate_hz: f32) {
@@ -122,6 +131,7 @@ impl Lfo {
     pub fn reset_all(&mut self) {
         self.phase = f32x4::splat(0.0);
         self.phase_uniform = true;
+        self.smoothed = f32x4::splat(0.0);
         if self.waveform == LfoWaveform::SampleAndHold {
             self.refresh_sample_and_hold();
         }
@@ -129,6 +139,7 @@ impl Lfo {
 
     pub fn reset_lane(&mut self, lane: usize) {
         self.phase = self.phase.replace_lane(lane, 0.0);
+        self.smoothed = self.smoothed.replace_lane(lane, 0.0);
         let phases = self.phase.to_array();
         self.phase_uniform = phases
             .iter()
@@ -142,11 +153,13 @@ impl Lfo {
     }
 
     pub fn next(&mut self) -> f32x4 {
-        let output = if self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold {
+        let raw = if self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold {
             f32x4::splat(self.uniform_raw_output() * self.depth)
         } else {
             self.raw_output() * f32x4::splat(self.depth)
         };
+        let output = self.smoothed + (raw - self.smoothed) * self.smoothing_coeff;
+        self.smoothed = output;
         self.advance();
         output
     }
@@ -354,6 +367,43 @@ mod tests {
             let value = first_lane(lfo.next());
             assert!(value.is_finite());
             assert!((-1.0..=1.0).contains(&value));
+        }
+    }
+
+    #[test]
+    fn discontinuous_waveforms_have_no_large_per_sample_jumps() {
+        let sample_rate = 48_000.0;
+        let rates = [1.0, 10.0, 50.0, 200.0, 500.0];
+
+        for waveform in [LfoWaveform::Saw, LfoWaveform::ReverseSaw, LfoWaveform::Square] {
+            for &rate in &rates {
+                let mut lfo = Lfo::new(sample_rate);
+                lfo.set_rate_hz(rate);
+                lfo.set_depth(1.0);
+                lfo.set_waveform(waveform);
+
+                let mut prev = first_lane(lfo.next());
+                let mut max_diff: f32 = 0.0;
+                let cycles = (sample_rate / rate * 3.0) as usize;
+
+                for _ in 1..cycles {
+                    let value = first_lane(lfo.next());
+                    let diff = (value - prev).abs();
+                    max_diff = max_diff.max(diff);
+                    prev = value;
+                }
+
+                // Normal slope for a saw at this rate is rate/sample_rate.
+                // A smoothed discontinuity should not exceed a small absolute step.
+                let normal_slope = rate / sample_rate;
+                let abs_limit = (0.01f32).max(normal_slope * 5.0);
+
+                assert!(
+                    max_diff <= abs_limit,
+                    "{waveform:?} at {rate} Hz: max per-sample jump {:.6} exceeds limit {:.6} (normal slope {:.6})",
+                    max_diff, abs_limit, normal_slope,
+                );
+            }
         }
     }
 }
