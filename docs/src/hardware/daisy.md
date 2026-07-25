@@ -1,0 +1,181 @@
+# Daisy Seed
+
+Build, flash, and debug guide for the Daisy Seed 1.1 (STM32H750IBK6, Cortex-M7
+at 480 MHz). The firmware crate is `noctum-micro` under `hardware/daisy/`.
+
+## Prerequisites
+
+- Rust 1.93 or newer with the `thumbv7em-none-eabihf` target:
+  ```sh
+  rustup target add thumbv7em-none-eabihf
+  ```
+- `arm-none-eabi-objcopy` (arm-none-eabi-binutils) for creating raw binaries
+- A Daisy Seed 1.1 with the official bootloader installed
+
+Optional:
+- [probe-rs](https://probe.rs/) for flashing and RTT logging without DFU
+- `dfu-util` for uploading via the Daisy bootloader
+
+## Building
+
+```sh
+cd hardware/daisy
+cargo build --release -p noctum-micro
+```
+
+Create the raw binary for DFU upload:
+
+```sh
+arm-none-eabi-objcopy -O binary \
+  target/thumbv7em-none-eabihf/release/noctum-micro \
+  noctum-micro.bin
+```
+
+## Feature flags
+
+All feature flags are optional and additive. Pass them with `--features`:
+
+| Feature | Effect |
+| --- | --- |
+| `embedded-math` | Switches `f32x4` SIMD to scalar `micromath` for the Cortex-M7 (default) |
+| `daisy-full-rate` | Runs the engine at 48 kHz instead of 24 kHz (exceeds CPU budget with 4 voices) |
+| `oscillator-polyblep` | Uses PolyBLEP anti-aliasing instead of the default BLEP |
+| `diagnostics` | Enables RTT logging, MIDI debug output, and overrun warnings |
+| `audio-profiling` | Enables DWT cycle-count profiling per DSP stage |
+| `usb-audio-test-tone` | Substitutes USB audio with a 1 kHz reference tone (DAC unaffected) |
+| `usb-audio-raw-test` | Exposes raw USB interface without UAC1 class claim (diagnostic only) |
+
+Examples:
+
+```sh
+cargo build --release -p noctum-micro --features diagnostics
+cargo build --release -p noctum-micro --features diagnostics,daisy-full-rate
+```
+
+## Flashing
+
+### Via Daisy bootloader (DFU)
+
+Put the Daisy in bootloader mode (press BOOT + RESET, release RESET, release
+BOOT) and upload:
+
+```sh
+dfu-util -a 0 -s 0x90040000:leave \
+  -D noctum-micro.bin -d ,0483:df11
+```
+
+### Via probe-rs
+
+With a debug probe attached:
+
+```sh
+cd hardware/daisy
+cargo run --release -p noctum-micro
+```
+
+The `.cargo/config.toml` sets the runner to `probe-rs run --chip STM32H750IB`.
+
+## Diagnostics
+
+Build with the `diagnostics` feature to enable RTT logging:
+
+```sh
+DEFMT_LOG=debug cargo run --release -p noctum-micro \
+  --features diagnostics
+```
+
+The firmware logs parameter changes (`PARAM:`), queue overflows, and overrun
+events. `PERF` warnings appear when the audio task reaches 90% of the
+320,000-cycle deadline in any 1,500-block window.
+
+Production builds omit diagnostics.
+
+## Profiling
+
+The `audio-profiling` feature measures Cortex-M7 DWT cycle counts per DSP stage
+(envelopes/modulation, oscillators, filter, amplifier/pan, effects, master
+output). The oscillator total is further split into control updates, waveform
+generation, and sub/noise/mix cycles.
+
+```sh
+cargo run --release -p noctum-micro --features audio-profiling
+```
+
+### Standalone DSP benchmark
+
+Runs a fixed set of test cases without SAI, DMA, USB, or executor overhead:
+
+```sh
+cargo run --release -p noctum-micro \
+  --features audio-profiling --bin bench-dsp
+```
+
+### Factory-presset benchmark
+
+Evaluates all 512 Layer A programs from the Prophet Rev2 v1.0 factory bank.
+Each program receives a four-note chord (C4, E4, G4, C5) at full velocity and
+measures block time across attack, steady-state, and parameter-change scenarios.
+
+Requires building a combined image with the factory bank payload:
+
+```sh
+firmware/build-factory-preset-image.sh
+dfu-util -a 0 -s 0x90040000:leave \
+  -D target/bench-factory-presets-with-bank.bin \
+  -d ,0483:df11
+cargo run --release -p noctum-micro \
+  --features audio-profiling --bin bench-factory-presets
+```
+
+The benchmark reports average, p95, p99, maximum cycles, headroom, and
+over-budget block counts per program.
+
+## Audio reliability
+
+SAI receive overruns and transmit underruns are recoverable. Both DMA rings
+resynchronize automatically, and the firmware fades to silence before resuming.
+MIDI control processing is bounded per audio block so a burst cannot
+indefinitely delay DMA servicing.
+
+The user LED shows overruns as three full-brightness flashes (25 ms on/off).
+
+## USB audio capture
+
+When a host opens the USB audio capture interface, post-effects stereo output
+is mirrored as packed 24-bit PCM at 48 kHz. SAI remains the synth clock and
+never waits for USB. A lock-free frame ring bridges 32-frame render blocks to
+1 ms USB packets with 47–49 frames per packet to absorb clock drift.
+
+## USB MIDI identity
+
+Firmware uses temporary VID/PID `0xC0DE:0xCAFE` for local development. Before
+public release:
+1. Request a project PID under pid.codes community VID `0x1209`.
+2. Update `DEVELOPMENT_VID` and `DEVELOPMENT_PID` in the USB MIDI component.
+3. Verify the release identity on every supported host OS.
+
+## Program storage
+
+8 banks × 128 programs (512-byte records) in QSPI flash starting at offset
+`0x000C0000`. The bootloader/application reservation below this offset is never
+erased. On first boot or when the catalog is invalid, firmware formats the
+region. Empty slots load the default patch. One thread-mode task owns QSPI;
+neither flash erase nor page programming runs in the audio path.
+
+Bank Select (CC0/CC32, values 0–7) followed by Program Change loads a program.
+Rev2 and Prophet '08 Program Data SysEx messages save to their addressed slot.
+
+## Tests
+
+The Daisy workspace defaults to the Cortex-M target. Supply the host target for
+unit tests:
+
+```sh
+cargo test -p noctum-micro --lib --target aarch64-apple-darwin
+```
+
+Board-level tests for `embassy-daisy`:
+
+```sh
+cargo test -p embassy-daisy --features seed_1_1
+```

@@ -1,47 +1,43 @@
 # Noctum
 
-Noctum is a Rust virtual-analog polysynth project. It takes inspiration
-from the Sequential Prophet Rev2 approach to a broad, modulation-rich
-subtractive instrument: two oscillators per voice, a resonant low-pass filter,
-three envelopes, four LFOs, flexible routing, stereo spread, and global
-effects. It is an original implementation, not a clone.
+Noctum is a virtual-analog polysynth inspired by the Sequential Prophet Rev2: a
+subtractive instrument with two oscillators per voice, a resonant low-pass
+filter, three envelopes, four LFOs, flexible modulation routing, stereo spread,
+and global effects. It is an original implementation, not a clone.
 
-The project has three distinct pieces:
+Noctum is available in different hardware [models](models/overview.md), each
+running the same sound engine and sharing the same patch format and MIDI
+protocol. Currently shipping: **Micro 4**, a four-voice instrument on the Daisy
+Seed 1.1.
 
-- The **Synthesizer** is the instrument itself: its sound engine, controls,
-  voice behavior, and effects.
-- The **Application** is `synth-app`, a desktop harness for playing, editing,
-  and observing the synth while it is under development. It is not a product
-  distribution target.
-- The **SDK** is the `synth-core` library and its host integration contract.
-  It is intended for software hosts today and leaves a portable boundary for a
-  future hardware implementation.
+## What it sounds like
 
-## Reading this book
+Two analog-style oscillators per voice — saw, triangle, pulse, and blended
+shapes — feed a resonant ladder low-pass filter with switchable 2-pole and
+4-pole slopes. Three DADSR envelopes and four LFOs animate pitch, timbre,
+levels, and effects. Eight freely assignable modulation routes plus five
+dedicated performance routes let you build patches that respond to velocity,
+aftertouch, mod wheel, and more.
 
-Start with **Synthesizer** when you want to understand what the instrument can
-do or how a parameter changes a sound. It deliberately avoids Rust API detail.
+Stereo output with per-voice pan spread places chords across the field. Global
+effects — delay, chorus, flanger, phaser, reverb, ring modulation, distortion,
+and high-pass filtering — process the mixed voice output.
 
-Read **Application** to use the development harness for auditioning patches,
-MIDI, audio devices, and live analysis.
+16-voice polyphony on the desktop application. Hardware models balance voice
+count against CPU budget to keep a consistent sound character.
 
-Read **SDK** when you are embedding `SynthEngine` in a program, building a
-wrapper, or working on the DSP implementation. That section contains the Rust
-types, audio-thread contract, data flow, and development commands.
+## Choosing a model
 
-The **Hardware** section is a reserved home for the future physical
-implementation.
+Start with [Models](models/overview.md) to compare the hardware lineup. Every
+model shares the same [sound architecture](synthesizer/overview.md),
+[parameter set](synthesizer/parameters.md), and [MIDI
+protocol](appendix/midi-spec.md).
 
-## Quick start
-
-Run the development harness:
-
-```bash
-cargo run --release -p synth-app
-```
-
-Serve this book locally:
-
-```bash
-mdbook serve docs
-```
+| Section | Who it's for |
+| --- | --- |
+| [Models](models/overview.md) | Choosing hardware, understanding voice/rate trade-offs |
+| [Synthesizer](synthesizer/overview.md) | Learning the instrument's capabilities and sound |
+| [Hardware](hardware/overview.md) | Building, flashing, and debugging firmware |
+| [Application](application.md) | Running the desktop development harness |
+| [SDK](sdk/getting-started.md) | Embedding `synth-core` in a host or working on the DSP |
+| [Appendix](appendix/midi-spec.md) | MIDI protocol, SysEx, and factory-presset import |
