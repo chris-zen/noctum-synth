@@ -12,6 +12,14 @@ pub mod lfo;
 pub(crate) mod lookahead_limiter;
 pub mod noise;
 pub(crate) mod rng;
+#[cfg(any(
+    test,
+    all(
+        feature = "embedded-math",
+        target_os = "none",
+        not(feature = "daisy-full-rate")
+    )
+))]
 pub(crate) mod upsampler;
 pub mod wavetable;
 
