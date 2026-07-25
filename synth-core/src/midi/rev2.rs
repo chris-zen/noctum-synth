@@ -248,6 +248,31 @@ impl Default for Rev2MidiEncoder {
 }
 
 impl Rev2MidiEncoder {
+    /// Encode a patch as a stored Prophet Rev2 Program Data dump.
+    pub fn program_data(
+        bank: u8,
+        program: u8,
+        patch: &Patch,
+        output: &mut [u8],
+    ) -> Result<usize, Rev2SysexError> {
+        if bank > 7 {
+            return Err(Rev2SysexError::InvalidBank);
+        }
+        if program & 0x80 != 0 {
+            return Err(Rev2SysexError::NonSevenBitData);
+        }
+        if output.len() < REV2_PROGRAM_DATA_SYSEX_LEN {
+            return Err(Rev2SysexError::OutputTooSmall);
+        }
+
+        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        encode_program_layers(patch, &mut raw);
+        output[..6].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02, bank, program]);
+        pack_program_data(&raw, &mut output[6..6 + REV2_PROGRAM_PACKED_LEN]);
+        output[REV2_PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
+        Ok(REV2_PROGRAM_DATA_SYSEX_LEN)
+    }
+
     /// Encode a patch as a Prophet Rev2 Program Edit Buffer data dump.
     pub fn program_edit_buffer(patch: &Patch, output: &mut [u8]) -> Result<usize, Rev2SysexError> {
         if output.len() < REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN {
@@ -255,8 +280,7 @@ impl Rev2MidiEncoder {
         }
 
         let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
-        encode_patch_layer(patch, &mut raw[..REV2_LAYER_DATA_LEN]);
-        encode_patch_layer(&Patch::default(), &mut raw[REV2_LAYER_DATA_LEN..]);
+        encode_program_layers(patch, &mut raw);
 
         output[..4].copy_from_slice(&REV2_SYSEX_HEADER);
         pack_program_data(&raw, &mut output[4..4 + REV2_PROGRAM_PACKED_LEN]);
@@ -482,6 +506,11 @@ impl Rev2MidiEncoder {
     }
 }
 
+fn encode_program_layers(patch: &Patch, raw: &mut [u8; REV2_PROGRAM_DATA_LEN]) {
+    encode_patch_layer(patch, &mut raw[..REV2_LAYER_DATA_LEN]);
+    encode_patch_layer(&Patch::default(), &mut raw[REV2_LAYER_DATA_LEN..]);
+}
+
 fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
     let mut encoder = Rev2MidiEncoder::default();
     patch.for_each_param(|param, value| {
@@ -528,6 +557,9 @@ fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
         }
     });
     raw[27] = quantize(patch.amplifier.initial_level, 0.0, 1.0, 127) as u8;
+    raw[LAYER_A_NAME_RANGE].fill(b' ');
+    raw[LAYER_A_NAME_RANGE.start..LAYER_A_NAME_RANGE.start + patch.name.len()]
+        .copy_from_slice(patch.name.as_bytes());
 }
 
 fn store_nrpn(raw: &mut [u8], messages: &[[u8; 3]]) {
@@ -1261,6 +1293,40 @@ mod tests {
         assert_eq!(decoded.unison_detune, 12.0);
         assert_eq!(decoded.key_mode, crate::KeyMode::LastRetrigger);
         assert!(decoded.unison_chord.is_empty());
+    }
+
+    #[test]
+    fn program_data_encoder_round_trips_address_and_patch() {
+        let mut source = Patch::default();
+        source.name.push_str("Stored Program").unwrap();
+        source.filter.resonance = 0.75;
+        let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+
+        let len = Rev2MidiEncoder::program_data(7, 127, &source, &mut message).unwrap();
+        let decoded = Rev2MidiDecoder::program_data(&message).unwrap();
+
+        assert_eq!(len, REV2_PROGRAM_DATA_SYSEX_LEN);
+        assert_eq!((decoded.bank, decoded.program), (7, 127));
+        assert_eq!(decoded.patch.name, source.name);
+        assert!((decoded.patch.filter.resonance - source.filter.resonance).abs() < 0.01);
+    }
+
+    #[test]
+    fn program_data_encoder_validates_address_and_capacity() {
+        let patch = Patch::default();
+        let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+        assert_eq!(
+            Rev2MidiEncoder::program_data(8, 0, &patch, &mut message),
+            Err(Rev2SysexError::InvalidBank)
+        );
+        assert_eq!(
+            Rev2MidiEncoder::program_data(0, 128, &patch, &mut message),
+            Err(Rev2SysexError::NonSevenBitData)
+        );
+        assert_eq!(
+            Rev2MidiEncoder::program_data(0, 0, &patch, &mut message[..10]),
+            Err(Rev2SysexError::OutputTooSmall)
+        );
     }
 
     #[test]

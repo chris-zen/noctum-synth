@@ -1,4 +1,4 @@
-# Appendix: MIDI Implementation
+# Appendix: MIDI Spec
 
 This appendix documents the MIDI protocol accepted by the synth. The **Prophet
 Rev2** is the primary reference: live CC/NRPN control, patch editing, and MIDI
@@ -14,18 +14,19 @@ SysEx messages for factory-bank import. Prophet '08 programs are decoded into
 the same internal patch format as Rev2 Layer A. See [Prophet '08
 Compatibility](#prophet-08-compatibility) below.
 
-See [Factory Presets](factory-presets.md) for instructions on importing the
-official Sequential factory sound banks.
+See [Factory Presets](factory-presets.md) for instructions on loading the
+official Sequential factory sound banks into hardware program memory.
 
 ## Protocol Overview
 
-The synth accepts four categories of MIDI input. Channel messages are accepted
+The synth accepts five categories of MIDI input. Channel messages are accepted
 on any channel; System Real-Time messages have no MIDI channel.
 
 | Protocol | Purpose |
 |---|---|
 | **CC** (Control Change) | Coarse 7-bit control of a subset of parameters |
 | **NRPN** (Non-Registered Parameter Number) | High-resolution 14-bit access to every parameter |
+| **Program Change** | Recall a stored program; CC0/CC32 select the global bank |
 | **SysEx** (System Exclusive) | Bulk patch import/export and Program Data library imports |
 | **System Real-Time** | External timing clock plus transport Start and Stop |
 
@@ -57,12 +58,6 @@ restores the latest patch BPM.
 Slave Thru retransmits Timing Clock on MIDI output. MIDI Continue (`FB`) and
 Song Position Pointer are ignored.
 
-## RPN / NRPN Reset
-
-The synth responds to the RPN Reset command: sending CC 100 value 127 followed
-by CC 101 value 127 clears the current NRPN selection, returning it to a known
-idle state.
-
 ## NRPN Protocol
 
 The synth tracks NRPN state independently for each of the 16 MIDI channels.
@@ -81,6 +76,13 @@ maximum raw value before being converted to real-world units.
 Data Increment (CC 96) and Data Decrement (CC 97) are also supported. They
 adjust the current NRPN value by ±1, clamped to the parameter's valid range.
 
+### NRPN / RPN Reset
+
+The synth responds to the RPN Reset command: sending CC 100 value 127 followed
+by CC 101 value 127 clears the current NRPN selection, returning it to a known
+idle state.
+
+
 ## Value Conversion
 
 Raw MIDI values are converted to real-world units using one of four formulas.
@@ -94,6 +96,38 @@ The same formulas are inverted when encoding output.
 | **Bipolar** | `(raw / max) × 2 − 1` | Envelope amounts, modulation depth |
 
 Booleans are decoded as `raw ≥ 64` (CC) or `raw ≠ 0` (NRPN).
+
+#### Program Memory
+
+The synth supports 8 persistent banks of 128 programs. CC0 and CC32 values
+0–7 are both accepted as global Bank Select inputs; the selected bank is
+consumed by the next Program Change. Sending a Program Data message saves
+the decoded patch to its included bank/program address. Sending a
+Program Edit Buffer only loads the live patch and does not write program
+memory.
+
+## Performance Messages
+
+Standard channel voice messages are supported:
+
+| Message | Behaviour |
+|---|---|
+| Note On (velocity > 0) | Voice allocation |
+| Note On (velocity = 0) | Treated as Note Off |
+| Note Off | Voice release |
+| Pitch Bend | 14-bit, normalised to −1.0 to +1.0 |
+| Channel Pressure / Poly Key Pressure | 7-bit, normalised to 0.0 to 1.0 |
+
+## Special CC Handlers
+
+The following CC numbers are reserved for performance controls and are handled
+before any parameter decoding:
+
+| CC | Function |
+|---|---|
+| 1  | Mod Wheel (0–127 → 0%–100%) |
+| 64 | Sustain Pedal (64–127 = on, 0–63 = off) |
+| 120, 123 | All Notes Off |
 
 ## Prophet Rev2 Control Change Assignments
 
@@ -294,29 +328,6 @@ Pressure (118), Breath (120), Velocity (122), and MIDI Foot (124).
 | 156 | Effect Parameter 1 | 0–255 → 0%–100% | 255 |
 | 157 | Effect Parameter 2 | 0–127 → 0%–100% | 127 |
 | 158 | Effect Clock Sync | 0=off, 1=on | 1 |
-
-## Special CC Handlers
-
-The following CC numbers are reserved for performance controls and are handled
-before any parameter decoding:
-
-| CC | Function |
-|---|---|
-| 1  | Mod Wheel (0–127 → 0%–100%) |
-| 64 | Sustain Pedal (64–127 = on, 0–63 = off) |
-| 120, 123 | All Notes Off |
-
-## Performance Messages
-
-Standard channel voice messages are supported:
-
-| Message | Behaviour |
-|---|---|
-| Note On (velocity > 0) | Voice allocation |
-| Note On (velocity = 0) | Treated as Note Off |
-| Note Off | Voice release |
-| Pitch Bend | 14-bit, normalised to −1.0 to +1.0 |
-| Channel Pressure / Poly Key Pressure | 7-bit, normalised to 0.0 to 1.0 |
 
 ## SysEx Messages
 
@@ -520,9 +531,8 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 **Split-MSB sidebands:** Bipolar values (max 254) and other values above 127
 store their low 7 bits in one byte and bit 8 in bit 7 of a *different* byte
 (that host byte's own value occupies bits 0–6). Some parameters use bit 7 of
-their own byte instead. Byte 27 (VCA Level) is decoded directly because it has
-no NRPN mapping. Offsets above 255 are sequencer data and are not decoded by
-the synth.
+their own byte instead. Byte 27 (VCA Level) is a plain 0–127 field with no
+MSB sideband. Offsets above 255 are sequencer data and are not imported.
 
 | Value byte | Parameter | MSB stored in byte | Host parameter at MSB byte |
 |---|---|---|---|
@@ -550,6 +560,17 @@ source or destination byte instead.
 
 Layer B occupies bytes 1024–2043 and follows the same layout as Layer A. The
 synth currently ignores Layer B.
+
+## Prophet Rev2 Unsupported Features
+
+The following Prophet Rev2 systems are not implemented by this synth:
+
+- Layer B parameter control
+- Sequencer and arpeggiator
+- Rev2 SysEx import/export of the undocumented chord-memory voicing bytes
+- Global settings (tuning, MIDI channel, pedal config, etc.)
+- Program memory management (save, rename, bank copy)
+- Alternate tunings
 
 ## Prophet '08 Compatibility
 
@@ -587,7 +608,7 @@ and byte 228 in Layer B).
 
 Bipolar values (max 254) and other values above 127 use the same split-MSB
 sideband scheme as Rev2 (low 7 bits in one byte, bit 8 in bit 7 of another).
-The decoder handles all documented MSB sidebands listed below.
+All documented MSB sidebands are listed below.
 
 #### Layer A (bytes 0–199)
 
@@ -728,14 +749,15 @@ Filter Poles (byte 19) and LFO 4 Frequency (byte 52) each host two MSB
 sidebands because their own values never use bit 7. Mod 3/4 source and
 Breath/Foot amount bytes form reciprocal pairs.
 
-The synth decodes voice parameters at offsets 0–36, 37–56 (LFOs), 57–64
+Imported voice parameters cover offsets 0–36, 37–56 (LFOs), 57–64
 (auxiliary envelope), 65–76 (free modulation slots), and 81–90 (dedicated
-modulation). Byte 27 (VCA Initial Level) is decoded directly. It also reads the
-program name from bytes 184–199. Key mode and the Prophet '08 unison fields are
-also applied: the three fixed detune modes translate to eight Rev2-style voices
-at progressively larger detune values. The two oscillator Glide rates and Glide
-mode are imported, with Glide enabled when either rate is nonzero. Sequencer,
-arpeggiator, tempo, and split settings are present in the image but not applied.
+modulation), plus the program name at bytes 184–199. Byte 27 (VCA Initial
+Level) is a plain 0–127 field with no MSB sideband. Key mode and the
+Prophet '08 unison fields are applied: the three fixed detune modes map to
+eight Rev2-style voices at progressively larger detune values. The two
+oscillator Glide rates and Glide mode are imported, with Glide enabled when
+either rate is nonzero. Sequencer, arpeggiator, tempo, and split settings are
+present in the image but not applied.
 
 #### Layer B (bytes 200–383)
 
@@ -752,27 +774,3 @@ The following Prophet '08 systems are not implemented:
 - Split and stack program modes
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)
-
-## MIDI Output
-
-MIDI output is transmitted on channel 1:
-
-- Parameter changes use full 4-message NRPN sequences.
-- `Pan Mod Mode` uses CC 10 (value 0 or 127).
-- A 159-entry cache suppresses repeated NRPN values that quantize to the same
-  raw MIDI value.
-- The **Send** button in the UI transmits the current patch as a complete
-  Program Edit Buffer SysEx message.
-- Inbound changes and patches update the local engine without being echoed back
-  to MIDI output to prevent feedback loops.
-
-## Unsupported Prophet Rev2 Features
-
-The following Prophet Rev2 systems are not implemented by this synth:
-
-- Layer B parameter control
-- Sequencer and arpeggiator
-- Rev2 SysEx import/export of the undocumented chord-memory voicing bytes
-- Global settings (tuning, MIDI channel, pedal config, etc.)
-- Program memory management (save, rename, bank copy)
-- Alternate tunings

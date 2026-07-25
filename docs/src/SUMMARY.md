@@ -9,6 +9,10 @@
 - [Parameter Guide](synthesizer/parameters.md)
 - [Modulation and Effects](synthesizer/modulation-effects.md)
 
+# Hardware
+
+- [Future Hardware](hardware/overview.md)
+
 # Application
 
 - [Development Harness](application.md)
@@ -22,9 +26,5 @@
 
 # Appendix
 
-- [MIDI Implementation](appendix/midi-implementation.md)
+- [MIDI Spec](appendix/midi-spec.md)
 - [Factory Presets](appendix/factory-presets.md)
-
-# Hardware
-
-- [Future Hardware](hardware/overview.md)

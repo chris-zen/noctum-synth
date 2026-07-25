@@ -26,11 +26,34 @@ pub enum InvalidMidiReason {
     SysExOutputTooSmall,
 }
 
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    all(feature = "diagnostics", target_arch = "arm"),
+    derive(defmt::Format)
+)]
+pub enum StorageOperation {
+    Load,
+    Save,
+    PersistSelection,
+}
+
+#[derive(Clone, Copy)]
+#[cfg_attr(
+    all(feature = "diagnostics", target_arch = "arm"),
+    derive(defmt::Format)
+)]
+pub enum StorageFailureReason {
+    Flash,
+    InvalidAddress,
+    InvalidRecord,
+    VerifyFailed,
+}
+
 #[cfg(feature = "diagnostics")]
-pub use enabled::{PerfMonitor, emit, emit_xrun, init, run_task};
+pub use enabled::{emit, emit_xrun, init, run_task, PerfMonitor};
 
 #[cfg(not(feature = "diagnostics"))]
-pub use disabled::{PerfMonitor, emit, emit_xrun, init};
+pub use disabled::{emit, emit_xrun, init, PerfMonitor};
 
 #[derive(Clone, Copy)]
 pub enum Event {
@@ -77,7 +100,31 @@ pub enum Event {
     },
     ControlQueueFull,
     PatchQueueFull,
+    ProgramStorageQueueFull,
     ProgramEditBufferReceived,
+    ProgramDataReceived {
+        bank: u8,
+        program: u8,
+    },
+    ProgramChangeReceived {
+        bank: u8,
+        program: u8,
+    },
+    ProgramLoaded {
+        bank: u8,
+        program: u8,
+        elapsed_micros: u64,
+    },
+    ProgramSaved {
+        bank: u8,
+        program: u8,
+    },
+    ProgramStorageFailed {
+        operation: StorageOperation,
+        reason: StorageFailureReason,
+        bank: u8,
+        program: u8,
+    },
     InvalidMidi {
         cable: u8,
         reason: InvalidMidiReason,
@@ -376,9 +423,47 @@ mod enabled {
                 Event::PatchQueueFull => {
                     defmt::warn!("synth patch queue full; dropping newest patch")
                 }
+                Event::ProgramStorageQueueFull => {
+                    defmt::warn!("program storage overflow full; dropping newest request")
+                }
                 Event::ProgramEditBufferReceived => {
                     defmt::info!("received Rev2 Program Edit Buffer")
                 }
+                Event::ProgramDataReceived { bank, program } => defmt::info!(
+                    "saving Rev2 Program Data bank={} program={}",
+                    bank,
+                    program
+                ),
+                Event::ProgramChangeReceived { bank, program } => defmt::info!(
+                    "program change bank={} program={}",
+                    bank,
+                    program
+                ),
+                Event::ProgramLoaded {
+                    bank,
+                    program,
+                    elapsed_micros,
+                } => defmt::info!(
+                    "loaded program bank={} program={} flash_us={}",
+                    bank,
+                    program,
+                    elapsed_micros
+                ),
+                Event::ProgramSaved { bank, program } => {
+                    defmt::info!("saved program bank={} program={}", bank, program)
+                }
+                Event::ProgramStorageFailed {
+                    operation,
+                    reason,
+                    bank,
+                    program,
+                } => defmt::error!(
+                    "program storage failed operation={:?} reason={:?} bank={} program={}",
+                    operation,
+                    reason,
+                    bank,
+                    program
+                ),
                 Event::InvalidMidi {
                     cable,
                     reason,
@@ -495,7 +580,7 @@ mod disabled {
 
 #[cfg(all(test, feature = "diagnostics"))]
 mod tests {
-    use super::{Event, PerfMonitor, enabled::PERF_REPORT_INTERVAL_BLOCKS};
+    use super::{enabled::PERF_REPORT_INTERVAL_BLOCKS, Event, PerfMonitor};
 
     #[test]
     fn performance_monitor_reports_only_near_the_budget() {

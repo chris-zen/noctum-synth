@@ -60,6 +60,44 @@ Before the first public binary or hardware release:
 
 Allocation requirements: <https://pid.codes/howto/>.
 
+## MIDI program storage
+
+Production firmware owns a compact persistent program store in the Daisy's
+8 MiB QSPI flash. It exposes 8 banks of 128 programs. The catalog starts at
+QSPI offset `0x000C0000`; 1,024 fixed 512-byte records start at `0x000C1000`
+and end at `0x00141000`. The official bootloader/application reservation below
+`0x000C0000` is never erased by the store.
+
+On first boot, or when the catalog version/CRC is invalid, firmware erases this
+516 KiB region and writes a new catalog. Erased program records represent
+`Patch::default()`, so every slot initially loads the default patch. There is
+no factory/user bank split and no MIDI format command.
+
+MIDI behavior is global across channels:
+
+- CC0 and CC32 values 0–7 select a pending bank; the next Program Change
+  loads that bank/program through the normal patch transition.
+- A Rev2 Program Data SysEx message (`F0 01 2F 02 <bank> <program> ... F7`)
+  saves its decoded patch to that slot. The write is asynchronous.
+- A Rev2 Program Edit Buffer message (`F0 01 2F 03 ... F7`) remains a live
+  edit and never writes flash.
+- The last successful load is restored on boot. Selection updates use an
+  append-only catalog journal and compact only after hundreds of changes.
+
+One thread-mode task owns QSPI. USB MIDI only enqueues bounded requests, and
+the audio interrupt only receives completed patches; neither flash erase nor
+page programming runs in the audio path. Slot saves use 4 KiB sector
+read-modify-write and verify the written 512-byte record. A failed load/save is
+reported by diagnostics and does not replace the running patch.
+
+`synth_core::Rev2MidiEncoder::program_data` produces outbound-compatible Rev2
+Program Data bytes for host tooling. Firmware does not automatically echo a
+dump after load and does not invent a vendor-specific dump-request message.
+
+The factory-preset benchmark's legacy raw-SysEx QSPI image starts at the same
+offset and is intentionally incompatible with the production compact store;
+running production firmware may format that benchmark data.
+
 ## USB audio
 
 The analog DAC is always active. When a host opens the USB audio capture
@@ -142,6 +180,10 @@ is complete. `NRPN` without `PARAM` points to an unsupported parameter or a
 dropped control. Queue overflow is reported separately. The startup log must
 contain `diagnostics enabled`; if it does not, the running image was built
 without the feature or an older image is still flashed.
+
+Successful program loads log `flash_us=…`, measuring the QSPI record read
+and compact-record decode before the patch enters the audio transition queue.
+Use that value to decide whether an SDRAM cache is warranted on target hardware.
 
 Production firmware omits the diagnostics reporter by default. XRUNs are still
 visible on the user LED; enable `diagnostics` when RTT logging is attached.

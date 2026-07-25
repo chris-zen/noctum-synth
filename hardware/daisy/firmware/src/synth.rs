@@ -4,6 +4,8 @@ use wmidi::MidiMessage;
 
 use synth_core::{ControlMessage, MidiRealtimeEvent, Patch, Rev2MidiDecoder, Rev2MidiUpdate};
 
+use crate::program::{ProgramSelection, ProgramStorageQueue, ProgramStorageRequest};
+
 pub fn realtime_to_control(
     message: &MidiMessage<'_>,
     timestamp_micros: u64,
@@ -97,6 +99,8 @@ pub struct SynthMidiHandler<'a, const PATCH_CAPACITY: usize> {
         PATCH_CAPACITY,
     >,
     indicator: crate::indicator::Sender<'a>,
+    storage: &'a ProgramStorageQueue,
+    program_selection: ProgramSelection,
     decoder: Rev2MidiDecoder,
     #[cfg(feature = "diagnostics")]
     nrpn_monitor: NrpnMonitor,
@@ -114,6 +118,8 @@ impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
             PATCH_CAPACITY,
         >,
         indicator: crate::indicator::Sender<'a>,
+        storage: &'a crate::program::ProgramStorageQueue,
+        initial_bank: u8,
     ) -> Self {
         Self {
             controls,
@@ -121,10 +127,16 @@ impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
             pending_releases,
             patches,
             indicator,
+            storage,
+            program_selection: ProgramSelection::new(initial_bank),
             decoder: Rev2MidiDecoder::default(),
             #[cfg(feature = "diagnostics")]
             nrpn_monitor: NrpnMonitor::default(),
         }
+    }
+
+    fn enqueue_storage(&self, request: ProgramStorageRequest) -> bool {
+        self.storage.try_send(request).is_ok()
     }
 
     fn enqueue(&self, command: ControlMessage) {
@@ -159,6 +171,31 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
         {
             self.enqueue(command);
             return;
+        }
+
+        match message {
+            MidiMessage::ControlChange(_, controller, value)
+                if matches!(u8::from(controller), 0 | 32) =>
+            {
+                self.program_selection.bank_select(u8::from(controller), u8::from(value));
+                return;
+            }
+            MidiMessage::ProgramChange(_, program) => {
+                let bank = self.program_selection.requested_bank();
+                let program = u8::from(program);
+                let request = ProgramStorageRequest::Load { bank, program };
+                if self.enqueue_storage(request) {
+                    self.program_selection.commit();
+                    crate::diagnostics::emit(crate::diagnostics::Event::ProgramChangeReceived {
+                        bank,
+                        program,
+                    });
+                } else {
+                    crate::diagnostics::emit(crate::diagnostics::Event::ProgramStorageQueueFull);
+                }
+                return;
+            }
+            _ => {}
         }
 
         #[cfg(feature = "diagnostics")]
@@ -214,39 +251,61 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
         if message.len() < 4 || message[..3] != [0xf0, 0x01, 0x2f] {
             return;
         }
-        let patch = match Rev2MidiDecoder::program_edit_buffer(message) {
-            Ok(patch) => patch,
-            Err(error) => {
-                use crate::diagnostics::InvalidMidiReason;
-                use synth_core::Rev2SysexError;
-
-                let reason = match error {
-                    Rev2SysexError::InvalidLength => InvalidMidiReason::InvalidSysExLength,
-                    Rev2SysexError::InvalidFraming => InvalidMidiReason::InvalidSysExFraming,
-                    Rev2SysexError::InvalidManufacturer => {
-                        InvalidMidiReason::InvalidSysExManufacturer
+        match message[3] {
+            0x02 => match Rev2MidiDecoder::program_data(message) {
+                Ok(program) => {
+                    let (bank, program_number) = (program.bank, program.program);
+                    if !self.enqueue_storage(ProgramStorageRequest::Save {
+                        bank,
+                        program: program_number,
+                        patch: program.patch,
+                    }) {
+                        crate::diagnostics::emit(
+                            crate::diagnostics::Event::ProgramStorageQueueFull,
+                        );
                     }
-                    Rev2SysexError::InvalidModel => InvalidMidiReason::InvalidSysExModel,
-                    Rev2SysexError::UnsupportedCommand => {
-                        InvalidMidiReason::UnsupportedSysExCommand
+                }
+                Err(error) => emit_sysex_error(cable, message.len(), error),
+            },
+            0x03 => match Rev2MidiDecoder::program_edit_buffer(message) {
+                Ok(patch) => {
+                    crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
+                    if self.patches.try_send(patch).is_err() {
+                        crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
                     }
-                    Rev2SysexError::InvalidBank => InvalidMidiReason::InvalidSysExBank,
-                    Rev2SysexError::NonSevenBitData => InvalidMidiReason::NonSevenBitSysExData,
-                    Rev2SysexError::OutputTooSmall => InvalidMidiReason::SysExOutputTooSmall,
-                };
-                crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
+                }
+                Err(error) => emit_sysex_error(cable, message.len(), error),
+            },
+            _ => {
+                emit_sysex_error(
                     cable,
-                    reason,
-                    length: message.len() as u16,
-                });
-                return;
+                    message.len(),
+                    synth_core::Rev2SysexError::UnsupportedCommand,
+                );
             }
-        };
-        crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
-        if self.patches.try_send(patch).is_err() {
-            crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
         }
     }
+}
+
+fn emit_sysex_error(cable: u8, length: usize, error: synth_core::Rev2SysexError) {
+    use crate::diagnostics::InvalidMidiReason;
+    use synth_core::Rev2SysexError;
+
+    let reason = match error {
+        Rev2SysexError::InvalidLength => InvalidMidiReason::InvalidSysExLength,
+        Rev2SysexError::InvalidFraming => InvalidMidiReason::InvalidSysExFraming,
+        Rev2SysexError::InvalidManufacturer => InvalidMidiReason::InvalidSysExManufacturer,
+        Rev2SysexError::InvalidModel => InvalidMidiReason::InvalidSysExModel,
+        Rev2SysexError::UnsupportedCommand => InvalidMidiReason::UnsupportedSysExCommand,
+        Rev2SysexError::InvalidBank => InvalidMidiReason::InvalidSysExBank,
+        Rev2SysexError::NonSevenBitData => InvalidMidiReason::NonSevenBitSysExData,
+        Rev2SysexError::OutputTooSmall => InvalidMidiReason::SysExOutputTooSmall,
+    };
+    crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
+        cable,
+        reason,
+        length: length as u16,
+    });
 }
 
 fn enqueue_command(
@@ -342,9 +401,9 @@ impl NrpnMonitor {
 
 #[cfg(test)]
 mod tests {
+    use super::{message_to_control, message_to_controls, realtime_to_control};
     #[cfg(feature = "diagnostics")]
     use super::{CompletedNrpn, NrpnMonitor};
-    use super::{message_to_control, message_to_controls, realtime_to_control};
     use synth_core::{ControlMessage, MidiClockMode, MidiRealtimeEvent, ParamId, Rev2MidiDecoder};
     use wmidi::MidiMessage;
 

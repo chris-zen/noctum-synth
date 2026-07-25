@@ -46,8 +46,13 @@ engine.process_interleaved(&mut interleaved, 2);
 
 ## Tests and benchmarks
 
+Some integration tests (notably `engine_tests`) construct a large
+`SynthEngine` on the stack. Raise the Rust thread stack with
+`RUST_MIN_STACK` (at least 16 MiB) or those tests abort with a stack overflow:
+
 ```bash
-cargo test -p synth-core
+RUST_MIN_STACK=16777216 cargo test -p synth-core
+RUST_MIN_STACK=16777216 cargo test -p synth-core --tests
 cargo run --release -p synth-core --example voice_block_perf
 cargo run --release -p synth-core --example filter_perf
 ```

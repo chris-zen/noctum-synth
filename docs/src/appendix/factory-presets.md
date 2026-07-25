@@ -1,8 +1,8 @@
 # Factory Presets
 
-This page explains how to import Sequential's official factory sound banks into
-the synth-app. The synth supports both the Prophet Rev2 and Prophet '08 SysEx
-formats.
+This page explains how to load Sequential's official Prophet Rev2 factory
+sound banks into hardware program memory over MIDI. For the desktop
+development harness, see [Application: Development Harness](../application.md).
 
 ## Downloading the Presets
 
@@ -10,29 +10,35 @@ Sequential publishes the factory sound banks on their support site:
 
 > <https://sequential.com/support/download/prophet-rev2-sounds/>
 
-Two preset collections are available:
-
 | Download | Contents |
 |---|---|
 | **Prophet Rev2 Factory Programs** | 4 factory banks (F1–F4) × 128 programs, plus 4 user banks (U1–U4) |
-| **Prophet '08 Sound Bank** | 2 factory banks (F5–F6) × 128 programs, originally shipped with the Prophet '08 |
 
-Each download is a `.zip` containing a `.syx` (SysEx) file and a ReadMe with
-installation instructions. The factory presets list PDF (showing all program
-names) is also available on the page.
+Each download is a `.zip` containing a `.syx` (SysEx) file and a ReadMe. The
+factory presets list PDF (showing all program names) is also available on the
+page.
 
-## Sending Presets to the Synth-App
+Hardware program storage accepts **Prophet Rev2** Program Data only
+(`F0 01 2F 02 … F7`). Prophet '08 SysEx is not written to program memory; use
+the [desktop harness](../application.md) if you need those banks.
 
-The synth-app imports presets via live MIDI SysEx. There is no file-open dialog
-— you send the `.syx` file to the app through a virtual MIDI port or loopback
-connection.
+## Sending Presets
 
-### Setup
+1. Connect the synthesizer so its MIDI input is available to the host.
+2. Open a SysEx utility and set the destination to that MIDI port.
+3. Send the Rev2 `.syx` file. Each Program Data message saves Layer A into the
+   bank and program encoded in the message (banks 0–7, programs 0–127).
+   Firmware applies USB backpressure while flash writes complete, so a full
+   512-program dump can take on the order of a minute; wait for the transfer
+   to finish before recalling.
+4. Recall with Bank Select (CC0 or CC32, value 0–7) followed by Program Change.
 
-1. Launch the synth-app.
-2. Open **Settings** and select a MIDI input port that can receive SysEx data.
-3. Ensure the **Patches** toggle for that port is enabled (it is on by default).
-4. Use a MIDI utility to send the `.syx` file to the selected port.
+Program Edit Buffer messages (`F0 01 2F 03 … F7`) load the live patch only and
+do not write program memory.
+
+Send at a moderate rate so the device can accept each dump (SysEx Librarian
+and MIDI-OX defaults are fine). Do not power-cycle mid-transfer: a full bank
+set writes many flash sectors.
 
 ### Mac OS — SysEx Librarian
 
@@ -40,15 +46,10 @@ connection.
 sending SysEx files on macOS.
 
 1. Download and install SysEx Librarian.
-2. Create a virtual MIDI port (optional): open **Audio MIDI Setup** → Window →
-   **Show MIDI Studio** → double-click **IAC Driver** → enable "Device is online".
-3. In SysEx Librarian, set the **Destination** to the port you configured in the
-   synth-app (e.g. the IAC Bus).
+2. Confirm the synthesizer's MIDI port appears in Audio MIDI Setup.
+3. In SysEx Librarian, set the **Destination** to that port.
 4. Drag the `.syx` file onto the SysEx Librarian window.
 5. Click **Play**.
-
-The synth-app will receive each Program Data message, decode it, and save it to
-the patches directory.
 
 ### Windows — MIDI-OX
 
@@ -56,11 +57,9 @@ the patches directory.
 Windows.
 
 1. Download and install MIDI-OX.
-2. Install a virtual MIDI loopback driver such as
-   [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and create
-   a port.
-3. In MIDI-OX, go to **Options → MIDI Devices** and select the virtual port as
-   the output.
+2. Note the synthesizer's MIDI port name.
+3. In MIDI-OX, go to **Options → MIDI Devices** and select that port as the
+   output.
 4. Go to **View → SysEx**, then **SysEx → Configure**. Set Low Level Output
    Buffers Size to 4096 and disable "Auto-adjust Buffer Delays".
 5. From the Command Window menu, choose **Load File** and open the `.syx` file.
@@ -68,62 +67,21 @@ Windows.
 
 ### Linux
 
-Use `amidi` to send SysEx files. Create a virtual MIDI port with
-`snd-virmidi` or use an ALSA loopback device:
+Use `amidi` to send SysEx to the synthesizer's ALSA MIDI port:
 
 ```bash
 amidi -p <port_name> -s path/to/file.syx
 ```
 
-## How Imports Work
+List ports with `amidi -l`.
 
-When the synth-app receives a Program Data SysEx message (`F0 01 2F 02 ... F7`
-for Rev2 or `F0 01 23 02 ... F7` for Prophet '08), it:
+## What Gets Stored
 
-1. Validates and unpacks the 7-bit packed payload.
-2. Decodes Layer A into a patch.
-3. Saves the patch as a `.json` file in the patches directory.
-
-Program Edit Buffer messages (`F0 01 2F 03 ... F7` for Rev2, `F0 01 23 03 ... F7`
-for Prophet '08) load the patch directly into the active synth engine instead of
-saving to disk.
-
-## File Naming
-
-Imported patches are saved with deterministic names based on their bank and
-program location:
-
-| Source | Banks | Example Filename |
-|---|---|---|
-| Rev2 Factory | F1–F4 (banks 0–3) | `F1-001-LosVangelis2041.json` |
-| Rev2 User | U1–U4 (banks 4–7) | `U1-052-PolyRadiance.json` |
-| Prophet '08 | F5–F6 (banks 0–1) | `F5-001-Wagnerian.json` |
-
-Names use the embedded Layer A name from each program. Receiving the same bank and program
-location again overwrites the existing file, making it safe to re-send or re-import.
-
-## Patches Directory
-
-Imported patches are saved alongside user-saved patches in the app's patches
-directory:
-
-| OS | Location |
-|---|---|
-| macOS | `~/Library/Application Support/analog-synth/patches/` |
-| Linux | `~/.local/share/analog-synth/patches/` |
-| Windows | `C:\Users\<user>\AppData\Roaming\analog-synth\patches\` |
-
-## Notes
-
-- The synth decodes only **Layer A** of each program. Layer B, sequencer,
-  arpeggiator, and global settings are ignored. Rev2 and Prophet '08 Glide
-  settings are imported; Prophet '08 Glide is enabled when either oscillator
-  has a nonzero rate.
-- Imported patches do **not** change the active sound — they are saved to disk
-  as a library only.
-- If the MIDI program import queue fills up, a message is printed to the
-  console. Send SysEx files at a reasonable speed (SysEx Librarian and MIDI-OX
-  defaults work fine).
-- See the [MIDI Implementation](midi-implementation.md) appendix for full
-  details on Prophet Rev2 CC/NRPN and SysEx formats, and the Prophet '08
-  compatibility section for imported program layout.
+- Only **Layer A** is stored. Layer B, sequencer, arpeggiator, and global
+  settings are ignored. Glide settings from the Rev2 image are imported.
+- There is no factory/user bank split on the device: banks 0–7 are ordinary
+  persistent slots. Rev2 factory files typically use banks 0–3 (F1–F4) and
+  4–7 (U1–U4).
+- Empty or freshly formatted slots recall the default patch until overwritten.
+- See the [MIDI Spec](midi-spec.md) for Program Data framing, Bank Select /
+  Program Change behavior, and the Rev2 program image layout.

@@ -6,17 +6,19 @@ real-time analysis while the engine evolves. It is deliberately not positioned
 as the end-user product or a reusable host SDK.
 
 The application uses `eframe` and `egui` for its UI, CPAL for real-time audio,
-and `midir` for MIDI input and output. It saves patch and settings state between runs and
-shows live voice and timing status. A detached analysis viewport receives audio
-feedback from the callback for spectrum and signal inspection.
+and `midir` for MIDI input and output. It saves patch and settings state between
+runs and shows live voice and timing status.
 
 ## Main views
 
 - **Parameters** edits the sound: oscillators, filter, envelopes, LFOs,
-  modulation, effects, and master volume.
+  modulation, effects, and master volume. The **Analysis** button opens a
+  detached analysis window (see below).
 - **Settings** selects MIDI input/output, MIDI clock mode and source, audio
   output and optional audio input devices, sample rate, filter oversampling,
   and theme-related preferences.
+- **Analysis** is a separate viewport for spectrum and signal inspection. Its
+  open state and geometry are restored between runs.
 
 The application lists available audio devices on startup. It chooses a named
 device when supplied, otherwise the system default. An optional input can be
@@ -63,7 +65,7 @@ flowchart LR
     Audio["CPAL audio callback"]
     Engine["SynthEngine"]
     Feedback["Feedback capture"]
-    Analysis["Status and analysis viewport"]
+    Analysis["Analysis viewport"]
 
     UI --> Queue
     UI --> MIDIOut
@@ -76,6 +78,58 @@ flowchart LR
     Audio --> Feedback
     Feedback --> Analysis
 ```
+
+## Analysis window
+
+Open the window with the **Analysis** button in the Parameters view. It is a
+detached egui viewport with three tabs. Only **Real Time** consumes live audio
+from the engine; the design tabs render offline probes used while developing
+DSP.
+
+### Real Time
+
+The audio callback publishes synchronized stereo blocks of synth output and,
+when an input device is open in Settings, the captured input. The Real Time tab
+drains those blocks and shows an oscilloscope and a spectrum analyzer.
+
+Both plots share a **Signal** selector:
+
+| Button | Source |
+|---|---|
+| **I** | Audio input only |
+| **O** | Synth output only |
+| **I+O** | Both overlaid (input in warm colors, output in cool colors) |
+
+Use this to compare hardware against the software reference: route the
+hardware's audio into the selected input device, play the same patch (or MIDI)
+on both, and switch **I** / **O** / **I+O** to inspect each signal alone or
+together in time and frequency. Input capture for analysis does not require
+**Audio In** mixing into the speakers; that toggle only sums input into the
+audible output.
+
+Oscilloscope controls cover timebase, trigger level, vertical range, and left /
+right / stereo traces. The spectrum analyzer offers FFT size, window type,
+linear or log frequency axis, optional peak hold, and left / right / sum
+channel selection. Hover readouts report frequency, level, and nearest note.
+
+### Osc Design
+
+Offline oscillator workbench. It renders a chosen waveform (saw, saw+tri,
+triangle, or pulse) with PolyBLEP or BLEP anti-aliasing, shape amount, MIDI
+note, sample rate, and cycle count. The view shows the time-domain waveform
+(zoom and pan) and its spectrum, with optional harmonic markers. **Live**
+re-renders while controls change; **Render** forces a pass; **Save WAV**
+exports the current buffer. This tab does not play through the main engine.
+
+### Filter Design
+
+Offline filter frequency-response probe. Choose filter model, cutoff,
+resonance, poles, sample rate, and oversampling. The plot shows magnitude in
+dB; optional smoothing and **Overlay all models** compare every model at the
+current settings while only the selected model drives the live synth.
+Selecting a model updates the engine filter type. **Live** refreshes as
+parameters change; **Refresh** forces a new measurement. Self-oscillating
+resonances use a sine-probe measurement instead of a small impulse.
 
 ## Rev2 MIDI parameters
 
@@ -94,13 +148,41 @@ ignored because the app does not currently implement those Rev2 systems. Rev2
 chord voicings cannot be imported because their program-image
 bytes are not documented; native patches preserve chord memory.
 
-Stored Program Data dumps are library imports rather than live edits. The app
-reads their bank and program metadata, decodes Layer A, and saves the patch as
-pretty JSON without changing the active engine or UI. Rev2 factory sysex banks 0-3
-save as F1-F4; Rev2 device banks 4-7 save as U1-U4. Prophet '08 factory banks
-save as F5-F6. Imported programs use the embedded Layer A name from each program.
-Filenames are sortable, such as `F1-001-LosVangelis2041.json`; receiving the same
-location again overwrites the same file.
+### Importing factory presets
+
+Stored Program Data dumps are library imports rather than live edits. There is
+no file-open dialog: send a Sequential `.syx` file to a MIDI input port
+selected in Settings (with the **Patches** toggle enabled) through a virtual
+port or loopback. Download the official banks from Sequential's
+[Prophet Rev2 sounds](https://sequential.com/support/download/prophet-rev2-sounds/)
+page.
+
+The app accepts both formats:
+
+| Source | SysEx framing | Saved as |
+|---|---|---|
+| Prophet Rev2 factory banks | `F0 01 2F 02 … F7` (banks 0–3) | **F1–F4** |
+| Prophet Rev2 user banks | `F0 01 2F 02 … F7` (banks 4–7) | **U1–U4** |
+| Prophet '08 sound bank | `F0 01 23 02 … F7` (banks 0–1) | **F5–F6** |
+
+Rev2 factory programs therefore land under F1–F4; Prophet '08 programs under
+F5 and F6. Each message is decoded to Layer A and written as pretty JSON
+without changing the active engine or UI. Filenames use the bank label, a
+1-based program number, and the embedded Layer A name — for example
+`F1-001-LosVangelis2041.json` or `F5-001-Wagnerian.json`. Receiving the same
+bank and program again overwrites that file.
+
+Imported patches are saved alongside user-saved patches:
+
+| OS | Location |
+|---|---|
+| macOS | `~/Library/Application Support/analog-synth/patches/` |
+| Linux | `~/.local/share/analog-synth/patches/` |
+| Windows | `C:\Users\<user>\AppData\Roaming\analog-synth\patches\` |
+
+If the MIDI program import queue fills up, a message is printed to the console.
+Send SysEx at a reasonable speed. Hardware program memory accepts Rev2 Program
+Data only; see [Factory Presets](appendix/factory-presets.md).
 
 Whole patch loads and initial device synchronization use one Rev2 Program Edit
 Buffer SysEx message. Layer A contains the local patch, Layer B contains the

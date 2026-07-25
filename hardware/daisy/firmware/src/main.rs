@@ -8,13 +8,13 @@ use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use synth_core::dsp::{FilterOversampling, FilterType};
-use synth_core::{MidiClockMode};
+use synth_core::MidiClockMode;
 
 use analog_synth_daisy_firmware::audio::{
     ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,
 };
 use analog_synth_daisy_firmware::pending_releases::PendingReleases;
-use analog_synth_daisy_firmware::{audio, diagnostics, indicator, midi, usb_audio};
+use analog_synth_daisy_firmware::{audio, diagnostics, fatal, indicator, midi, program, usb_audio};
 
 const SAMPLE_RATE_HZ: f32 = usb_audio::SAMPLE_RATE_HZ as f32;
 // One second of float delay history per stereo channel. The buffer remains a
@@ -29,6 +29,7 @@ static CONTROLS: ControlQueue = ControlQueue::new();
 static PERFORMANCE: PerformanceQueue = PerformanceQueue::new();
 static PENDING_RELEASES: PendingReleases = PendingReleases::new();
 static PATCHES: PatchQueue = Channel::new();
+static PROGRAM_REQUESTS: program::ProgramStorageQueue = Channel::new();
 static INDICATOR: indicator::Indicator = indicator::Indicator::new();
 static USB_AUDIO: usb_audio::UsbAudioBuffer = usb_audio::UsbAudioBuffer::new();
 
@@ -53,6 +54,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         Ok(parts) => parts,
         Err(_) => fatal("Daisy board already initialized"),
     };
+    let (program_store, initial_patch, last_bank) = program::init(parts.qspi);
     let mut sdram = match parts
         .sdram
         .init(&mut core.MPU, &mut core.SCB, &mut core.CPUID)
@@ -74,6 +76,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         engine.set_filter_type(FIRMWARE_FILTER_TYPE);
         engine.set_filter_oversampling(FIRMWARE_FILTER_OVERSAMPLING);
         engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
+        engine.apply_patch(&initial_patch);
         engine
     }) else {
         fatal("synth engine already initialized");
@@ -90,6 +93,11 @@ async fn main(spawner: embassy_executor::Spawner) {
     match diagnostics::run_task() {
         Ok(task) => spawner.spawn(task),
         Err(_) => defmt::error!("diagnostics task unavailable"),
+    }
+
+    match program::run_task(program_store, &PROGRAM_REQUESTS, &PATCHES) {
+        Ok(task) => spawner.spawn(task),
+        Err(_) => fatal("program storage task unavailable"),
     }
 
     // Hardware DMA/USB handlers stay at P0. Audio rendering runs at P1, and
@@ -117,6 +125,8 @@ async fn main(spawner: embassy_executor::Spawner) {
         &PERFORMANCE,
         &PENDING_RELEASES,
         &PATCHES,
+        &PROGRAM_REQUESTS,
+        last_bank,
         indicator_tx,
         &USB_AUDIO,
     )
@@ -126,11 +136,4 @@ async fn main(spawner: embassy_executor::Spawner) {
     }
 
     core::future::pending().await
-}
-
-fn fatal(reason: &'static str) -> ! {
-    defmt::error!("fatal firmware initialization failure: {=str}", reason);
-    loop {
-        cortex_m::asm::wfi();
-    }
 }

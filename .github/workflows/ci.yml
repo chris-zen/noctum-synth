@@ -50,4 +50,6 @@ jobs:
         run: cargo build --workspace
 
       - name: Test
+        env:
+          RUST_MIN_STACK: "16777216"
         run: cargo test --workspace

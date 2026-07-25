@@ -1,10 +1,10 @@
 //! Patch parameter bundles and modulation routing targets.
 
-use crate::ParamId;
 use crate::dsp::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoWaveform, MIN_LFO_RATE_HZ,
+    LfoWaveform, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
+    DEFAULT_SUSTAIN_LEVEL, MIN_LFO_RATE_HZ,
 };
+use crate::ParamId;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -1109,6 +1109,15 @@ impl Default for ChordMemory {
 }
 
 impl ChordMemory {
+    /// Build chord memory from root-relative semitone intervals.
+    pub fn from_intervals(intervals: &[u8]) -> Self {
+        let mut memory = Self::default();
+        let count = intervals.len().min(CHORD_MEMORY_CAPACITY);
+        memory.intervals[..count].copy_from_slice(&intervals[..count]);
+        memory.len = count as u8;
+        memory
+    }
+
     pub fn from_notes(notes: impl IntoIterator<Item = u8>) -> Self {
         let mut present = [false; 128];
         for note in notes {
@@ -1245,7 +1254,11 @@ impl Default for Patch {
 
 impl Patch {
     fn bool_f32(b: bool) -> f32 {
-        if b { 1.0 } else { 0.0 }
+        if b {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     fn lfo_waveform_index(lfo_waveform: LfoWaveform) -> f32 {

@@ -19,10 +19,11 @@ cargo install mdbook mdbook-mermaid
 
 ## Common commands
 
-Run all workspace tests:
+Run all workspace tests (raise the thread stack for large `SynthEngine`
+integration tests — see the root README):
 
 ```bash
-cargo test --workspace
+RUST_MIN_STACK=16777216 cargo test --workspace
 ```
 
 Generate Rust API documentation:

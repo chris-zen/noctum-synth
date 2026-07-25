@@ -108,10 +108,20 @@ both settings take effect on the next launch.
 ## Development
 
 ```bash
-cargo test --workspace
+RUST_MIN_STACK=16777216 cargo test --workspace
 cargo doc --no-deps --open -p synth-core
 cargo run --release -p synth-core --example voice_block_perf
 cargo run --release -p synth-core --example filter_perf
+```
+
+Some `synth-core` integration tests (notably `engine_tests`) build large
+`SynthEngine` values on the stack. The default Rust thread stack is too small
+and fails with a stack overflow / “memory allocation of … bytes failed”
+style abort. Set `RUST_MIN_STACK` to at least **16 MiB** (`16777216`) when
+running those tests:
+
+```bash
+RUST_MIN_STACK=16777216 cargo test -p synth-core --tests
 ```
 
 ## License

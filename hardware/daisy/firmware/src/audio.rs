@@ -14,7 +14,6 @@ use embassy_sync::channel::Channel;
 use heapless::Deque;
 use synth_core::{ControlMessage, Patch, SynthEngineWithMemory};
 
-use crate::patch_transition::PatchTransition;
 use crate::pending_releases::PendingReleases;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
@@ -220,7 +219,6 @@ pub async fn run_task(
     #[cfg(feature = "audio-profiling")]
     let mut profiler = profiling::AudioProfiler::new(BLOCK_CYCLE_BUDGET);
     let mut perf_monitor = diagnostics::PerfMonitor::new(BLOCK_CYCLE_BUDGET);
-    let mut patch_transition = PatchTransition::default();
     let mut adaptive_control_budget = AdaptiveControlBudget::new();
 
     // Render before starting the receive clock. The SAI input ring cannot
@@ -284,17 +282,9 @@ pub async fn run_task(
             profiler.begin(RenderStage::ControlDrain);
         }
         if let Ok(patch) = patches.try_receive() {
-            patch_transition.enqueue(patch);
-        }
-        let transition_action = patch_transition.begin_block();
-        if transition_action.patch.is_some() {
+            engine.apply_patch(&patch);
             adaptive_control_budget.reset();
         }
-        if let Some(patch) = transition_action.patch {
-            engine.apply_patch(&patch);
-        }
-        // Releases that overflowed the performance queue are correctness
-        // critical and do not wait behind replaceable parameter traffic.
         apply_pending_releases(engine, pending_releases);
 
         if let Ok(command) = performance.try_receive() {
@@ -321,13 +311,10 @@ pub async fn run_task(
         #[cfg(feature = "audio-profiling")]
         profiler.end(RenderStage::ControlDrain);
 
-        if transition_action.render {
-            #[cfg(feature = "audio-profiling")]
-            engine.process_interleaved_profiled(&mut interleaved, 2, &mut profiler);
-            #[cfg(not(feature = "audio-profiling"))]
-            engine.process_interleaved(&mut interleaved, 2);
-        }
-        patch_transition.finish_block(&mut interleaved, transition_action.render);
+        #[cfg(feature = "audio-profiling")]
+        engine.process_interleaved_profiled(&mut interleaved, 2, &mut profiler);
+        #[cfg(not(feature = "audio-profiling"))]
+        engine.process_interleaved(&mut interleaved, 2);
 
         #[cfg(feature = "audio-profiling")]
         profiler.begin(RenderStage::OutputCopy);
@@ -340,13 +327,11 @@ pub async fn run_task(
         }
 
         let work_cycles = DWT::cycle_count().wrapping_sub(work_started);
-        if transition_action.render {
-            adaptive_control_budget.observe_rendered_block(
-                work_cycles,
-                adaptive_spent,
-                BLOCK_CYCLE_BUDGET,
-            );
-        }
+        adaptive_control_budget.observe_rendered_block(
+            work_cycles,
+            adaptive_spent,
+            BLOCK_CYCLE_BUDGET,
+        );
         if let Some(event) = perf_monitor.observe(work_cycles) {
             diagnostics::emit(event);
         }

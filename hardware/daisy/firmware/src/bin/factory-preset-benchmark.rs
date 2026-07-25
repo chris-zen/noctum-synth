@@ -4,17 +4,21 @@
 use core::hint::black_box;
 
 use analog_synth_daisy_firmware::audio::{
-    AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue, PatchQueue,
+    AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET,
 };
 use analog_synth_daisy_firmware::patch_transition::PatchTransition;
 use analog_synth_daisy_firmware::profiling::{AudioProfiler, Snapshot};
 use cortex_m::peripheral::DWT;
-use embassy_daisy::Board;
 use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::qspi::QspiFlash;
-use synth_core::dsp::{FilterOversampling, FilterType};
-use synth_core::{ControlMessage, ModDestination, ParamId, REV2_PROGRAM_DATA_SYSEX_LEN, Rev2MidiDecoder, SynthEngineWithMemory, profiling::RenderStage};
+use embassy_daisy::Board;
 use {defmt_rtt as _, panic_probe as _};
+
+use synth_core::dsp::{FilterOversampling, FilterType};
+use synth_core::{
+    profiling::RenderStage, ControlMessage, ModDestination, ParamId, Rev2MidiDecoder,
+    SynthEngineWithMemory, REV2_PROGRAM_DATA_SYSEX_LEN,
+};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
 const EFFECTS_SAMPLES: usize = 48_000 * 2;
@@ -54,7 +58,7 @@ fn main() -> ! {
     core.SCB.enable_icache();
 
     let parts = Board::take().expect("Daisy board already initialized");
-    let mut qspi = parts.qspi.init();
+    let mut qspi = QspiFlash::new(parts.qspi);
     let mut sdram = parts
         .sdram
         .init(&mut core.MPU, &mut core.SCB, &mut core.CPUID)
@@ -115,14 +119,12 @@ fn main() -> ! {
 
         engine.all_notes_off();
         for note in [60, 64, 67, 72] {
-            assert!(
-                controls
-                    .try_send(ControlMessage::NoteOn {
-                        note,
-                        velocity: 1.0,
-                    })
-                    .is_ok()
-            );
+            assert!(controls
+                .try_send(ControlMessage::NoteOn {
+                    note,
+                    velocity: 1.0,
+                })
+                .is_ok());
         }
         let attack = measure_raw(
             &mut engine,
@@ -342,17 +344,18 @@ fn measure_control_stress(
                 ParamId::FilterResonance,
                 patch.filter.resonance + direction * 0.001,
             ),
-            (ParamId::Osc1ShapeMod, patch.osc1.shape_mod + direction * 0.001),
+            (
+                ParamId::Osc1ShapeMod,
+                patch.osc1.shape_mod + direction * 0.001,
+            ),
             (
                 ParamId::EffectParam1,
                 patch.effects.param1 + direction * 0.001,
             ),
         ] {
-            assert!(
-                controls
-                    .try_send(ControlMessage::SetParam(param, value))
-                    .is_ok()
-            );
+            assert!(controls
+                .try_send(ControlMessage::SetParam(param, value))
+                .is_ok());
         }
         let started = DWT::cycle_count();
         run_callback(
@@ -446,14 +449,12 @@ impl AdaptiveBudgetSummary {
 
         let controls = ControlQueue::new();
         for note in [60, 64, 67, 72] {
-            assert!(
-                controls
-                    .try_send(ControlMessage::NoteOn {
-                        note,
-                        velocity: 1.0,
-                    })
-                    .is_ok()
-            );
+            assert!(controls
+                .try_send(ControlMessage::NoteOn {
+                    note,
+                    velocity: 1.0,
+                })
+                .is_ok());
         }
         for (param, value) in [
             (ParamId::FilterCutoff, patch.filter.cutoff),
@@ -461,11 +462,9 @@ impl AdaptiveBudgetSummary {
             (ParamId::Osc1ShapeMod, patch.osc1.shape_mod),
             (ParamId::EffectParam1, patch.effects.param1),
         ] {
-            assert!(
-                controls
-                    .try_send(ControlMessage::SetParam(param, value))
-                    .is_ok()
-            );
+            assert!(controls
+                .try_send(ControlMessage::SetParam(param, value))
+                .is_ok());
         }
         let patches = PatchQueue::new();
         let mut transition = PatchTransition::default();

@@ -1,0 +1,28 @@
+---
+description: Raise RUST_MIN_STACK when running synth-core integration tests
+alwaysApply: true
+---
+
+# Integration test stack size
+
+`synth-core` integration tests (especially `engine_tests`) place a large
+`SynthEngine` on the stack. The default Rust thread stack is too small and
+aborts with a stack overflow / out-of-memory-for-stack failure.
+
+Whenever you run `cargo test` that includes `synth-core` integration tests
+(`--tests`, `--test engine_tests`, or `--workspace`), set:
+
+```bash
+RUST_MIN_STACK=16777216
+```
+
+Example:
+
+```bash
+RUST_MIN_STACK=16777216 cargo test -p synth-core --tests
+RUST_MIN_STACK=16777216 cargo test --workspace
+```
+
+Do not treat a stack overflow in these tests as a product bug until the run
+has been retried with `RUST_MIN_STACK` set. See the root `README.md`
+Development section and `synth-core/README.md`.

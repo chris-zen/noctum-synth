@@ -1,17 +1,18 @@
 //! USB-MIDI transport and its application-facing event boundary.
 
-use embassy_daisy::usb::midi::{Decoder, MidiClass, dispatch_events};
+use embassy_daisy::usb::midi::{dispatch_events, Decoder, MidiClass};
 use embassy_daisy::usb::{Builder, Config, EndpointError};
 use embassy_executor::InterruptExecutor;
 use embassy_stm32::interrupt;
-
-pub use embassy_daisy::usb::midi::{DecodeError, MessageHandler};
 
 use synth_core::REV2_PROGRAM_DATA_SYSEX_LEN;
 
 use crate::audio::{ControlQueue, PatchQueue, PerformanceQueue};
 use crate::pending_releases::PendingReleases;
+use crate::program::ProgramStorageQueue;
 use crate::synth::SynthMidiHandler;
+
+pub use embassy_daisy::usb::midi::{DecodeError, MessageHandler};
 
 // Use the larger stored-program envelope even though the firmware currently
 // applies only Program Edit Buffer dumps. This keeps transport assembly
@@ -39,6 +40,8 @@ pub fn spawn(
     performance: &'static PerformanceQueue,
     pending_releases: &'static PendingReleases,
     patches: &'static PatchQueue,
+    storage: &'static ProgramStorageQueue,
+    initial_bank: u8,
     indicator: crate::indicator::Sender<'static>,
     audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
 ) -> Result<(), embassy_executor::SpawnError> {
@@ -48,6 +51,8 @@ pub fn spawn(
         performance,
         pending_releases,
         patches,
+        storage,
+        initial_bank,
         indicator,
         audio_buffer,
     )?);
@@ -61,6 +66,8 @@ async fn run_task(
     performance: &'static PerformanceQueue,
     pending_releases: &'static PendingReleases,
     patches: &'static PatchQueue,
+    storage: &'static ProgramStorageQueue,
+    initial_bank: u8,
     indicator: crate::indicator::Sender<'static>,
     audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
 ) -> ! {
@@ -70,15 +77,20 @@ async fn run_task(
         pending_releases,
         patches.sender(),
         indicator,
+        storage,
+        initial_bank,
     );
     run(resources, handler, audio_buffer).await
 }
 
-async fn run(
+async fn run<H>(
     resources: embassy_daisy::usb::UsbResources,
-    handler: impl MessageHandler,
+    handler: H,
     audio_buffer: &'static crate::usb_audio::UsbAudioBuffer,
-) -> ! {
+) -> !
+where
+    H: MessageHandler,
+{
     use embassy_daisy::usb::audio::{
         AudioConfig, Channel, HostBinding, InputTerminalType, Microphone, SampleWidth,
         State as AudioState,
@@ -212,7 +224,7 @@ unsafe extern "C" fn I2C4_ER() {
 mod tests {
     use super::{CONTROL_BUFFER_SIZE, PRODUCT, SYSEX_CAPACITY};
     use embassy_daisy::usb::midi::{
-        DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket, dispatch_events,
+        dispatch_events, DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket,
     };
 
     #[derive(Default)]

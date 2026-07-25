@@ -22,6 +22,9 @@ heapless = "0.9"
 synth-core.workspace = true
 wmidi.workspace = true
 
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
+
 [target.'cfg(target_arch = "arm")'.dependencies]
 cortex-m.workspace = true
 cortex-m-rt.workspace = true
