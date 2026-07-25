@@ -751,7 +751,8 @@ mod tests {
 
         for harmonic in 2..=5 {
             let baseline_harmonic = projected_amplitude(baseline, baseline_pitch * harmonic as f32);
-            let candidate_harmonic = projected_amplitude(candidate, candidate_pitch * harmonic as f32);
+            let candidate_harmonic =
+                projected_amplitude(candidate, candidate_pitch * harmonic as f32);
             assert!(
                 candidate_harmonic < 0.005,
                 "harmonic={harmonic} baseline={baseline_harmonic} candidate={candidate_harmonic}"
@@ -840,7 +841,8 @@ mod tests {
         let mut phase = 0.0f32;
         let mut previous = 0.0f32;
         for _ in 0..24_000 {
-            previous = process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
+            previous =
+                process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
             phase += phase_step;
         }
         let mut found_peak = previous.abs() >= 0.12;
@@ -848,7 +850,8 @@ mod tests {
             if found_peak {
                 break;
             }
-            previous = process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
+            previous =
+                process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
             phase += phase_step;
             found_peak = previous.abs() >= 0.12;
         }
@@ -858,7 +861,8 @@ mod tests {
         );
 
         filter.set_resonance(0.72);
-        let crossed = process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
+        let crossed =
+            process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
         assert!(
             (crossed - previous).abs() < 0.04,
             "threshold crossing dropped or jumped: before={previous} after={crossed}"

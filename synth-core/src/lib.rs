@@ -73,26 +73,25 @@ pub use effects::{EffectModulation, Effects, EffectsWithMemory};
 pub use engine::{SynthEngine, SynthEngineWithMemory};
 pub use midi::{
     MidiClockMode, MidiClockStatus, MidiProgramImport, MidiProgramSource, MidiRealtimeEvent,
-    MidiTransportState, P08MidiDecoder, P08ProgramData, Rev2MidiDecoder, Rev2MidiEncoder,
-    Rev2MidiUpdate, Rev2ProgramData, Rev2SysexError, P08_PROGRAM_DATA_LEN,
-    P08_PROGRAM_DATA_SYSEX_LEN, P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN, P08_PROGRAM_PACKED_LEN,
+    MidiTransportState, P08_PROGRAM_DATA_LEN, P08_PROGRAM_DATA_SYSEX_LEN,
+    P08_PROGRAM_EDIT_BUFFER_SYSEX_LEN, P08_PROGRAM_PACKED_LEN, P08MidiDecoder, P08ProgramData,
     REV2_PROGRAM_DATA_LEN, REV2_PROGRAM_DATA_SYSEX_LEN, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    REV2_PROGRAM_PACKED_LEN,
+    REV2_PROGRAM_PACKED_LEN, Rev2MidiDecoder, Rev2MidiEncoder, Rev2MidiUpdate, Rev2ProgramData,
+    Rev2SysexError,
 };
 pub use patch::{
     AmplifierParams, AuxEnvelopeParams, ChordMemory, ClockDivision, DedicatedModSlot,
-    DedicatedModSource, EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LfoParams,
-    LfoSyncDivision, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode, LFO_COUNT,
-    MOD_MATRIX_FREE_SLOT_COUNT,
+    DedicatedModSource, EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LFO_COUNT,
+    LfoParams, LfoSyncDivision, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix,
+    ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
 };
-pub use patch_storage::{PatchRecord, PatchRecordError, PATCH_RECORD_SIZE};
+pub use patch_storage::{PATCH_RECORD_SIZE, PatchRecord, PatchRecordError};
 pub use profiling::{RenderContext, RenderProfiler, RenderStage};
 pub use tuning::midi_to_hz;
 pub use voice::{
-    glide_seconds, voice_pan_position, ActiveNotes, OscillatorModulation, OscillatorParams,
-    Oscillators, OscillatorsOutput, OscillatorsParams, PerformanceModulation, VoiceBlock,
-    VoiceManager, REV2_VOICE_PAN_POSITIONS,
+    ActiveNotes, OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput,
+    OscillatorsParams, PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, VoiceManager,
+    glide_seconds, voice_pan_position,
 };
 
 use crate::dsp::{FilterOversampling, FilterType};

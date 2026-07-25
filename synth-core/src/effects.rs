@@ -1400,7 +1400,8 @@ fn soft_clip(input: f32, gain: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::{
-        DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, EffectParams, EffectType, Effects, EffectsWithMemory,
+        DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, EffectParams, EffectType, Effects,
+        EffectsWithMemory,
     };
 
     extern crate std;
@@ -1563,7 +1564,8 @@ mod tests {
                 effect.set_param1(value);
             }
             let input = if index < 4096 { 0.35 } else { 0.0 };
-            let (left, right) = effect.next(input, -input, EffectModulation::default(), None, &mut ctx);
+            let (left, right) =
+                effect.next(input, -input, EffectModulation::default(), None, &mut ctx);
             peak = peak.max(left.abs()).max(right.abs());
         }
 
@@ -1700,206 +1702,205 @@ mod tests {
         }
     }
 
+    const TEST_BUFFER_SAMPLES: usize = 4096;
 
-        const TEST_BUFFER_SAMPLES: usize = 4096;
+    const DELAY_EFFECTS: [EffectType; 7] = [
+        EffectType::DelayMono,
+        EffectType::DdlStereo,
+        EffectType::BucketBrigadeDelay,
+        EffectType::Chorus,
+        EffectType::Flanger1,
+        EffectType::Flanger2,
+        EffectType::Reverb,
+    ];
 
-        const DELAY_EFFECTS: [EffectType; 7] = [
-            EffectType::DelayMono,
-            EffectType::DdlStereo,
-            EffectType::BucketBrigadeDelay,
-            EffectType::Chorus,
-            EffectType::Flanger1,
-            EffectType::Flanger2,
-            EffectType::Reverb,
-        ];
+    fn configured(effect_type: EffectType) -> Effects<TEST_BUFFER_SAMPLES> {
+        let mut effects = Effects::new(48_000.0);
+        effects.set_params(EffectParams {
+            enabled: true,
+            effect_type,
+            mix: 1.0,
+            clock_sync: false,
+            param1: 0.55,
+            param2: 0.65,
+        });
+        effects
+    }
 
-        fn configured(effect_type: EffectType) -> Effects<TEST_BUFFER_SAMPLES> {
-            let mut effects = Effects::new(48_000.0);
-            effects.set_params(EffectParams {
-                enabled: true,
-                effect_type,
-                mix: 1.0,
-                clock_sync: false,
-                param1: 0.55,
-                param2: 0.65,
-            });
+    fn next_effect(
+        effects: &mut Effects<TEST_BUFFER_SAMPLES>,
+        left: f32,
+        right: f32,
+        modulation: EffectModulation,
+        lowest_note: Option<u8>,
+    ) -> (f32, f32) {
+        let mut ctx = crate::create_render_context!();
+        effects.next(left, right, modulation, lowest_note, &mut ctx)
+    }
+
+    #[test]
+    fn daisy_sized_pool_provides_one_second_per_stereo_channel() {
+        let mut buffer = std::vec![0.0; 96_000];
+        let (left, right) = split_stereo(&mut buffer).unwrap();
+        assert_eq!(left.len(), 48_000);
+        assert_eq!(right.len(), 48_000);
+    }
+
+    #[test]
+    fn effect_modulation_steps_are_smoothed() {
+        let mut smoother = EffectModulationSmoother::new(48_000.0);
+        let target = EffectModulation {
+            mix: 1.0,
+            param1: -1.0,
+            param2: 0.5,
+        };
+
+        let first = smoother.next(target);
+        assert!(first.mix > 0.0 && first.mix < 0.005);
+        assert!(first.param1 < 0.0 && first.param1 > -0.005);
+        assert!(first.param2 > 0.0 && first.param2 < 0.005);
+
+        let mut after_five_ms = first;
+        for _ in 1..240 {
+            after_five_ms = smoother.next(target);
+        }
+        assert!((0.62..0.64).contains(&after_five_ms.mix));
+        assert!((-0.64..-0.62).contains(&after_five_ms.param1));
+        assert!((0.31..0.32).contains(&after_five_ms.param2));
+    }
+
+    #[test]
+    fn effect_changes_do_not_clear_shared_delay_memory() {
+        let mut effects = configured(EffectType::DelayMono);
+        effects.buffer.as_mut().fill(0.375);
+
+        effects.set_type(EffectType::Reverb);
+
+        assert!(
             effects
-        }
+                .buffer
+                .as_ref()
+                .iter()
+                .all(|sample| *sample == 0.375)
+        );
+    }
 
-        fn next_effect(
-            effects: &mut Effects<TEST_BUFFER_SAMPLES>,
-            left: f32,
-            right: f32,
-            modulation: EffectModulation,
-            lowest_note: Option<u8>,
-        ) -> (f32, f32) {
-            let mut ctx = crate::create_render_context!();
-            effects.next(left, right, modulation, lowest_note, &mut ctx)
-        }
-
-        #[test]
-        fn daisy_sized_pool_provides_one_second_per_stereo_channel() {
-            let mut buffer = std::vec![0.0; 96_000];
-            let (left, right) = split_stereo(&mut buffer).unwrap();
-            assert_eq!(left.len(), 48_000);
-            assert_eq!(right.len(), 48_000);
-        }
-
-        #[test]
-        fn effect_modulation_steps_are_smoothed() {
-            let mut smoother = EffectModulationSmoother::new(48_000.0);
-            let target = EffectModulation {
-                mix: 1.0,
-                param1: -1.0,
-                param2: 0.5,
-            };
-
-            let first = smoother.next(target);
-            assert!(first.mix > 0.0 && first.mix < 0.005);
-            assert!(first.param1 < 0.0 && first.param1 > -0.005);
-            assert!(first.param2 > 0.0 && first.param2 < 0.005);
-
-            let mut after_five_ms = first;
-            for _ in 1..240 {
-                after_five_ms = smoother.next(target);
+    #[test]
+    fn logical_delay_reset_matches_zero_filled_memory() {
+        for effect_type in DELAY_EFFECTS {
+            let mut logical = configured(effect_type);
+            for index in 0..512 {
+                let input = if index == 0 { 0.8 } else { 0.0 };
+                next_effect(
+                    &mut logical,
+                    input,
+                    -input,
+                    EffectModulation::default(),
+                    Some(60),
+                );
             }
-            assert!((0.62..0.64).contains(&after_five_ms.mix));
-            assert!((-0.64..-0.62).contains(&after_five_ms.param1));
-            assert!((0.31..0.32).contains(&after_five_ms.param2));
-        }
+            logical.set_type(EffectType::Distortion);
+            logical.buffer.as_mut().fill(0.375);
+            logical.set_type(effect_type);
 
-        #[test]
-        fn effect_changes_do_not_clear_shared_delay_memory() {
-            let mut effects = configured(EffectType::DelayMono);
-            effects.buffer.as_mut().fill(0.375);
+            let mut physical = configured(effect_type);
+            physical.buffer.as_mut().fill(0.0);
 
-            effects.set_type(EffectType::Reverb);
-
-            assert!(
-                effects
-                    .buffer
-                    .as_ref()
-                    .iter()
-                    .all(|sample| *sample == 0.375)
-            );
-        }
-
-        #[test]
-        fn logical_delay_reset_matches_zero_filled_memory() {
-            for effect_type in DELAY_EFFECTS {
-                let mut logical = configured(effect_type);
-                for index in 0..512 {
-                    let input = if index == 0 { 0.8 } else { 0.0 };
-                    next_effect(
-                        &mut logical,
-                        input,
-                        -input,
-                        EffectModulation::default(),
-                        Some(60),
-                    );
-                }
-                logical.set_type(EffectType::Distortion);
-                logical.buffer.as_mut().fill(0.375);
-                logical.set_type(effect_type);
-
-                let mut physical = configured(effect_type);
-                physical.buffer.as_mut().fill(0.0);
-
-                for index in 0..4096 {
-                    let input = if index == 0 { 0.8 } else { 0.0 };
-                    let expected = next_effect(
-                        &mut physical,
-                        input,
-                        -input,
-                        EffectModulation::default(),
-                        Some(60),
-                    );
-                    let actual = next_effect(
-                        &mut logical,
-                        input,
-                        -input,
-                        EffectModulation::default(),
-                        Some(60),
-                    );
-                    assert_eq!(
-                        [actual.0.to_bits(), actual.1.to_bits()],
-                        [expected.0.to_bits(), expected.1.to_bits()],
-                        "logical reset diverged for {effect_type:?} at sample {index}"
-                    );
-                }
+            for index in 0..4096 {
+                let input = if index == 0 { 0.8 } else { 0.0 };
+                let expected = next_effect(
+                    &mut physical,
+                    input,
+                    -input,
+                    EffectModulation::default(),
+                    Some(60),
+                );
+                let actual = next_effect(
+                    &mut logical,
+                    input,
+                    -input,
+                    EffectModulation::default(),
+                    Some(60),
+                );
+                assert_eq!(
+                    [actual.0.to_bits(), actual.1.to_bits()],
+                    [expected.0.to_bits(), expected.1.to_bits()],
+                    "logical reset diverged for {effect_type:?} at sample {index}"
+                );
             }
         }
+    }
 
-        #[test]
-        fn prepared_reverb_taps_match_dynamic_interpolation() {
-            let sample_rate = 48_000.0;
-            let mut samples = [0.0; 48_000 / REVERB_SEGMENTS];
-            for (index, sample) in samples.iter_mut().enumerate() {
-                *sample = ((index * 37 % 101) as f32 - 50.0) / 50.0;
-            }
-            let maximum_delay = (samples.len() - 2) as f32;
-            let delays = REVERB_COMB_LEFT_SECONDS
-                .into_iter()
-                .chain(REVERB_COMB_RIGHT_SECONDS)
-                .chain(REVERB_ALLPASS_LEFT_SECONDS)
-                .chain(REVERB_ALLPASS_RIGHT_SECONDS);
-
-            for delay_samples in delays.map(|seconds| seconds * sample_rate) {
-                let prepared = PreparedDelay::new(delay_samples, maximum_delay);
-                for index in 0..samples.len() {
-                    let mut state = DelayLineState {
-                        index,
-                        written: samples.len(),
-                    };
-                    let expected = {
-                        let delay = DelayBuffer::new(&mut samples, &mut state).unwrap();
-                        delay.read(delay_samples)
-                    };
-                    let actual = reverb_read_exact(&samples, &state, prepared);
-                    assert_eq!(
-                        actual.to_bits(),
-                        expected.to_bits(),
-                        "tap differed at delay {delay_samples} and index {index}: {actual} vs {expected}"
-                    );
-                }
-            }
+    #[test]
+    fn prepared_reverb_taps_match_dynamic_interpolation() {
+        let sample_rate = 48_000.0;
+        let mut samples = [0.0; 48_000 / REVERB_SEGMENTS];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = ((index * 37 % 101) as f32 - 50.0) / 50.0;
         }
+        let maximum_delay = (samples.len() - 2) as f32;
+        let delays = REVERB_COMB_LEFT_SECONDS
+            .into_iter()
+            .chain(REVERB_COMB_RIGHT_SECONDS)
+            .chain(REVERB_ALLPASS_LEFT_SECONDS)
+            .chain(REVERB_ALLPASS_RIGHT_SECONDS);
 
-        #[test]
-        fn prepared_reverb_kernel_stays_close_to_exact_output() {
-            let mut exact = Reverb::<ExactReverbKernel>::default();
-            let mut prepared = Reverb::<PreparedReverbKernel>::default();
-            let mut exact_buffer = std::vec![0.0; 48_000];
-            let mut prepared_buffer = std::vec![0.0; 48_000];
-            let context = ProcessContext {
-                sample_rate: 48_000.0,
-                tempo_bpm: 120.0,
-                param1: 0.55,
-                param2: 0.65,
-                clock_sync: false,
-                lowest_note: Some(60),
-            };
-            let mut maximum_error = 0.0f32;
-
-            for index in 0..32_768 {
-                let left = if index == 0 {
-                    0.8
-                } else {
-                    ((index * 37 % 101) as f32 - 50.0) * 0.0002
+        for delay_samples in delays.map(|seconds| seconds * sample_rate) {
+            let prepared = PreparedDelay::new(delay_samples, maximum_delay);
+            for index in 0..samples.len() {
+                let mut state = DelayLineState {
+                    index,
+                    written: samples.len(),
                 };
-                let right = if index == 0 { -0.4 } else { left * -0.37 };
-                let mut ctx = crate::create_render_context!();
-                let expected = exact
-                    .next(left, right, &mut exact_buffer, context, &mut ctx)
-                    .unwrap();
-                let actual = prepared
-                    .next(left, right, &mut prepared_buffer, context, &mut ctx)
-                    .unwrap();
-                maximum_error = maximum_error
-                    .max((actual.0 - expected.0).abs())
-                    .max((actual.1 - expected.1).abs());
+                let expected = {
+                    let delay = DelayBuffer::new(&mut samples, &mut state).unwrap();
+                    delay.read(delay_samples)
+                };
+                let actual = reverb_read_exact(&samples, &state, prepared);
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "tap differed at delay {delay_samples} and index {index}: {actual} vs {expected}"
+                );
             }
-
-            assert!(maximum_error <= 2e-6, "maximum error was {maximum_error}");
         }
+    }
+
+    #[test]
+    fn prepared_reverb_kernel_stays_close_to_exact_output() {
+        let mut exact = Reverb::<ExactReverbKernel>::default();
+        let mut prepared = Reverb::<PreparedReverbKernel>::default();
+        let mut exact_buffer = std::vec![0.0; 48_000];
+        let mut prepared_buffer = std::vec![0.0; 48_000];
+        let context = ProcessContext {
+            sample_rate: 48_000.0,
+            tempo_bpm: 120.0,
+            param1: 0.55,
+            param2: 0.65,
+            clock_sync: false,
+            lowest_note: Some(60),
+        };
+        let mut maximum_error = 0.0f32;
+
+        for index in 0..32_768 {
+            let left = if index == 0 {
+                0.8
+            } else {
+                ((index * 37 % 101) as f32 - 50.0) * 0.0002
+            };
+            let right = if index == 0 { -0.4 } else { left * -0.37 };
+            let mut ctx = crate::create_render_context!();
+            let expected = exact
+                .next(left, right, &mut exact_buffer, context, &mut ctx)
+                .unwrap();
+            let actual = prepared
+                .next(left, right, &mut prepared_buffer, context, &mut ctx)
+                .unwrap();
+            maximum_error = maximum_error
+                .max((actual.0 - expected.0).abs())
+                .max((actual.1 - expected.1).abs());
+        }
+
+        assert!(maximum_error <= 2e-6, "maximum error was {maximum_error}");
+    }
 }

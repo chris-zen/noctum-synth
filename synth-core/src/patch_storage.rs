@@ -1,8 +1,8 @@
 //! Compact, versioned patch records for non-volatile program storage.
 
 use crate::patch::{
-    DedicatedModSource, ModDestination, ModSource, CHORD_MEMORY_CAPACITY,
-    MOD_MATRIX_FREE_SLOT_COUNT, PATCH_NAME_CAPACITY,
+    CHORD_MEMORY_CAPACITY, DedicatedModSource, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination,
+    ModSource, PATCH_NAME_CAPACITY,
 };
 use crate::{ParamId, Patch};
 
@@ -508,9 +508,11 @@ mod tests {
         PatchRecord::encode(&patch, &mut record).unwrap();
         let decoded = PatchRecord::decode(&record).unwrap();
         assert_patch_close(&patch, &decoded);
-        assert!(record[HEADER_LEN + PAYLOAD_LEN..]
-            .iter()
-            .all(|byte| *byte == 0xff));
+        assert!(
+            record[HEADER_LEN + PAYLOAD_LEN..]
+                .iter()
+                .all(|byte| *byte == 0xff)
+        );
     }
 
     #[test]

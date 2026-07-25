@@ -375,7 +375,11 @@ mod tests {
         let sample_rate = 48_000.0;
         let rates = [1.0, 10.0, 50.0, 200.0, 500.0];
 
-        for waveform in [LfoWaveform::Saw, LfoWaveform::ReverseSaw, LfoWaveform::Square] {
+        for waveform in [
+            LfoWaveform::Saw,
+            LfoWaveform::ReverseSaw,
+            LfoWaveform::Square,
+        ] {
             for &rate in &rates {
                 let mut lfo = Lfo::new(sample_rate);
                 lfo.set_rate_hz(rate);
@@ -401,7 +405,9 @@ mod tests {
                 assert!(
                     max_diff <= abs_limit,
                     "{waveform:?} at {rate} Hz: max per-sample jump {:.6} exceeds limit {:.6} (normal slope {:.6})",
-                    max_diff, abs_limit, normal_slope,
+                    max_diff,
+                    abs_limit,
+                    normal_slope,
                 );
             }
         }

@@ -546,8 +546,10 @@ mod tests {
     use crate::{LANES, midi_to_hz};
 
     extern crate std;
+    use super::{
+        CascadedTptSvf, DistributedNewtonTpt, GainLimitedTpt, HuovilainenLadder, ScalarFeedbackTpt,
+    };
     use std::vec::Vec;
-    use super::{CascadedTptSvf, DistributedNewtonTpt, GainLimitedTpt, HuovilainenLadder, ScalarFeedbackTpt};
 
     fn process(filter: &mut LadderFilter, input: f32x4, note: f32x4, sample_rate: f32) -> f32x4 {
         process_modulated(
@@ -1171,7 +1173,9 @@ mod tests {
         filter.set_self_osc_pitch_tuning_cents(tuning_cents);
 
         (0..frames)
-            .map(|_| process(filter, f32x4::splat(0.0), f32x4::splat(note), sample_rate).to_array()[0])
+            .map(|_| {
+                process(filter, f32x4::splat(0.0), f32x4::splat(note), sample_rate).to_array()[0]
+            })
             .collect()
     }
 
@@ -1238,7 +1242,13 @@ mod tests {
         tuning_cents: f32,
         sample_rate: f32,
     ) -> f32 {
-        estimate_excited_self_oscillation_pitch_hz(cutoff, note, key_track, tuning_cents, sample_rate)
+        estimate_excited_self_oscillation_pitch_hz(
+            cutoff,
+            note,
+            key_track,
+            tuning_cents,
+            sample_rate,
+        )
     }
 
     fn estimate_excited_self_oscillation_pitch_hz(
@@ -1587,7 +1597,8 @@ mod tests {
         assert!(impulse_summary.energy.is_finite() && impulse_summary.energy > 0.0);
 
         let mut sine_filter = LadderFilter::default();
-        let sine_sweep = render_sine_sweep(&mut sine_filter, 1200.0, 0.35, 4, 100.0, 4000.0, sr, 2048);
+        let sine_sweep =
+            render_sine_sweep(&mut sine_filter, 1200.0, 0.35, 4, 100.0, 4000.0, sr, 2048);
         let sine_summary = summarize_response(&sine_sweep);
         assert!(sine_summary.energy.is_finite() && sine_summary.energy > 0.0);
 
@@ -1597,7 +1608,8 @@ mod tests {
         assert!(cutoff_summary.energy.is_finite() && cutoff_summary.energy > 0.0);
 
         let mut resonance_filter = LadderFilter::default();
-        let resonance_sweep = render_resonance_sweep(&mut resonance_filter, 1000.0, 1000.0, sr, 2048);
+        let resonance_sweep =
+            render_resonance_sweep(&mut resonance_filter, 1000.0, 1000.0, sr, 2048);
         let resonance_summary = summarize_response(&resonance_sweep);
         assert!(resonance_summary.energy.is_finite() && resonance_summary.peak_abs < 5.0);
 
@@ -1645,7 +1657,8 @@ mod tests {
         }
         exaggerated_trim.set_self_osc_pitch_tuning_cents(1200.0);
 
-        let normal_amp = measure_modulated_response(&mut normal_trim, 2500.0, 72.0, 0.0, 0.0, sr, 0.1);
+        let normal_amp =
+            measure_modulated_response(&mut normal_trim, 2500.0, 72.0, 0.0, 0.0, sr, 0.1);
         let exaggerated_amp =
             measure_modulated_response(&mut exaggerated_trim, 2500.0, 72.0, 0.0, 0.0, sr, 0.1);
         let ratio = exaggerated_amp / normal_amp.max(1.0e-9);
@@ -1756,7 +1769,8 @@ mod tests {
         filter.set_env_amount(0.5);
         filter.set_env_velocity_amount(1.0);
 
-        let amps = measure_velocity_lane_response(&mut filter, 3000.0, [0.0, 0.25, 0.5, 1.0], sr, 0.1);
+        let amps =
+            measure_velocity_lane_response(&mut filter, 3000.0, [0.0, 0.25, 0.5, 1.0], sr, 0.1);
 
         assert!(
             amps[0] < amps[1] && amps[1] < amps[2] && amps[2] < amps[3],
@@ -1779,8 +1793,10 @@ mod tests {
         positive.set_cutoff(1000.0);
         positive.set_audio_mod(1.0);
 
-        let negative_amp = measure_modulated_response(&mut negative, 2500.0, 60.0, 0.0, -1.0, sr, 0.1);
-        let positive_amp = measure_modulated_response(&mut positive, 2500.0, 60.0, 0.0, 1.0, sr, 0.1);
+        let negative_amp =
+            measure_modulated_response(&mut negative, 2500.0, 60.0, 0.0, -1.0, sr, 0.1);
+        let positive_amp =
+            measure_modulated_response(&mut positive, 2500.0, 60.0, 0.0, 1.0, sr, 0.1);
 
         assert!(
             positive_amp > negative_amp * 3.0,
@@ -1928,8 +1944,10 @@ mod tests {
     fn test_self_oscillation_spans_wide_resonance_range_and_level_rises() {
         let sr = 44100.0;
         let cutoff = 440.0;
-        let below = measure_self_oscillation_tail_energy(SELF_OSC_RESONANCE_START - 0.02, cutoff, sr);
-        let onset = measure_self_oscillation_tail_energy(SELF_OSC_RESONANCE_START + 0.02, cutoff, sr);
+        let below =
+            measure_self_oscillation_tail_energy(SELF_OSC_RESONANCE_START - 0.02, cutoff, sr);
+        let onset =
+            measure_self_oscillation_tail_energy(SELF_OSC_RESONANCE_START + 0.02, cutoff, sr);
         let mid = measure_self_oscillation_tail_energy(0.85, cutoff, sr);
         let max = measure_self_oscillation_tail_energy(1.0, cutoff, sr);
 
@@ -2106,7 +2124,8 @@ mod tests {
             f.set_resonance(1.0);
             let mut samples = Vec::with_capacity(90_000);
             for _ in 0..90_000 {
-                samples.push(process(&mut f, f32x4::splat(0.0), f32x4::splat(60.0), sr).to_array()[0]);
+                samples
+                    .push(process(&mut f, f32x4::splat(0.0), f32x4::splat(60.0), sr).to_array()[0]);
             }
             samples
         };

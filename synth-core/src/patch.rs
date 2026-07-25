@@ -1,10 +1,10 @@
 //! Patch parameter bundles and modulation routing targets.
 
-use crate::dsp::{
-    LfoWaveform, DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
-    DEFAULT_SUSTAIN_LEVEL, MIN_LFO_RATE_HZ,
-};
 use crate::ParamId;
+use crate::dsp::{
+    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
+    LfoWaveform, MIN_LFO_RATE_HZ,
+};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -1254,11 +1254,7 @@ impl Default for Patch {
 
 impl Patch {
     fn bool_f32(b: bool) -> f32 {
-        if b {
-            1.0
-        } else {
-            0.0
-        }
+        if b { 1.0 } else { 0.0 }
     }
 
     fn lfo_waveform_index(lfo_waveform: LfoWaveform) -> f32 {

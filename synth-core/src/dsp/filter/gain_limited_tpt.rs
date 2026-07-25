@@ -691,8 +691,8 @@ mod tests {
             let mut sin_sum = 0.0;
             let mut cos_sum = 0.0;
             for (index, sample) in samples.iter().copied().enumerate() {
-                let window =
-                    0.5 * (1.0 - (core::f32::consts::TAU * index as f32 / (fft_size - 1) as f32).cos());
+                let window = 0.5
+                    * (1.0 - (core::f32::consts::TAU * index as f32 / (fft_size - 1) as f32).cos());
                 let phase = step * index as f32;
                 sin_sum += sample * window * phase.sin();
                 cos_sum += sample * window * phase.cos();
@@ -933,7 +933,8 @@ mod tests {
 
     #[test]
     fn gain_limited_self_oscillation_is_consistent_with_an_oscillator_active() {
-        let autonomous = live_self_oscillation_analyzer_harmonics_db(739.99, 1.0, 1.0, 1.0, false, 36);
+        let autonomous =
+            live_self_oscillation_analyzer_harmonics_db(739.99, 1.0, 1.0, 1.0, false, 36);
         let driven = live_self_oscillation_analyzer_harmonics_db(739.99, 1.0, 1.0, 1.0, true, 36);
         assert!(
             (autonomous[0] - driven[0]).abs() <= 2.0,

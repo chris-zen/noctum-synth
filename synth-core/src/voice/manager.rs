@@ -1,5 +1,6 @@
 //! Polyphonic voice allocation and mixing.
 
+use super::{NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position};
 #[cfg(test)]
 use crate::dsp::filter::MAX_CUTOFF_HZ;
 use crate::dsp::filter::MIN_CUTOFF_HZ;
@@ -7,9 +8,6 @@ use crate::dsp::{FilterOversampling, FilterType};
 use crate::effects::EffectModulation;
 use crate::fixed_index_list::FixedIndexList;
 use crate::profiling::RenderContext;
-use super::{
-    NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
-};
 use crate::{
     ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, LANES, ModDestination, ParamId,
     Patch, UnisonMode, VOICE_PACKS,

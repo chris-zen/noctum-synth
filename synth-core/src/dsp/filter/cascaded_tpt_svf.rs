@@ -895,7 +895,8 @@ mod tests {
                     SAMPLE_RATE,
                 )
             };
-            let mixed_output = render(&mut mixed, f32x4::new([-0.25, 0.05, -0.25, 0.05])).to_array();
+            let mixed_output =
+                render(&mut mixed, f32x4::new([-0.25, 0.05, -0.25, 0.05])).to_array();
             let low_output = render(&mut low, f32x4::splat(-0.25)).to_array();
             let high_output = render(&mut high, f32x4::splat(0.05)).to_array();
             assert!(
