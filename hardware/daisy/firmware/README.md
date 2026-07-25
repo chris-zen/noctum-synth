@@ -217,12 +217,12 @@ oversampling disabled; filter-comparison cases override that model explicitly.
 
 ```sh
 cargo run --release -p noctum-micro \
-  --features audio-profiling --bin dsp-benchmark
+  --features audio-profiling --bin bench-dsp
 ```
 
 ### Factory-preset benchmark
 
-`factory-preset-benchmark` evaluates all 512 Layer A programs from the Prophet
+`bench-factory-presets` evaluates all 512 Layer A programs from the Prophet
 Rev2 v1.0 factory bank without measuring MIDI transport, QSPI reads, patch
 decoding, logging, or engine initialization. Its timed callback-equivalent path
 does include production queue polling/control draining, engine rendering,
@@ -243,7 +243,7 @@ QSPI `0x900c0000`. Upload it through the normal Daisy bootloader flow:
 
 ```sh
 dfu-util -a 0 -s 0x90040000:leave \
-  -D target/factory-preset-benchmark-with-bank.bin \
+  -D target/bench-factory-presets-with-bank.bin \
   -d ,0483:df11
 ```
 
@@ -261,7 +261,7 @@ Run it with a debug probe attached:
 
 ```sh
 cargo run --release -p noctum-micro \
-  --features audio-profiling --bin factory-preset-benchmark
+  --features audio-profiling --bin bench-factory-presets
 ```
 
 Every `FACTORY raw` record contains bank/program/scenario, average, p95, p99,
@@ -337,7 +337,7 @@ For repeatable on-target DSP measurements without SAI, DMA, USB, or executor
 deadlines, run the standalone benchmark binary:
 
 ```sh
-cargo run --release --bin dsp-benchmark --features audio-profiling
+cargo run --release --bin bench-dsp --features audio-profiling
 ```
 
 It uses the production clock/cache/MPU setup and the same SDRAM-backed effects

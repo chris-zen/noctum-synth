@@ -5,9 +5,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DAISY_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 REPO_DIR=$(CDPATH= cd -- "$DAISY_DIR/../.." && pwd)
 BANK=${1:-"$REPO_DIR/Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx"}
-OUTPUT=${2:-"$DAISY_DIR/target/factory-preset-benchmark-with-bank.bin"}
-ELF="$DAISY_DIR/target/thumbv7em-none-eabihf/release/factory-preset-benchmark"
-PADDED="$DAISY_DIR/target/factory-preset-benchmark-padded.bin"
+OUTPUT=${2:-"$DAISY_DIR/target/bench-factory-presets-with-bank.bin"}
+ELF="$DAISY_DIR/target/thumbv7em-none-eabihf/release/bench-factory-presets"
+PADDED="$DAISY_DIR/target/bench-factory-presets-padded.bin"
 
 EXPECTED_BANK_SIZE=1201152
 BANK_FILE_OFFSET_BLOCKS=128
@@ -25,7 +25,7 @@ fi
 
 cd "$DAISY_DIR"
 cargo build --release -p noctum-micro \
-    --features audio-profiling --bin factory-preset-benchmark
+    --features audio-profiling --bin bench-factory-presets
 
 # The Daisy bootloader stores the file at QSPI 0x90040000 and copies the first
 # 480 KiB into AXI SRAM. Pad the application storage to 512 KiB, then place the

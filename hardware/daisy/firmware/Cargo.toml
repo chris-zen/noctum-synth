@@ -45,15 +45,15 @@ test = false
 bench = false
 
 [[bin]]
-name = "dsp-benchmark"
-path = "src/bin/dsp-benchmark.rs"
+name = "bench-dsp"
+path = "src/bin/bench-dsp.rs"
 required-features = ["audio-profiling"]
 test = false
 bench = false
 
 [[bin]]
-name = "factory-preset-benchmark"
-path = "src/bin/factory-preset-benchmark.rs"
+name = "bench-factory-presets"
+path = "src/bin/bench-factory-presets.rs"
 required-features = ["audio-profiling"]
 test = false
 bench = false
