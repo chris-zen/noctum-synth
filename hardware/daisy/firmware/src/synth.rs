@@ -2,7 +2,9 @@
 
 use wmidi::MidiMessage;
 
-use synth_core::{ControlMessage, MidiRealtimeEvent, Patch, Rev2MidiDecoder, Rev2MidiUpdate};
+use synth_core::{
+    ControlMessage, MidiRealtimeEvent, P08MidiDecoder, Patch, Rev2MidiDecoder, Rev2MidiUpdate,
+};
 
 use crate::program::{ProgramSelection, ProgramStorageQueue, ProgramStorageRequest};
 
@@ -248,11 +250,11 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
 
     fn handle_sysex(&mut self, cable: u8, message: &[u8]) {
         self.indicator.notify_midi();
-        if message.len() < 4 || message[..3] != [0xf0, 0x01, 0x2f] {
+        if message.len() < 4 || message[0] != 0xf0 || message[1] != 0x01 {
             return;
         }
-        match message[3] {
-            0x02 => match Rev2MidiDecoder::program_data(message) {
+        match (message[2], message[3]) {
+            (0x2f, 0x02) => match Rev2MidiDecoder::program_data(message) {
                 Ok(program) => {
                     let (bank, program_number) = (program.bank, program.program);
                     if !self.enqueue_storage(ProgramStorageRequest::Save {
@@ -267,7 +269,32 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                 }
                 Err(error) => emit_sysex_error(cable, message.len(), error),
             },
-            0x03 => match Rev2MidiDecoder::program_edit_buffer(message) {
+            (0x2f, 0x03) => match Rev2MidiDecoder::program_edit_buffer(message) {
+                Ok(patch) => {
+                    crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
+                    if self.patches.try_send(patch).is_err() {
+                        crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
+                    }
+                }
+                Err(error) => emit_sysex_error(cable, message.len(), error),
+            },
+            (0x23, 0x02) => match P08MidiDecoder::program_data(message) {
+                Ok(program) => {
+                    let bank = program.bank + 4;
+                    let program_number = program.program;
+                    if !self.enqueue_storage(ProgramStorageRequest::Save {
+                        bank,
+                        program: program_number,
+                        patch: program.patch,
+                    }) {
+                        crate::diagnostics::emit(
+                            crate::diagnostics::Event::ProgramStorageQueueFull,
+                        );
+                    }
+                }
+                Err(error) => emit_sysex_error(cable, message.len(), error),
+            },
+            (0x23, 0x03) => match P08MidiDecoder::program_edit_buffer(message) {
                 Ok(patch) => {
                     crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
                     if self.patches.try_send(patch).is_err() {

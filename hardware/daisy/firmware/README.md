@@ -79,8 +79,11 @@ MIDI behavior is global across channels:
   loads that bank/program through the normal patch transition.
 - A Rev2 Program Data SysEx message (`F0 01 2F 02 <bank> <program> ... F7`)
   saves its decoded patch to that slot. The write is asynchronous.
-- A Rev2 Program Edit Buffer message (`F0 01 2F 03 ... F7`) remains a live
-  edit and never writes flash.
+- A Prophet '08 Program Data SysEx message (`F0 01 23 02 <bank> <program> ... F7`)
+  saves its decoded patch to hardware bank +4 (P08 bank 0 → hardware bank 4,
+  P08 bank 1 → hardware bank 5). The write is asynchronous.
+- A Rev2 or Prophet '08 Program Edit Buffer message (`F0 01 2F 03 ... F7` or
+  `F0 01 23 03 ... F7`) remains a live edit and never writes flash.
 - The last successful load is restored on boot. Selection updates use an
   append-only catalog journal and compact only after hundreds of changes.
 

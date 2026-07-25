@@ -10,8 +10,9 @@ published on the Sequential forum:
 > <https://forum.sequential.com/index.php?topic=2056.msg22693.html#msg22693>
 
 The synth also accepts **Prophet '08** Program Data and Program Edit Buffer
-SysEx messages for factory-bank import. Prophet '08 programs are decoded into
-the same internal patch format as Rev2 Layer A. See [Prophet '08
+SysEx messages. P08 programs are decoded into the same internal patch format as
+Rev2 Layer A and are saved to persistent program memory on the hardware
+(banks 4–5, mapped from P08 banks 0–1). See [Prophet '08
 Compatibility](#prophet-08-compatibility) below.
 
 See [Factory Presets](factory-presets.md) for instructions on loading the
@@ -102,9 +103,11 @@ Booleans are decoded as `raw ≥ 64` (CC) or `raw ≠ 0` (NRPN).
 The synth supports 8 persistent banks of 128 programs. CC0 and CC32 values
 0–7 are both accepted as global Bank Select inputs; the selected bank is
 consumed by the next Program Change. Sending a Program Data message saves
-the decoded patch to its included bank/program address. Sending a
-Program Edit Buffer only loads the live patch and does not write program
-memory.
+the decoded patch to its included bank/program address. Rev2 Program Data
+saves to the bank encoded in the message (0–7). P08 Program Data saves to
+hardware bank +4 (P08 bank 0 → hardware bank 4, P08 bank 1 → hardware bank 5).
+Sending a Program Edit Buffer only loads the live patch and does not write
+program memory.
 
 ## Performance Messages
 
@@ -333,7 +336,8 @@ Pressure (118), Breath (120), Velocity (122), and MIDI Foot (124).
 
 Both Prophet Rev2 and Prophet '08 use Sequential's standard SysEx framing and
 7-bit packing (see [Seven-Bit Unpacking](#seven-bit-unpacking)). The model ID
-byte distinguishes the two formats.
+byte distinguishes the two formats. Program Data messages from either synth are
+saved to persistent hardware program memory.
 
 ### Seven-Bit Unpacking
 
@@ -577,8 +581,10 @@ The following Prophet Rev2 systems are not implemented by this synth:
 The synth accepts Prophet '08 Program Data and Program Edit Buffer SysEx for
 importing factory banks and loading patches from a Prophet '08 editor. Imported
 programs are converted into the internal Rev2-style patch format (Layer A
-parameters only). Live MIDI control uses the Prophet Rev2 protocol above; only
-SysEx import is supported for Prophet '08 programs.
+parameters only) and are saved to persistent program memory on the hardware
+(P08 bank 0 → hardware bank 4, P08 bank 1 → hardware bank 5). Live MIDI
+control uses the Prophet Rev2 protocol above; only SysEx import is supported
+for Prophet '08 parameters.
 
 Reference: [Prophet '08 User's Guide v1.0](http://www.dsisynth.com/misc/Prophet_08_Manual_v1.0.pdf),
 SysEx Messages (page 51) and Program Parameter Data (page 44).
@@ -587,7 +593,7 @@ SysEx Messages (page 51) and Program Parameter Data (page 44).
 
 | Command | Name | Size |
 |---|---|---|
-| `0x02` | Program Data (stored patch import) | 446 bytes |
+| `0x02` | Program Data (stored patch save/import) | 446 bytes |
 | `0x03` | Program Edit Buffer (live patch load) | 444 bytes |
 
 Framing: `F0 01 23 <cmd> ... F7`
@@ -769,7 +775,7 @@ Layer B.
 The following Prophet '08 systems are not implemented:
 
 - Layer B parameter control
-- Live MIDI control of Prophet '08 parameters (SysEx import only)
+- Live MIDI control of Prophet '08 parameters (SysEx only, no CC/NRPN)
 - Sequencer and arpeggiator
 - Split and stack program modes
 - Global settings (tuning, MIDI channel, pedal config, etc.)

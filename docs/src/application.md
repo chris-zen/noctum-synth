@@ -181,8 +181,8 @@ Imported patches are saved alongside user-saved patches:
 | Windows | `C:\Users\<user>\AppData\Roaming\analog-synth\patches\` |
 
 If the MIDI program import queue fills up, a message is printed to the console.
-Send SysEx at a reasonable speed. Hardware program memory accepts Rev2 Program
-Data only; see [Factory Presets](appendix/factory-presets.md).
+Send SysEx at a reasonable speed. Hardware program memory accepts both Rev2 and
+Prophet '08 Program Data; see [Factory Presets](appendix/factory-presets.md).
 
 Whole patch loads and initial device synchronization use one Rev2 Program Edit
 Buffer SysEx message. Layer A contains the local patch, Layer B contains the
