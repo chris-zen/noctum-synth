@@ -29,7 +29,7 @@ pub const DEVELOPMENT_VID: u16 = 0xc0de;
 pub const DEVELOPMENT_PID: u16 = 0xcafe;
 
 const MANUFACTURER: &str = "chris-zen";
-const PRODUCT: &str = "Analog Synth (development)";
+const PRODUCT: &str = "Noctum (development)";
 const CONTROL_BUFFER_SIZE: usize = 128;
 
 static EXECUTOR: InterruptExecutor = InterruptExecutor::new();

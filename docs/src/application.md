@@ -176,9 +176,9 @@ Imported patches are saved alongside user-saved patches:
 
 | OS | Location |
 |---|---|
-| macOS | `~/Library/Application Support/analog-synth/patches/` |
-| Linux | `~/.local/share/analog-synth/patches/` |
-| Windows | `C:\Users\<user>\AppData\Roaming\analog-synth\patches\` |
+| macOS | `~/Library/Application Support/noctum/patches/` |
+| Linux | `~/.local/share/noctum/patches/` |
+| Windows | `C:\Users\<user>\AppData\Roaming\noctum\patches\` |
 
 If the MIDI program import queue fills up, a message is printed to the console.
 Send SysEx at a reasonable speed. Hardware program memory accepts both Rev2 and

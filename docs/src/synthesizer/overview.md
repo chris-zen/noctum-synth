@@ -1,6 +1,6 @@
 # Synthesizer Capabilities
 
-Analog Synth is a 16-voice subtractive polysynth. Each played note has its own
+Noctum is a 16-voice subtractive polysynth. Each played note has its own
 oscillator phase, filter and envelope movement, while the instrument shares a
 single set of patch controls and global effects.
 

@@ -1,6 +1,6 @@
 # Hardware
 
-This directory contains the hardware implementation of Analog Synth. It is
+This directory contains the hardware implementation of Noctum. It is
 intentionally outside the root Rust workspace: each hardware platform owns its
 own firmware toolchain, build configuration, and release process.
 

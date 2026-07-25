@@ -21,28 +21,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "analog-synth-daisy-firmware"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "critical-section",
- "defmt 1.1.1",
- "defmt-rtt",
- "embassy-daisy",
- "embassy-executor",
- "embassy-futures",
- "embassy-stm32",
- "embassy-sync",
- "embassy-time",
- "heapless",
- "panic-probe",
- "static_cell",
- "synth-core",
- "wmidi",
-]
-
-[[package]]
 name = "as-slice"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -850,6 +828,28 @@ name = "nb"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
+
+[[package]]
+name = "noctum-micro"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section",
+ "defmt 1.1.1",
+ "defmt-rtt",
+ "embassy-daisy",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "heapless",
+ "panic-probe",
+ "static_cell",
+ "synth-core",
+ "wmidi",
+]
 
 [[package]]
 name = "nu-ansi-term"

@@ -1,6 +1,6 @@
 # Daisy platform
 
-This directory contains the Daisy-based implementation of Analog Synth.
+This directory contains the Daisy-based implementation of Noctum.
 
 - `embassy-daisy/` is a reusable Embassy board support package.
 - `firmware/` is the Daisy Seed application and remains outside the root Cargo

@@ -16,7 +16,7 @@ use crate::ui::settings_view::{AudioBaseline, MidiInputEntry};
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
 
-pub(crate) const APP_TITLE: &str = "Analog Synth";
+pub(crate) const APP_TITLE: &str = "Noctum";
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]

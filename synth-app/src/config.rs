@@ -10,7 +10,7 @@ use crate::ui::app::Tab;
 use crate::ui::settings_view::Settings;
 use crate::ui::viewport::WindowGeometry;
 
-const APP_NAME_FOLDER: &str = "AnalogSynth";
+pub(crate) const APP_NAME_FOLDER: &str = "Noctum";
 const CONFIG_FILE: &str = "config.json";
 
 #[derive(Debug)]

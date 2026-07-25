@@ -4,7 +4,7 @@ set -eu
 script_dir=$(dirname -- "$0")
 script_dir=$(cd -- "$script_dir" && pwd)
 binary=$(mktemp /tmp/usb-audio-raw-capture.XXXXXX)
-midi_device=${USB_MIDI_DEVICE:-Analog Synth USB MIDI (development)}
+midi_device=${USB_MIDI_DEVICE:-Noctum USB MIDI (development)}
 capture_pid=
 
 cleanup() {

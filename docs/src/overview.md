@@ -1,6 +1,6 @@
-# Analog Synth
+# Noctum
 
-Analog Synth is a Rust virtual-analog polysynth project. It takes inspiration
+Noctum is a Rust virtual-analog polysynth project. It takes inspiration
 from the Sequential Prophet Rev2 approach to a broad, modulation-rich
 subtractive instrument: two oscillators per voice, a resonant low-pass filter,
 three envelopes, four LFOs, flexible routing, stereo spread, and global

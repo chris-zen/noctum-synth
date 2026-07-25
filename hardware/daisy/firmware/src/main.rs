@@ -10,11 +10,11 @@ use {defmt_rtt as _, panic_probe as _};
 use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::MidiClockMode;
 
-use analog_synth_daisy_firmware::audio::{
+use noctum_micro::audio::{
     ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,
 };
-use analog_synth_daisy_firmware::pending_releases::PendingReleases;
-use analog_synth_daisy_firmware::{audio, diagnostics, fatal, indicator, midi, program, usb_audio};
+use noctum_micro::pending_releases::PendingReleases;
+use noctum_micro::{audio, diagnostics, fatal, indicator, midi, program, usb_audio};
 
 const SAMPLE_RATE_HZ: f32 = usb_audio::SAMPLE_RATE_HZ as f32;
 // One second of float delay history per stereo channel. The buffer remains a

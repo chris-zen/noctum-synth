@@ -1,4 +1,4 @@
-# Analog Synth
+# Noctum
 
 A hobby project to build a virtual-analog synthesizer inspired by the
 **Sequential Prophet Rev2** — the 16-voice, modulation-rich polysynth that

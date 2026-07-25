@@ -1,4 +1,4 @@
-# Analog Synth Daisy firmware
+# Noctum Micro firmware
 
 Hardware proof firmware for a Daisy Seed 1.1 using `embassy-daisy`.
 
@@ -10,17 +10,17 @@ from external SDRAM and audio DMA remains in non-cacheable D2 SRAM.
 Build and create the raw bootloader image:
 
 ```sh
-cargo build --release -p analog-synth-daisy-firmware
+cargo build --release -p noctum-micro
 arm-none-eabi-objcopy -O binary \
-  target/thumbv7em-none-eabihf/release/analog-synth-daisy-firmware \
-  analog-synth-daisy-firmware.bin
+  target/thumbv7em-none-eabihf/release/noctum-micro \
+  noctum-micro.bin
 ```
 
 With the official bootloader in its USB grace period, upload it using:
 
 ```sh
 dfu-util -a 0 -s 0x90040000:leave \
-  -D analog-synth-daisy-firmware.bin -d ,0483:df11
+  -D noctum-micro.bin -d ,0483:df11
 ```
 
 The firmware runs one four-lane SIMD `SynthEngine` voice pack at 48 kHz,
@@ -126,7 +126,7 @@ defaults to the Cortex-M target, supply the development machine's host target
 explicitly, for example on Apple Silicon:
 
 ```sh
-cargo test -p analog-synth-daisy-firmware --lib \
+cargo test -p noctum-micro --lib \
   --target aarch64-apple-darwin
 ```
 
@@ -145,7 +145,7 @@ firmware so AppleUSBAudio does not claim its streaming interface, then run the
 libusb harness:
 
 ```sh
-cargo build --release -p analog-synth-daisy-firmware \
+cargo build --release -p noctum-micro \
   --features diagnostics,usb-audio-test-tone,usb-audio-raw-test
 tools/usb-audio-raw-smoke.sh
 ```
@@ -169,7 +169,7 @@ Build and run with the `diagnostics` feature when checking desktop-to-Daisy
 parameter control, audio health, or USB MIDI bring-up:
 
 ```sh
-DEFMT_LOG=debug cargo run --release -p analog-synth-daisy-firmware \
+DEFMT_LOG=debug cargo run --release -p noctum-micro \
   --features diagnostics
 ```
 
@@ -197,7 +197,7 @@ Build and run with the firmware-only profiling feature to measure the Cortex-M7
 DWT cycle count for each DSP stage:
 
 ```sh
-cargo run --release -p analog-synth-daisy-firmware --features audio-profiling
+cargo run --release -p noctum-micro --features audio-profiling
 ```
 
 The profiler reports total block time and separate envelope/modulation,
@@ -216,7 +216,7 @@ General benchmark cases use the production Gain-Limited TPT filter with
 oversampling disabled; filter-comparison cases override that model explicitly.
 
 ```sh
-cargo run --release -p analog-synth-daisy-firmware \
+cargo run --release -p noctum-micro \
   --features audio-profiling --bin dsp-benchmark
 ```
 
@@ -260,7 +260,7 @@ receive an additional 256-block profiling pass.
 Run it with a debug probe attached:
 
 ```sh
-cargo run --release -p analog-synth-daisy-firmware \
+cargo run --release -p noctum-micro \
   --features audio-profiling --bin factory-preset-benchmark
 ```
 
@@ -288,13 +288,13 @@ all audio-task work. It queues a `PERF` warning only when the maximum in a
 more expensive per-stage profiling hooks for day-to-day development:
 
 ```sh
-cargo run --release -p analog-synth-daisy-firmware --features diagnostics
+cargo run --release -p noctum-micro --features diagnostics
 ```
 
 Ship builds omit diagnostics entirely:
 
 ```sh
-cargo run --release -p analog-synth-daisy-firmware
+cargo run --release -p noctum-micro
 ```
 
 ## Audio overrun recovery

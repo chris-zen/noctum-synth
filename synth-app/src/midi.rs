@@ -38,7 +38,7 @@ pub fn merged_port_list(available: &[String], configured: &[String]) -> Vec<Stri
 }
 
 pub fn list_input_ports() -> Vec<String> {
-    let Ok(midi_in) = MidiInput::new("analog-synth-list") else {
+    let Ok(midi_in) = MidiInput::new("noctum-list") else {
         return Vec::new();
     };
     midi_in
@@ -49,7 +49,7 @@ pub fn list_input_ports() -> Vec<String> {
 }
 
 pub fn list_output_ports() -> Vec<String> {
-    let Ok(midi_out) = MidiOutput::new("analog-synth-output-list") else {
+    let Ok(midi_out) = MidiOutput::new("noctum-output-list") else {
         return Vec::new();
     };
     midi_out
@@ -305,7 +305,7 @@ impl MidiOutputHandle {
             state.clear();
             return true;
         };
-        let Ok(midi_out) = MidiOutput::new("analog-synth-output") else {
+        let Ok(midi_out) = MidiOutput::new("noctum-output") else {
             state.clear();
             return false;
         };
@@ -320,7 +320,7 @@ impl MidiOutputHandle {
             state.clear();
             return false;
         };
-        let Ok(connection) = midi_out.connect(&port, "analog-synth-midi-output") else {
+        let Ok(connection) = midi_out.connect(&port, "noctum-midi-output") else {
             state.clear();
             return false;
         };
@@ -611,7 +611,7 @@ impl MidiInputManager {
         port_name: &str,
         flags: Arc<MidiInputFlags>,
     ) -> Option<MidiInputConnection<()>> {
-        let mut midi_in = MidiInput::new("analog-synth").ok()?;
+        let mut midi_in = MidiInput::new("noctum").ok()?;
         midi_in.ignore(Ignore::None);
         let ports = midi_in.ports();
         let filter_lower = port_name.to_lowercase();
@@ -1072,7 +1072,7 @@ mod tests {
         let output = MidiOutputHandle::default();
         {
             let mut state = output.state.lock();
-            state.configured_port = Some("Analog Synth USB MIDI (development)".to_owned());
+            state.configured_port = Some("Noctum USB MIDI (development)".to_owned());
             // These model identical NoteOff messages forwarded during the
             // immediately preceding chord, still inside the echo TTL.
             state.record_echo(&[0x80, 64, 0]);

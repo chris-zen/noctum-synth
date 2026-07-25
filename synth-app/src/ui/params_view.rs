@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
+use crate::config::APP_NAME_FOLDER;
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
     KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
@@ -2957,7 +2958,7 @@ pub struct PatchManager {
 
 impl PatchManager {
     pub fn new() -> Self {
-        let config_dir = directories::ProjectDirs::from("", "", "AnalogSynth")
+        let config_dir = directories::ProjectDirs::from("", "", APP_NAME_FOLDER)
             .map(|d| d.config_dir().to_path_buf())
             .unwrap_or_default();
         let patches_dir = config_dir.join("patches");
@@ -3447,8 +3448,7 @@ mod tests {
 
     #[test]
     fn successful_save_adopts_name_and_clean_baseline() {
-        let root =
-            std::env::temp_dir().join(format!("analog-synth-patch-save-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("noctum-patch-save-{}", std::process::id()));
         let patches_dir = root.join("patches");
         std::fs::create_dir_all(&patches_dir).unwrap();
         let mut manager = PatchManager {
@@ -3473,10 +3473,8 @@ mod tests {
 
     #[test]
     fn failed_save_preserves_loaded_name_and_baseline() {
-        let root = std::env::temp_dir().join(format!(
-            "analog-synth-patch-save-failure-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("noctum-patch-save-failure-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         let baseline = Patch::default();
         let mut manager = PatchManager {
@@ -3498,8 +3496,7 @@ mod tests {
 
     #[test]
     fn autosave_roundtrip_preserves_patch_name_and_metadata() {
-        let root =
-            std::env::temp_dir().join(format!("analog-synth-autosave-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("noctum-autosave-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let manager = PatchManager {
             save_name: "preset *".to_string(),
@@ -3522,8 +3519,7 @@ mod tests {
 
     #[test]
     fn midi_program_save_uses_deterministic_overwriteable_json() {
-        let root =
-            std::env::temp_dir().join(format!("analog-synth-midi-import-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("noctum-midi-import-{}", std::process::id()));
         let patches_dir = root.join("patches");
         std::fs::create_dir_all(&patches_dir).unwrap();
         let manager = PatchManager {
@@ -3560,8 +3556,7 @@ mod tests {
 
     #[test]
     fn p08_midi_program_save_uses_embedded_patch_name() {
-        let root =
-            std::env::temp_dir().join(format!("analog-synth-p08-import-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("noctum-p08-import-{}", std::process::id()));
         let patches_dir = root.join("patches");
         std::fs::create_dir_all(&patches_dir).unwrap();
         let manager = PatchManager {

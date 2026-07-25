@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-elf="${1:-target/thumbv7em-none-eabihf/release/analog-synth-daisy-firmware}"
+elf="${1:-target/thumbv7em-none-eabihf/release/noctum-micro}"
 prefix="${ARM_NONE_EABI_PREFIX:-arm-none-eabi-}"
 
 test -f "$elf" || {

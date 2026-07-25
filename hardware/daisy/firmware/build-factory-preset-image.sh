@@ -24,7 +24,7 @@ if [ "$ACTUAL_BANK_SIZE" -ne "$EXPECTED_BANK_SIZE" ]; then
 fi
 
 cd "$DAISY_DIR"
-cargo build --release -p analog-synth-daisy-firmware \
+cargo build --release -p noctum-micro \
     --features audio-profiling --bin factory-preset-benchmark
 
 # The Daisy bootloader stores the file at QSPI 0x90040000 and copies the first

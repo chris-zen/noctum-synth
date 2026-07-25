@@ -1,7 +1,7 @@
 [book]
-title = "Analog Synth Documentation"
-authors = ["Analog Synth contributors"]
-description = "Project documentation for the analog-synth Rust virtual-analog synthesizer."
+title = "Noctum Documentation"
+authors = ["Noctum contributors"]
+description = "Project documentation for the noctum Rust virtual-analog synthesizer."
 language = "en"
 src = "src"
 

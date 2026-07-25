@@ -8,8 +8,8 @@ use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::sdram::Sdram;
 use {defmt_rtt as _, panic_probe as _};
 
-use analog_synth_daisy_firmware::audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue};
-use analog_synth_daisy_firmware::profiling::{AudioProfiler, Snapshot};
+use noctum_micro::audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue};
+use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use synth_core::dsp::{FilterOversampling, FilterType, Waveform};
 use synth_core::{ControlMessage, DedicatedModSource, EffectType, GlideMode, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SynthEngineWithMemory, profiling::RenderStage};
 

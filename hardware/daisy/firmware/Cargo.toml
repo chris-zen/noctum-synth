@@ -1,5 +1,5 @@
 [package]
-name = "analog-synth-daisy-firmware"
+name = "noctum-micro"
 version = "0.1.0"
 publish = false
 edition.workspace = true
@@ -39,7 +39,7 @@ panic-probe.workspace = true
 static_cell.workspace = true
 
 [[bin]]
-name = "analog-synth-daisy-firmware"
+name = "noctum-micro"
 path = "src/main.rs"
 test = false
 bench = false

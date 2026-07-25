@@ -3,11 +3,11 @@
 
 use core::hint::black_box;
 
-use analog_synth_daisy_firmware::audio::{
+use noctum_micro::audio::{
     AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET,
 };
-use analog_synth_daisy_firmware::patch_transition::PatchTransition;
-use analog_synth_daisy_firmware::profiling::{AudioProfiler, Snapshot};
+use noctum_micro::patch_transition::PatchTransition;
+use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use cortex_m::peripheral::DWT;
 use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::qspi::QspiFlash;
