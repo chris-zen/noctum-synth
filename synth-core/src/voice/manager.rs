@@ -8,6 +8,8 @@ use crate::dsp::{FilterOversampling, FilterType};
 use crate::effects::EffectModulation;
 use crate::fixed_index_list::FixedIndexList;
 use crate::profiling::RenderContext;
+use crate::arp::{ArpEngine, ArpEvent};
+use crate::pressed_keys::PressedKeys;
 use crate::{
     ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, LANES, ModDestination, ParamId,
     Patch, UnisonMode, VOICE_PACKS,
@@ -41,6 +43,7 @@ pub struct VoiceManager<const PACKS: usize = VOICE_PACKS> {
     performance: PerformanceModulation,
     modulation: PatchModulation,
     last_effect_modulation: EffectModulation,
+    arp: ArpEngine,
 }
 
 impl<const PACKS: usize> VoiceManager<PACKS> {
@@ -70,6 +73,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
             performance: PerformanceModulation::default(),
             modulation,
             last_effect_modulation: EffectModulation::default(),
+            arp: ArpEngine::new(sample_rate),
         }
     }
 
@@ -94,6 +98,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         self.unison.mode = patch.unison_mode;
         self.unison.detune = patch.unison_detune.clamp(0.0, 16.0);
         self.unison.chord = patch.unison_chord;
+        self.arp.set_params(&patch.arp);
         self.rebuild_sounding_notes();
     }
 
@@ -117,6 +122,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
                 }
                 self.allocated.clear_occupancy();
                 self.pressed_keys.clear();
+                self.arp.all_notes_off();
             }
             ControlMessage::SetUnisonChord(chord) => {
                 self.unison.chord = chord;
@@ -182,6 +188,16 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         if note >= 128 {
             return;
         }
+        if self.arp.params().enabled {
+            let was_empty = self.pressed_keys.is_empty();
+            self.pressed_keys.press(note, velocity);
+            self.last_played_note = Some(note);
+            if was_empty {
+                self.reset_key_synced_lfos();
+            }
+            self.arp.note_on(note, velocity);
+            return;
+        }
         let is_first_key = self.pressed_keys.is_empty();
         let glide_start = self.last_played_note;
         let should_glide = self.glide.enabled
@@ -219,6 +235,10 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
             return;
         }
         self.pressed_keys.release(note);
+        if self.arp.params().enabled {
+            self.arp.note_off(note);
+            return;
+        }
         if !self.unison.enabled {
             self.allocated.poly_note_off(&mut self.blocks, note);
             return;
@@ -383,6 +403,9 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         }
         self.allocated.clear_occupancy();
 
+        if self.arp.params().enabled {
+            return;
+        }
         if self.unison.enabled {
             if let Some((note, velocity)) = self.pressed_keys.selected(self.key_mode) {
                 self.update_unison_group(note, velocity, true, None, false);
@@ -397,6 +420,12 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
     }
 
     fn set_sustain_pedal(&mut self, pressed: bool) {
+        if self.arp.params().enabled {
+            self.arp.set_sustain_pedal(pressed);
+            if !self.arp.sustain_forward() {
+                return;
+            }
+        }
         if self.unison.enabled {
             if self.allocated.sustain_pressed && !pressed && self.pressed_keys.is_empty() {
                 self.release_unison_group();
@@ -465,6 +494,73 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
                 .modulation
                 .set_aux_destination(ModDestination::from_index(value as usize)),
             ParamId::AuxEgAmount => self.modulation.set_aux_amount(value),
+            ParamId::ArpEnabled => {
+                let became_enabled = value >= 0.5 && !self.arp.params().enabled;
+                self.arp.set_enabled(value >= 0.5);
+                if became_enabled {
+                    // Repopulate arp held_notes from currently pressed keys, since
+                    // the arp's clear() on disable wiped its internal state.
+                    for (note, velocity) in self.pressed_keys.iter() {
+                        self.arp.note_on(note, velocity);
+                    }
+                }
+                self.rebuild_sounding_notes();
+                return;
+            }
+            ParamId::ArpMode => {
+                self.arp.set_params(&crate::patch::ArpParams {
+                    mode: crate::patch::ArpMode::from_index(value as usize),
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
+            ParamId::ArpRange => {
+                self.arp.set_params(&crate::patch::ArpParams {
+                    range: (value as u8).clamp(0, 2) + 1,
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
+            ParamId::ArpRepeats => {
+                self.arp.set_params(&crate::patch::ArpParams {
+                    repeats: (value as u8).clamp(0, 2) + 1,
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
+            ParamId::ArpRelatch => {
+                self.arp.set_params(&crate::patch::ArpParams {
+                    relatch: value >= 0.5,
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
+            ParamId::ArpHold => {
+                self.arp.set_params(&crate::patch::ArpParams {
+                    hold: value >= 0.5,
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
+            ParamId::ArpBeatSync => {
+                self.arp.set_params(&crate::patch::ArpParams {
+                    beat_sync: value >= 0.5,
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
+            ParamId::ArpSustainMode => {
+                let mode = match value as usize {
+                    0 => crate::patch::ArpSustainMode::ArpHold,
+                    2 => crate::patch::ArpSustainMode::ArpHoldMom,
+                    _ => crate::patch::ArpSustainMode::Sustain,
+                };
+                self.arp.set_params(&crate::patch::ArpParams {
+                    sustain_mode: mode,
+                    ..self.arp.params().clone()
+                });
+                return;
+            }
             _ => {}
         }
         for block in &mut self.blocks {
@@ -489,17 +585,47 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         for block in &mut self.blocks {
             block.set_tempo_bpm(bpm);
         }
+        self.arp.set_tempo_bpm(bpm);
     }
 
     pub(crate) fn set_clock_division(&mut self, division: ClockDivision) {
         for block in &mut self.blocks {
             block.set_clock_division(division);
         }
+        self.arp.set_clock_division(division);
     }
 }
 
 impl<const PACKS: usize> VoiceManager<PACKS> {
+    fn arp_advance(&mut self) {
+        if !self.arp.params().enabled {
+            return;
+        }
+        let prev_note = self.arp.current_note();
+        match self.arp.advance(1) {
+            Some(ArpEvent::Release(_)) => {
+                if let Some(prev) = prev_note {
+                    self.allocated.poly_note_off(&mut self.blocks, prev);
+                }
+            }
+            Some(ArpEvent::Step(note)) => {
+                if let Some(prev) = prev_note {
+                    self.allocated.poly_note_off(&mut self.blocks, prev);
+                }
+                self.allocated.poly_note_on(
+                    &mut self.blocks,
+                    note,
+                    self.arp.current_velocity(),
+                    prev_note.filter(|_| self.glide.enabled),
+                    self.glide.enabled,
+                );
+            }
+            None => {}
+        }
+    }
+
     pub(crate) fn next(&mut self, ctx: &mut RenderContext<'_>) -> (f32, f32) {
+        self.arp_advance();
         let mut left = 0.0f32;
         let mut right = 0.0f32;
         let mut effects = EffectModulation::default();
@@ -893,73 +1019,6 @@ struct UnisonSettings {
     mode: UnisonMode,
     detune: f32,
     chord: ChordMemory,
-}
-
-#[derive(Clone)]
-struct PressedKeys {
-    /// Press order packed as `(note << 8) | 7-bit velocity`.
-    order: [u16; 128],
-    len: usize,
-}
-
-impl Default for PressedKeys {
-    fn default() -> Self {
-        Self {
-            order: [0; 128],
-            len: 0,
-        }
-    }
-}
-
-impl PressedKeys {
-    fn press(&mut self, note: u8, velocity: f32) {
-        if note >= 128 {
-            return;
-        }
-        self.release(note);
-        let velocity = (velocity.clamp(0.0, 1.0) * 127.0 + 0.5) as u16;
-        self.order[self.len] = u16::from(note) << 8 | velocity;
-        self.len += 1;
-    }
-
-    fn release(&mut self, note: u8) {
-        let Some(index) = self.order[..self.len]
-            .iter()
-            .position(|held| (*held >> 8) as u8 == note)
-        else {
-            return;
-        };
-        self.order.copy_within(index + 1..self.len, index);
-        self.len -= 1;
-    }
-
-    fn clear(&mut self) {
-        self.len = 0;
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn selected(&self, mode: KeyMode) -> Option<(u8, f32)> {
-        let packed = match mode {
-            KeyMode::Low | KeyMode::LowRetrigger => *self.order[..self.len]
-                .iter()
-                .min_by_key(|held| *held >> 8)?,
-            KeyMode::High | KeyMode::HighRetrigger => *self.order[..self.len]
-                .iter()
-                .max_by_key(|held| *held >> 8)?,
-            KeyMode::Last | KeyMode::LastRetrigger => *self.order[..self.len].last()?,
-        };
-        Some(((packed >> 8) as u8, f32::from(packed & 0x7f) / 127.0))
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (u8, f32)> + '_ {
-        self.order[..self.len]
-            .iter()
-            .copied()
-            .map(|packed| ((packed >> 8) as u8, f32::from(packed & 0x7f) / 127.0))
-    }
 }
 
 fn key_mode_retriggers(mode: KeyMode) -> bool {
@@ -1984,5 +2043,297 @@ mod tests {
             freq_after_many < freq_c5,
             "freq {freq_after_many} should still be below C5 ({freq_c5})"
         );
+    }
+
+    #[test]
+    fn arp_assign_plays_notes_in_press_order() {
+        let sample_rate = 44_100.0f32;
+        let bps = 120.0 / 60.0;
+        let step = (sample_rate / (bps * 1.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::ArpMode,
+            crate::patch::ArpMode::Assign.index() as f32,
+        ));
+
+        // Simulate pressing C, then E, then G quickly
+        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+
+        // First step fires immediately
+        process_frames(&mut voices, 1);
+        let mut seen: heapless::Vec<u8, 6> = heapless::Vec::new();
+        if let Some(n) = voices.active_notes().iter().next() {
+            let _ = seen.push(n);
+        }
+        assert_eq!(seen.last().copied(), Some(60), "first immediate step");
+
+        // Advance enough for step 2
+        process_frames(&mut voices, step + 10);
+        if let Some(n) = voices.active_notes().iter().next() {
+            let _ = seen.push(n);
+        }
+        assert_eq!(seen.last().copied(), Some(64), "second step");
+
+        // Advance for step 3
+        process_frames(&mut voices, step + 10);
+        if let Some(n) = voices.active_notes().iter().next() {
+            let _ = seen.push(n);
+        }
+        assert_eq!(seen.last().copied(), Some(67), "third step");
+
+        // Wrap back
+        process_frames(&mut voices, step + 10);
+        if let Some(n) = voices.active_notes().iter().next() {
+            let _ = seen.push(n);
+        }
+        assert_eq!(seen.last().copied(), Some(60), "wrap back to C");
+    }
+
+    #[test]
+    fn arp_cycles_through_notes_and_each_is_audible() {
+        let sample_rate = 44_100.0f32;
+        let bps = 120.0 / 60.0;
+        let step = (sample_rate / (bps * 1.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        // Keep filter wide open for audibility
+        let mut ctx = crate::create_render_context!();
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+
+        // Press three notes — first note triggers immediate step
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::ArpMode,
+            crate::patch::ArpMode::Up.index() as f32,
+        ));
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 1.0,
+        });
+
+        assert_eq!(voices.active_notes().len(), 0);
+
+        // First step fires immediately
+        process_frames(&mut voices, 1);
+        assert_eq!(voices.active_notes().len(), 1);
+        assert!(voices.active_notes().contains(&60), "first arp step should be 60");
+
+        // Render through the step and verify audio is non-silent
+        let mut total_a = 0.0f32;
+        for _ in 0..(step / 2) {
+            let (l, r) = voices.next(&mut ctx);
+            total_a += l.abs() + r.abs();
+        }
+        assert!(
+            total_a > 0.01,
+            "first arp note must produce audible output, got {total_a}"
+        );
+
+        // Advancing to step 2
+        process_frames(&mut voices, step - step / 2);
+        assert_eq!(voices.active_notes().len(), 1);
+        assert!(voices.active_notes().contains(&64), "second arp step should be 64");
+
+        // Step 2 audio check
+        let mut total_b = 0.0f32;
+        for _ in 0..(step / 2) {
+            let (l, r) = voices.next(&mut ctx);
+            total_b += l.abs() + r.abs();
+        }
+        assert!(
+            total_b > 0.01,
+            "second arp note must produce audible output, got {total_b}"
+        );
+
+        // Wrap around after step 3
+        process_frames(&mut voices, step + step - step / 2);
+        assert!(voices.active_notes().contains(&60), "should have wrapped back to 60");
+    }
+
+    #[test]
+    fn arp_adding_notes_mid_cycle_eventually_plays_them() {
+        let sample_rate = 44_100.0f32;
+        let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::ArpMode,
+            crate::patch::ArpMode::Assign.index() as f32,
+        ));
+
+        // Press C
+        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        process_frames(&mut voices, 1);
+        assert!(voices.active_notes().contains(&60));
+
+        // Run for half a step, then add E mid-cycle
+        process_frames(&mut voices, step / 2);
+        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
+
+        // Advance past the first step trigger (C again, since step was at 0)
+        process_frames(&mut voices, step / 2 + 10);
+        // Now we should have stepped either to C or E depending on the rebuild timing
+        let note = voices.active_notes().iter().next();
+        assert!(note.is_some(), "arp should still have an active note");
+
+        // Advance through several more steps — E must appear eventually
+        let mut saw_e = false;
+        for _ in 0..4 {
+            process_frames(&mut voices, step + 10);
+            if let Some(n) = voices.active_notes().iter().next() {
+                if n == 64 {
+                    saw_e = true;
+                    break;
+                }
+            }
+        }
+        assert!(saw_e, "E must appear within a few cycles after being added mid-cycle");
+    }
+
+    #[test]
+    fn arp_with_fast_clock_division_steps_quickly() {
+        let sample_rate = 44_100.0f32;
+        let bps = 120.0 / 60.0;
+        // Sixteenth = 4 steps per quarter
+        let step = (sample_rate / (bps * 4.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::ArpMode,
+            crate::patch::ArpMode::Up.index() as f32,
+        ));
+        // ClockDivide is routed through SynthEngine, not set_param; call directly
+        voices.set_clock_division(crate::patch::ClockDivision::Sixteenth);
+
+        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+
+        assert!(step < (sample_rate / (bps * 1.0)) as usize / 2,
+            "sixteenth step {step} should be < half of quarter step {}", (sample_rate / (bps * 1.0)) as usize);
+
+        process_frames(&mut voices, 1);
+        assert!(voices.active_notes().contains(&60), "first step");
+        process_frames(&mut voices, step + 10);
+        assert!(voices.active_notes().contains(&64), "second step at sixteenth");
+        process_frames(&mut voices, step + 10);
+        assert!(voices.active_notes().contains(&67), "third step at sixteenth");
+    }
+
+    #[test]
+    fn arp_note_off_removes_note_from_cycle() {
+        let sample_rate = 44_100.0f32;
+        let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::ArpMode,
+            crate::patch::ArpMode::Up.index() as f32,
+        ));
+
+        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+
+        // First step
+        process_frames(&mut voices, 1);
+        assert!(voices.active_notes().contains(&60));
+
+        // Release middle note
+        voices.handle_control(ControlMessage::NoteOff { note: 64 });
+
+        // Advance through several cycles — 64 should never appear
+        let mut saw_64 = false;
+        for _ in 0..8 {
+            process_frames(&mut voices, step + 10);
+            if let Some(n) = voices.active_notes().iter().next() {
+                saw_64 = saw_64 || n == 64;
+            }
+        }
+        assert!(!saw_64, "released note 64 must not appear in any subsequent arp step");
+    }
+
+    #[test]
+    fn arp_with_hold_persists_after_key_release() {
+        let sample_rate = 44_100.0f32;
+        let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpHold, 1.0));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::ArpMode,
+            crate::patch::ArpMode::Up.index() as f32,
+        ));
+
+        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+        process_frames(&mut voices, 1);
+
+        // Release all keys — hold should keep them
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        voices.handle_control(ControlMessage::NoteOff { note: 67 });
+
+        // Advance through a cycle — should still have notes
+        process_frames(&mut voices, step + 10);
+        assert!(voices.active_notes().len() > 0, "hold should keep arp running after release");
+    }
+
+    #[test]
+    fn arp_enable_disable_preserves_held_notes_on_reenable() {
+        let sample_rate = 44_100.0f32;
+        let _step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+
+        // Press notes while arp is ON — they go to arp held_notes, not direct allocation
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+
+        // Disable arp — should clear internal state but pressed_keys remain
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 0.0));
+        // Notes are still physically held and revoice polyphonically
+        assert!(voices.active_notes().len() > 0, "poly notes should play after arp disabled");
+
+        // Re-enable arp — pressed_keys are still held, should rebuild from them
+        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        process_frames(&mut voices, 1);
+        assert!(voices.active_notes().len() > 0, "arp should restart with currently held keys");
     }
 }

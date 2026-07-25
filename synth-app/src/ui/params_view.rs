@@ -14,10 +14,10 @@ use synth_core::dsp::{
     FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
 };
 use synth_core::{
-    ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType,
-    GlideMode, KeyMode, LfoSyncDivision, MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot,
-    ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
-    glide_seconds,
+    ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
+    EffectParams, EffectType, GlideMode, KeyMode, LfoSyncDivision, MidiClockMode, ModDestination,
+    ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode,
+    ParamId, Patch, UnisonMode, glide_seconds,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -27,6 +27,7 @@ const MOD_MATRIX_PANEL_WIDTH: f32 = 760.0;
 const MOD_MATRIX_EXPANDED_ID: &str = "mod_matrix_expanded";
 const MOD_DEDICATED_LABEL_WIDTH: f32 = 110.0;
 const EFFECTS_PANEL_WIDTH: f32 = 560.0;
+const MISC_PANEL_WIDTH: f32 = 100.0;
 const FILTER_GRID_WIDTH: f32 = 360.0;
 const AMP_GRID_WIDTH: f32 = 320.0;
 const AUX_GRID_WIDTH: f32 = 360.0;
@@ -102,6 +103,15 @@ pub struct UiState {
     pub unison_chord: ChordMemory,
     pub bpm: f32,
     pub clock_divide: usize,
+
+    pub arp_enabled: bool,
+    pub arp_mode: usize,
+    pub arp_range: u8,
+    pub arp_repeats: u8,
+    pub arp_relatch: bool,
+    pub arp_hold: bool,
+    pub arp_beat_sync: bool,
+    pub arp_sustain_mode: usize,
     pub sub_level: f32,
     pub noise_level: f32,
     pub filter_cutoff: f32,
@@ -196,6 +206,14 @@ impl Default for UiState {
             unison_chord: ChordMemory::default(),
             bpm: 120.0,
             clock_divide: ClockDivision::default().index(),
+            arp_enabled: false,
+            arp_mode: ArpMode::default().index(),
+            arp_range: 1,
+            arp_repeats: 1,
+            arp_relatch: false,
+            arp_hold: false,
+            arp_beat_sync: false,
+            arp_sustain_mode: 1,
             sub_level: 0.0,
             noise_level: 0.0,
             filter_cutoff: 20_000.0,
@@ -356,6 +374,19 @@ impl UiState {
         self.effect_runtime_params = [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT];
         self.store_active_effect_params();
         self.master_volume = patch.master_volume;
+
+        self.arp_enabled = patch.arp.enabled;
+        self.arp_mode = patch.arp.mode.index();
+        self.arp_range = patch.arp.range;
+        self.arp_repeats = patch.arp.repeats;
+        self.arp_relatch = patch.arp.relatch;
+        self.arp_hold = patch.arp.hold;
+        self.arp_beat_sync = patch.arp.beat_sync;
+        self.arp_sustain_mode = match patch.arp.sustain_mode {
+            ArpSustainMode::ArpHold => 0,
+            ArpSustainMode::Sustain => 1,
+            ArpSustainMode::ArpHoldMom => 2,
+        };
     }
 
     pub fn apply_midi_update(&mut self, update: MidiUiUpdate) {
@@ -472,6 +503,14 @@ impl UiState {
             ParamId::EffectParam1 => self.effect_param1 = value,
             ParamId::EffectParam2 => self.effect_param2 = value,
             ParamId::MasterVolume => self.master_volume = value,
+            ParamId::ArpEnabled => self.arp_enabled = enabled,
+            ParamId::ArpMode => self.arp_mode = value as usize,
+            ParamId::ArpRange => self.arp_range = (value as u8).clamp(0, 2) + 1,
+            ParamId::ArpRepeats => self.arp_repeats = (value as u8).clamp(0, 2) + 1,
+            ParamId::ArpRelatch => self.arp_relatch = enabled,
+            ParamId::ArpHold => self.arp_hold = enabled,
+            ParamId::ArpBeatSync => self.arp_beat_sync = enabled,
+            ParamId::ArpSustainMode => self.arp_sustain_mode = value as usize,
             _ => return,
         }
         if matches!(
@@ -697,6 +736,20 @@ impl From<&UiState> for Patch {
                 param2: state.effect_param2,
             },
             master_volume: state.master_volume,
+            arp: synth_core::ArpParams {
+                enabled: state.arp_enabled,
+                mode: ArpMode::from_index(state.arp_mode),
+                range: state.arp_range,
+                repeats: state.arp_repeats,
+                relatch: state.arp_relatch,
+                hold: state.arp_hold,
+                beat_sync: state.arp_beat_sync,
+                sustain_mode: match state.arp_sustain_mode {
+                    0 => ArpSustainMode::ArpHold,
+                    2 => ArpSustainMode::ArpHoldMom,
+                    _ => ArpSustainMode::Sustain,
+                },
+            },
             name: synth_core::PatchName::new(),
         }
     }
@@ -733,21 +786,28 @@ pub fn show(
         ui.add_space(8.0);
 
         if ui.available_width() >= WIDE_LAYOUT_MIN_WIDTH {
-            ui.columns(2, |columns| {
-                module_panel_with_header(
+            equal_height_columns(ui, "filter_amp_row", 2, |columns, min_height| {
+                let filter_h = module_panel_with_header(
                     &mut columns[0],
                     "Low-Pass Filter",
+                    min_height,
                     |ui| filter_model_combo(ui, filter_type, control),
                     |ui| filter_module(ui, state, control),
                 );
-                module_panel(&mut columns[1], "Amplifier", |ui| {
-                    amplifier_module(ui, state, control);
-                });
+                let amp_h = module_panel_with_header(
+                    &mut columns[1],
+                    "Amplifier",
+                    min_height,
+                    |_| {},
+                    |ui| amplifier_module(ui, state, control),
+                );
+                filter_h.max(amp_h)
             });
         } else {
             module_panel_with_header(
                 ui,
                 "Low-Pass Filter",
+                0.0,
                 |ui| filter_model_combo(ui, filter_type, control),
                 |ui| filter_module(ui, state, control),
             );
@@ -759,14 +819,22 @@ pub fn show(
 
         ui.add_space(8.0);
 
-        ui.columns(2, |columns| {
-            module_panel(&mut columns[0], "Low Frequency Oscillators", |ui| {
-                lfo_module(ui, state, control);
-            });
-
-            module_panel(&mut columns[1], "Auxiliary Envelope", |ui| {
-                auxiliary_envelope_module(ui, state, control);
-            });
+        equal_height_columns(ui, "lfo_aux_row", 2, |columns, min_height| {
+            let lfo_h = module_panel_with_header(
+                &mut columns[0],
+                "Low Frequency Oscillators",
+                min_height,
+                |_| {},
+                |ui| lfo_module(ui, state, control),
+            );
+            let aux_h = module_panel_with_header(
+                &mut columns[1],
+                "Auxiliary Envelope",
+                min_height,
+                |_| {},
+                |ui| auxiliary_envelope_module(ui, state, control),
+            );
+            lfo_h.max(aux_h)
         });
 
         ui.add_space(8.0);
@@ -775,26 +843,72 @@ pub fn show(
 
         ui.add_space(8.0);
 
-        module_panel(ui, "Effects", |ui| {
-            effects_module(ui, state, control);
-        });
+        {
+            let row_id = ui.id().with(("equal_height_row", "effects_misc_row"));
+            let min_height = ui
+                .ctx()
+                .memory(|mem| mem.data.get_temp::<f32>(row_id))
+                .unwrap_or(0.0);
+            let mut measured_height = 0.0_f32;
+
+            ui.horizontal_top(|ui| {
+                let spacing = ui.spacing().item_spacing.x;
+                let effects_width =
+                    (ui.available_width() - MISC_PANEL_WIDTH - spacing).max(0.0);
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(effects_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_width(effects_width);
+                        measured_height = measured_height.max(module_panel_with_header(
+                            ui,
+                            "Effects",
+                            min_height,
+                            |_| {},
+                            |ui| effects_module(ui, state, control),
+                        ));
+                    },
+                );
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(MISC_PANEL_WIDTH, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_width(MISC_PANEL_WIDTH);
+                        measured_height = measured_height.max(module_panel_with_header(
+                            ui,
+                            "Misc",
+                            min_height,
+                            |_| {},
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    control_cell(ui, |ui| {
+                                        param_knob_f32(
+                                            ui,
+                                            "Bend Range",
+                                            &mut state.pitch_bend_range,
+                                            0.0..=12.0,
+                                            2.0,
+                                            ParamId::PitchBendRange,
+                                            control,
+                                        );
+                                    });
+                                });
+                            },
+                        ));
+                    },
+                );
+            });
+
+            ui.ctx()
+                .memory_mut(|mem| mem.data.insert_temp(row_id, measured_height.ceil()));
+        }
 
         ui.add_space(8.0);
 
-        module_panel(ui, "Misc", |ui| {
-            ui.horizontal(|ui| {
-                control_cell(ui, |ui| {
-                    param_knob_f32(
-                        ui,
-                        "Bend Range",
-                        &mut state.pitch_bend_range,
-                        0.0..=12.0,
-                        2.0,
-                        ParamId::PitchBendRange,
-                        control,
-                    );
-                });
-            });
+        module_panel(ui, "Arpeggiator", |ui| {
+            arpeggiator_module(ui, state, control);
         });
     });
 }
@@ -1247,24 +1361,31 @@ fn format_glide_display(amount: f32) -> String {
 }
 
 fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
-    module_panel_with_header(ui, title, |_| {}, add_contents);
+    module_panel_with_header(ui, title, 0.0, |_| {}, add_contents);
 }
 
 fn module_panel_with_header(
     ui: &mut egui::Ui,
     title: &str,
+    min_height: f32,
     add_header_right: impl FnOnce(&mut egui::Ui),
     add_contents: impl FnOnce(&mut egui::Ui),
-) {
+) -> f32 {
     let horizontal_margin = 10;
-    egui::Frame::group(ui.style())
+    let top_margin = 8.0;
+    let bottom_margin = 8.0;
+    let stroke = ui.visuals().widgets.noninteractive.bg_stroke.width * 2.0;
+    let mut pad_added = 0.0_f32;
+
+    let response = egui::Frame::group(ui.style())
         .inner_margin(egui::Margin {
             left: horizontal_margin,
             right: horizontal_margin,
-            top: 8,
-            bottom: 8,
+            top: top_margin as i8,
+            bottom: bottom_margin as i8,
         })
         .show(ui, |ui| {
+            let y0 = ui.cursor().top();
             ui.horizontal(|ui| {
                 ui.add(egui::Label::new(egui::RichText::new(title).strong()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1279,6 +1400,218 @@ fn module_panel_with_header(
             );
             ui.add_space(12.0);
             add_contents(ui);
+
+            if min_height > 0.0 {
+                let used = ui.cursor().top() - y0;
+                let pad =
+                    (min_height - used - top_margin - bottom_margin - stroke).max(0.0);
+                if pad > 0.0 {
+                    ui.allocate_exact_size(
+                        egui::vec2(ui.available_width().max(0.0), pad),
+                        egui::Sense::hover(),
+                    );
+                    pad_added = pad;
+                }
+            }
+        })
+        .response;
+
+    (response.rect.height() - pad_added).max(0.0)
+}
+
+fn equal_height_columns(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash,
+    n: usize,
+    add_contents: impl FnOnce(&mut [egui::Ui], f32) -> f32,
+) {
+    let row_id = ui.id().with(("equal_height_row", id));
+    let target_height = ui
+        .ctx()
+        .memory(|mem| mem.data.get_temp::<f32>(row_id))
+        .unwrap_or(0.0);
+
+    let mut measured_height = 0.0_f32;
+    ui.columns(n, |columns| {
+        measured_height = add_contents(columns, target_height);
+    });
+
+    ui.ctx()
+        .memory_mut(|mem| mem.data.insert_temp(row_id, measured_height.ceil()));
+}
+
+fn arpeggiator_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    let combo_w = 120.0;
+    let toggle_w = 46.0;
+    let toggle_h = 22.0;
+    let toggle_size = egui::vec2(toggle_w, toggle_h);
+    let toggle_wide_size = egui::vec2(combo_w, toggle_h);
+
+    egui::Grid::new("arp_grid1")
+        .num_columns(3)
+        .spacing(egui::vec2(12.0, 0.0))
+        .show(ui, |ui| {
+            control_cell(ui, |ui| {
+                param_toggle_sized(
+                    ui,
+                    toggle_size,
+                    "On",
+                    &mut state.arp_enabled,
+                    ParamId::ArpEnabled,
+                    control,
+                );
+            });
+
+            control_cell(ui, |ui| {
+                let mut range_idx = state.arp_range.saturating_sub(1) as usize;
+                param_knob_discrete(
+                    ui,
+                    "Range",
+                    &mut range_idx,
+                    &["1", "2", "3"],
+                    0,
+                    ParamId::ArpRange,
+                    control,
+                );
+                state.arp_range = range_idx as u8 + 1;
+            });
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(combo_w, CONTROL_CELL_H),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    arp_mode_combo(ui, state, control);
+                    arp_sustain_combo(ui, state, control);
+                },
+            );
+
+            ui.end_row();
+        });
+
+    ui.add_space(6.0);
+
+    egui::Grid::new("arp_grid2")
+        .num_columns(3)
+        .spacing(egui::vec2(12.0, 0.0))
+        .show(ui, |ui| {
+            control_cell(ui, |ui| {
+                param_toggle_sized(
+                    ui,
+                    toggle_size,
+                    "Hold",
+                    &mut state.arp_hold,
+                    ParamId::ArpHold,
+                    control,
+                );
+            });
+
+            control_cell(ui, |ui| {
+                let mut repeats_idx = state.arp_repeats.saturating_sub(1) as usize;
+                param_knob_discrete(
+                    ui,
+                    "Repeats",
+                    &mut repeats_idx,
+                    &["1", "2", "3"],
+                    0,
+                    ParamId::ArpRepeats,
+                    control,
+                );
+                state.arp_repeats = repeats_idx as u8 + 1;
+            });
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(combo_w, CONTROL_CELL_H),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    param_toggle_sized(
+                        ui,
+                        toggle_wide_size,
+                        "Relatch",
+                        &mut state.arp_relatch,
+                        ParamId::ArpRelatch,
+                        control,
+                    );
+                    param_toggle_sized(
+                        ui,
+                        toggle_wide_size,
+                        "Beat Sync",
+                        &mut state.arp_beat_sync,
+                        ParamId::ArpBeatSync,
+                        control,
+                    );
+                },
+            );
+
+            ui.end_row();
+        });
+}
+
+fn arp_mode_combo(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    let label_text = match ArpMode::from_index(state.arp_mode) {
+        ArpMode::Up => "Up",
+        ArpMode::Down => "Down",
+        ArpMode::UpDown => "Up Down",
+        ArpMode::Random => "Random",
+        ArpMode::Assign => "Assign",
+    };
+    egui::ComboBox::from_id_salt("arp_mode")
+        .width(ui.available_width())
+        .selected_text(label_text)
+        .show_ui(ui, |ui| {
+            for mode in ArpMode::ALL {
+                let name = match mode {
+                    ArpMode::Up => "Up",
+                    ArpMode::Down => "Down",
+                    ArpMode::UpDown => "Up Down",
+                    ArpMode::Random => "Random",
+                    ArpMode::Assign => "Assign",
+                };
+                if ui
+                    .selectable_label(state.arp_mode == mode.index(), name)
+                    .clicked()
+                {
+                    state.arp_mode = mode.index();
+                    control.set_param(ParamId::ArpMode, mode.index() as f32);
+                    ui.close();
+                }
+            }
+        });
+}
+
+fn arp_sustain_combo(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
+    let label_text = match state.arp_sustain_mode {
+        0 => "Arp Hold",
+        2 => "Arp Hold Mom",
+        _ => "Sustain",
+    };
+    egui::ComboBox::from_id_salt("arp_sustain")
+        .width(ui.available_width())
+        .selected_text(label_text)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(state.arp_sustain_mode == 0, "Arp Hold")
+                .clicked()
+            {
+                state.arp_sustain_mode = 0;
+                control.set_param(ParamId::ArpSustainMode, 0.0);
+                ui.close();
+            }
+            if ui
+                .selectable_label(state.arp_sustain_mode == 1, "Sustain")
+                .clicked()
+            {
+                state.arp_sustain_mode = 1;
+                control.set_param(ParamId::ArpSustainMode, 1.0);
+                ui.close();
+            }
+            if ui
+                .selectable_label(state.arp_sustain_mode == 2, "Arp Hold Mom")
+                .clicked()
+            {
+                state.arp_sustain_mode = 2;
+                control.set_param(ParamId::ArpSustainMode, 2.0);
+                ui.close();
+            }
         });
 }
 
@@ -1883,6 +2216,7 @@ fn modulation_matrix_panel(ui: &mut egui::Ui, state: &mut UiState, control: &Syn
     module_panel_with_header(
         ui,
         "Modulation Matrix",
+        0.0,
         |ui| {
             let expanded_id = egui::Id::new(MOD_MATRIX_EXPANDED_ID);
             let expanded = ui.data(|data| data.get_temp::<bool>(expanded_id).unwrap_or(false));

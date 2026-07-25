@@ -343,7 +343,7 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-const PARAM_IDS: [ParamId; 99] = [
+const PARAM_IDS: [ParamId; 107] = [
     ParamId::Osc1Waveform,
     ParamId::Osc1Enabled,
     ParamId::Osc1Frequency,
@@ -441,6 +441,14 @@ const PARAM_IDS: [ParamId; 99] = [
     ParamId::EffectClockSync,
     ParamId::EffectParam1,
     ParamId::EffectParam2,
+    ParamId::ArpEnabled,
+    ParamId::ArpMode,
+    ParamId::ArpRange,
+    ParamId::ArpRepeats,
+    ParamId::ArpRelatch,
+    ParamId::ArpHold,
+    ParamId::ArpBeatSync,
+    ParamId::ArpSustainMode,
     ParamId::MasterVolume,
     ParamId::AnalogDrift,
 ];

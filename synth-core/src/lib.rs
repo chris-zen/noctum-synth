@@ -44,6 +44,7 @@
 
 #![no_std]
 
+pub(crate) mod arp;
 pub mod dsp;
 pub mod effects;
 pub mod engine;
@@ -54,6 +55,7 @@ mod micromath;
 pub mod midi;
 pub mod patch;
 pub mod patch_storage;
+pub(crate) mod pressed_keys;
 pub mod profiling;
 mod rate_adapter;
 pub mod tuning;
@@ -80,10 +82,11 @@ pub use midi::{
     Rev2SysexError,
 };
 pub use patch::{
-    AmplifierParams, AuxEnvelopeParams, ChordMemory, ClockDivision, DedicatedModSlot,
-    DedicatedModSource, EffectParams, EffectType, FilterParams, GlideMode, KeyMode, LFO_COUNT,
-    LfoParams, LfoSyncDivision, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix,
-    ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode, Patch, PatchName, UnisonMode,
+    AmplifierParams, ArpMode, ArpParams, ArpSustainMode, AuxEnvelopeParams, ChordMemory,
+    ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterParams,
+    GlideMode, KeyMode, LFO_COUNT, LfoParams, LfoSyncDivision, MOD_MATRIX_FREE_SLOT_COUNT,
+    ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode,
+    Patch, PatchName, UnisonMode,
 };
 pub use patch_storage::{PATCH_RECORD_SIZE, PatchRecord, PatchRecordError};
 pub use profiling::{RenderContext, RenderProfiler, RenderStage};
@@ -216,6 +219,14 @@ pub enum ParamId {
     VcaDrive,
     PanSpread,
     PanModMode,
+    ArpEnabled,
+    ArpMode,
+    ArpRange,
+    ArpRepeats,
+    ArpRelatch,
+    ArpHold,
+    ArpBeatSync,
+    ArpSustainMode,
     MasterVolume,
     PitchBendRange,
 }
@@ -322,6 +333,14 @@ impl ParamId {
             Self::VcaDrive => "VCA Drive",
             Self::PanSpread => "Pan Spread",
             Self::PanModMode => "Pan Mod Mode",
+            Self::ArpEnabled => "Arp On/Off",
+            Self::ArpMode => "Arp Mode",
+            Self::ArpRange => "Arp Range",
+            Self::ArpRepeats => "Arp Repeats",
+            Self::ArpRelatch => "Arp Relatch",
+            Self::ArpHold => "Arp Hold",
+            Self::ArpBeatSync => "Arp Beat Sync",
+            Self::ArpSustainMode => "Arp Sustain Mode",
             Self::MasterVolume => "Master Volume",
             Self::PitchBendRange => "Pitch Bend Range",
         }

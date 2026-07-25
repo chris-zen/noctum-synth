@@ -13,6 +13,8 @@ pub const PATCH_NAME_CAPACITY: usize = 20;
 pub const CHORD_MEMORY_CAPACITY: usize = 16;
 pub const LFO_COUNT: usize = 4;
 pub const MOD_MATRIX_FREE_SLOT_COUNT: usize = 8;
+pub const MAX_ARP_NOTES: usize = 16;
+pub const MAX_ARP_STEPS: usize = MAX_ARP_NOTES * 3 * 3;
 
 pub type PatchName = heapless::String<PATCH_NAME_CAPACITY>;
 
@@ -1182,6 +1184,78 @@ impl Default for OscillatorPatch {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArpMode {
+    #[default]
+    Up,
+    Down,
+    UpDown,
+    Assign,
+    Random,
+}
+
+impl ArpMode {
+    pub const ALL: [Self; 5] = [Self::Up, Self::Down, Self::UpDown, Self::Random, Self::Assign];
+
+    pub const fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Down,
+            2 => Self::UpDown,
+            3 => Self::Assign,
+            4 => Self::Random,
+            _ => Self::Up,
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Up => 0,
+            Self::Down => 1,
+            Self::UpDown => 2,
+            Self::Assign => 3,
+            Self::Random => 4,
+        }
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArpSustainMode {
+    ArpHold,
+    #[default]
+    Sustain,
+    ArpHoldMom,
+}
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, Clone)]
+pub struct ArpParams {
+    pub enabled: bool,
+    pub mode: ArpMode,
+    pub range: u8,
+    pub repeats: u8,
+    pub relatch: bool,
+    pub hold: bool,
+    pub beat_sync: bool,
+    pub sustain_mode: ArpSustainMode,
+}
+
+impl Default for ArpParams {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: ArpMode::Up,
+            range: 1,
+            repeats: 1,
+            relatch: false,
+            hold: false,
+            beat_sync: false,
+            sustain_mode: ArpSustainMode::default(),
+        }
+    }
+}
+
 /// Complete synthesizer patch capturing every parameter in one serializable snapshot.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
@@ -1210,6 +1284,8 @@ pub struct Patch {
     pub lfos: [LfoParams; LFO_COUNT],
     pub mod_matrix: ModMatrix,
     pub effects: EffectParams,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub arp: ArpParams,
     pub master_volume: f32,
     pub name: PatchName,
 }
@@ -1246,6 +1322,7 @@ impl Default for Patch {
             lfos: [LfoParams::default(); LFO_COUNT],
             mod_matrix: ModMatrix::default(),
             effects: EffectParams::default(),
+            arp: ArpParams::default(),
             master_volume: 0.8,
             name: PatchName::new(),
         }
@@ -1403,6 +1480,22 @@ impl Patch {
         f(ParamId::EffectParam1, self.effects.param1);
         f(ParamId::EffectParam2, self.effects.param2);
 
+        f(ParamId::ArpEnabled, s(self.arp.enabled));
+        f(ParamId::ArpMode, self.arp.mode.index() as f32);
+        f(ParamId::ArpRange, (self.arp.range.saturating_sub(1)) as f32);
+        f(ParamId::ArpRepeats, (self.arp.repeats.saturating_sub(1)) as f32);
+        f(ParamId::ArpRelatch, s(self.arp.relatch));
+        f(ParamId::ArpHold, s(self.arp.hold));
+        f(ParamId::ArpBeatSync, s(self.arp.beat_sync));
+        f(
+            ParamId::ArpSustainMode,
+            match self.arp.sustain_mode {
+                ArpSustainMode::ArpHold => 0.0,
+                ArpSustainMode::Sustain => 1.0,
+                ArpSustainMode::ArpHoldMom => 2.0,
+            },
+        );
+
         f(ParamId::MasterVolume, self.master_volume);
         f(ParamId::AnalogDrift, self.osc_slop);
     }
@@ -1556,6 +1649,20 @@ impl Patch {
             ParamId::EffectParam1 => self.effects.param1 = value,
             ParamId::EffectParam2 => self.effects.param2 = value,
             ParamId::MasterVolume => self.master_volume = value,
+            ParamId::ArpEnabled => self.arp.enabled = flag,
+            ParamId::ArpMode => self.arp.mode = ArpMode::from_index(value as usize),
+            ParamId::ArpRange => self.arp.range = (value as u8).clamp(0, 2) + 1,
+            ParamId::ArpRepeats => self.arp.repeats = (value as u8).clamp(0, 2) + 1,
+            ParamId::ArpRelatch => self.arp.relatch = flag,
+            ParamId::ArpHold => self.arp.hold = flag,
+            ParamId::ArpBeatSync => self.arp.beat_sync = flag,
+            ParamId::ArpSustainMode => {
+                self.arp.sustain_mode = match value as usize {
+                    0 => ArpSustainMode::ArpHold,
+                    2 => ArpSustainMode::ArpHoldMom,
+                    _ => ArpSustainMode::Sustain,
+                }
+            }
             ParamId::VcaDrive => {}
         }
     }
