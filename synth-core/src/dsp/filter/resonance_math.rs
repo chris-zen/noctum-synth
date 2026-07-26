@@ -1,14 +1,11 @@
 //! Resonance-control shaping selected at the filter subsystem boundary.
 
-#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
-use super::RESONANCE_CONTROL_EXPONENT;
-
 #[inline(always)]
 pub(super) fn shape(value: f32) -> f32 {
     backend::shape(value)
 }
 
-#[cfg(all(feature = "embedded-math", target_os = "none"))]
+#[cfg(target_arch = "arm")]
 mod backend {
     #[inline(always)]
     fn hardware_sqrt(mut value: f32) -> f32 {
@@ -35,18 +32,21 @@ mod backend {
     }
 }
 
-#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+#[cfg(not(target_arch = "arm"))]
 mod backend {
-    use super::RESONANCE_CONTROL_EXPONENT;
+    use crate::dsp::filter::RESONANCE_CONTROL_EXPONENT;
+    use crate::math::F32;
 
     #[inline(always)]
     pub(super) fn shape(value: f32) -> f32 {
-        crate::math::powf(value, RESONANCE_CONTROL_EXPONENT)
+        F32(value).powf(F32(RESONANCE_CONTROL_EXPONENT)).as_f32()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::dsp::filter::RESONANCE_CONTROL_EXPONENT;
+
     #[test]
     fn hardware_sqrt_form_tracks_reference_power() {
         let mut maximum_error = 0.0_f32;
@@ -54,7 +54,7 @@ mod tests {
             let value = index as f32 / 65_536.0;
             let square_root = value.sqrt();
             let actual = value * square_root * square_root.sqrt();
-            let expected = libm::powf(value, super::RESONANCE_CONTROL_EXPONENT);
+            let expected = libm::powf(value, RESONANCE_CONTROL_EXPONENT);
             maximum_error = maximum_error.max((actual - expected).abs());
         }
         assert!(maximum_error <= 2.0e-7, "maximum error={maximum_error}");

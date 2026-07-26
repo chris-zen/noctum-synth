@@ -1,6 +1,6 @@
 //! Four-stage TPT cascade with an analytic, gain-limited feedback loop.
 
-use crate::f32x4;
+use crate::math::{F32, WideF32};
 
 use crate::dsp::filter::{
     FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_RESONANCE_START,
@@ -28,7 +28,7 @@ const SELF_OSC_COLOR_B4: f32 = 0.000288;
 const SELF_OSC_COLOR_B5: f32 = -0.00024;
 
 #[inline(always)]
-fn uniform_lane_value(value: f32x4) -> Option<f32> {
+fn uniform_lane_value(value: WideF32) -> Option<f32> {
     let lanes = value.to_array();
     lanes[1..]
         .iter()
@@ -46,10 +46,10 @@ struct StaticCoefficientCache {
 pub(super) struct GainLimitedTpt {
     self_osc_pitch_tuning_cents: f32,
     static_coefficient_cache: StaticCoefficientCache,
-    z: [f32x4; 4],
-    oversample_decimator_z: f32x4,
-    previous_output: f32x4,
-    smoothed_feedback: f32x4,
+    z: [WideF32; 4],
+    oversample_decimator_z: WideF32,
+    previous_output: WideF32,
+    smoothed_feedback: WideF32,
 }
 
 impl Default for GainLimitedTpt {
@@ -57,19 +57,19 @@ impl Default for GainLimitedTpt {
         Self {
             self_osc_pitch_tuning_cents: SELF_OSC_PITCH_TUNING_CENTS,
             static_coefficient_cache: StaticCoefficientCache::default(),
-            z: [f32x4::splat(0.0); 4],
-            oversample_decimator_z: f32x4::splat(0.0),
-            previous_output: f32x4::splat(0.0),
-            smoothed_feedback: f32x4::splat(0.0),
+            z: [WideF32::ZERO; 4],
+            oversample_decimator_z: WideF32::ZERO,
+            previous_output: WideF32::ZERO,
+            smoothed_feedback: WideF32::ZERO,
         }
     }
 }
 
 impl GainLimitedTpt {
     fn reset(&mut self) {
-        self.z = [f32x4::splat(0.0); 4];
-        self.previous_output = f32x4::splat(0.0);
-        self.smoothed_feedback = f32x4::splat(0.0);
+        self.z = [WideF32::ZERO; 4];
+        self.previous_output = WideF32::ZERO;
+        self.smoothed_feedback = WideF32::ZERO;
         self.clear_oversampling_state();
     }
 
@@ -84,15 +84,15 @@ impl GainLimitedTpt {
         ) {
             let mut values = state.to_array();
             values[lane] = 0.0;
-            *state = f32x4::new(values);
+            *state = WideF32::new(values);
         }
     }
 
     fn clear_oversampling_state(&mut self) {
-        self.oversample_decimator_z = f32x4::splat(0.0);
+        self.oversample_decimator_z = WideF32::ZERO;
     }
 
-    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+    fn process(&mut self, frame: FilterFrame) -> WideF32 {
         // Oversampling is a global run setting, independent of resonance.
         let factor = frame.oversampling.factor(frame.sample_rate);
         if factor == 1 {
@@ -102,7 +102,7 @@ impl GainLimitedTpt {
 
         let oversampled_rate = frame.sample_rate * factor as f32;
         let g = self.coefficients(frame, oversampled_rate);
-        let mut output = f32x4::splat(0.0);
+        let mut output = WideF32::ZERO;
         for _ in 0..factor {
             output = self.process_subsample(frame, g);
             output = self.decimate(output, factor);
@@ -110,33 +110,33 @@ impl GainLimitedTpt {
         output
     }
 
-    fn process_subsample(&mut self, frame: FilterFrame, g: f32x4) -> f32x4 {
+    fn process_subsample(&mut self, frame: FilterFrame, g: WideF32) -> WideF32 {
         let amount = if frame.poles == 4 {
             self_oscillation_amount(frame.resonance_control)
         } else {
-            f32x4::splat(0.0)
+            WideF32::ZERO
         };
         let transition = smoothstep(amount);
         let linear_feedback = if frame.poles == 2 {
-            frame.shaped_resonance * f32x4::splat(TWO_POLE_MAX_RESONANCE)
+            frame.shaped_resonance * WideF32::splat(TWO_POLE_MAX_RESONANCE)
         } else {
-            frame.shaped_resonance * f32x4::splat(FOUR_POLE_MAX_LINEAR_RESONANCE)
+            frame.shaped_resonance * WideF32::splat(FOUR_POLE_MAX_LINEAR_RESONANCE)
         };
         let requested_feedback = if frame.poles == 4 {
             self_oscillation_feedback(linear_feedback, transition)
         } else {
             linear_feedback
         };
-        let nonlinear = amount.simd_gt(f32x4::splat(0.0));
+        let nonlinear = amount.simd_gt(WideF32::ZERO);
         let effective_feedback = if nonlinear.any() {
-            let limiter_drive = transition * f32x4::splat(LIMITER_DRIVE);
+            let limiter_drive = transition * WideF32::splat(LIMITER_DRIVE);
             let output_power = self.previous_output * self.previous_output;
             let limited_feedback =
-                requested_feedback / (f32x4::splat(1.0) + limiter_drive * output_power);
+                requested_feedback / (WideF32::splat(1.0) + limiter_drive * output_power);
             // This keeps the smoothing time at a stable fraction of the cutoff
             // period across pitch, sample rate, and global oversampling factors.
-            let smoothing = (g * f32x4::splat(LIMITER_SMOOTHING_SCALE))
-                .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
+            let smoothing = (g * WideF32::splat(LIMITER_SMOOTHING_SCALE))
+                .clamp(WideF32::ZERO, WideF32::splat(1.0));
             self.smoothed_feedback += (limited_feedback - self.smoothed_feedback) * smoothing;
             self.smoothed_feedback = nonlinear.blend(self.smoothed_feedback, linear_feedback);
             self.smoothed_feedback
@@ -146,21 +146,21 @@ impl GainLimitedTpt {
         };
 
         let audio_input = if frame.poles == 4 {
-            frame.input * f32x4::splat(AUDIO_INPUT_GAIN)
+            frame.input * WideF32::splat(AUDIO_INPUT_GAIN)
         } else {
             frame.input
         };
         let compensated_input = if frame.poles == 4 {
             audio_input
-                * (f32x4::splat(1.0)
+                * (WideF32::splat(1.0)
                     + frame.shaped_resonance
-                        * f32x4::splat(FOUR_POLE_MAX_LINEAR_RESONANCE * RESONANCE_BASS_COMP))
+                        * WideF32::splat(FOUR_POLE_MAX_LINEAR_RESONANCE * RESONANCE_BASS_COMP))
         } else {
             audio_input
         };
         let input = compensated_input + self_oscillation_excitation(amount);
         let (a, b) = self.output_affine_form(g, frame.poles);
-        let u = (input - effective_feedback * b) / (f32x4::splat(1.0) + effective_feedback * a);
+        let u = (input - effective_feedback * b) / (WideF32::splat(1.0) + effective_feedback * a);
 
         let y0 = g * u + stage_offset(self.z[0], g);
         let y1 = g * y0 + stage_offset(self.z[1], g);
@@ -192,7 +192,7 @@ impl GainLimitedTpt {
         }
     }
 
-    fn output_affine_form(&self, g: f32x4, poles: u8) -> (f32x4, f32x4) {
+    fn output_affine_form(&self, g: WideF32, poles: u8) -> (WideF32, WideF32) {
         let s0 = stage_offset(self.z[0], g);
         let s1 = stage_offset(self.z[1], g);
         let g2 = g * g;
@@ -207,7 +207,7 @@ impl GainLimitedTpt {
         (g4, g3 * s0 + g2 * s1 + g * s2 + s3)
     }
 
-    fn decimate(&mut self, output: f32x4, factor: usize) -> f32x4 {
+    fn decimate(&mut self, output: WideF32, factor: usize) -> WideF32 {
         let mut state = self.oversample_decimator_z.to_array();
         let output_values = output.to_array();
         for lane in 0..state.len() {
@@ -215,14 +215,14 @@ impl GainLimitedTpt {
                 state[lane] = output_values[lane];
             }
         }
-        self.oversample_decimator_z = f32x4::new(state);
-        let g = f32x4::splat(decimator_coefficient(factor));
+        self.oversample_decimator_z = WideF32::new(state);
+        let g = WideF32::splat(decimator_coefficient(factor));
         tpt_one_pole(output, &mut self.oversample_decimator_z, g)
     }
 
-    fn coefficients(&mut self, frame: FilterFrame, sample_rate: f32) -> f32x4 {
+    fn coefficients(&mut self, frame: FilterFrame, sample_rate: f32) -> WideF32 {
         if frame.static_cutoff {
-            return f32x4::splat(self.static_coefficient(frame, sample_rate));
+            return WideF32::splat(self.static_coefficient(frame, sample_rate));
         }
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
@@ -237,12 +237,12 @@ impl GainLimitedTpt {
             }
         });
         let pitch_semitones = if let Some(pitch) = uniform_pitch_semitones {
-            f32x4::splat(pitch)
+            WideF32::splat(pitch)
         } else if frame.poles == 4 {
             smoothstep(self_oscillation_amount(frame.resonance_control))
-                * f32x4::splat(self.self_osc_pitch_tuning_cents / 100.0)
+                * WideF32::splat(self.self_osc_pitch_tuning_cents / 100.0)
         } else {
-            f32x4::splat(0.0)
+            WideF32::ZERO
         };
         let cutoff_modulation = super::coefficient_math::PreparedCutoffModulation::new(
             frame.cutoff_mod_semitones + pitch_semitones,
@@ -272,9 +272,11 @@ impl GainLimitedTpt {
         }
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
-        let cutoff = (frame.cutoff_hz * crate::math::exp2(pitch_cents / 1200.0))
+        let cutoff = (frame.cutoff_hz * F32(pitch_cents / 1200.0).exp2().as_f32())
             .clamp(MIN_CUTOFF_HZ, max_cutoff);
-        let raw = crate::math::tan(core::f32::consts::PI * cutoff / sample_rate);
+        let raw = F32(core::f32::consts::PI * cutoff / sample_rate)
+            .tan()
+            .as_f32();
         let value = raw / (1.0 + raw);
         self.static_coefficient_cache = StaticCoefficientCache { key, value };
         value
@@ -287,7 +289,8 @@ fn decimator_coefficient(factor: usize) -> f32 {
 }
 
 mod decimator_math {
-    #[cfg(all(feature = "embedded-math", target_os = "none"))]
+    use crate::math::F32;
+    #[cfg(feature = "fast-math")]
     #[inline(always)]
     pub(super) fn coefficient(factor: usize) -> f32 {
         match factor {
@@ -297,11 +300,11 @@ mod decimator_math {
         }
     }
 
-    #[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+    #[cfg(not(feature = "fast-math"))]
     #[inline(always)]
     pub(super) fn coefficient(factor: usize) -> f32 {
         let angle = core::f32::consts::PI * 0.45 / factor as f32;
-        let raw = crate::math::tan(angle);
+        let raw = F32(angle).tan().as_f32();
         raw / (1.0 + raw)
     }
 }
@@ -332,15 +335,15 @@ impl FilterAlgorithm for GainLimitedTpt {
         self.self_osc_pitch_tuning_cents
     }
 
-    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+    fn process(&mut self, frame: FilterFrame) -> WideF32 {
         GainLimitedTpt::process(self, frame)
     }
 }
 
-fn self_oscillation_amount(resonance_control: f32x4) -> f32x4 {
-    ((resonance_control - f32x4::splat(SELF_OSC_RESONANCE_START))
-        / f32x4::splat(1.0 - SELF_OSC_RESONANCE_START))
-    .clamp(f32x4::splat(0.0), f32x4::splat(1.0))
+fn self_oscillation_amount(resonance_control: WideF32) -> WideF32 {
+    ((resonance_control - WideF32::splat(SELF_OSC_RESONANCE_START))
+        / WideF32::splat(1.0 - SELF_OSC_RESONANCE_START))
+    .clamp(WideF32::ZERO, WideF32::splat(1.0))
 }
 
 #[inline(always)]
@@ -355,43 +358,44 @@ fn self_oscillation_amount_scalar(resonance_control: f32) -> f32 {
     }
 }
 
-fn self_oscillation_feedback(linear: f32x4, transition: f32x4) -> f32x4 {
-    let target = f32x4::splat(FOUR_POLE_SELF_OSC_START_RESONANCE)
+fn self_oscillation_feedback(linear: WideF32, transition: WideF32) -> WideF32 {
+    let target = WideF32::splat(FOUR_POLE_SELF_OSC_START_RESONANCE)
         + transition
-            * f32x4::splat(FOUR_POLE_SELF_OSC_MAX_RESONANCE - FOUR_POLE_SELF_OSC_START_RESONANCE);
+            * WideF32::splat(FOUR_POLE_SELF_OSC_MAX_RESONANCE - FOUR_POLE_SELF_OSC_START_RESONANCE);
     linear + (target - linear) * transition
 }
 
-fn self_oscillation_output_makeup(transition: f32x4) -> f32x4 {
-    f32x4::splat(1.0) + transition * f32x4::splat(SELF_OSC_OUTPUT_MAKEUP - 1.0)
+fn self_oscillation_output_makeup(transition: WideF32) -> WideF32 {
+    WideF32::splat(1.0) + transition * WideF32::splat(SELF_OSC_OUTPUT_MAKEUP - 1.0)
 }
 
 /// Shapes the autonomous self-oscillation with a finite Chebyshev polynomial.
 /// The second and third partials use relative coefficients 0.0076 and -0.00116;
 /// tiny fourth/fifth-partial terms (0.000036/-0.000015) suppress residual upper
 /// color without adding another polynomial order or an unlimited harmonic tail.
-fn self_oscillation_color(output: f32x4, amount: f32x4) -> f32x4 {
-    let ramp = ((amount - f32x4::splat(0.8)) * f32x4::splat(5.0))
-        .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-    let normalized = (output * f32x4::splat(SELF_OSC_COLOR_REFERENCE_LEVEL_INV))
-        .clamp(f32x4::splat(-1.0), f32x4::splat(1.0));
-    let polynomial = f32x4::splat(SELF_OSC_COLOR_B4) + normalized * f32x4::splat(SELF_OSC_COLOR_B5);
-    let polynomial = f32x4::splat(SELF_OSC_COLOR_B3) + normalized * polynomial;
-    let polynomial = f32x4::splat(SELF_OSC_COLOR_B2) + normalized * polynomial;
-    let polynomial = f32x4::splat(SELF_OSC_COLOR_B1) + normalized * polynomial;
-    let polynomial = f32x4::splat(SELF_OSC_COLOR_B0) + normalized * polynomial;
-    let colored = polynomial * f32x4::splat(SELF_OSC_COLOR_REFERENCE_LEVEL);
+fn self_oscillation_color(output: WideF32, amount: WideF32) -> WideF32 {
+    let ramp = ((amount - WideF32::splat(0.8)) * WideF32::splat(5.0))
+        .clamp(WideF32::ZERO, WideF32::splat(1.0));
+    let normalized = (output * WideF32::splat(SELF_OSC_COLOR_REFERENCE_LEVEL_INV))
+        .clamp(WideF32::splat(-1.0), WideF32::splat(1.0));
+    let polynomial =
+        WideF32::splat(SELF_OSC_COLOR_B4) + normalized * WideF32::splat(SELF_OSC_COLOR_B5);
+    let polynomial = WideF32::splat(SELF_OSC_COLOR_B3) + normalized * polynomial;
+    let polynomial = WideF32::splat(SELF_OSC_COLOR_B2) + normalized * polynomial;
+    let polynomial = WideF32::splat(SELF_OSC_COLOR_B1) + normalized * polynomial;
+    let polynomial = WideF32::splat(SELF_OSC_COLOR_B0) + normalized * polynomial;
+    let colored = polynomial * WideF32::splat(SELF_OSC_COLOR_REFERENCE_LEVEL);
     output + (colored - output) * ramp
 }
 
-fn self_oscillation_excitation(amount: f32x4) -> f32x4 {
-    let gain = amount * amount * f32x4::splat(SELF_OSC_EXCITATION);
-    gain * f32x4::new([1.0, -0.75, 0.5, -0.25])
+fn self_oscillation_excitation(amount: WideF32) -> WideF32 {
+    let gain = amount * amount * WideF32::splat(SELF_OSC_EXCITATION);
+    gain * WideF32::new(core::array::from_fn(|i| [1.0, -0.75, 0.5, -0.25][i % 4]))
 }
 
-fn smoothstep(value: f32x4) -> f32x4 {
-    let value = value.clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-    value * value * (f32x4::splat(3.0) - f32x4::splat(2.0) * value)
+fn smoothstep(value: WideF32) -> WideF32 {
+    let value = value.clamp(WideF32::ZERO, WideF32::splat(1.0));
+    value * value * (WideF32::splat(3.0) - WideF32::splat(2.0) * value)
 }
 
 #[inline(always)]
@@ -399,15 +403,15 @@ fn smoothstep_scalar(value: f32) -> f32 {
     value * value * (3.0 - 2.0 * value)
 }
 
-fn stage_offset(z: f32x4, g: f32x4) -> f32x4 {
-    z * (f32x4::splat(1.0) - g)
+fn stage_offset(z: WideF32, g: WideF32) -> WideF32 {
+    z * (WideF32::splat(1.0) - g)
 }
 
-fn commit_tpt_output(z: &mut f32x4, y: f32x4) {
+fn commit_tpt_output(z: &mut WideF32, y: WideF32) {
     *z = y + (y - *z);
 }
 
-fn tpt_one_pole(input: f32x4, z: &mut f32x4, g: f32x4) -> f32x4 {
+fn tpt_one_pole(input: WideF32, z: &mut WideF32, g: WideF32) -> WideF32 {
     let v = (input - *z) * g;
     let output = v + *z;
     *z = output + v;
@@ -420,6 +424,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn state_stays_within_runtime_size_budget() {
         assert!(core::mem::size_of::<GainLimitedTpt>() <= 128);
     }
@@ -427,11 +432,11 @@ mod tests {
     #[test]
     fn embedded_uniform_coefficients_keep_filter_output_within_error_bounds() {
         for resonance in [0.0f32, 0.65, 0.9] {
-            let shaped_resonance = crate::math::powf(resonance, 1.75);
-            let resonance_control = f32x4::splat(resonance);
+            let shaped_resonance = F32(resonance).powf(F32(1.75)).as_f32();
+            let resonance_control = WideF32::splat(resonance);
             let amount = self_oscillation_amount(resonance_control);
             let pitch_semitones =
-                smoothstep(amount) * f32x4::splat(SELF_OSC_PITCH_TUNING_CENTS / 100.0);
+                smoothstep(amount) * WideF32::splat(SELF_OSC_PITCH_TUNING_CENTS / 100.0);
             let mut vector_filter = GainLimitedTpt::default();
             let mut embedded_filter = GainLimitedTpt::default();
             let mut squared_error = 0.0f32;
@@ -446,21 +451,19 @@ mod tests {
                 } else {
                     phase * 4.0 - 4.0
                 };
-                let cutoff_mod = f32x4::splat(triangle * 36.0);
+                let cutoff_mod = WideF32::splat(triangle * 36.0);
                 let input_phase = (sample % 97) as f32 / 97.0;
-                let input = f32x4::new([
-                    input_phase * 2.0 - 1.0,
+                let input = WideF32::new(core::array::from_fn(|i| [input_phase * 2.0 - 1.0,
                     0.75 - input_phase,
                     input_phase - 0.25,
-                    0.5 - input_phase * 0.5,
-                ]);
+                    0.5 - input_phase * 0.5,][i % 4]));
                 let frame = FilterFrame {
                     input,
                     cutoff_hz: 1_200.0,
                     cutoff_mod_semitones: cutoff_mod,
                     cutoff_mod_uniform_semitones: Some(triangle * 36.0),
                     resonance_control,
-                    shaped_resonance: f32x4::splat(shaped_resonance),
+                    shaped_resonance: WideF32::splat(shaped_resonance),
                     poles: 4,
                     oversampling: crate::dsp::FilterOversampling::Off,
                     sample_rate: 48_000.0,
@@ -505,11 +508,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn limiter_reduces_feedback_as_output_grows() {
-        let requested = f32x4::splat(5.25);
-        let drive = f32x4::splat(LIMITER_DRIVE);
-        let previous = f32x4::new([0.0, 0.25, 0.5, 1.0]);
-        let limited = requested / (f32x4::splat(1.0) + drive * previous * previous);
+        let requested = WideF32::splat(5.25);
+        let drive = WideF32::splat(LIMITER_DRIVE);
+        let previous = WideF32::new(core::array::from_fn(|i| [0.0, 0.25, 0.5, 1.0][i % 4]));
+        let limited = requested / (WideF32::splat(1.0) + drive * previous * previous);
         assert!(limited.to_array().windows(2).all(|pair| pair[1] < pair[0]));
     }
 
@@ -517,12 +521,12 @@ mod tests {
     fn harmonic_color_does_not_inflate_the_self_oscillation_crest() {
         let mut filter = GainLimitedTpt::default();
         let frame = FilterFrame {
-            input: f32x4::ZERO,
+            input: WideF32::ZERO,
             cutoff_hz: 739.99,
-            cutoff_mod_semitones: f32x4::ZERO,
+            cutoff_mod_semitones: WideF32::ZERO,
             cutoff_mod_uniform_semitones: Some(0.0),
-            resonance_control: f32x4::splat(1.0),
-            shaped_resonance: f32x4::splat(1.0),
+            resonance_control: WideF32::splat(1.0),
+            shaped_resonance: WideF32::splat(1.0),
             poles: 4,
             oversampling: crate::dsp::FilterOversampling::Off,
             sample_rate: 48_000.0,
@@ -547,7 +551,8 @@ mod tests {
     }
 
     use crate::dsp::filter::{Filter, FilterOversampling, FilterType};
-    use crate::{ParamId, SynthEngine, f32x4};
+    use crate::math::WideF32;
+    use crate::{ParamId, SynthEngine};
 
     extern crate std;
     use std::vec::Vec;
@@ -570,16 +575,16 @@ mod tests {
         filter
     }
 
-    fn process(filter: &mut Filter, input: f32x4, note: f32x4, sample_rate: f32) -> f32x4 {
+    fn process(filter: &mut Filter, input: WideF32, note: WideF32, sample_rate: f32) -> WideF32 {
         filter.process(
             input,
             note,
-            f32x4::splat(0.0),
-            f32x4::splat(1.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
+            WideF32::ZERO,
+            WideF32::splat(1.0),
+            WideF32::ZERO,
+            WideF32::ZERO,
+            WideF32::ZERO,
+            WideF32::ZERO,
             sample_rate,
         )
     }
@@ -601,8 +606,8 @@ mod tests {
         for _ in 0..frames {
             let _ = process(
                 &mut filter,
-                f32x4::splat(phase.sin() * amplitude),
-                f32x4::splat(69.0),
+                WideF32::splat(phase.sin() * amplitude),
+                WideF32::splat(69.0),
                 sample_rate,
             );
             phase += phase_step;
@@ -614,8 +619,8 @@ mod tests {
             let sine = phase.sin();
             let output = process(
                 &mut filter,
-                f32x4::splat(sine * amplitude),
-                f32x4::splat(69.0),
+                WideF32::splat(sine * amplitude),
+                WideF32::splat(69.0),
                 sample_rate,
             )
             .to_array()[0];
@@ -636,8 +641,8 @@ mod tests {
         for _ in 0..128 {
             let _ = process(
                 &mut filter,
-                f32x4::splat(0.1),
-                f32x4::splat(69.0),
+                WideF32::splat(0.1),
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             );
         }
@@ -646,8 +651,8 @@ mod tests {
             samples.push(
                 process(
                     &mut filter,
-                    f32x4::splat(0.0),
-                    f32x4::splat(69.0),
+                    WideF32::ZERO,
+                    WideF32::splat(69.0),
                     SAMPLE_RATE,
                 )
                 .to_array()[0],
@@ -820,6 +825,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "wide-1"))]
     fn gain_limited_driven_chords_retain_output_headroom() {
         let mut previous_peak = 0.0;
         let mut previous_rms = 0.0;
@@ -869,6 +875,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "wide-1"))]
     fn adding_a_second_key_does_not_raise_the_first_fundamental() {
         let one_key = live_key_tracked_fundamental_db(&[36], CUTOFF_HZ);
         let two_keys = live_key_tracked_fundamental_db(&[36, 43], CUTOFF_HZ);
@@ -879,6 +886,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "downsampling"))]
     fn gain_limited_live_analyzer_level_and_harmonics_match_target() {
         for cutoff in [410.0, 110.0, 220.0, 440.0, 739.99, 880.0, 1760.0] {
             let harmonics =
@@ -994,6 +1002,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(not(feature = "fast-math"), feature = "filter-all"))]
     fn gain_limited_tpt_linear_response_matches_baseline() {
         const FOUR_POLE_INPUT_GAIN: f32 = 0.40;
         const FOUR_POLE_FEEDBACK: f32 = 3.75;
@@ -1122,8 +1131,8 @@ mod tests {
         for _ in 0..24_000 {
             previous = process(
                 &mut filter,
-                f32x4::splat(phase.sin() * 0.1),
-                f32x4::splat(69.0),
+                WideF32::splat(phase.sin() * 0.1),
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             )
             .to_array()[0];
@@ -1132,8 +1141,8 @@ mod tests {
         filter.set_resonance(0.72);
         let crossed = process(
             &mut filter,
-            f32x4::splat(phase.sin() * 0.1),
-            f32x4::splat(69.0),
+            WideF32::splat(phase.sin() * 0.1),
+            WideF32::splat(69.0),
             SAMPLE_RATE,
         )
         .to_array()[0];
@@ -1205,8 +1214,8 @@ mod tests {
         for _ in 0..128 {
             let _ = process(
                 &mut filter,
-                f32x4::splat(0.1),
-                f32x4::splat(69.0),
+                WideF32::splat(0.1),
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             );
         }
@@ -1215,8 +1224,8 @@ mod tests {
         for frame in 0..24_000 {
             let output = process(
                 &mut filter,
-                f32x4::splat(0.0),
-                f32x4::splat(69.0),
+                WideF32::ZERO,
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             )
             .to_array()[0];
@@ -1256,14 +1265,17 @@ mod tests {
                         for frame in 0..256 {
                             let phase = frame as f32;
                             let output = filter.process(
-                                f32x4::new([0.8, -0.8, 0.25, -0.25]),
-                                f32x4::new([24.0, 60.0, 96.0, 120.0]),
-                                f32x4::new([0.0, 0.33, 0.66, 1.0]),
-                                f32x4::new([0.0, 0.33, 0.66, 1.0]),
-                                f32x4::new([phase.sin(), phase.cos(), -phase.sin(), -phase.cos()]),
-                                f32x4::new([-48.0, -12.0, 12.0, 48.0]),
-                                f32x4::new([-0.2, -0.05, 0.05, 0.2]),
-                                f32x4::new([-0.25, 0.0, 0.25, 0.5]),
+                                WideF32::new(core::array::from_fn(|i| [0.8, -0.8, 0.25, -0.25][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [24.0, 60.0, 96.0, 120.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [0.0, 0.33, 0.66, 1.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [0.0, 0.33, 0.66, 1.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [phase.sin(),
+                                    phase.cos(),
+                                    -phase.sin(),
+                                    -phase.cos(),][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [-48.0, -12.0, 12.0, 48.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [-0.2, -0.05, 0.05, 0.2][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [-0.25, 0.0, 0.25, 0.5][i % 4])),
                                 sample_rate,
                             );
                             for value in output.to_array() {
@@ -1279,6 +1291,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
     fn gain_limited_tpt_reset_and_lanes_are_independent() {
         let make = || {
@@ -1297,40 +1310,40 @@ mod tests {
             let input = (frame as f32 * 0.037).sin() * 0.1;
             let mixed_output = mixed
                 .process(
-                    f32x4::splat(input),
-                    f32x4::splat(69.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(1.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(0.0),
-                    f32x4::new([-0.25, 0.05, -0.25, 0.05]),
-                    f32x4::splat(0.0),
+                    WideF32::splat(input),
+                    WideF32::splat(69.0),
+                    WideF32::ZERO,
+                    WideF32::splat(1.0),
+                    WideF32::ZERO,
+                    WideF32::ZERO,
+                    WideF32::new(core::array::from_fn(|i| [-0.25, 0.05, -0.25, 0.05][i % 4])),
+                    WideF32::ZERO,
                     SAMPLE_RATE,
                 )
                 .to_array();
             let zero = lane_zero
                 .process(
-                    f32x4::splat(input),
-                    f32x4::splat(69.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(1.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(-0.25),
-                    f32x4::splat(0.0),
+                    WideF32::splat(input),
+                    WideF32::splat(69.0),
+                    WideF32::ZERO,
+                    WideF32::splat(1.0),
+                    WideF32::ZERO,
+                    WideF32::ZERO,
+                    WideF32::splat(-0.25),
+                    WideF32::ZERO,
                     SAMPLE_RATE,
                 )
                 .to_array()[0];
             let one = lane_one
                 .process(
-                    f32x4::splat(input),
-                    f32x4::splat(69.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(1.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(0.05),
-                    f32x4::splat(0.0),
+                    WideF32::splat(input),
+                    WideF32::splat(69.0),
+                    WideF32::ZERO,
+                    WideF32::splat(1.0),
+                    WideF32::ZERO,
+                    WideF32::ZERO,
+                    WideF32::splat(0.05),
+                    WideF32::ZERO,
                     SAMPLE_RATE,
                 )
                 .to_array()[1];
@@ -1342,15 +1355,15 @@ mod tests {
         let mut fresh = make();
         let reset_lane = process(
             &mut mixed,
-            f32x4::splat(0.1),
-            f32x4::splat(69.0),
+            WideF32::splat(0.1),
+            WideF32::splat(69.0),
             SAMPLE_RATE,
         )
         .to_array();
         let fresh_lane = process(
             &mut fresh,
-            f32x4::splat(0.1),
-            f32x4::splat(69.0),
+            WideF32::splat(0.1),
+            WideF32::splat(69.0),
             SAMPLE_RATE,
         )
         .to_array();
@@ -1360,14 +1373,14 @@ mod tests {
         assert_eq!(
             process(
                 &mut mixed,
-                f32x4::splat(0.1),
-                f32x4::splat(69.0),
+                WideF32::splat(0.1),
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             ),
             process(
                 &mut fresh,
-                f32x4::splat(0.1),
-                f32x4::splat(69.0),
+                WideF32::splat(0.1),
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             )
         );
@@ -1388,8 +1401,8 @@ mod tests {
             for frame in 0..48_000 {
                 let output = process(
                     &mut filter,
-                    f32x4::splat(0.0),
-                    f32x4::splat(note),
+                    WideF32::ZERO,
+                    WideF32::splat(note),
                     SAMPLE_RATE,
                 )
                 .to_array()[0];
@@ -1418,8 +1431,8 @@ mod tests {
             let input = if frame < 24_000 { 0.1 } else { 0.0 };
             let output = process(
                 &mut filter,
-                f32x4::splat(input),
-                f32x4::splat(69.0),
+                WideF32::splat(input),
+                WideF32::splat(69.0),
                 SAMPLE_RATE,
             )
             .to_array()[0];

@@ -1,9 +1,8 @@
 //! Low-frequency oscillators for periodic modulation.
 
-use crate::f32x4;
+use crate::math::WideF32;
 
 use super::rng::DspRng;
-use crate::{F32x4Ext, LANES};
 
 /// Minimum LFO rate in Hz.
 pub const MIN_LFO_RATE_HZ: f32 = 0.022;
@@ -48,17 +47,17 @@ impl LfoWaveform {
 
 /// Four-lane LFO with configurable rate, depth, waveform, and key sync.
 pub struct Lfo {
-    phase: f32x4,
+    phase: WideF32,
     phase_uniform: bool,
-    phase_inc: f32x4,
+    phase_inc: WideF32,
     waveform: LfoWaveform,
     key_sync: bool,
     depth: f32,
-    sample_and_hold: f32x4,
-    rng: [DspRng; LANES],
+    sample_and_hold: WideF32,
+    rng: [DspRng; WideF32::LANES],
     sample_rate: f32,
-    smoothed: f32x4,
-    smoothing_coeff: f32x4,
+    smoothed: WideF32,
+    smoothing_coeff: WideF32,
 }
 
 impl Default for Lfo {
@@ -70,26 +69,33 @@ impl Default for Lfo {
 impl Lfo {
     pub fn new(sample_rate: f32) -> Self {
         let mut lfo = Self {
-            phase: f32x4::splat(0.0),
+            phase: WideF32::ZERO,
             phase_uniform: true,
-            phase_inc: f32x4::splat(0.0),
+            phase_inc: WideF32::ZERO,
             waveform: LfoWaveform::Triangle,
             key_sync: true,
             depth: 0.0,
-            sample_and_hold: f32x4::splat(0.0),
-            rng: [
-                DspRng::new(0x4c46_4f01, 0x5148_0001),
-                DspRng::new(0x4c46_4f02, 0x5148_0002),
-                DspRng::new(0x4c46_4f03, 0x5148_0003),
-                DspRng::new(0x4c46_4f04, 0x5148_0004),
-            ],
+            sample_and_hold: WideF32::ZERO,
+            rng: core::array::from_fn(|i| {
+                let seeds = [
+                    (0x4c46_4f01, 0x5148_0001),
+                    (0x4c46_4f02, 0x5148_0002),
+                    (0x4c46_4f03, 0x5148_0003),
+                    (0x4c46_4f04, 0x5148_0004),
+                    (0x4c46_4f05, 0x5148_0005),
+                    (0x4c46_4f06, 0x5148_0006),
+                    (0x4c46_4f07, 0x5148_0007),
+                    (0x4c46_4f08, 0x5148_0008),
+                ];
+                DspRng::new(seeds[i].0, seeds[i].1)
+            }),
             sample_rate,
-            smoothed: f32x4::splat(0.0),
-            smoothing_coeff: f32x4::splat(0.0),
+            smoothed: WideF32::ZERO,
+            smoothing_coeff: WideF32::ZERO,
         };
         lfo.set_rate_hz(MIN_LFO_RATE_HZ);
         let coeff = (1.0 / (sample_rate.max(1.0) * LFO_SMOOTHING_SECONDS)).min(1.0);
-        lfo.smoothing_coeff = f32x4::splat(coeff);
+        lfo.smoothing_coeff = WideF32::splat(coeff);
         lfo.refresh_sample_and_hold();
         lfo
     }
@@ -99,12 +105,12 @@ impl Lfo {
         let rate = self.phase_inc.to_array()[0] * self.sample_rate;
         self.set_rate_hz(rate);
         let coeff = (1.0 / (self.sample_rate * LFO_SMOOTHING_SECONDS)).min(1.0);
-        self.smoothing_coeff = f32x4::splat(coeff);
+        self.smoothing_coeff = WideF32::splat(coeff);
     }
 
     pub fn set_rate_hz(&mut self, rate_hz: f32) {
         let rate_hz = rate_hz.clamp(MIN_SYNCED_LFO_RATE_HZ, MAX_LFO_RATE_HZ);
-        self.phase_inc = f32x4::splat(rate_hz / self.sample_rate.max(1.0));
+        self.phase_inc = WideF32::splat(rate_hz / self.sample_rate.max(1.0));
     }
 
     pub fn set_depth(&mut self, depth: f32) {
@@ -129,9 +135,9 @@ impl Lfo {
     }
 
     pub fn reset_all(&mut self) {
-        self.phase = f32x4::splat(0.0);
+        self.phase = WideF32::ZERO;
         self.phase_uniform = true;
-        self.smoothed = f32x4::splat(0.0);
+        self.smoothed = WideF32::ZERO;
         if self.waveform == LfoWaveform::SampleAndHold {
             self.refresh_sample_and_hold();
         }
@@ -152,11 +158,11 @@ impl Lfo {
         }
     }
 
-    pub fn next(&mut self) -> f32x4 {
+    pub fn next(&mut self) -> WideF32 {
         let raw = if self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold {
-            f32x4::splat(self.uniform_raw_output() * self.depth)
+            WideF32::splat(self.uniform_raw_output() * self.depth)
         } else {
-            self.raw_output() * f32x4::splat(self.depth)
+            self.raw_output() * WideF32::splat(self.depth)
         };
         let output = self.smoothed + (raw - self.smoothed) * self.smoothing_coeff;
         self.smoothed = output;
@@ -170,14 +176,14 @@ impl Lfo {
         self.advance();
     }
 
-    pub fn raw_output(&self) -> f32x4 {
+    pub fn raw_output(&self) -> WideF32 {
         if self.phase_uniform && self.waveform != LfoWaveform::SampleAndHold {
-            return f32x4::splat(self.uniform_raw_output());
+            return WideF32::splat(self.uniform_raw_output());
         }
         match self.waveform {
             LfoWaveform::Triangle => triangle(self.phase),
             LfoWaveform::Saw => self.phase,
-            LfoWaveform::ReverseSaw => f32x4::splat(1.0) - self.phase,
+            LfoWaveform::ReverseSaw => WideF32::splat(1.0) - self.phase,
             LfoWaveform::Square => square(self.phase),
             LfoWaveform::SampleAndHold => self.sample_and_hold,
         }
@@ -212,7 +218,7 @@ impl Lfo {
     fn advance(&mut self) {
         if self.phase_uniform {
             let next = self.phase.to_array()[0] + self.phase_inc.to_array()[0];
-            self.phase = f32x4::splat(if next < 1.0 { next } else { next - 1.0 });
+            self.phase = WideF32::splat(if next < 1.0 { next } else { next - 1.0 });
             if self.waveform == LfoWaveform::SampleAndHold && next >= 1.0 {
                 self.refresh_sample_and_hold();
             }
@@ -224,44 +230,44 @@ impl Lfo {
         // is below two, so wrapping needs only one exact subtraction. Avoid
         // the considerably more expensive four-lane floor operation on Daisy.
         self.phase = next
-            .simd_lt(f32x4::splat(1.0))
-            .blend(next, next - f32x4::splat(1.0));
+            .simd_lt(WideF32::splat(1.0))
+            .blend(next, next - WideF32::splat(1.0));
 
         if self.waveform == LfoWaveform::SampleAndHold {
             let next_lanes = next.to_array();
             let mut sample_and_hold = self.sample_and_hold.to_array();
-            for lane in 0..LANES {
+            for lane in 0..WideF32::LANES {
                 if next_lanes[lane] >= 1.0 {
                     sample_and_hold[lane] = bipolar_random(&mut self.rng[lane]);
                 }
             }
-            self.sample_and_hold = f32x4::new(sample_and_hold);
+            self.sample_and_hold = WideF32::new(sample_and_hold);
         }
     }
 
     fn refresh_sample_and_hold(&mut self) {
-        self.sample_and_hold = f32x4::new(core::array::from_fn(|lane| {
+        self.sample_and_hold = WideF32::new(core::array::from_fn(|lane| {
             bipolar_random(&mut self.rng[lane])
         }));
     }
 }
 
-fn triangle(phase: f32x4) -> f32x4 {
-    let four = f32x4::splat(4.0);
+fn triangle(phase: WideF32) -> WideF32 {
+    let four = WideF32::splat(4.0);
     let scaled = phase * four;
     let rising = scaled;
-    let falling = f32x4::splat(2.0) - scaled;
+    let falling = WideF32::splat(2.0) - scaled;
     let wrapping = scaled - four;
-    phase.simd_lt(f32x4::splat(0.25)).blend(
+    phase.simd_lt(WideF32::splat(0.25)).blend(
         rising,
-        phase.simd_lt(f32x4::splat(0.75)).blend(falling, wrapping),
+        phase.simd_lt(WideF32::splat(0.75)).blend(falling, wrapping),
     )
 }
 
-fn square(phase: f32x4) -> f32x4 {
+fn square(phase: WideF32) -> WideF32 {
     phase
-        .simd_lt(f32x4::splat(0.5))
-        .blend(f32x4::splat(1.0), f32x4::splat(0.0))
+        .simd_lt(WideF32::splat(0.5))
+        .blend(WideF32::splat(1.0), WideF32::ZERO)
 }
 
 fn bipolar_random(rng: &mut DspRng) -> f32 {
@@ -272,7 +278,7 @@ fn bipolar_random(rng: &mut DspRng) -> f32 {
 mod tests {
     use super::*;
 
-    fn first_lane(value: f32x4) -> f32 {
+    fn first_lane(value: WideF32) -> f32 {
         value.to_array()[0]
     }
 

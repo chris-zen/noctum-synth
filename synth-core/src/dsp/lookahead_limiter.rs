@@ -102,6 +102,8 @@ impl LookaheadLimiter {
 
 #[cfg(test)]
 mod tests {
+    use crate::math::TAU;
+
     use super::{LOOKAHEAD_SAMPLES, LookaheadLimiter, OUTPUT_CEILING};
 
     const SAMPLE_RATE: f32 = 48_000.0;
@@ -213,7 +215,7 @@ mod tests {
             let mut input = 0.0f32;
             for (source, bin) in SOURCE_BINS.iter().copied().enumerate() {
                 let phase =
-                    crate::TAU * bin as f32 * index as f32 / FFT_SIZE as f32 + source as f32 * 0.37;
+                    TAU * bin as f32 * index as f32 / FFT_SIZE as f32 + source as f32 * 0.37;
                 input += libm::sinf(phase);
             }
             input *= 0.28;
@@ -222,8 +224,7 @@ mod tests {
             maximum = maximum.max(output.abs());
             if index >= SETTLE_SAMPLES {
                 let analysis_index = index - SETTLE_SAMPLES;
-                let phase =
-                    crate::TAU * ANALYSIS_BIN as f32 * analysis_index as f32 / FFT_SIZE as f32;
+                let phase = TAU * ANALYSIS_BIN as f32 * analysis_index as f32 / FFT_SIZE as f32;
                 real += output * libm::cosf(phase);
                 imaginary -= output * libm::sinf(phase);
             }

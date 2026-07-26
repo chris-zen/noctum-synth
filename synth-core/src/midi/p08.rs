@@ -2,6 +2,7 @@
 
 use super::rev2::Rev2SysexError;
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
+use crate::math::F32;
 use crate::patch::decode_patch_name;
 use crate::{
     DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
@@ -185,7 +186,7 @@ fn ranged(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
 }
 
 fn logarithmic(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
-    min * crate::math::powf(max / min, unit(raw, raw_max))
+    min * F32(max / min).powf(F32(unit(raw, raw_max))).as_f32()
 }
 
 const P08_MOD_DESTINATIONS: [ModDestination; 44] = [
@@ -585,6 +586,7 @@ fn nrpn_max(number: u16) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::WideF32;
     use crate::{ControlMessage, VoiceManager};
 
     fn render_frames<const PACKS: usize>(voices: &mut VoiceManager<PACKS>, frames: usize) {
@@ -689,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "fast-math"))]
     fn tom_sawyer_last_retrigger_glides_in_place_without_pending_voices() {
         let mut patch = P08MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
@@ -709,7 +712,7 @@ mod tests {
         let start = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
         assert!((start - before).abs() < 0.01);
         for voice in 0..8 {
-            assert!(!voices[voice / crate::LANES].has_pending_note(voice % crate::LANES));
+            assert!(!voices[voice / WideF32::LANES].has_pending_note(voice % WideF32::LANES));
         }
 
         // Glide should make progress within the first 32 samples.
@@ -768,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "wide-1"))]
     fn tom_sawyer_unison_glide_matches_pressed_key_model_under_adversarial_ordering() {
         let base_patch = P08MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()

@@ -5,7 +5,7 @@
 //! a [`WavetableBank`] to the oscillator explicitly. Consequently, retaining
 //! this code does not add table data to the analog/BLEP production firmware.
 
-use crate::{LANES, TAU, f32x4};
+use crate::math::{TAU, WideF32};
 
 pub const WAVETABLE_MIP_LEVELS: usize = 12;
 pub const WAVETABLE_HARMONIC_LIMITS: [u16; WAVETABLE_MIP_LEVELS] =
@@ -140,14 +140,8 @@ pub fn generate_wavetable_bank(
 }
 
 fn sin_cos(angle: f32) -> (f32, f32) {
-    #[cfg(feature = "embedded-math")]
-    {
-        ::micromath::F32Ext::sin_cos(angle)
-    }
-    #[cfg(not(feature = "embedded-math"))]
-    {
-        (libm::sinf(angle), libm::cosf(angle))
-    }
+    let (s, c) = crate::math::F32(angle).sin_cos();
+    (s.as_f32(), c.as_f32())
 }
 
 fn report_samples(samples: &[f32]) -> WavetableBankReport {
@@ -180,24 +174,24 @@ enum WaveTable {
 #[doc(hidden)]
 pub struct WavetableOscillatorKernel {
     bank: WavetableBank,
-    current: [u8; LANES],
-    previous: [u8; LANES],
-    fade_remaining: [u8; LANES],
-    prepared_increment_bits: [u32; LANES],
+    current: [u8; WideF32::LANES],
+    previous: [u8; WideF32::LANES],
+    fade_remaining: [u8; WideF32::LANES],
+    prepared_increment_bits: [u32; WideF32::LANES],
 }
 
 impl WavetableOscillatorKernel {
     pub(crate) fn new(bank: WavetableBank) -> Self {
         Self {
             bank,
-            current: [0; LANES],
-            previous: [0; LANES],
-            fade_remaining: [0; LANES],
-            prepared_increment_bits: [u32::MAX; LANES],
+            current: [0; WideF32::LANES],
+            previous: [0; WideF32::LANES],
+            fade_remaining: [0; WideF32::LANES],
+            prepared_increment_bits: [u32::MAX; WideF32::LANES],
         }
     }
 
-    pub(crate) fn prepare(&mut self, phase_inc: f32x4) {
+    pub(crate) fn prepare(&mut self, phase_inc: WideF32) {
         for (lane, increment) in phase_inc.to_array().into_iter().enumerate() {
             let increment_bits = increment.to_bits();
             if increment_bits == self.prepared_increment_bits[lane] {
@@ -226,18 +220,18 @@ impl WavetableOscillatorKernel {
         }
     }
 
-    pub(crate) fn saw(&self, phase: f32x4) -> f32x4 {
+    pub(crate) fn saw(&self, phase: WideF32) -> WideF32 {
         self.sample(WaveTable::Saw, phase)
     }
 
-    pub(crate) fn triangle(&self, phase: f32x4) -> f32x4 {
+    pub(crate) fn triangle(&self, phase: WideF32) -> WideF32 {
         self.sample(WaveTable::Triangle, phase)
     }
 
-    fn sample(&self, waveform: WaveTable, phase: f32x4) -> f32x4 {
+    fn sample(&self, waveform: WaveTable, phase: WideF32) -> WideF32 {
         let phase = phase.to_array();
-        let mut output = [0.0; LANES];
-        for lane in 0..LANES {
+        let mut output = [0.0; WideF32::LANES];
+        for lane in 0..WideF32::LANES {
             let current = self
                 .bank
                 .sample(waveform, self.current[lane] as usize, phase[lane]);
@@ -252,7 +246,7 @@ impl WavetableOscillatorKernel {
                 previous + (current - previous) * amount
             };
         }
-        f32x4::new(output)
+        WideF32::new(output)
     }
 }
 
@@ -358,9 +352,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn mip_state_is_per_lane_and_crossfade_restarts_safely() {
         let mut kernel = WavetableOscillatorKernel::new(reference_bank());
-        kernel.prepare(f32x4::new([0.000_1, 0.001, 0.01, 0.1]));
+        kernel.prepare(WideF32::new(core::array::from_fn(|i| [0.000_1, 0.001, 0.01, 0.1][i % 4])));
         assert!(
             kernel
                 .current
@@ -378,14 +373,14 @@ mod tests {
         );
         assert!(
             kernel
-                .sample(WaveTable::Saw, f32x4::splat(0.237))
+                .sample(WaveTable::Saw, WideF32::splat(0.237))
                 .to_array()
                 .into_iter()
                 .all(f32::is_finite)
         );
         kernel.finish();
-        kernel.prepare(f32x4::new([0.1, 0.01, 0.001, 0.000_1]));
-        assert_eq!(kernel.fade_remaining, [CROSSFADE_SAMPLES; LANES]);
+        kernel.prepare(WideF32::new(core::array::from_fn(|i| [0.1, 0.01, 0.001, 0.000_1][i % 4])));
+        assert_eq!(kernel.fade_remaining, [CROSSFADE_SAMPLES; WideF32::LANES]);
     }
 
     #[test]

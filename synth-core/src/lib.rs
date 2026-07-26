@@ -3,8 +3,8 @@
 //! `synth-core` is a `#![no_std]` library that implements a complete subtractive
 //! synthesizer voice: dual band-limited oscillators, sub oscillator, noise, a
 //! nonlinear ladder filter, three envelopes, and four LFOs. Sixteen voices are
-//! rendered using four-wide SIMD ([`LANES`]) so each [`VoiceBlock`] processes
-//! four notes in parallel.
+//! rendered using SIMD ([`crate::math::WideF32::LANES`]) so each [`VoiceBlock`]
+//! processes several notes in parallel.
 //!
 //! DSP algorithms are based on *Designing Software Synthesizer Plugins in C++*
 //! by Will C. Pirkle, adapted to the Prophet Rev2 architecture and ported to
@@ -44,14 +44,19 @@
 
 #![no_std]
 
+#[cfg(not(any(
+    all(feature = "wide-8", not(feature = "wide-4"), not(feature = "wide-1")),
+    all(feature = "wide-4", not(feature = "wide-8"), not(feature = "wide-1")),
+    all(feature = "wide-1", not(feature = "wide-8"), not(feature = "wide-4")),
+)))]
+compile_error!("Exactly one of the `wide-8`, `wide-4`, or `wide-1` features must be enabled.");
+
 pub(crate) mod arp;
 pub mod dsp;
 pub mod effects;
 pub mod engine;
 pub mod fixed_index_list;
-pub(crate) mod math;
-#[cfg(feature = "embedded-math")]
-mod micromath;
+pub mod math;
 pub mod midi;
 pub mod patch;
 pub mod patch_storage;
@@ -61,15 +66,7 @@ mod rate_adapter;
 pub mod tuning;
 pub mod voice;
 
-#[cfg(feature = "embedded-math")]
-pub use crate::micromath::f32x4;
-#[cfg(not(feature = "embedded-math"))]
-pub use wide::f32x4;
-
-#[cfg(feature = "embedded-math")]
-pub(crate) use crate::micromath::i32x4;
-#[cfg(not(feature = "embedded-math"))]
-pub(crate) use wide::i32x4;
+use crate::math::WideF32;
 
 pub use effects::{EffectModulation, Effects, EffectsWithMemory};
 pub use engine::{SynthEngine, SynthEngineWithMemory};
@@ -98,22 +95,6 @@ pub use voice::{
 };
 
 use crate::dsp::{FilterOversampling, FilterType};
-
-pub trait F32x4Ext {
-    #[must_use]
-    fn replace_lane(self, lane: usize, value: f32) -> Self;
-}
-
-#[cfg(not(feature = "embedded-math"))]
-impl F32x4Ext for f32x4 {
-    #[inline(always)]
-    fn replace_lane(self, lane: usize, value: f32) -> Self {
-        debug_assert!(lane < 4);
-        let mut values = self.to_array();
-        values[lane] = value;
-        Self::new(values)
-    }
-}
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
 ///
@@ -411,17 +392,11 @@ pub enum ControlMessage {
     },
 }
 
-/// Circle constant π.
-pub const PI: f32 = core::f32::consts::PI;
-/// Full circle in radians (2π).
-pub const TAU: f32 = 2.0 * PI;
-/// SIMD width: number of voices rendered per [`VoiceBlock`] step.
-pub const LANES: usize = 4;
 /// Total polyphonic voice count.
 pub const VOICE_COUNT: usize = 16;
-/// Number of [`VoiceBlock`] instances (`VOICE_COUNT / LANES`).
-pub const VOICE_PACKS: usize = VOICE_COUNT / LANES;
-const _: () = assert!(VOICE_COUNT % LANES == 0);
+/// Number of [`VoiceBlock`] instances (`VOICE_COUNT / WideF32::LANES`).
+pub const VOICE_PACKS: usize = VOICE_COUNT / WideF32::LANES;
+const _: () = assert!(VOICE_COUNT % WideF32::LANES == 0);
 
 /// Default sample rate used when constructing DSP objects (44.1 kHz).
 pub const DEFAULT_SAMPLE_RATE: f32 = 44100.0;
@@ -430,8 +405,8 @@ pub const DEFAULT_TEMPO_BPM: f32 = 120.0;
 
 /// Wrap a phase value into the `[0, 1)` range.
 #[inline]
-pub(crate) fn wrap01(phase: f32x4) -> f32x4 {
-    phase - phase.floor()
+pub(crate) fn wrap01(phase: WideF32) -> WideF32 {
+    phase.wrap01()
 }
 
 #[cfg(test)]

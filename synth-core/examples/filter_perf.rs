@@ -1,8 +1,9 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use synth_core::VOICE_PACKS;
 use synth_core::dsp::{Filter, FilterOversampling, FilterType};
-use synth_core::{LANES, VOICE_PACKS, f32x4};
+use synth_core::math::WideF32;
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 1_000_000;
@@ -101,7 +102,7 @@ fn time_static_filter_mode(
     let mut filter = configured_filter(filter_type, resonance, oversampling);
     let mut phase = [0.0, 0.17, 0.33, 0.71];
     let phase_inc = [0.013, 0.019, 0.023, 0.031];
-    let notes = f32x4::new([48.0, 55.0, 60.0, 67.0]);
+    let notes = WideF32::new(core::array::from_fn(|i| [48.0, 55.0, 60.0, 67.0][i % 4]));
     let start = Instant::now();
 
     for _ in 0..ITERATIONS {
@@ -122,8 +123,8 @@ fn time_modulated_filter(filter_type: FilterType, resonance: f32) -> Duration {
 
     let mut phase = [0.0, 0.17, 0.33, 0.71];
     let phase_inc = [0.013, 0.019, 0.023, 0.031];
-    let notes = f32x4::new([48.0, 55.0, 60.0, 67.0]);
-    let filter_env = f32x4::new([0.2, 0.4, 0.6, 0.8]);
+    let notes = WideF32::new(core::array::from_fn(|i| [48.0, 55.0, 60.0, 67.0][i % 4]));
+    let filter_env = WideF32::new(core::array::from_fn(|i| [0.2, 0.4, 0.6, 0.8][i % 4]));
     let start = Instant::now();
 
     for _ in 0..ITERATIONS {
@@ -135,7 +136,7 @@ fn time_modulated_filter(filter_type: FilterType, resonance: f32) -> Duration {
             input,
             notes,
             filter_env,
-            f32x4::splat(1.0),
+            WideF32::splat(1.0),
             osc1,
             SAMPLE_RATE,
         );
@@ -169,7 +170,7 @@ fn time_static_voice_blocks_mode(
         .collect();
     let mut phase = [0.0, 0.17, 0.33, 0.71];
     let phase_inc = [0.013, 0.019, 0.023, 0.031];
-    let notes = f32x4::new([48.0, 55.0, 60.0, 67.0]);
+    let notes = WideF32::new(core::array::from_fn(|i| [48.0, 55.0, 60.0, 67.0][i % 4]));
     let start = Instant::now();
 
     for _ in 0..ITERATIONS {
@@ -184,36 +185,36 @@ fn time_static_voice_blocks_mode(
     start.elapsed()
 }
 
-fn process(filter: &mut Filter, input: f32x4, note: f32x4, sample_rate: f32) -> f32x4 {
+fn process(filter: &mut Filter, input: WideF32, note: WideF32, sample_rate: f32) -> WideF32 {
     process_modulated(
         filter,
         input,
         note,
-        f32x4::splat(0.0),
-        f32x4::splat(1.0),
-        f32x4::splat(0.0),
+        WideF32::ZERO,
+        WideF32::splat(1.0),
+        WideF32::ZERO,
         sample_rate,
     )
 }
 
 fn process_modulated(
     filter: &mut Filter,
-    input: f32x4,
-    note: f32x4,
-    filter_env: f32x4,
-    velocity: f32x4,
-    osc1_audio: f32x4,
+    input: WideF32,
+    note: WideF32,
+    filter_env: WideF32,
+    velocity: WideF32,
+    osc1_audio: WideF32,
     sample_rate: f32,
-) -> f32x4 {
+) -> WideF32 {
     filter.process(
         input,
         note,
         filter_env,
         velocity,
         osc1_audio,
-        f32x4::splat(0.0),
-        f32x4::splat(0.0),
-        f32x4::splat(0.0),
+        WideF32::ZERO,
+        WideF32::ZERO,
+        WideF32::ZERO,
         sample_rate,
     )
 }
@@ -231,8 +232,8 @@ fn configured_filter(
     filter
 }
 
-fn advance_phase(phase: &mut [f32; LANES], phase_inc: [f32; LANES]) {
-    for lane in 0..LANES {
+fn advance_phase(phase: &mut [f32; WideF32::LANES], phase_inc: [f32; WideF32::LANES]) {
+    for lane in 0..WideF32::LANES {
         phase[lane] += phase_inc[lane];
         if phase[lane] >= 1.0 {
             phase[lane] -= 1.0;
@@ -240,6 +241,6 @@ fn advance_phase(phase: &mut [f32; LANES], phase_inc: [f32; LANES]) {
     }
 }
 
-fn phase_to_signal(phase: [f32; LANES]) -> f32x4 {
-    f32x4::new(phase) * f32x4::splat(2.0) - f32x4::splat(1.0)
+fn phase_to_signal(phase: [f32; WideF32::LANES]) -> WideF32 {
+    WideF32::new(phase) * WideF32::splat(2.0) - WideF32::splat(1.0)
 }

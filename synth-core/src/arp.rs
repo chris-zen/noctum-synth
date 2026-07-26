@@ -1,9 +1,9 @@
 use rand_core::Rng;
-use rand_pcg::Pcg32;
 use rand_core::SeedableRng;
+use rand_pcg::Pcg32;
 
-use crate::pressed_keys::PressedKeys;
 use crate::patch::{ArpMode, ArpParams, ArpSustainMode, ClockDivision};
+use crate::pressed_keys::PressedKeys;
 
 pub const MAX_ARP_NOTES: usize = 16;
 pub const MAX_ARP_STEPS: usize = MAX_ARP_NOTES * 3 * 3;
@@ -49,7 +49,11 @@ impl ArpEngine {
             current_note: None,
             current_velocity: 0.0,
             phase: 0.0,
-            samples_per_step: Self::calc_samples_per_step(sample_rate, 120.0, ClockDivision::default()),
+            samples_per_step: Self::calc_samples_per_step(
+                sample_rate,
+                120.0,
+                ClockDivision::default(),
+            ),
             tempo_bpm: 120.0,
             clock_division: ClockDivision::default(),
             sample_rate,
@@ -82,20 +86,14 @@ impl ArpEngine {
 
     pub(crate) fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
         self.tempo_bpm = tempo_bpm;
-        self.samples_per_step = Self::calc_samples_per_step(
-            self.sample_rate,
-            tempo_bpm,
-            self.clock_division,
-        );
+        self.samples_per_step =
+            Self::calc_samples_per_step(self.sample_rate, tempo_bpm, self.clock_division);
     }
 
     pub(crate) fn set_clock_division(&mut self, division: ClockDivision) {
         self.clock_division = division;
-        self.samples_per_step = Self::calc_samples_per_step(
-            self.sample_rate,
-            self.tempo_bpm,
-            division,
-        );
+        self.samples_per_step =
+            Self::calc_samples_per_step(self.sample_rate, self.tempo_bpm, division);
     }
 
     pub(crate) fn note_on(&mut self, note: u8, velocity: f32) {
@@ -236,8 +234,7 @@ impl ArpEngine {
             return;
         }
 
-        let held: heapless::Vec<(u8, f32), MAX_ARP_NOTES> =
-            self.held_notes.iter().collect();
+        let held: heapless::Vec<(u8, f32), MAX_ARP_NOTES> = self.held_notes.iter().collect();
 
         let mut notes: heapless::Vec<(u8, f32), MAX_ARP_NOTES> = heapless::Vec::new();
         match self.params.mode {
@@ -321,11 +318,7 @@ impl ArpEngine {
         self.needs_rebuild = false;
     }
 
-    fn calc_samples_per_step(
-        sample_rate: f32,
-        tempo_bpm: f32,
-        division: ClockDivision,
-    ) -> f32 {
+    fn calc_samples_per_step(sample_rate: f32, tempo_bpm: f32, division: ClockDivision) -> f32 {
         let bps = tempo_bpm / 60.0;
         let steps_per_beat = division.steps_per_quarter();
         if bps <= 0.0 || steps_per_beat <= 0.0 {

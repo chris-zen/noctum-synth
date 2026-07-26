@@ -1,7 +1,5 @@
-use crate::f32x4;
-
-use crate::LANES;
 use crate::dsp::analog_oscillator::{MAX_PULSE_WIDTH, MIN_PULSE_WIDTH};
+use crate::math::WideF32;
 #[cfg(test)]
 use crate::wrap01;
 
@@ -22,37 +20,37 @@ pub enum SawMethod {
 
 #[derive(Clone, Copy)]
 pub(crate) struct PulseBlepState {
-    width: f32x4,
-    edge: f32x4,
-    table_window: f32x4,
+    width: WideF32,
+    edge: WideF32,
+    table_window: WideF32,
 }
 
 impl PulseBlepState {
-    pub(crate) fn new(width: f32x4) -> Self {
+    pub(crate) fn new(width: WideF32) -> Self {
         let width = clamp_pulse_width(width);
         Self {
             width,
-            edge: f32x4::splat(1.0) - width,
-            table_window: f32x4::ZERO,
+            edge: WideF32::splat(1.0) - width,
+            table_window: WideF32::ZERO,
         }
     }
 
-    pub(crate) fn set_width(&mut self, width: f32x4) {
+    pub(crate) fn set_width(&mut self, width: WideF32) {
         self.width = clamp_pulse_width(width);
-        self.edge = f32x4::splat(1.0) - self.width;
+        self.edge = WideF32::splat(1.0) - self.width;
     }
 
     #[inline(always)]
-    pub(crate) fn width(&self) -> f32x4 {
+    pub(crate) fn width(&self) -> WideF32 {
         self.width
     }
 
-    pub(crate) fn set_phase_inc(&mut self, phase_inc: f32x4) {
+    pub(crate) fn set_phase_inc(&mut self, phase_inc: WideF32) {
         self.table_window = table_blep_windows(phase_inc);
     }
 }
 
-pub(crate) fn blep_pulse(phi: f32x4, dt: f32x4, width: f32x4, method: SawMethod) -> f32x4 {
+pub(crate) fn blep_pulse(phi: WideF32, dt: WideF32, width: WideF32, method: SawMethod) -> WideF32 {
     let mut state = PulseBlepState::new(width);
     if method == SawMethod::Blep {
         state.set_phase_inc(dt);
@@ -61,11 +59,11 @@ pub(crate) fn blep_pulse(phi: f32x4, dt: f32x4, width: f32x4, method: SawMethod)
 }
 
 pub(crate) fn blep_pulse_prepared(
-    phi: f32x4,
-    dt: f32x4,
+    phi: WideF32,
+    dt: WideF32,
     state: &PulseBlepState,
     method: SawMethod,
-) -> f32x4 {
+) -> WideF32 {
     match method {
         SawMethod::PolyBlep => polyblep_pulse(phi, dt, state),
         SawMethod::Blep => table_blep_pulse(phi, state),
@@ -73,8 +71,11 @@ pub(crate) fn blep_pulse_prepared(
 }
 
 #[inline]
-fn clamp_pulse_width(width: f32x4) -> f32x4 {
-    width.clamp(f32x4::splat(MIN_PULSE_WIDTH), f32x4::splat(MAX_PULSE_WIDTH))
+fn clamp_pulse_width(width: WideF32) -> WideF32 {
+    width.clamp(
+        WideF32::splat(MIN_PULSE_WIDTH),
+        WideF32::splat(MAX_PULSE_WIDTH),
+    )
 }
 
 /// Generates a pulse directly from its two discontinuities.
@@ -82,52 +83,52 @@ fn clamp_pulse_width(width: f32x4) -> f32x4 {
 /// This is algebraically equivalent to subtracting two band-limited saws, but
 /// avoids calculating two ramps that cancel. Callers keep `phi` in `[0, 1)`,
 /// so the width-shifted phase needs at most one subtraction to wrap.
-#[cfg(feature = "embedded-math")]
-fn polyblep_pulse(phi: f32x4, dt: f32x4, state: &PulseBlepState) -> f32x4 {
+#[cfg(feature = "fast-math")]
+fn polyblep_pulse(phi: WideF32, dt: WideF32, state: &PulseBlepState) -> WideF32 {
     let phase = phi.to_array();
     let phase_inc = dt.to_array();
     let pulse_width = state.width.to_array();
     let pulse_edge = state.edge.to_array();
-    let mut output = [0.0; LANES];
+    let mut output = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         let (naive, shifted_phase) =
             pulse_phases_lane(phase[lane], pulse_width[lane], pulse_edge[lane]);
         output[lane] = naive + polyblep_falling_correction_lane(phase[lane], phase_inc[lane])
             - polyblep_falling_correction_lane(shifted_phase, phase_inc[lane]);
     }
 
-    f32x4::new(output)
+    WideF32::new(output)
 }
 
-#[cfg(not(feature = "embedded-math"))]
-fn polyblep_pulse(phi: f32x4, dt: f32x4, state: &PulseBlepState) -> f32x4 {
+#[cfg(not(feature = "fast-math"))]
+fn polyblep_pulse(phi: WideF32, dt: WideF32, state: &PulseBlepState) -> WideF32 {
     let before_edge = phi.simd_lt(state.edge);
     let shifted_phase = before_edge.blend(phi + state.width, phi - state.edge);
     let phase = phi.to_array();
     let shifted = shifted_phase.to_array();
     let phase_inc = dt.to_array();
-    let mut correction = [0.0; LANES];
+    let mut correction = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         correction[lane] = polyblep_falling_correction_lane(phase[lane], phase_inc[lane])
             - polyblep_falling_correction_lane(shifted[lane], phase_inc[lane]);
     }
 
-    let one = f32x4::splat(1.0);
+    let one = WideF32::splat(1.0);
     let naive = before_edge.blend(-one, one);
-    naive + f32x4::new(correction)
+    naive + WideF32::new(correction)
 }
 
-#[cfg(feature = "embedded-math")]
-fn table_blep_pulse(phi: f32x4, state: &PulseBlepState) -> f32x4 {
+#[cfg(feature = "fast-math")]
+fn table_blep_pulse(phi: WideF32, state: &PulseBlepState) -> WideF32 {
     let phase = phi.to_array();
     let pulse_width = state.width.to_array();
     let pulse_edge = state.edge.to_array();
     let table_window = state.table_window.to_array();
-    let mut output = [0.0; LANES];
+    let mut output = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         let (naive, shifted_phase) =
             pulse_phases_lane(phase[lane], pulse_width[lane], pulse_edge[lane]);
         let window = table_window[lane];
@@ -135,30 +136,30 @@ fn table_blep_pulse(phi: f32x4, state: &PulseBlepState) -> f32x4 {
             - table_blep_falling_correction_lane(shifted_phase, window);
     }
 
-    f32x4::new(output)
+    WideF32::new(output)
 }
 
-#[cfg(not(feature = "embedded-math"))]
-fn table_blep_pulse(phi: f32x4, state: &PulseBlepState) -> f32x4 {
+#[cfg(not(feature = "fast-math"))]
+fn table_blep_pulse(phi: WideF32, state: &PulseBlepState) -> WideF32 {
     let before_edge = phi.simd_lt(state.edge);
     let shifted_phase = before_edge.blend(phi + state.width, phi - state.edge);
     let phase = phi.to_array();
     let shifted = shifted_phase.to_array();
     let table_window = state.table_window.to_array();
-    let mut correction = [0.0; LANES];
+    let mut correction = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         let window = table_window[lane];
         correction[lane] = table_blep_falling_correction_lane(phase[lane], window)
             - table_blep_falling_correction_lane(shifted[lane], window);
     }
 
-    let one = f32x4::splat(1.0);
+    let one = WideF32::splat(1.0);
     let naive = before_edge.blend(-one, one);
-    naive + f32x4::new(correction)
+    naive + WideF32::new(correction)
 }
 
-#[cfg(feature = "embedded-math")]
+#[cfg(feature = "fast-math")]
 #[inline]
 fn pulse_phases_lane(phase: f32, width: f32, edge: f32) -> (f32, f32) {
     if phase >= edge {
@@ -168,9 +169,9 @@ fn pulse_phases_lane(phase: f32, width: f32, edge: f32) -> (f32, f32) {
     }
 }
 
-pub(crate) fn blep_saw(phi: f32x4, dt: f32x4, method: SawMethod) -> f32x4 {
-    let one = f32x4::splat(1.0);
-    let two = f32x4::splat(2.0);
+pub(crate) fn blep_saw(phi: WideF32, dt: WideF32, method: SawMethod) -> WideF32 {
+    let one = WideF32::splat(1.0);
+    let two = WideF32::splat(2.0);
     let mut out = phi * two - one;
 
     if method == SawMethod::PolyBlep {
@@ -186,16 +187,16 @@ pub(crate) fn blep_saw(phi: f32x4, dt: f32x4, method: SawMethod) -> f32x4 {
 /// Double-sided 4-point polyBLEP correction for the positive-going ramp's
 /// downward step: added on the right of the discontinuity (phase 0) and
 /// subtracted on the left (phase 1).
-fn polyblep_falling_correction(phi: f32x4, dt: f32x4) -> f32x4 {
+fn polyblep_falling_correction(phi: WideF32, dt: WideF32) -> WideF32 {
     let phase = phi.to_array();
     let phase_inc = dt.to_array();
-    let mut correction = [0.0; LANES];
+    let mut correction = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         correction[lane] = polyblep_falling_correction_lane(phase[lane], phase_inc[lane]);
     }
 
-    f32x4::new(correction)
+    WideF32::new(correction)
 }
 
 #[inline]
@@ -227,9 +228,9 @@ fn polyblep_residual_lane(t: f32, dt: f32) -> f32 {
 }
 
 #[inline]
-fn table_points_per_side(dt: f32x4) -> [u32; LANES] {
+fn table_points_per_side(dt: WideF32) -> [u32; WideF32::LANES] {
     let dt = dt.to_array();
-    let mut points = [1; LANES];
+    let mut points = [1; WideF32::LANES];
 
     for (idx, phase_inc) in dt.iter().enumerate() {
         points[idx] = table_points_per_side_lane(*phase_inc);
@@ -238,15 +239,15 @@ fn table_points_per_side(dt: f32x4) -> [u32; LANES] {
     points
 }
 
-fn table_blep_windows(dt: f32x4) -> f32x4 {
+fn table_blep_windows(dt: WideF32) -> WideF32 {
     let phase_inc = dt.to_array();
-    let mut windows = [0.0; LANES];
+    let mut windows = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         windows[lane] = phase_inc[lane] * table_points_per_side_lane(phase_inc[lane]) as f32;
     }
 
-    f32x4::new(windows)
+    WideF32::new(windows)
 }
 
 #[inline]
@@ -260,17 +261,21 @@ pub(crate) fn table_points_per_side_lane(phase_inc: f32) -> u32 {
     }
 }
 
-fn table_blep_falling_correction(phi: f32x4, dt: f32x4, points: [u32; LANES]) -> f32x4 {
+fn table_blep_falling_correction(
+    phi: WideF32,
+    dt: WideF32,
+    points: [u32; WideF32::LANES],
+) -> WideF32 {
     let phase = phi.to_array();
     let phase_inc = dt.to_array();
-    let mut correction = [0.0; LANES];
+    let mut correction = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         let window = phase_inc[lane] * points[lane] as f32;
         correction[lane] = table_blep_falling_correction_lane(phase[lane], window);
     }
 
-    f32x4::new(correction)
+    WideF32::new(correction)
 }
 
 #[inline]
@@ -302,15 +307,18 @@ fn blep_table_lookup(t: f32, left_side: bool) -> f32 {
 }
 
 #[cfg(test)]
-fn blep_pulse_reference(phi: f32x4, dt: f32x4, width: f32x4, method: SawMethod) -> f32x4 {
-    let one = f32x4::splat(1.0);
-    let half = f32x4::splat(0.5);
-    let width = width.clamp(f32x4::splat(MIN_PULSE_WIDTH), f32x4::splat(MAX_PULSE_WIDTH));
+fn blep_pulse_reference(phi: WideF32, dt: WideF32, width: WideF32, method: SawMethod) -> WideF32 {
+    let one = WideF32::splat(1.0);
+    let half = WideF32::splat(0.5);
+    let width = width.clamp(
+        WideF32::splat(MIN_PULSE_WIDTH),
+        WideF32::splat(MAX_PULSE_WIDTH),
+    );
     let saw1 = blep_saw(phi, dt, method);
     let phi2 = wrap01(phi + width);
     let saw2 = blep_saw(phi2, dt, method);
     let out = half * saw1 - half * saw2;
-    out * f32x4::splat(2.0) + width * f32x4::splat(2.0) - one
+    out * WideF32::splat(2.0) + width * WideF32::splat(2.0) - one
 }
 
 #[cfg(test)]
@@ -339,19 +347,17 @@ mod tests {
         for method in [SawMethod::PolyBlep, SawMethod::Blep] {
             for width in WIDTHS {
                 for phase_inc in PHASE_INCREMENTS {
-                    let dt = f32x4::splat(phase_inc);
-                    let width = f32x4::splat(width);
+                    let dt = WideF32::splat(phase_inc);
+                    let width = WideF32::splat(width);
                     for index in (0..4096).step_by(4) {
-                        let phases = f32x4::new([
-                            index as f32 / 4096.0,
+                        let phases = WideF32::new(core::array::from_fn(|i| [index as f32 / 4096.0,
                             (index + 1) as f32 / 4096.0,
                             (index + 2) as f32 / 4096.0,
-                            (index + 3) as f32 / 4096.0,
-                        ]);
+                            (index + 3) as f32 / 4096.0,][i % 4]));
                         let expected = blep_pulse_reference(phases, dt, width, method).to_array();
                         let actual = blep_pulse(phases, dt, width, method).to_array();
 
-                        for lane in 0..LANES {
+                        for lane in 0..WideF32::LANES {
                             let error = (actual[lane] - expected[lane]).abs();
                             assert!(
                                 error <= MAX_ERROR,

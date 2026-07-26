@@ -53,3 +53,8 @@ jobs:
         env:
           RUST_MIN_STACK: "16777216"
         run: cargo test --workspace
+
+      - name: synth-core feature matrix
+        env:
+          RUST_MIN_STACK: "16777216"
+        run: make -C synth-core test-matrix

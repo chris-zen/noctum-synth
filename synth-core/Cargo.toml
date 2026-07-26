@@ -5,12 +5,29 @@ edition = "2024"
 description = "Pure DSP algorithms: oscillators, filters, envelopes, LFOs — using wide for SIMD"
 
 [features]
-default = ["serde"]
+default = ["wide-4", "filter-all", "serde"]
 serde = ["dep:serde"]
 profiling = []
-embedded-math = ["dep:micromath"]
-daisy-full-rate = []
+fast-math = ["dep:micromath"]
+downsampling = []
 oscillator-polyblep = []
+wide-8 = []
+wide-4 = []
+wide-1 = []
+
+# Per-filter model features
+filter-distributed-newton = []
+filter-scalar-feedback = []
+filter-gain-limited = []
+filter-huovilainen = []
+filter-cascaded-svf = []
+filter-all = [
+    "filter-distributed-newton",
+    "filter-scalar-feedback",
+    "filter-gain-limited",
+    "filter-huovilainen",
+    "filter-cascaded-svf",
+]
 
 [dependencies]
 wide = { version = "1", default-features = false }

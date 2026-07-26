@@ -1,6 +1,5 @@
-use crate::f32x4;
-
 use crate::ParamId;
+use crate::math::WideF32;
 use crate::patch::AuxEnvelopeParams;
 
 pub struct AuxEnv {
@@ -40,11 +39,11 @@ impl AuxEnv {
         true
     }
 
-    pub fn next_signal(&mut self, velocities: f32x4, aux_amount: f32) -> (f32x4, f32x4) {
+    pub fn next_signal(&mut self, velocities: WideF32, aux_amount: f32) -> (WideF32, WideF32) {
         let aux_env = self.envelope.next();
-        let aux_velocity_scale = f32x4::splat(1.0 - self.velocity_amount)
-            + velocities * f32x4::splat(self.velocity_amount);
-        let aux_signal = aux_env * f32x4::splat(aux_amount) * aux_velocity_scale;
+        let aux_velocity_scale = WideF32::splat(1.0 - self.velocity_amount)
+            + velocities * WideF32::splat(self.velocity_amount);
+        let aux_signal = aux_env * WideF32::splat(aux_amount) * aux_velocity_scale;
         (aux_env, aux_signal)
     }
 
@@ -93,7 +92,7 @@ impl AuxEnv {
     }
 
     #[cfg(test)]
-    pub(crate) fn envelope_next(&mut self) -> f32x4 {
+    pub(crate) fn envelope_next(&mut self) -> WideF32 {
         self.envelope.next()
     }
 

@@ -1,20 +1,25 @@
 //! Polyphonic voice allocation and mixing.
 
-use super::{NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position};
+use core::ops::{Deref, DerefMut, Index, IndexMut};
+
+use crate::arp::{ArpEngine, ArpEvent};
 #[cfg(test)]
 use crate::dsp::filter::MAX_CUTOFF_HZ;
 use crate::dsp::filter::MIN_CUTOFF_HZ;
 use crate::dsp::{FilterOversampling, FilterType};
 use crate::effects::EffectModulation;
 use crate::fixed_index_list::FixedIndexList;
-use crate::profiling::RenderContext;
-use crate::arp::{ArpEngine, ArpEvent};
+use crate::math::F32;
+use crate::math::WideF32;
 use crate::pressed_keys::PressedKeys;
-use crate::{
-    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, LANES, ModDestination, ParamId,
-    Patch, UnisonMode, VOICE_PACKS,
+use crate::profiling::RenderContext;
+use crate::voice::{
+    NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
 };
-use core::ops::{Deref, DerefMut, Index, IndexMut};
+use crate::{
+    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, ModDestination, ParamId, Patch,
+    UnisonMode, VOICE_PACKS,
+};
 
 const MIDI_CC_FILTER_RESONANCE: u8 = 71;
 const MIDI_CC_FILTER_CUTOFF: u8 = 74;
@@ -55,7 +60,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
             let mut block = VoiceBlock::new(sample_rate);
             block.apply_voice_patch(&patch);
             block.set_pan_positions(core::array::from_fn(|lane| {
-                voice_pan_position(block_index * LANES + lane, Self::VOICE_COUNT)
+                voice_pan_position(block_index * WideF32::LANES + lane, Self::VOICE_COUNT)
             }));
             block
         });
@@ -102,7 +107,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         self.rebuild_sounding_notes();
     }
 
-    const VOICE_COUNT: usize = PACKS * LANES;
+    const VOICE_COUNT: usize = PACKS * WideF32::LANES;
 
     pub fn handle_control(&mut self, msg: ControlMessage) {
         match msg {
@@ -305,7 +310,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
                 && self.blocks[block_idx].active_note(lane).is_some();
             let lane_glide_start = if was_active { None } else { glide_start };
             let tuning_cents = core::array::from_fn(|block_lane| {
-                let index = block_idx * LANES + block_lane;
+                let index = block_idx * WideF32::LANES + block_lane;
                 if index < target_len {
                     unison_detune_cents(index, target_len, self.unison.detune)
                 } else {
@@ -368,7 +373,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
             .count();
         for block_idx in 0..PACKS {
             let tuning_cents = core::array::from_fn(|lane| {
-                let voice_idx = block_idx * LANES + lane;
+                let voice_idx = block_idx * WideF32::LANES + lane;
                 if voice_idx < count {
                     unison_detune_cents(voice_idx, count, self.unison.detune)
                 } else {
@@ -734,7 +739,7 @@ impl<const PACKS: usize> IndexMut<usize> for VoiceManager<PACKS> {
 /// Snapshot of MIDI notes currently sounding across all voices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActiveNotes<const PACKS: usize = VOICE_PACKS> {
-    notes: [[u8; LANES]; PACKS],
+    notes: [[u8; WideF32::LANES]; PACKS],
     len: usize,
 }
 
@@ -747,7 +752,7 @@ impl<const PACKS: usize> Default for ActiveNotes<PACKS> {
 impl<const PACKS: usize> ActiveNotes<PACKS> {
     pub const fn new() -> Self {
         Self {
-            notes: [[0; LANES]; PACKS],
+            notes: [[0; WideF32::LANES]; PACKS],
             len: 0,
         }
     }
@@ -757,13 +762,13 @@ impl<const PACKS: usize> ActiveNotes<PACKS> {
             return false;
         }
 
-        self.notes[self.len / LANES][self.len % LANES] = note;
+        self.notes[self.len / WideF32::LANES][self.len % WideF32::LANES] = note;
         self.len += 1;
         true
     }
 
     pub const fn capacity(&self) -> usize {
-        PACKS * LANES
+        PACKS * WideF32::LANES
     }
 
     pub fn len(&self) -> usize {
@@ -799,7 +804,7 @@ impl<const PACKS: usize> Iterator for ActiveNotesIter<'_, PACKS> {
             return None;
         }
 
-        let note = self.notes.notes[self.index / LANES][self.index % LANES];
+        let note = self.notes.notes[self.index / WideF32::LANES][self.index % WideF32::LANES];
         self.index += 1;
         Some(note)
     }
@@ -857,15 +862,15 @@ impl Iterator for SustainedVoicesIter {
 }
 
 struct AllocatedVoices<const PACKS: usize> {
-    held: FixedIndexList<PACKS, LANES>,
+    held: FixedIndexList<PACKS, { WideF32::LANES }>,
     sustained: SustainedVoices,
     sustain_pressed: bool,
     next_voice: usize,
 }
 
 impl<const PACKS: usize> AllocatedVoices<PACKS> {
-    const _VOICE_CAPACITY: () = assert!(PACKS * LANES <= 32);
-    const VOICE_COUNT: usize = PACKS * LANES;
+    const _VOICE_CAPACITY: () = assert!(PACKS * WideF32::LANES <= 32);
+    const VOICE_COUNT: usize = PACKS * WideF32::LANES;
 
     const fn new() -> Self {
         Self {
@@ -882,7 +887,7 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
     }
 
     fn voice_location(voice_idx: usize) -> (usize, usize) {
-        (voice_idx / LANES, voice_idx % LANES)
+        (voice_idx / WideF32::LANES, voice_idx % WideF32::LANES)
     }
 
     fn mark_held(&mut self, voice_idx: usize) {
@@ -951,7 +956,7 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
                 note,
                 velocity,
                 false,
-                [0.0; LANES],
+                [0.0; WideF32::LANES],
                 NoteGlide {
                     start_note: glide_start,
                     enabled: should_glide,
@@ -963,7 +968,7 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
                 note,
                 velocity,
                 false,
-                [0.0; LANES],
+                [0.0; WideF32::LANES],
                 NoteGlide {
                     start_note: glide_start,
                     enabled: should_glide,
@@ -1030,7 +1035,7 @@ fn key_mode_retriggers(mode: KeyMode) -> bool {
 
 fn midi_filter_cutoff_hz(value: f32) -> f32 {
     const CUTOFF_RANGE_OCTAVES: f32 = 9.813_781;
-    MIN_CUTOFF_HZ * crate::math::exp2(CUTOFF_RANGE_OCTAVES * value)
+    MIN_CUTOFF_HZ * F32(CUTOFF_RANGE_OCTAVES * value).exp2().as_f32()
 }
 
 #[cfg(test)]
@@ -1049,9 +1054,12 @@ mod tests {
         process_frames(voices, 1);
     }
 
-    fn find_gated_note(voices: &VoiceManager, note: u8) -> Option<(usize, usize)> {
+    fn find_gated_note<const PACKS: usize>(
+        voices: &VoiceManager<PACKS>,
+        note: u8,
+    ) -> Option<(usize, usize)> {
         for (block_idx, block) in voices.iter().enumerate() {
-            for lane in 0..LANES {
+            for lane in 0..WideF32::LANES {
                 if block.lanes().gate(lane) && block.lanes().note(lane) == note {
                     return Some((block_idx, lane));
                 }
@@ -1060,7 +1068,7 @@ mod tests {
         None
     }
 
-    fn enable_unison(voices: &mut VoiceManager, mode: UnisonMode) {
+    fn enable_unison<const PACKS: usize>(voices: &mut VoiceManager<PACKS>, mode: UnisonMode) {
         voices.handle_control(ControlMessage::SetParam(
             ParamId::UnisonMode,
             mode.index() as f32,
@@ -1068,7 +1076,7 @@ mod tests {
         voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 1.0));
     }
 
-    fn configure_glide(voices: &mut VoiceManager, mode: GlideMode) {
+    fn configure_glide<const PACKS: usize>(voices: &mut VoiceManager<PACKS>, mode: GlideMode) {
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Glide, 1.0));
         voices.handle_control(ControlMessage::SetParam(
             ParamId::GlideMode,
@@ -1077,7 +1085,7 @@ mod tests {
         voices.handle_control(ControlMessage::SetParam(ParamId::GlideEnabled, 1.0));
     }
 
-    fn gated_note_frequency(voices: &VoiceManager, note: u8) -> f32 {
+    fn gated_note_frequency<const PACKS: usize>(voices: &VoiceManager<PACKS>, note: u8) -> f32 {
         let (block, lane) = find_gated_note(voices, note).expect("note should be gated");
         voices[block].oscillators().osc1_frequency_hz().to_array()[lane]
     }
@@ -1169,6 +1177,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn unison_detune_is_symmetric_and_centered() {
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 16.0));
@@ -1274,6 +1283,7 @@ mod tests {
         assert!(progressed < crate::midi_to_hz(72));
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
     fn repeated_unison_note_waits_for_click_safe_shutdown_and_keeps_detune() {
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
@@ -1325,6 +1335,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
     fn live_detune_update_changes_pitch_without_retriggering() {
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
@@ -1448,6 +1459,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn four_notes_are_rendered_as_distinct_simd_lanes() {
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67, 72] {
@@ -1462,7 +1474,7 @@ mod tests {
         assert_eq!(block.lanes().gates_array(), [true, true, true, true]);
         assert_eq!(block.lanes().notes_array(), [60, 64, 67, 72]);
 
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             let expected = crate::midi_to_hz(block.lanes().notes_array()[lane]);
             let osc1_freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
             assert!(
@@ -1534,6 +1546,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn pan_pattern_scales_with_configured_voice_count() {
         let four_voices = VoiceManager::<1>::new(44_100.0);
         assert_eq!(
@@ -1684,6 +1697,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn stolen_voice_starts_after_five_millisecond_shutdown() {
         let mut voices = VoiceManager::<1>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
@@ -1742,6 +1756,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn sustain_holds_and_then_cancels_a_pending_stolen_note() {
         let mut voices = VoiceManager::<1>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
@@ -1768,6 +1783,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn one_voice_pack_limits_polyphony_to_four_voices() {
         let mut voices = VoiceManager::<1>::new(44_100.0);
         for note in [60, 61, 62, 63, 64] {
@@ -1779,13 +1795,14 @@ mod tests {
 
         let held = voices.active_notes();
         assert_eq!(voices.len(), 1);
-        assert_eq!(voices.active_voice_count(), LANES);
-        assert_eq!(held.len(), LANES);
+        assert_eq!(voices.active_voice_count(), WideF32::LANES);
+        assert_eq!(held.len(), WideF32::LANES);
         assert!(!held.contains(&60), "oldest note should be stolen");
         assert!(held.contains(&64), "new note should be allocated");
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn allocates_across_voice_blocks() {
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67, 72, 76] {
@@ -1916,6 +1933,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn sustained_voice_is_stolen_before_held_voice() {
         let mut voices = VoiceManager::<1>::new(44_100.0);
         for note in 60..=63 {
@@ -1932,7 +1950,7 @@ mod tests {
         });
 
         let active = voices.active_notes();
-        assert_eq!(active.len(), LANES);
+        assert_eq!(active.len(), WideF32::LANES);
         assert!(!active.contains(&60));
         for note in 61..=64 {
             assert!(active.contains(&note));
@@ -2052,7 +2070,10 @@ mod tests {
         let step = (sample_rate / (bps * 1.0)) as usize;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
@@ -2062,9 +2083,18 @@ mod tests {
         ));
 
         // Simulate pressing C, then E, then G quickly
-        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 1.0,
+        });
 
         // First step fires immediately
         process_frames(&mut voices, 1);
@@ -2105,7 +2135,10 @@ mod tests {
 
         // Keep filter wide open for audibility
         let mut ctx = crate::create_render_context!();
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
 
@@ -2133,7 +2166,10 @@ mod tests {
         // First step fires immediately
         process_frames(&mut voices, 1);
         assert_eq!(voices.active_notes().len(), 1);
-        assert!(voices.active_notes().contains(&60), "first arp step should be 60");
+        assert!(
+            voices.active_notes().contains(&60),
+            "first arp step should be 60"
+        );
 
         // Render through the step and verify audio is non-silent
         let mut total_a = 0.0f32;
@@ -2149,7 +2185,10 @@ mod tests {
         // Advancing to step 2
         process_frames(&mut voices, step - step / 2);
         assert_eq!(voices.active_notes().len(), 1);
-        assert!(voices.active_notes().contains(&64), "second arp step should be 64");
+        assert!(
+            voices.active_notes().contains(&64),
+            "second arp step should be 64"
+        );
 
         // Step 2 audio check
         let mut total_b = 0.0f32;
@@ -2164,7 +2203,10 @@ mod tests {
 
         // Wrap around after step 3
         process_frames(&mut voices, step + step - step / 2);
-        assert!(voices.active_notes().contains(&60), "should have wrapped back to 60");
+        assert!(
+            voices.active_notes().contains(&60),
+            "should have wrapped back to 60"
+        );
     }
 
     #[test]
@@ -2173,7 +2215,10 @@ mod tests {
         let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
@@ -2183,13 +2228,19 @@ mod tests {
         ));
 
         // Press C
-        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
         process_frames(&mut voices, 1);
         assert!(voices.active_notes().contains(&60));
 
         // Run for half a step, then add E mid-cycle
         process_frames(&mut voices, step / 2);
-        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
 
         // Advance past the first step trigger (C again, since step was at 0)
         process_frames(&mut voices, step / 2 + 10);
@@ -2208,7 +2259,10 @@ mod tests {
                 }
             }
         }
-        assert!(saw_e, "E must appear within a few cycles after being added mid-cycle");
+        assert!(
+            saw_e,
+            "E must appear within a few cycles after being added mid-cycle"
+        );
     }
 
     #[test]
@@ -2219,7 +2273,10 @@ mod tests {
         let step = (sample_rate / (bps * 4.0)) as usize;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
@@ -2230,19 +2287,37 @@ mod tests {
         // ClockDivide is routed through SynthEngine, not set_param; call directly
         voices.set_clock_division(crate::patch::ClockDivision::Sixteenth);
 
-        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 1.0,
+        });
 
-        assert!(step < (sample_rate / (bps * 1.0)) as usize / 2,
-            "sixteenth step {step} should be < half of quarter step {}", (sample_rate / (bps * 1.0)) as usize);
+        assert!(
+            step < (sample_rate / (bps * 1.0)) as usize / 2,
+            "sixteenth step {step} should be < half of quarter step {}",
+            (sample_rate / (bps * 1.0)) as usize
+        );
 
         process_frames(&mut voices, 1);
         assert!(voices.active_notes().contains(&60), "first step");
         process_frames(&mut voices, step + 10);
-        assert!(voices.active_notes().contains(&64), "second step at sixteenth");
+        assert!(
+            voices.active_notes().contains(&64),
+            "second step at sixteenth"
+        );
         process_frames(&mut voices, step + 10);
-        assert!(voices.active_notes().contains(&67), "third step at sixteenth");
+        assert!(
+            voices.active_notes().contains(&67),
+            "third step at sixteenth"
+        );
     }
 
     #[test]
@@ -2251,7 +2326,10 @@ mod tests {
         let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
@@ -2260,9 +2338,18 @@ mod tests {
             crate::patch::ArpMode::Up.index() as f32,
         ));
 
-        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 64, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 1.0,
+        });
 
         // First step
         process_frames(&mut voices, 1);
@@ -2279,7 +2366,10 @@ mod tests {
                 saw_64 = saw_64 || n == 64;
             }
         }
-        assert!(!saw_64, "released note 64 must not appear in any subsequent arp step");
+        assert!(
+            !saw_64,
+            "released note 64 must not appear in any subsequent arp step"
+        );
     }
 
     #[test]
@@ -2288,7 +2378,10 @@ mod tests {
         let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
@@ -2298,8 +2391,14 @@ mod tests {
             crate::patch::ArpMode::Up.index() as f32,
         ));
 
-        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 1.0,
+        });
         process_frames(&mut voices, 1);
 
         // Release all keys — hold should keep them
@@ -2308,7 +2407,10 @@ mod tests {
 
         // Advance through a cycle — should still have notes
         process_frames(&mut voices, step + 10);
-        assert!(voices.active_notes().len() > 0, "hold should keep arp running after release");
+        assert!(
+            voices.active_notes().len() > 0,
+            "hold should keep arp running after release"
+        );
     }
 
     #[test]
@@ -2317,23 +2419,38 @@ mod tests {
         let _step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, MAX_CUTOFF_HZ));
+        voices.handle_control(ControlMessage::SetParam(
+            ParamId::FilterCutoff,
+            MAX_CUTOFF_HZ,
+        ));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
 
         // Press notes while arp is ON — they go to arp held_notes, not direct allocation
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::NoteOn { note: 60, velocity: 1.0 });
-        voices.handle_control(ControlMessage::NoteOn { note: 67, velocity: 1.0 });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 67,
+            velocity: 1.0,
+        });
 
         // Disable arp — should clear internal state but pressed_keys remain
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 0.0));
         // Notes are still physically held and revoice polyphonically
-        assert!(voices.active_notes().len() > 0, "poly notes should play after arp disabled");
+        assert!(
+            voices.active_notes().len() > 0,
+            "poly notes should play after arp disabled"
+        );
 
         // Re-enable arp — pressed_keys are still held, should rebuild from them
         voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
         process_frames(&mut voices, 1);
-        assert!(voices.active_notes().len() > 0, "arp should restart with currently held keys");
+        assert!(
+            voices.active_notes().len() > 0,
+            "arp should restart with currently held keys"
+        );
     }
 }

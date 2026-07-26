@@ -1,6 +1,7 @@
 //! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
 
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
+use crate::math::F32;
 use crate::patch::decode_patch_name;
 use crate::{
     DedicatedModSource, LfoSyncDivision, MidiClockMode, ModDestination, ModRoute, ModSource,
@@ -343,7 +344,7 @@ impl Rev2MidiEncoder {
             ParamId::UnisonEnabled => (168, bool_raw(value)),
             ParamId::UnisonMode => (169, quantize(value, 0.0, 16.0, 16)),
             ParamId::UnisonDetune => (167, quantize(value, 0.0, 16.0, 16)),
-            ParamId::Bpm => (179, crate::math::round(value.clamp(30.0, 250.0)) as u16),
+            ParamId::Bpm => (179, F32(value.clamp(30.0, 250.0)).round().as_f32() as u16),
             ParamId::ClockDivide => (175, quantize(value, 0.0, 12.0, 12)),
             ParamId::FilterCutoff => (15, quantize_log(value, 20.0, 20_000.0, 164)),
             ParamId::FilterResonance => (16, quantize(value, 0.0, 1.0, 127)),
@@ -759,12 +760,14 @@ fn key_mode_index(raw: u16) -> f32 {
 }
 
 fn quantize(value: f32, min: f32, max: f32, raw_max: u16) -> u16 {
-    crate::math::round((value.clamp(min, max) - min) / (max - min) * raw_max as f32) as u16
+    F32((value.clamp(min, max) - min) / (max - min) * raw_max as f32)
+        .round()
+        .as_f32() as u16
 }
 
 fn quantize_log(value: f32, min: f32, max: f32, raw_max: u16) -> u16 {
-    let normalized = crate::math::ln(value.clamp(min, max) / min) / crate::math::ln(max / min);
-    crate::math::round(normalized * raw_max as f32) as u16
+    let normalized = F32(value.clamp(min, max) / min).ln().as_f32() / F32(max / min).ln().as_f32();
+    F32(normalized * raw_max as f32).round().as_f32() as u16
 }
 
 fn unit(raw: u16, max: u16) -> f32 {
@@ -780,7 +783,7 @@ fn ranged(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
 }
 
 fn logarithmic(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
-    min * crate::math::powf(max / min, unit(raw, raw_max))
+    min * F32(max / min).powf(F32(unit(raw, raw_max))).as_f32()
 }
 
 fn emit_param(emit: &mut impl FnMut(Rev2MidiUpdate), param: ParamId, value: f32) {
@@ -809,7 +812,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         3 => emit_param(
             emit,
             ParamId::EffectType,
-            crate::math::round(ranged(raw, 127, 0.0, 12.0)),
+            F32(ranged(raw, 127, 0.0, 12.0)).round().as_f32(),
         ),
         5 => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
         7 | 37 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
@@ -827,7 +830,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         22 => emit_osc_shape(
             emit,
             true,
-            crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
+            F32(ranged(raw, 127, 0.0, 4.0)).round().as_f32() as u16,
         ),
         23 => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
         24 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
@@ -835,7 +838,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         26 => emit_osc_shape(
             emit,
             false,
-            crate::math::round(ranged(raw, 127, 0.0, 4.0)) as u16,
+            F32(ranged(raw, 127, 0.0, 4.0)).round().as_f32() as u16,
         ),
         27 => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
         28 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
@@ -856,7 +859,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         85 => emit_param(
             emit,
             ParamId::AuxEgDestination,
-            crate::math::round(ranged(raw, 127, 0.0, 52.0)),
+            F32(ranged(raw, 127, 0.0, 52.0)).round().as_f32(),
         ),
         86 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 127)),
         87 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),

@@ -1,6 +1,5 @@
-use crate::f32x4;
-
-use crate::{F32x4Ext, LANES};
+use crate::math::F32;
+use crate::math::WideF32;
 
 pub const MIN_TIME_SECONDS: f32 = 0.0005;
 pub const MAX_TIME_SECONDS: f32 = 30.0;
@@ -18,14 +17,14 @@ const ANALOG_DECAY_TCO: f32 = 0.007_083_409;
 
 /// Four-lane delayed ADSR envelope with optional attack-decay looping.
 pub struct DadsrEnvelope {
-    stage: [EnvStage; LANES],
-    gate: [bool; LANES],
-    value: f32x4,
+    stage: [EnvStage; WideF32::LANES],
+    gate: [bool; WideF32::LANES],
+    value: WideF32,
     delay_seconds: f32,
-    delay_samples_remaining: [u32; LANES],
-    shutdown_start: [f32; LANES],
-    shutdown_samples_remaining: [u32; LANES],
-    shutdown_total_samples: [u32; LANES],
+    delay_samples_remaining: [u32; WideF32::LANES],
+    shutdown_start: [f32; WideF32::LANES],
+    shutdown_samples_remaining: [u32; WideF32::LANES],
+    shutdown_total_samples: [u32; WideF32::LANES],
     attack_seconds: f32,
     decay_seconds: f32,
     sustain_level: f32,
@@ -39,14 +38,14 @@ impl DadsrEnvelope {
     /// Creates an envelope whose attack, decay, and release segments advance linearly.
     pub fn linear(sample_rate: f32) -> Self {
         Self {
-            stage: [EnvStage::Idle; LANES],
-            gate: [false; LANES],
-            value: f32x4::splat(0.0),
+            stage: [EnvStage::Idle; WideF32::LANES],
+            gate: [false; WideF32::LANES],
+            value: WideF32::ZERO,
             delay_seconds: 0.0,
-            delay_samples_remaining: [0; LANES],
-            shutdown_start: [0.0; LANES],
-            shutdown_samples_remaining: [0; LANES],
-            shutdown_total_samples: [0; LANES],
+            delay_samples_remaining: [0; WideF32::LANES],
+            shutdown_start: [0.0; WideF32::LANES],
+            shutdown_samples_remaining: [0; WideF32::LANES],
+            shutdown_total_samples: [0; WideF32::LANES],
             attack_seconds: DEFAULT_ATTACK_SECONDS,
             decay_seconds: DEFAULT_DECAY_SECONDS,
             sustain_level: DEFAULT_SUSTAIN_LEVEL,
@@ -66,14 +65,14 @@ impl DadsrEnvelope {
     /// Creates an envelope whose attack, decay, and release segments use analog-style curves.
     pub fn analog(sample_rate: f32) -> Self {
         Self {
-            stage: [EnvStage::Idle; LANES],
-            gate: [false; LANES],
-            value: f32x4::splat(0.0),
+            stage: [EnvStage::Idle; WideF32::LANES],
+            gate: [false; WideF32::LANES],
+            value: WideF32::ZERO,
             delay_seconds: 0.0,
-            delay_samples_remaining: [0; LANES],
-            shutdown_start: [0.0; LANES],
-            shutdown_samples_remaining: [0; LANES],
-            shutdown_total_samples: [0; LANES],
+            delay_samples_remaining: [0; WideF32::LANES],
+            shutdown_start: [0.0; WideF32::LANES],
+            shutdown_samples_remaining: [0; WideF32::LANES],
+            shutdown_total_samples: [0; WideF32::LANES],
             attack_seconds: DEFAULT_ATTACK_SECONDS,
             decay_seconds: DEFAULT_DECAY_SECONDS,
             sustain_level: DEFAULT_SUSTAIN_LEVEL,
@@ -134,7 +133,7 @@ impl DadsrEnvelope {
     }
 
     /// Advances every lane by one sample and returns the current envelope values.
-    pub fn next(&mut self) -> f32x4 {
+    pub fn next(&mut self) -> WideF32 {
         let mut values = self.value.to_array();
         let curve = self.curve;
 
@@ -201,7 +200,7 @@ impl DadsrEnvelope {
             }
         }
 
-        self.value = f32x4::new(values);
+        self.value = WideF32::new(values);
         self.value
     }
 
@@ -225,7 +224,7 @@ impl DadsrEnvelope {
 
     /// Releases every lane.
     pub fn release_all(&mut self) {
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             self.release_lane(lane);
         }
     }
@@ -245,8 +244,10 @@ impl DadsrEnvelope {
             return;
         }
 
-        let samples =
-            crate::math::round(seconds.max(MIN_TIME_SECONDS) * self.sample_rate).max(1.0) as u32;
+        let samples = F32(seconds.max(MIN_TIME_SECONDS) * self.sample_rate)
+            .round()
+            .as_f32()
+            .max(1.0) as u32;
         self.shutdown_start[lane] = current;
         self.shutdown_samples_remaining[lane] = samples;
         self.shutdown_total_samples[lane] = samples;
@@ -270,8 +271,10 @@ impl DadsrEnvelope {
             self.delay_samples_remaining[lane] = 0;
             self.stage[lane] = EnvStage::Attack;
         } else {
-            self.delay_samples_remaining[lane] =
-                crate::math::round(self.delay_seconds * self.sample_rate).max(1.0) as u32;
+            self.delay_samples_remaining[lane] = F32(self.delay_seconds * self.sample_rate)
+                .round()
+                .as_f32()
+                .max(1.0) as u32;
             self.stage[lane] = EnvStage::Delay;
         }
     }
@@ -505,7 +508,7 @@ fn linear_step(seconds: f32, sample_rate: f32) -> f32 {
 
 fn analog_coeff(tco: f32, seconds: f32, sample_rate: f32) -> f32 {
     let samples = seconds * sample_rate;
-    crate::math::exp(-crate::math::ln((1.0 + tco) / tco) / samples)
+    (-F32((1.0 + tco) / tco).ln() / samples).exp().as_f32()
 }
 
 #[cfg(test)]
@@ -664,6 +667,7 @@ mod tests {
         assert!(env.is_idle_lane(0));
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
     fn reset_lane_does_not_change_adjacent_lanes() {
         let mut env = DadsrEnvelope::linear(1000.0);

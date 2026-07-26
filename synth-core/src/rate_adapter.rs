@@ -1,24 +1,16 @@
 //! Engine-local internal-rate adaptation.
 //!
 //! Chooses full-rate passthrough or half-rate DSP plus [`crate::dsp::upsampler`]
-//! reconstruction so embedded target flags stay out of semantic DSP algorithms.
+//! reconstruction. The `downsampling` feature is a quality tradeoff — when
+//! enabled, DSP renders at half the internal sample rate and upsampler
+//! reconstructs the output. Feature selection is the Makefile's responsibility.
 
-#[cfg(any(
-    not(all(feature = "embedded-math", target_os = "none")),
-    feature = "daisy-full-rate"
-))]
+#[cfg(not(feature = "downsampling"))]
 pub(crate) use full_rate::RateAdapter;
-#[cfg(all(
-    feature = "embedded-math",
-    target_os = "none",
-    not(feature = "daisy-full-rate")
-))]
+#[cfg(feature = "downsampling")]
 pub(crate) use half_rate::RateAdapter;
 
-#[cfg(any(
-    not(all(feature = "embedded-math", target_os = "none")),
-    feature = "daisy-full-rate"
-))]
+#[cfg(not(feature = "downsampling"))]
 mod full_rate {
     #[derive(Default)]
     pub(crate) struct RateAdapter {
@@ -46,14 +38,7 @@ mod full_rate {
     }
 }
 
-#[cfg(any(
-    test,
-    all(
-        feature = "embedded-math",
-        target_os = "none",
-        not(feature = "daisy-full-rate")
-    )
-))]
+#[cfg(any(test, feature = "downsampling"))]
 mod half_rate {
     use crate::dsp::upsampler::Upsampler;
 

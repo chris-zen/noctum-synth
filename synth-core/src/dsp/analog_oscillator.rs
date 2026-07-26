@@ -2,9 +2,9 @@ use crate::dsp::blep::{
     PulseBlepState, blep_pulse, blep_pulse_prepared, blep_saw, table_points_per_side_lane,
 };
 use crate::dsp::rng::DspRng;
-use crate::f32x4;
+use crate::math::{F32, WideF32};
 use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_SAMPLE_RATE, F32x4Ext, LANES, wrap01};
+use crate::{DEFAULT_SAMPLE_RATE, wrap01};
 
 pub use crate::dsp::blep::SawMethod;
 
@@ -58,27 +58,27 @@ trait OscillatorKernel {
     }
 
     #[inline(always)]
-    fn prepare_sample(&mut self, _phase_inc: f32x4) {}
+    fn prepare_sample(&mut self, _phase_inc: WideF32) {}
 
     #[inline(always)]
     fn finish_sample(&mut self) {}
 
     #[inline(always)]
-    fn saw(&self, phase: f32x4, phase_inc: f32x4) -> f32x4 {
+    fn saw(&self, phase: WideF32, phase_inc: WideF32) -> WideF32 {
         blep_saw(phase, phase_inc, self.saw_method())
     }
 
     #[inline(always)]
-    fn pulse(&self, phase: f32x4, phase_inc: f32x4, state: &PulseBlepState) -> f32x4 {
+    fn pulse(&self, phase: WideF32, phase_inc: WideF32, state: &PulseBlepState) -> WideF32 {
         blep_pulse_prepared(phase, phase_inc, state, self.saw_method())
     }
 
     #[inline(always)]
-    fn triangle(&self, phase: f32x4, phase_inc: f32x4, integrator: &mut f32x4) -> f32x4 {
+    fn triangle(&self, phase: WideF32, phase_inc: WideF32, integrator: &mut WideF32) -> WideF32 {
         if self.saw_method() == SawMethod::PolyBlep {
-            let square = blep_pulse(phase, phase_inc, f32x4::splat(0.5), SawMethod::PolyBlep);
-            *integrator = (*integrator - square * phase_inc * f32x4::splat(4.0))
-                .clamp(f32x4::splat(-1.2), f32x4::splat(1.2));
+            let square = blep_pulse(phase, phase_inc, WideF32::splat(0.5), SawMethod::PolyBlep);
+            *integrator = (*integrator - square * phase_inc * WideF32::splat(4.0))
+                .clamp(WideF32::splat(-1.2), WideF32::splat(1.2));
             *integrator
         } else {
             polyblamp2_triangle(phase, phase_inc)
@@ -86,7 +86,7 @@ trait OscillatorKernel {
     }
 
     #[inline(always)]
-    fn triangle_at(&self, phase: f32x4, phase_inc: f32x4) -> f32x4 {
+    fn triangle_at(&self, phase: WideF32, phase_inc: WideF32) -> WideF32 {
         polyblamp2_triangle(phase, phase_inc)
     }
 
@@ -106,7 +106,7 @@ impl OscillatorKernel for crate::dsp::wavetable::WavetableOscillatorKernel {
         false
     }
 
-    fn prepare_sample(&mut self, phase_inc: f32x4) {
+    fn prepare_sample(&mut self, phase_inc: WideF32) {
         crate::dsp::wavetable::WavetableOscillatorKernel::prepare(self, phase_inc);
     }
 
@@ -114,24 +114,24 @@ impl OscillatorKernel for crate::dsp::wavetable::WavetableOscillatorKernel {
         crate::dsp::wavetable::WavetableOscillatorKernel::finish(self);
     }
 
-    fn saw(&self, phase: f32x4, _phase_inc: f32x4) -> f32x4 {
+    fn saw(&self, phase: WideF32, _phase_inc: WideF32) -> WideF32 {
         crate::dsp::wavetable::WavetableOscillatorKernel::saw(self, phase)
     }
 
-    fn pulse(&self, phase: f32x4, _phase_inc: f32x4, state: &PulseBlepState) -> f32x4 {
+    fn pulse(&self, phase: WideF32, _phase_inc: WideF32, state: &PulseBlepState) -> WideF32 {
         let width = state.width();
         let shifted = wrap01(phase + width);
         crate::dsp::wavetable::WavetableOscillatorKernel::saw(self, phase)
             - crate::dsp::wavetable::WavetableOscillatorKernel::saw(self, shifted)
-            + width * f32x4::splat(2.0)
-            - f32x4::splat(1.0)
+            + width * WideF32::splat(2.0)
+            - WideF32::splat(1.0)
     }
 
-    fn triangle(&self, phase: f32x4, _phase_inc: f32x4, _integrator: &mut f32x4) -> f32x4 {
+    fn triangle(&self, phase: WideF32, _phase_inc: WideF32, _integrator: &mut WideF32) -> WideF32 {
         crate::dsp::wavetable::WavetableOscillatorKernel::triangle(self, phase)
     }
 
-    fn triangle_at(&self, phase: f32x4, _phase_inc: f32x4) -> f32x4 {
+    fn triangle_at(&self, phase: WideF32, _phase_inc: WideF32) -> WideF32 {
         crate::dsp::wavetable::WavetableOscillatorKernel::triangle(self, phase)
     }
 
@@ -193,18 +193,18 @@ type EngineOscillatorKernel = BlepOscillatorKernel;
 pub(crate) type EngineOscillator = AnalogOscillator<EngineOscillatorKernel>;
 
 /// Per-lane comparison mask for conditional SIMD updates (`blend` true branch).
-type LaneMask = f32x4;
+type LaneMask = WideF32;
 
 /// Output of a single oscillator sample step, including phase-wrap metadata
 /// used by oscillator sync.
 #[derive(Debug, Clone, Copy)]
 pub struct OscillatorStep {
     /// Band-limited waveform output per SIMD lane.
-    pub output: f32x4,
+    pub output: WideF32,
     /// Lanes that wrapped past the end of their cycle this step.
     pub(crate) wrapped: LaneMask,
     /// Sub-sample position of the wrap within the step, in `[0, 1)`.
-    pub(crate) subsample_offset: f32x4,
+    pub(crate) subsample_offset: WideF32,
 }
 
 /// A 4-lane (SIMD) virtual-analog oscillator.
@@ -217,17 +217,17 @@ pub struct AnalogOscillator<K = RuntimeOscillatorKernel> {
     kernel: K,
     shape: f32,
     sample_rate: f32,
-    phase: f32x4,
-    phase_inc: f32x4,
-    correction_from_phase_inc: f32x4,
-    correction_transition_remaining: [u8; LANES],
+    phase: WideF32,
+    phase_inc: WideF32,
+    correction_from_phase_inc: WideF32,
+    correction_transition_remaining: [u8; WideF32::LANES],
     correction_transition_mask: u8,
     pulse_blep: PulseBlepState,
-    intended_frequency_hz: f32x4,
-    effective_frequency_hz: f32x4,
-    enabled_mask: f32x4,
-    last_output: f32x4,
-    triangle_integrator: f32x4,
+    intended_frequency_hz: WideF32,
+    effective_frequency_hz: WideF32,
+    enabled_mask: WideF32,
+    last_output: WideF32,
+    triangle_integrator: WideF32,
     slop: OscSlopState,
 }
 
@@ -240,17 +240,17 @@ impl Default for AnalogOscillator<RuntimeOscillatorKernel> {
             },
             shape: 0.0,
             sample_rate: DEFAULT_SAMPLE_RATE,
-            phase: f32x4::splat(0.0),
-            phase_inc: f32x4::splat(0.0),
-            correction_from_phase_inc: f32x4::splat(0.0),
-            correction_transition_remaining: [0; LANES],
+            phase: WideF32::ZERO,
+            phase_inc: WideF32::ZERO,
+            correction_from_phase_inc: WideF32::ZERO,
+            correction_transition_remaining: [0; WideF32::LANES],
             correction_transition_mask: 0,
-            pulse_blep: PulseBlepState::new(f32x4::splat(0.5)),
-            intended_frequency_hz: f32x4::splat(0.0),
-            effective_frequency_hz: f32x4::splat(0.0),
-            enabled_mask: f32x4::splat(1.0),
-            last_output: f32x4::splat(0.0),
-            triangle_integrator: f32x4::splat(-1.0),
+            pulse_blep: PulseBlepState::new(WideF32::splat(0.5)),
+            intended_frequency_hz: WideF32::ZERO,
+            effective_frequency_hz: WideF32::ZERO,
+            enabled_mask: WideF32::splat(1.0),
+            last_output: WideF32::ZERO,
+            triangle_integrator: WideF32::splat(-1.0),
             slop: OscSlopState::new(),
         }
     }
@@ -306,17 +306,17 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
             kernel,
             shape: 0.0,
             sample_rate,
-            phase: f32x4::splat(0.0),
-            phase_inc: f32x4::splat(0.0),
-            correction_from_phase_inc: f32x4::splat(0.0),
-            correction_transition_remaining: [0; LANES],
+            phase: WideF32::ZERO,
+            phase_inc: WideF32::ZERO,
+            correction_from_phase_inc: WideF32::ZERO,
+            correction_transition_remaining: [0; WideF32::LANES],
             correction_transition_mask: 0,
-            pulse_blep: PulseBlepState::new(f32x4::splat(0.5)),
-            intended_frequency_hz: f32x4::splat(0.0),
-            effective_frequency_hz: f32x4::splat(0.0),
-            enabled_mask: f32x4::splat(1.0),
-            last_output: f32x4::splat(0.0),
-            triangle_integrator: f32x4::splat(-1.0),
+            pulse_blep: PulseBlepState::new(WideF32::splat(0.5)),
+            intended_frequency_hz: WideF32::ZERO,
+            effective_frequency_hz: WideF32::ZERO,
+            enabled_mask: WideF32::splat(1.0),
+            last_output: WideF32::ZERO,
+            triangle_integrator: WideF32::splat(-1.0),
             slop: OscSlopState::new(),
         }
     }
@@ -337,21 +337,21 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     pub fn set_shape(&mut self, shape: f32) {
         self.shape = shape.clamp(0.0, 1.0);
         self.pulse_blep
-            .set_width(f32x4::splat(pulse_width_from_shape(self.shape)));
+            .set_width(WideF32::splat(pulse_width_from_shape(self.shape)));
     }
 
     /// Enables or mutes all lanes uniformly.
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled_mask = f32x4::splat(if enabled { 1.0 } else { 0.0 });
+        self.enabled_mask = WideF32::splat(if enabled { 1.0 } else { 0.0 });
     }
 
     /// Sets a per-lane enable gain mask, clamped to `[0, 1]`.
-    pub fn set_enabled_mask(&mut self, enabled_mask: f32x4) {
-        self.enabled_mask = enabled_mask.clamp(f32x4::splat(0.0), f32x4::splat(1.0));
+    pub fn set_enabled_mask(&mut self, enabled_mask: WideF32) {
+        self.enabled_mask = enabled_mask.clamp(WideF32::ZERO, WideF32::splat(1.0));
     }
 
     /// Sets the phase of all lanes, wrapped into `[0, 1)`.
-    pub fn set_phase(&mut self, phase: f32x4) {
+    pub fn set_phase(&mut self, phase: WideF32) {
         self.phase = wrap01(phase);
         self.triangle_integrator = naive_triangle(self.phase);
     }
@@ -369,9 +369,9 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     /// The slave phase is set to where it would be at the end of the current
     /// sample after resetting at `subsample_offset` and advancing for the
     /// remaining part of the sample.
-    pub(crate) fn hard_sync_reset(&mut self, reset: LaneMask, subsample_offset: f32x4) {
-        let one = f32x4::splat(1.0);
-        let remaining = (one - subsample_offset).clamp(f32x4::splat(0.0), one);
+    pub(crate) fn hard_sync_reset(&mut self, reset: LaneMask, subsample_offset: WideF32) {
+        let one = WideF32::splat(1.0);
+        let remaining = (one - subsample_offset).clamp(WideF32::ZERO, one);
         let synced_phase = self.phase_inc * remaining;
 
         self.phase = reset.blend(synced_phase, self.phase);
@@ -381,14 +381,14 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
 
     /// Sets the intended (pre-slop) frequency per lane and refreshes the
     /// effective drifted frequency.
-    pub fn set_frequency(&mut self, freq: f32x4) {
+    pub fn set_frequency(&mut self, freq: WideF32) {
         let freq = sanitize_frequency(freq, self.sample_rate);
         self.intended_frequency_hz = freq;
         self.refresh_effective_frequency();
     }
 
     /// Returns the current effective (slop-drifted) frequency per lane.
-    pub fn frequency_hz(&self) -> f32x4 {
+    pub fn frequency_hz(&self) -> WideF32 {
         self.effective_frequency_hz
     }
 
@@ -446,13 +446,13 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
     }
 
     /// Evaluates the band-limited base waveform at phase `phi`.
-    fn sample_waveform(&mut self, phi: f32x4) -> f32x4 {
+    fn sample_waveform(&mut self, phi: WideF32) -> WideF32 {
         match self.waveform {
             Waveform::Saw => self.kernel.saw(phi, self.phase_inc),
             Waveform::SawTri => {
                 let saw = self.kernel.saw(phi, self.phase_inc);
                 let tri = self.triangle(phi);
-                let mix = f32x4::splat(self.shape.abs());
+                let mix = WideF32::splat(self.shape.abs());
                 saw + (tri - saw) * mix
             }
             Waveform::Triangle => self.triangle(phi),
@@ -460,14 +460,14 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         }
     }
 
-    fn triangle(&mut self, phi: f32x4) -> f32x4 {
+    fn triangle(&mut self, phi: WideF32) -> WideF32 {
         self.kernel
             .triangle(phi, self.phase_inc, &mut self.triangle_integrator)
     }
 
     /// Morphs saw/triangle timbre by crossfading `raw` with a phase-shifted
     /// copy of the same waveform; other waveforms pass through unchanged.
-    fn apply_shape_morph(&self, phi: f32x4, raw: f32x4) -> f32x4 {
+    fn apply_shape_morph(&self, phi: WideF32, raw: WideF32) -> WideF32 {
         if !matches!(self.waveform, Waveform::Saw | Waveform::Triangle) {
             return raw;
         }
@@ -475,13 +475,13 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         if shape == 0.0 {
             return raw;
         }
-        let shifted_phi = wrap01(phi + f32x4::splat(self.shape * 0.5));
+        let shifted_phi = wrap01(phi + WideF32::splat(self.shape * 0.5));
         let shifted = self.sample_waveform_at(shifted_phi);
-        let amount = f32x4::splat(shape);
+        let amount = WideF32::splat(shape);
         raw + (shifted - raw) * amount
     }
 
-    fn sample_waveform_at(&self, phi: f32x4) -> f32x4 {
+    fn sample_waveform_at(&self, phi: WideF32) -> WideF32 {
         match self.waveform {
             Waveform::Saw => self.kernel.saw(phi, self.phase_inc),
             Waveform::Triangle => self.kernel.triangle_at(phi, self.phase_inc),
@@ -489,7 +489,7 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         }
     }
 
-    fn previous_correction_output(&self, phi: f32x4, phase_inc: f32x4) -> Option<f32x4> {
+    fn previous_correction_output(&self, phi: WideF32, phase_inc: WideF32) -> Option<WideF32> {
         if !self.kernel.supports_correction_transition() {
             return None;
         }
@@ -501,9 +501,9 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
                 if shape == 0.0 {
                     return Some(raw);
                 }
-                let shifted_phi = wrap01(phi + f32x4::splat(self.shape * 0.5));
+                let shifted_phi = wrap01(phi + WideF32::splat(self.shape * 0.5));
                 let shifted = self.kernel.saw(shifted_phi, phase_inc);
-                Some(raw + (shifted - raw) * f32x4::splat(shape))
+                Some(raw + (shifted - raw) * WideF32::splat(shape))
             }
             Waveform::Pulse => Some(blep_pulse(
                 phi,
@@ -515,18 +515,18 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         }
     }
 
-    fn correction_transition_step(&mut self) -> Option<(f32x4, f32x4)> {
+    fn correction_transition_step(&mut self) -> Option<(WideF32, WideF32)> {
         if self.correction_transition_mask == 0 {
             return None;
         }
 
         let previous_phase_inc = self.correction_from_phase_inc;
-        let mut blend = [1.0; LANES];
+        let mut blend = [1.0; WideF32::LANES];
         let mut correction_from = self.correction_from_phase_inc.to_array();
         let current_phase_inc = self.phase_inc.to_array();
         let denominator = f32::from(CORRECTION_TRANSITION_SAMPLES - 1);
 
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             let remaining = self.correction_transition_remaining[lane];
             if remaining == 0 {
                 continue;
@@ -538,12 +538,12 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
                 self.correction_transition_mask &= !(1 << lane);
             }
         }
-        self.correction_from_phase_inc = f32x4::new(correction_from);
+        self.correction_from_phase_inc = WideF32::new(correction_from);
 
-        Some((previous_phase_inc, f32x4::new(blend)))
+        Some((previous_phase_inc, WideF32::new(blend)))
     }
 
-    fn begin_correction_transition(&mut self, previous: f32x4, current: f32x4) {
+    fn begin_correction_transition(&mut self, previous: WideF32, current: WideF32) {
         if !self.kernel.supports_correction_transition()
             || !matches!(self.waveform, Waveform::Saw | Waveform::Pulse)
         {
@@ -556,7 +556,7 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         let previous = previous.to_array();
         let current = current.to_array();
         let mut correction_from = self.correction_from_phase_inc.to_array();
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             if correction_step_needs_transition(
                 previous[lane],
                 current[lane],
@@ -569,12 +569,12 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
                 correction_from[lane] = current[lane];
             }
         }
-        self.correction_from_phase_inc = f32x4::new(correction_from);
+        self.correction_from_phase_inc = WideF32::new(correction_from);
     }
 
     fn clear_correction_transition(&mut self) {
         self.correction_from_phase_inc = self.phase_inc;
-        self.correction_transition_remaining = [0; LANES];
+        self.correction_transition_remaining = [0; WideF32::LANES];
         self.correction_transition_mask = 0;
     }
 
@@ -596,7 +596,7 @@ impl<K: OscillatorKernel> AnalogOscillator<K> {
         let freq = self.intended_frequency_hz * self.slop.frequency_ratio();
         let freq = clamp_frequency(freq, self.sample_rate);
         self.effective_frequency_hz = freq;
-        self.phase_inc = freq * f32x4::splat(1.0 / self.sample_rate);
+        self.phase_inc = freq * WideF32::splat(1.0 / self.sample_rate);
         self.begin_correction_transition(previous_phase_inc, self.phase_inc);
         if self.waveform == Waveform::Pulse && self.kernel.saw_method() == SawMethod::Blep {
             self.pulse_blep.set_phase_inc(self.phase_inc);
@@ -622,12 +622,12 @@ fn correction_step_needs_transition(previous: f32, current: f32, method: SawMeth
 /// both scaled by `amount`.
 struct OscSlopState {
     amount: f32,
-    static_ratio: f32x4,
-    drift_ratio: f32x4,
-    drift_target_ratio: f32x4,
-    drift_ratio_step: f32x4,
-    samples_until_target: [u32; LANES],
-    rng: [DspRng; LANES],
+    static_ratio: WideF32,
+    drift_ratio: WideF32,
+    drift_target_ratio: WideF32,
+    drift_ratio_step: WideF32,
+    samples_until_target: [u32; WideF32::LANES],
+    rng: [DspRng; WideF32::LANES],
 }
 
 impl OscSlopState {
@@ -635,17 +635,24 @@ impl OscSlopState {
     fn new() -> Self {
         Self {
             amount: 0.0,
-            static_ratio: f32x4::splat(1.0),
-            drift_ratio: f32x4::splat(1.0),
-            drift_target_ratio: f32x4::splat(1.0),
-            drift_ratio_step: f32x4::splat(1.0),
-            samples_until_target: [0; LANES],
-            rng: [
-                DspRng::new(0x0a50_0001, 0x51ab_0001),
-                DspRng::new(0x0a50_0002, 0x51ab_0002),
-                DspRng::new(0x0a50_0003, 0x51ab_0003),
-                DspRng::new(0x0a50_0004, 0x51ab_0004),
-            ],
+            static_ratio: WideF32::splat(1.0),
+            drift_ratio: WideF32::splat(1.0),
+            drift_target_ratio: WideF32::splat(1.0),
+            drift_ratio_step: WideF32::splat(1.0),
+            samples_until_target: [0; WideF32::LANES],
+            rng: core::array::from_fn(|i| {
+                let seeds = [
+                    (0x0a50_0001, 0x51ab_0001),
+                    (0x0a50_0002, 0x51ab_0002),
+                    (0x0a50_0003, 0x51ab_0003),
+                    (0x0a50_0004, 0x51ab_0004),
+                    (0x0a50_0005, 0x51ab_0005),
+                    (0x0a50_0006, 0x51ab_0006),
+                    (0x0a50_0007, 0x51ab_0007),
+                    (0x0a50_0008, 0x51ab_0008),
+                ];
+                DspRng::new(seeds[i].0, seeds[i].1)
+            }),
         }
     }
 
@@ -663,11 +670,11 @@ impl OscSlopState {
 
     /// Zeroes all accumulated detune and drift state.
     fn clear(&mut self) {
-        self.static_ratio = f32x4::splat(1.0);
-        self.drift_ratio = f32x4::splat(1.0);
-        self.drift_target_ratio = f32x4::splat(1.0);
-        self.drift_ratio_step = f32x4::splat(1.0);
-        self.samples_until_target = [0; LANES];
+        self.static_ratio = WideF32::splat(1.0);
+        self.drift_ratio = WideF32::splat(1.0);
+        self.drift_target_ratio = WideF32::splat(1.0);
+        self.drift_ratio_step = WideF32::splat(1.0);
+        self.samples_until_target = [0; WideF32::LANES];
     }
 
     /// Reseeds one lane's fixed per-note detune with a fresh random offset.
@@ -675,7 +682,7 @@ impl OscSlopState {
         let mut static_ratio = self.static_ratio.to_array();
         static_ratio[lane] =
             cents_to_ratio(bipolar_random(&mut self.rng[lane]) * self.depth_cents() * 0.5);
-        self.static_ratio = f32x4::new(static_ratio);
+        self.static_ratio = WideF32::new(static_ratio);
     }
 
     /// Advances the per-lane drift random walk by one sample.
@@ -689,7 +696,7 @@ impl OscSlopState {
         let mut drift_ratio = self.drift_ratio.to_array();
         let mut drift_target_ratio = self.drift_target_ratio.to_array();
         let mut drift_ratio_step = self.drift_ratio_step.to_array();
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             if self.samples_until_target[lane] == 0 {
                 let sample_rate = sample_rate.max(1.0);
                 let min_samples = ((0.5 * sample_rate) as u32).max(1);
@@ -697,10 +704,9 @@ impl OscSlopState {
                 let samples = self.rng[lane].u32_inclusive(min_samples, max_samples);
                 drift_target_ratio[lane] =
                     cents_to_ratio(bipolar_random(&mut self.rng[lane]) * depth_cents * 0.5);
-                drift_ratio_step[lane] = crate::math::powf(
-                    drift_target_ratio[lane] / drift_ratio[lane],
-                    1.0 / samples as f32,
-                );
+                drift_ratio_step[lane] = F32(drift_target_ratio[lane] / drift_ratio[lane])
+                    .powf(F32(1.0 / samples as f32))
+                    .as_f32();
                 self.samples_until_target[lane] = samples;
             }
 
@@ -713,13 +719,13 @@ impl OscSlopState {
             }
         }
 
-        self.drift_ratio = f32x4::new(drift_ratio);
-        self.drift_target_ratio = f32x4::new(drift_target_ratio);
-        self.drift_ratio_step = f32x4::new(drift_ratio_step);
+        self.drift_ratio = WideF32::new(drift_ratio);
+        self.drift_target_ratio = WideF32::new(drift_target_ratio);
+        self.drift_ratio_step = WideF32::new(drift_ratio_step);
     }
 
     /// Returns the combined static plus drift pitch ratio per lane.
-    fn frequency_ratio(&self) -> f32x4 {
+    fn frequency_ratio(&self) -> WideF32 {
         self.static_ratio * self.drift_ratio
     }
 
@@ -730,15 +736,15 @@ impl OscSlopState {
 }
 
 /// Clamps each lane's frequency to a finite, non-negative value below Nyquist.
-fn sanitize_frequency(freq: f32x4, sample_rate: f32) -> f32x4 {
+fn sanitize_frequency(freq: WideF32, sample_rate: f32) -> WideF32 {
     let max_freq = max_frequency(sample_rate);
-    let clamped = freq.clamp(f32x4::splat(0.0), f32x4::splat(max_freq));
-    freq.is_finite().blend(clamped, f32x4::splat(0.0))
+    let clamped = freq.clamp(WideF32::ZERO, WideF32::splat(max_freq));
+    freq.is_finite().blend(clamped, WideF32::ZERO)
 }
 
 /// Clamps each lane's frequency to `[0, max_frequency]` for the sample rate.
-fn clamp_frequency(freq: f32x4, sample_rate: f32) -> f32x4 {
-    freq.clamp(f32x4::splat(0.0), f32x4::splat(max_frequency(sample_rate)))
+fn clamp_frequency(freq: WideF32, sample_rate: f32) -> WideF32 {
+    freq.clamp(WideF32::ZERO, WideF32::splat(max_frequency(sample_rate)))
 }
 
 /// Returns the highest allowed frequency (below Nyquist) for `sample_rate`,
@@ -752,41 +758,41 @@ fn max_frequency(sample_rate: f32) -> f32 {
 }
 
 /// Returns a per-lane mask for lanes whose phase crosses the `1.0` boundary.
-fn phase_wrapped_mask(phi: f32x4, phase_inc: f32x4, next_phase: f32x4) -> LaneMask {
-    let zero = f32x4::splat(0.0);
-    let one = f32x4::splat(1.0);
+fn phase_wrapped_mask(phi: WideF32, phase_inc: WideF32, next_phase: WideF32) -> LaneMask {
+    let zero = WideF32::ZERO;
+    let one = WideF32::splat(1.0);
     phase_inc.simd_gt(zero) & next_phase.simd_ge(one) & phi.simd_lt(one)
 }
 
 /// Computes the sub-sample position of each lane's wrap within the step, in
 /// `[0, 1)`, for hard-sync alignment.
-fn wrap_subsample_offset(phi: f32x4, phase_inc: f32x4, wrapped: LaneMask) -> f32x4 {
-    let zero = f32x4::splat(0.0);
-    let one = f32x4::splat(1.0);
+fn wrap_subsample_offset(phi: WideF32, phase_inc: WideF32, wrapped: LaneMask) -> WideF32 {
+    let zero = WideF32::ZERO;
+    let one = WideF32::splat(1.0);
     let offset = ((one - phi) / phase_inc).clamp(zero, one);
     wrapped.blend(offset, zero)
 }
 
 /// Evaluates a band-limited triangle per SIMD lane, correcting the two
 /// slope discontinuities with second-order polyBLAMP residuals.
-fn polyblamp2_triangle(phi: f32x4, dt: f32x4) -> f32x4 {
-    #[cfg(feature = "embedded-math")]
+fn polyblamp2_triangle(phi: WideF32, dt: WideF32) -> WideF32 {
+    #[cfg(feature = "fast-math")]
     {
         return polyblamp2_triangle_scalar_lanes(phi, dt);
     }
-    #[cfg(not(feature = "embedded-math"))]
+    #[cfg(not(feature = "fast-math"))]
     polyblamp2_triangle_simd(phi, dt)
 }
 
 /// Cortex-M7 has a scalar FPU, so skip corner arithmetic independently for
 /// every inactive lane instead of evaluating and blending four divisions.
-#[cfg(feature = "embedded-math")]
-fn polyblamp2_triangle_scalar_lanes(phi: f32x4, dt: f32x4) -> f32x4 {
+#[cfg(feature = "fast-math")]
+fn polyblamp2_triangle_scalar_lanes(phi: WideF32, dt: WideF32) -> WideF32 {
     let phases = phi.to_array();
     let phase_increments = dt.to_array();
-    let mut output = [0.0; LANES];
+    let mut output = [0.0; WideF32::LANES];
 
-    for lane in 0..LANES {
+    for lane in 0..WideF32::LANES {
         let phase = phases[lane];
         let phase_increment = phase_increments[lane];
         let naive = naive_triangle_scalar(phase);
@@ -804,10 +810,10 @@ fn polyblamp2_triangle_scalar_lanes(phi: f32x4, dt: f32x4) -> f32x4 {
             - 8.0 * polyblamp2_corner_lane(midpoint_phase, phase_increment);
     }
 
-    f32x4::new(output)
+    WideF32::new(output)
 }
 
-#[cfg(feature = "embedded-math")]
+#[cfg(feature = "fast-math")]
 #[inline]
 fn polyblamp2_corner_lane(phase_from_corner: f32, dt: f32) -> f32 {
     let distance = if phase_from_corner < dt {
@@ -824,20 +830,25 @@ fn polyblamp2_corner_lane(phase_from_corner: f32, dt: f32) -> f32 {
 
 /// SIMD-capable hosts retain branchless evaluation, but share one reciprocal
 /// across both corners instead of issuing four vector divisions.
-#[cfg(not(feature = "embedded-math"))]
-fn polyblamp2_triangle_simd(phi: f32x4, dt: f32x4) -> f32x4 {
-    let zero = f32x4::splat(0.0);
-    let one = f32x4::splat(1.0);
-    let slope_jump = f32x4::splat(8.0);
+#[cfg(not(feature = "fast-math"))]
+fn polyblamp2_triangle_simd(phi: WideF32, dt: WideF32) -> WideF32 {
+    let zero = WideF32::ZERO;
+    let one = WideF32::splat(1.0);
+    let slope_jump = WideF32::splat(8.0);
     let naive = naive_triangle(phi);
-    let active = dt.simd_gt(zero) & dt.simd_lt(f32x4::splat(MAX_POLYBLAMP2_PHASE_INC));
-    let safe_dt = dt.max(f32x4::splat(MIN_POLYBLAMP2_PHASE_INC));
+    let active = dt.simd_gt(zero) & dt.simd_lt(WideF32::splat(MAX_POLYBLAMP2_PHASE_INC));
+    let safe_dt = dt.max(WideF32::splat(MIN_POLYBLAMP2_PHASE_INC));
     let inverse_dt = one / safe_dt;
 
     active.blend(
         naive + slope_jump * polyblamp2_corner_simd(phi, dt, safe_dt, inverse_dt)
             - slope_jump
-                * polyblamp2_corner_simd(wrap01(phi - f32x4::splat(0.5)), dt, safe_dt, inverse_dt),
+                * polyblamp2_corner_simd(
+                    wrap01(phi - WideF32::splat(0.5)),
+                    dt,
+                    safe_dt,
+                    inverse_dt,
+                ),
         naive,
     )
 }
@@ -847,8 +858,8 @@ fn polyblamp2_triangle_simd(phi: f32x4, dt: f32x4) -> f32x4 {
 /// Peaks at `1.0` when `phi = 0.5` and reaches `0.0` at the cycle boundaries.
 /// Used as the base waveform for [`polyblamp2_triangle`] and to seed the
 /// triangle integrator after phase changes.
-fn naive_triangle(phi: f32x4) -> f32x4 {
-    f32x4::splat(1.0) - (phi - f32x4::splat(0.5)).abs() * f32x4::splat(4.0)
+fn naive_triangle(phi: WideF32) -> WideF32 {
+    WideF32::splat(1.0) - (phi - WideF32::splat(0.5)).abs() * WideF32::splat(4.0)
 }
 
 /// Scalar [`naive_triangle`] for a single lane.
@@ -856,16 +867,16 @@ fn naive_triangle_scalar(phase: f32) -> f32 {
     1.0 - (phase - 0.5).abs() * 4.0
 }
 
-#[cfg(not(feature = "embedded-math"))]
+#[cfg(not(feature = "fast-math"))]
 fn polyblamp2_corner_simd(
-    phase_from_corner: f32x4,
-    dt: f32x4,
-    safe_dt: f32x4,
-    inverse_dt: f32x4,
-) -> f32x4 {
-    let zero = f32x4::splat(0.0);
-    let one = f32x4::splat(1.0);
-    let third = f32x4::splat(1.0 / 3.0);
+    phase_from_corner: WideF32,
+    dt: WideF32,
+    safe_dt: WideF32,
+    inverse_dt: WideF32,
+) -> WideF32 {
+    let zero = WideF32::ZERO;
+    let one = WideF32::splat(1.0);
+    let third = WideF32::splat(1.0 / 3.0);
     let right_t = one - phase_from_corner * inverse_dt;
     let right = right_t * right_t * right_t * safe_dt * third;
     let left_t = one - (one - phase_from_corner) * inverse_dt;
@@ -877,25 +888,25 @@ fn polyblamp2_corner_simd(
 }
 
 #[cfg(test)]
-fn polyblamp2_triangle_reference(phi: f32x4, dt: f32x4) -> f32x4 {
-    let zero = f32x4::splat(0.0);
-    let slope_jump = f32x4::splat(8.0);
+fn polyblamp2_triangle_reference(phi: WideF32, dt: WideF32) -> WideF32 {
+    let zero = WideF32::ZERO;
+    let slope_jump = WideF32::splat(8.0);
     let naive = naive_triangle(phi);
-    let active = dt.simd_gt(zero) & dt.simd_lt(f32x4::splat(MAX_POLYBLAMP2_PHASE_INC));
+    let active = dt.simd_gt(zero) & dt.simd_lt(WideF32::splat(MAX_POLYBLAMP2_PHASE_INC));
 
     active.blend(
         naive + slope_jump * polyblamp2_corner_reference(phi, dt)
-            - slope_jump * polyblamp2_corner_reference(wrap01(phi - f32x4::splat(0.5)), dt),
+            - slope_jump * polyblamp2_corner_reference(wrap01(phi - WideF32::splat(0.5)), dt),
         naive,
     )
 }
 
 #[cfg(test)]
-fn polyblamp2_corner_reference(phase_from_corner: f32x4, dt: f32x4) -> f32x4 {
-    let zero = f32x4::splat(0.0);
-    let one = f32x4::splat(1.0);
-    let third = f32x4::splat(1.0 / 3.0);
-    let safe_dt = dt.max(f32x4::splat(MIN_POLYBLAMP2_PHASE_INC));
+fn polyblamp2_corner_reference(phase_from_corner: WideF32, dt: WideF32) -> WideF32 {
+    let zero = WideF32::ZERO;
+    let one = WideF32::splat(1.0);
+    let third = WideF32::splat(1.0 / 3.0);
+    let safe_dt = dt.max(WideF32::splat(MIN_POLYBLAMP2_PHASE_INC));
     let right_t = one - phase_from_corner / safe_dt;
     let right = right_t * right_t * right_t * safe_dt * third;
     let left_t = one - (one - phase_from_corner) / safe_dt;
@@ -908,7 +919,7 @@ fn polyblamp2_corner_reference(phase_from_corner: f32x4, dt: f32x4) -> f32x4 {
 
 /// Converts a pitch offset in cents to a multiplicative frequency ratio.
 fn cents_to_ratio(cents: f32) -> f32 {
-    crate::math::exp2(cents / 1200.0)
+    F32(cents / 1200.0).exp2().as_f32()
 }
 
 /// Returns a uniform random value in `[-1, 1)`.
@@ -924,47 +935,37 @@ pub fn pulse_width_from_shape(shape_mod: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::testing::{lane0, mask_lane, mask_lane_active, splat};
 
-    fn next_output<K: OscillatorKernel>(osc: &mut AnalogOscillator<K>) -> f32x4 {
+    fn next_output<K: OscillatorKernel>(osc: &mut AnalogOscillator<K>) -> WideF32 {
         let mut ctx = crate::create_render_context!();
         osc.next(&mut ctx).output
-    }
-
-    fn lane_mask(lanes: [bool; LANES]) -> LaneMask {
-        f32x4::new([
-            f32::from_bits(if lanes[0] { u32::MAX } else { 0 }),
-            f32::from_bits(if lanes[1] { u32::MAX } else { 0 }),
-            f32::from_bits(if lanes[2] { u32::MAX } else { 0 }),
-            f32::from_bits(if lanes[3] { u32::MAX } else { 0 }),
-        ])
-    }
-
-    fn lane_mask_active(mask: LaneMask, lane: usize) -> bool {
-        mask.to_array()[lane].to_bits() & 0x8000_0000 != 0
     }
 
     #[test]
     fn optimized_polyblamp_matches_branchless_reference() {
         let phase_increments = [
-            [0.0, 1.0e-15, 110.0 / 48_000.0, 440.0 / 48_000.0],
-            [880.0 / 48_000.0, 3_520.0 / 48_000.0, 0.249, 0.25],
+            0.0,
+            1.0e-15,
+            110.0 / 48_000.0,
+            440.0 / 48_000.0,
+            880.0 / 48_000.0,
+            3_520.0 / 48_000.0,
+            0.249,
+            0.25,
         ];
+        let phase_offsets = [0.0, 0.127, 0.499, 0.773];
         let mut maximum_error = 0.0f32;
 
-        for increments in phase_increments {
-            let dt = f32x4::new(increments);
+        for dt_value in phase_increments {
+            let dt = splat(dt_value);
             for sample in 0..4_096 {
                 let base = sample as f32 / 4_096.0;
-                let phi = f32x4::new([
-                    base,
-                    (base + 0.127).fract(),
-                    (base + 0.499).fract(),
-                    (base + 0.773).fract(),
-                ]);
-                let optimized = polyblamp2_triangle(phi, dt).to_array();
-                let reference = polyblamp2_triangle_reference(phi, dt).to_array();
-                for lane in 0..LANES {
-                    maximum_error = maximum_error.max((optimized[lane] - reference[lane]).abs());
+                for offset in phase_offsets {
+                    let phi = splat((base + offset).fract());
+                    let optimized = lane0(polyblamp2_triangle(phi, dt));
+                    let reference = lane0(polyblamp2_triangle_reference(phi, dt));
+                    maximum_error = maximum_error.max((optimized - reference).abs());
                 }
             }
         }
@@ -984,31 +985,33 @@ mod tests {
                 Waveform::Triangle,
                 Waveform::Pulse,
             ] {
-                let mut runtime = AnalogOscillator::new(48_000.0);
-                runtime.set_saw_method(method);
-                runtime.set_waveform(waveform);
-                runtime.set_shape(0.37);
-                runtime.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+                for frequency in [110.0, 220.0, 440.0, 880.0] {
+                    let mut runtime = AnalogOscillator::new(48_000.0);
+                    runtime.set_saw_method(method);
+                    runtime.set_waveform(waveform);
+                    runtime.set_shape(0.37);
+                    runtime.set_frequency(splat(frequency));
 
-                let mut typed = match method {
-                    SawMethod::Blep => TypedKernel::Blep(AnalogOscillator::new_with_kernel(
-                        48_000.0,
-                        BlepOscillatorKernel,
-                    )),
-                    SawMethod::PolyBlep => TypedKernel::PolyBlep(
-                        AnalogOscillator::new_with_kernel(48_000.0, PolyBlepOscillatorKernel),
-                    ),
-                };
-                typed.set_waveform(waveform);
-                typed.set_shape(0.37);
-                typed.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+                    let mut typed = match method {
+                        SawMethod::Blep => TypedKernel::Blep(AnalogOscillator::new_with_kernel(
+                            48_000.0,
+                            BlepOscillatorKernel,
+                        )),
+                        SawMethod::PolyBlep => TypedKernel::PolyBlep(
+                            AnalogOscillator::new_with_kernel(48_000.0, PolyBlepOscillatorKernel),
+                        ),
+                    };
+                    typed.set_waveform(waveform);
+                    typed.set_shape(0.37);
+                    typed.set_frequency(splat(frequency));
 
-                for sample in 0..4096 {
-                    assert_eq!(
-                        next_output(&mut runtime).to_array().map(f32::to_bits),
-                        typed.next().to_array().map(f32::to_bits),
-                        "typed {method:?} {waveform:?} diverged at sample {sample}"
-                    );
+                    for sample in 0..4096 {
+                        assert_eq!(
+                            lane0(next_output(&mut runtime)).to_bits(),
+                            lane0(typed.next()).to_bits(),
+                            "typed {method:?} {waveform:?} at {frequency}Hz diverged at sample {sample}"
+                        );
+                    }
                 }
             }
         }
@@ -1019,8 +1022,8 @@ mod tests {
         oscillator.set_saw_method(method);
         oscillator.set_waveform(waveform);
         oscillator.set_shape(0.383_838_4);
-        oscillator.set_frequency(f32x4::splat(frequency));
-        oscillator.set_phase(f32x4::splat(phase));
+        oscillator.set_frequency(WideF32::splat(frequency));
+        oscillator.set_phase(WideF32::splat(phase));
         next_output(&mut oscillator).to_array()[0]
     }
 
@@ -1050,9 +1053,9 @@ mod tests {
                 transitioned.set_saw_method(method);
                 transitioned.set_waveform(waveform);
                 transitioned.set_shape(0.383_838_4);
-                transitioned.set_frequency(f32x4::splat(OLD_FREQUENCY));
-                transitioned.set_phase(f32x4::splat(phase));
-                transitioned.set_frequency(f32x4::splat(NEW_FREQUENCY));
+                transitioned.set_frequency(WideF32::splat(OLD_FREQUENCY));
+                transitioned.set_phase(WideF32::splat(phase));
+                transitioned.set_frequency(WideF32::splat(NEW_FREQUENCY));
 
                 let first = next_output(&mut transitioned).to_array()[0];
                 assert!(
@@ -1060,20 +1063,23 @@ mod tests {
                     "first {method:?} {waveform:?} transition sample changed correction: expected {expected_old}, got {first}"
                 );
                 let expected_phase =
-                    wrap01(f32x4::splat(phase + NEW_FREQUENCY / 48_000.0)).to_array()[0];
+                    wrap01(WideF32::splat(phase + NEW_FREQUENCY / 48_000.0)).to_array()[0];
                 assert!(
                     (transitioned.phase.to_array()[0] - expected_phase).abs() <= f32::EPSILON,
                     "pitch phase should advance immediately at the new frequency"
                 );
                 assert_eq!(
                     transitioned.correction_transition_remaining,
-                    [CORRECTION_TRANSITION_SAMPLES - 1; LANES]
+                    [CORRECTION_TRANSITION_SAMPLES - 1; WideF32::LANES]
                 );
 
                 for _ in 1..CORRECTION_TRANSITION_SAMPLES {
                     next_output(&mut transitioned);
                 }
-                assert_eq!(transitioned.correction_transition_remaining, [0; LANES]);
+                assert_eq!(
+                    transitioned.correction_transition_remaining,
+                    [0; WideF32::LANES]
+                );
             }
         }
     }
@@ -1082,12 +1088,12 @@ mod tests {
     fn table_blep_support_boundary_always_transitions() {
         let mut oscillator = AnalogOscillator::new(48_000.0);
         oscillator.set_waveform(Waveform::Pulse);
-        oscillator.set_frequency(f32x4::splat(0.124_9 * 48_000.0));
-        oscillator.set_frequency(f32x4::splat(0.125_1 * 48_000.0));
+        oscillator.set_frequency(WideF32::splat(0.124_9 * 48_000.0));
+        oscillator.set_frequency(WideF32::splat(0.125_1 * 48_000.0));
 
         assert_eq!(
             oscillator.correction_transition_remaining,
-            [CORRECTION_TRANSITION_SAMPLES; LANES]
+            [CORRECTION_TRANSITION_SAMPLES; WideF32::LANES]
         );
     }
 
@@ -1095,10 +1101,13 @@ mod tests {
     fn small_frequency_update_within_one_blep_tier_stays_on_fast_path() {
         let mut oscillator = AnalogOscillator::new(48_000.0);
         oscillator.set_waveform(Waveform::Pulse);
-        oscillator.set_frequency(f32x4::splat(0.10 * 48_000.0));
-        oscillator.set_frequency(f32x4::splat(0.100_5 * 48_000.0));
+        oscillator.set_frequency(WideF32::splat(0.10 * 48_000.0));
+        oscillator.set_frequency(WideF32::splat(0.100_5 * 48_000.0));
 
-        assert_eq!(oscillator.correction_transition_remaining, [0; LANES]);
+        assert_eq!(
+            oscillator.correction_transition_remaining,
+            [0; WideF32::LANES]
+        );
     }
 
     enum TypedKernel {
@@ -1121,14 +1130,14 @@ mod tests {
             }
         }
 
-        fn set_frequency(&mut self, frequency: f32x4) {
+        fn set_frequency(&mut self, frequency: WideF32) {
             match self {
                 Self::Blep(oscillator) => oscillator.set_frequency(frequency),
                 Self::PolyBlep(oscillator) => oscillator.set_frequency(frequency),
             }
         }
 
-        fn next(&mut self) -> f32x4 {
+        fn next(&mut self) -> WideF32 {
             match self {
                 Self::Blep(oscillator) => next_output(oscillator),
                 Self::PolyBlep(oscillator) => next_output(oscillator),
@@ -1163,7 +1172,7 @@ mod tests {
         let mut profiled = AnalogOscillator::new(48_000.0);
         for oscillator in [&mut normal, &mut profiled] {
             oscillator.set_waveform(Waveform::Triangle);
-            oscillator.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+            oscillator.set_frequency(splat(440.0));
             oscillator.set_shape(0.35);
         }
         let mut profiler = BoundaryCounter {
@@ -1189,7 +1198,7 @@ mod tests {
         let mut profiled = AnalogOscillator::new(48_000.0);
         for oscillator in [&mut normal, &mut profiled] {
             oscillator.set_waveform(Waveform::Pulse);
-            oscillator.set_frequency(f32x4::new([110.0, 220.0, 440.0, 880.0]));
+            oscillator.set_frequency(splat(440.0));
             oscillator.set_shape(0.5);
         }
         let mut profiler = BoundaryCounter {
@@ -1210,67 +1219,61 @@ mod tests {
 
     #[test]
     fn next_reports_phase_wraps_per_lane() {
-        let mut osc = AnalogOscillator::new(100.0);
-        osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::new([40.0, 10.0, 0.0, 25.0]));
-        osc.set_phase(f32x4::new([0.7, 0.95, 0.99, 0.2]));
+        for (frequency, phase, expect_wrap, expect_offset) in [
+            (40.0, 0.7, true, 0.75),
+            (10.0, 0.95, true, 0.5),
+            (0.0, 0.99, false, 0.0),
+            (25.0, 0.2, false, 0.0),
+        ] {
+            let mut osc = AnalogOscillator::new(100.0);
+            osc.set_waveform(Waveform::Saw);
+            osc.set_frequency(splat(frequency));
+            osc.set_phase(splat(phase));
 
-        let mut ctx = crate::create_render_context!();
-        let step = osc.next(&mut ctx);
+            let mut ctx = crate::create_render_context!();
+            let step = osc.next(&mut ctx);
 
-        assert!(lane_mask_active(step.wrapped, 0));
-        assert!(lane_mask_active(step.wrapped, 1));
-        assert!(!lane_mask_active(step.wrapped, 2));
-        assert!(!lane_mask_active(step.wrapped, 3));
-        assert!((step.subsample_offset.to_array()[0] - 0.75).abs() < 0.001);
-        assert!((step.subsample_offset.to_array()[1] - 0.5).abs() < 0.001);
+            assert_eq!(mask_lane_active(step.wrapped, 0), expect_wrap);
+            if expect_offset > 0.0 {
+                assert!((lane0(step.subsample_offset) - expect_offset).abs() < 0.001);
+            }
+        }
     }
 
     #[test]
     fn sync_reset_lanes_at_preserves_subsample_offset() {
-        let mut osc = AnalogOscillator::new(100.0);
-        osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(10.0));
-        osc.set_phase(f32x4::new([0.4, 0.4, 0.4, 0.4]));
-        next_output(&mut osc);
+        for (reset_offset, expected_phase) in [(0.25, 0.075), (0.75, 0.025)] {
+            let mut osc = AnalogOscillator::new(100.0);
+            osc.set_waveform(Waveform::Saw);
+            osc.set_frequency(splat(10.0));
+            osc.set_phase(splat(0.4));
+            next_output(&mut osc);
 
-        osc.hard_sync_reset(
-            lane_mask([true, false, true, false]),
-            f32x4::new([0.25, 0.0, 0.75, 0.0]),
-        );
-        let phase = osc.phase.to_array();
+            osc.hard_sync_reset(
+                mask_lane(0),
+                splat(reset_offset),
+            );
+            let phase = lane0(osc.phase);
 
-        assert!(
-            (phase[0] - 0.075).abs() < 0.001,
-            "lane reset at 25% should end at phase 0.075, got {}",
-            phase[0]
-        );
-        assert!(
-            (phase[2] - 0.025).abs() < 0.001,
-            "lane reset at 75% should end at phase 0.025, got {}",
-            phase[2]
-        );
-        assert!(
-            (phase[1] - 0.5).abs() < 0.001,
-            "non-reset lane should keep its advanced phase"
-        );
-        assert!(
-            (phase[3] - 0.5).abs() < 0.001,
-            "non-reset lane should keep its advanced phase"
-        );
+            assert!(
+                (phase - expected_phase).abs() < 0.001,
+                "lane reset at {reset_offset} should end at phase {expected_phase}, got {phase}"
+            );
+        }
     }
 
     #[test]
     fn sync_reset_lanes_at_resets_only_selected_lanes() {
         let mut osc = AnalogOscillator::new(100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(1.0));
-        osc.set_phase(f32x4::new([0.25, 0.25, 0.75, 0.75]));
+        osc.set_frequency(splat(1.0));
+        let mut phase = splat(0.25);
+        if WideF32::LANES > 1 {
+            phase = phase.replace_lane(1, 0.75);
+        }
+        osc.set_phase(phase);
 
-        osc.hard_sync_reset(
-            lane_mask([true, false, true, false]),
-            f32x4::new([1.0, 0.0, 1.0, 0.0]),
-        );
+        osc.hard_sync_reset(mask_lane(0), splat(1.0));
         let out = next_output(&mut osc).to_array();
 
         assert!(
@@ -1278,26 +1281,19 @@ mod tests {
             "reset lane should render from cycle start, got {}",
             out[0]
         );
-        assert!(
-            (out[1] - out[0]).abs() > 0.1,
-            "non-reset lane should keep its previous phase"
-        );
-        assert!(
-            out[2].abs() < 0.1,
-            "reset lane should render from cycle start, got {}",
-            out[2]
-        );
-        assert!(
-            (out[3] - out[2]).abs() > 0.1,
-            "non-reset lane should keep its previous phase"
-        );
+        if WideF32::LANES > 1 {
+            assert!(
+                (out[1] - out[0]).abs() > 0.1,
+                "non-reset lane should keep its previous phase"
+            );
+        }
     }
 
     #[test]
     fn saw_phase_zero_is_corrected() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(WideF32::splat(440.0));
         let out = next_output(&mut osc);
         let arr = out.to_array();
         assert!(
@@ -1311,7 +1307,7 @@ mod tests {
     fn saw_mid_cycle_near_zero() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(1.0));
+        osc.set_frequency(WideF32::splat(1.0));
         for _ in 0..22050 {
             next_output(&mut osc);
         }
@@ -1328,7 +1324,7 @@ mod tests {
     fn triangle_peak() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Triangle);
-        osc.set_frequency(f32x4::splat(1.0));
+        osc.set_frequency(WideF32::splat(1.0));
         for _ in 0..22050 {
             next_output(&mut osc);
         }
@@ -1345,7 +1341,7 @@ mod tests {
     fn triangle_zero_crossing() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Triangle);
-        osc.set_frequency(f32x4::splat(1.0));
+        osc.set_frequency(WideF32::splat(1.0));
         for _ in 0..11025 {
             next_output(&mut osc);
         }
@@ -1362,16 +1358,16 @@ mod tests {
     fn polyblamp_triangle_smooths_corners_below_overlap_limit() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Triangle);
-        osc.set_frequency(f32x4::splat(4410.0));
+        osc.set_frequency(WideF32::splat(4410.0));
 
-        osc.set_phase(f32x4::splat(0.0));
+        osc.set_phase(WideF32::ZERO);
         let valley = next_output(&mut osc).to_array()[0];
         assert!(
             valley > -0.95,
             "PolyBLAMP should raise the sharp triangle valley, got {valley}"
         );
 
-        osc.set_phase(f32x4::splat(0.5));
+        osc.set_phase(WideF32::splat(0.5));
         let peak = next_output(&mut osc).to_array()[0];
         assert!(
             peak < 0.95,
@@ -1381,41 +1377,42 @@ mod tests {
 
     #[test]
     fn polyblamp_triangle_zero_frequency_lanes_stay_finite() {
-        let mut osc = AnalogOscillator::new(44100.0);
-        osc.set_waveform(Waveform::Triangle);
-        osc.set_frequency(f32x4::new([0.0, 4410.0, 0.0, 4410.0]));
-        osc.set_phase(f32x4::new([0.0, 0.0, 0.5, 0.5]));
+        for (frequency, phase, expected) in [
+            (0.0, 0.0, Some(-1.0)),
+            (0.0, 0.5, Some(1.0)),
+            (4410.0, 0.0, None),
+            (4410.0, 0.5, None),
+        ] {
+            let mut osc = AnalogOscillator::new(44100.0);
+            osc.set_waveform(Waveform::Triangle);
+            osc.set_frequency(splat(frequency));
+            osc.set_phase(splat(phase));
 
-        let out = next_output(&mut osc).to_array();
-        for sample in out {
-            assert!(sample.is_finite(), "triangle produced non-finite sample");
+            let out = lane0(next_output(&mut osc));
+            assert!(out.is_finite(), "triangle produced non-finite sample");
+            if let Some(expected) = expected {
+                assert!(
+                    (out - expected).abs() < 1e-6,
+                    "frequency={frequency} phase={phase} expected {expected}, got {out}"
+                );
+            }
         }
-        assert!(
-            (out[0] + 1.0).abs() < 1e-6,
-            "zero-frequency valley lane should use the naive value, got {}",
-            out[0]
-        );
-        assert!(
-            (out[2] - 1.0).abs() < 1e-6,
-            "zero-frequency peak lane should use the naive value, got {}",
-            out[2]
-        );
     }
 
     #[test]
     fn polyblamp_triangle_disables_correction_above_overlap_limit() {
         let mut osc = AnalogOscillator::new(100.0);
         osc.set_waveform(Waveform::Triangle);
-        osc.set_frequency(f32x4::splat(30.0));
+        osc.set_frequency(WideF32::splat(30.0));
 
-        osc.set_phase(f32x4::splat(0.0));
+        osc.set_phase(WideF32::ZERO);
         let valley = next_output(&mut osc).to_array()[0];
         assert!(
             (valley + 1.0).abs() < 1e-6,
             "above the overlap limit the valley should stay naive, got {valley}"
         );
 
-        osc.set_phase(f32x4::splat(0.5));
+        osc.set_phase(WideF32::splat(0.5));
         let peak = next_output(&mut osc).to_array()[0];
         assert!(
             (peak - 1.0).abs() < 1e-6,
@@ -1428,14 +1425,14 @@ mod tests {
         let mut polyblep = AnalogOscillator::new(44100.0);
         polyblep.set_waveform(Waveform::Triangle);
         polyblep.set_saw_method(SawMethod::PolyBlep);
-        polyblep.set_frequency(f32x4::splat(4410.0));
-        polyblep.set_phase(f32x4::splat(0.0));
+        polyblep.set_frequency(WideF32::splat(4410.0));
+        polyblep.set_phase(WideF32::ZERO);
 
         let mut polyblamp = AnalogOscillator::new(44100.0);
         polyblamp.set_waveform(Waveform::Triangle);
         polyblamp.set_saw_method(SawMethod::Blep);
-        polyblamp.set_frequency(f32x4::splat(4410.0));
-        polyblamp.set_phase(f32x4::splat(0.0));
+        polyblamp.set_frequency(WideF32::splat(4410.0));
+        polyblamp.set_phase(WideF32::ZERO);
 
         let polyblep_sample = next_output(&mut polyblep).to_array()[0];
         let polyblamp_sample = next_output(&mut polyblamp).to_array()[0];
@@ -1448,51 +1445,52 @@ mod tests {
 
     #[test]
     fn polyblep_integrated_triangle_stays_finite_and_bounded() {
-        let mut osc = AnalogOscillator::new(44100.0);
-        osc.set_waveform(Waveform::Triangle);
-        osc.set_saw_method(SawMethod::PolyBlep);
-        osc.set_frequency(f32x4::new([110.0, 440.0, 1760.0, 7040.0]));
+        for frequency in [110.0, 440.0, 1760.0, 7040.0] {
+            let mut osc = AnalogOscillator::new(44100.0);
+            osc.set_waveform(Waveform::Triangle);
+            osc.set_saw_method(SawMethod::PolyBlep);
+            osc.set_frequency(splat(frequency));
 
-        let mut max_abs = 0.0f32;
-        for _ in 0..4096 {
-            for sample in next_output(&mut osc).to_array() {
+            let mut max_abs = 0.0f32;
+            for _ in 0..4096 {
+                let sample = lane0(next_output(&mut osc));
                 assert!(sample.is_finite(), "triangle produced non-finite sample");
                 max_abs = max_abs.max(sample.abs());
             }
-        }
 
-        assert!(
-            max_abs <= 1.25,
-            "triangle output exceeded bounds: {max_abs}"
-        );
-        assert!(
-            max_abs > 0.1,
-            "triangle output unexpectedly collapsed: {max_abs}"
-        );
+            assert!(
+                max_abs <= 1.25,
+                "triangle output at {frequency}Hz exceeded bounds: {max_abs}"
+            );
+            assert!(
+                max_abs > 0.1,
+                "triangle output at {frequency}Hz unexpectedly collapsed: {max_abs}"
+            );
+        }
     }
 
     #[test]
     fn polyblamp_triangle_high_frequency_stays_finite_and_bounded() {
-        let mut osc = AnalogOscillator::new(44100.0);
-        osc.set_waveform(Waveform::Triangle);
-        osc.set_frequency(f32x4::new([8_000.0, 9_000.0, 10_000.0, 11_000.0]));
+        for frequency in [8_000.0, 9_000.0, 10_000.0, 11_000.0] {
+            let mut osc = AnalogOscillator::new(44100.0);
+            osc.set_waveform(Waveform::Triangle);
+            osc.set_frequency(splat(frequency));
 
-        let mut max_abs = 0.0f32;
-        for _ in 0..512 {
-            for sample in next_output(&mut osc).to_array() {
+            let mut max_abs = 0.0f32;
+            for _ in 0..512 {
+                let sample = lane0(next_output(&mut osc));
                 assert!(sample.is_finite(), "triangle produced non-finite sample");
                 max_abs = max_abs.max(sample.abs());
             }
+            assert!(
+                max_abs <= 1.25,
+                "triangle output at {frequency}Hz exceeded bounds: {max_abs}"
+            );
+            assert!(
+                max_abs > 0.1,
+                "triangle output at {frequency}Hz unexpectedly collapsed: {max_abs}"
+            );
         }
-
-        assert!(
-            max_abs <= 1.25,
-            "triangle output exceeded bounds: {max_abs}"
-        );
-        assert!(
-            max_abs > 0.1,
-            "triangle output unexpectedly collapsed: {max_abs}"
-        );
     }
 
     #[test]
@@ -1500,7 +1498,7 @@ mod tests {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Pulse);
         osc.set_shape(0.0);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(WideF32::splat(440.0));
         let out1 = next_output(&mut osc);
         let arr1 = out1.to_array();
         assert!(
@@ -1526,13 +1524,13 @@ mod tests {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
         osc.set_shape(0.0);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(WideF32::splat(440.0));
 
         let unshaped = next_output(&mut osc).to_array()[0];
 
         osc.set_shape(0.5);
-        osc.set_phase(f32x4::splat(0.0));
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_phase(WideF32::ZERO);
+        osc.set_frequency(WideF32::splat(440.0));
         let shaped = next_output(&mut osc).to_array()[0];
 
         assert!(
@@ -1542,25 +1540,25 @@ mod tests {
     }
 
     #[test]
-    fn simd_all_lanes_equal() {
+    fn uniform_input_keeps_all_lanes_equal() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(splat(440.0));
 
-        let out = next_output(&mut osc);
-        let arr = out.to_array();
-        assert!(
-            (arr[0] - arr[1]).abs() < 1e-6
-                && (arr[0] - arr[2]).abs() < 1e-6
-                && (arr[0] - arr[3]).abs() < 1e-6
-        );
+        let out = next_output(&mut osc).to_array();
+        for lane in 1..WideF32::LANES {
+            assert!(
+                (out[0] - out[lane]).abs() < 1e-6,
+                "lane {lane} diverged from lane 0 with uniform input"
+            );
+        }
     }
 
     #[test]
     fn phase_wraps_correctly() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(WideF32::splat(440.0));
 
         for _ in 0..100000 {
             let out = next_output(&mut osc);
@@ -1575,30 +1573,29 @@ mod tests {
     fn phase_input_wraps_without_remainder_edge_cases() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(440.0));
-        osc.set_phase(f32x4::new([-0.25, 0.25, 0.75, 1.25]));
+        osc.set_frequency(splat(440.0));
 
-        let out = next_output(&mut osc).to_array();
-
-        assert!(
-            (out[0] - out[2]).abs() < 1e-6,
-            "negative phase should wrap to the same point as positive phase"
-        );
-        assert!(
-            (out[1] - out[3]).abs() < 1e-6,
-            "phase above 1.0 should wrap without changing oscillator output"
-        );
+        for &(phase_a, phase_b) in &[(-0.25f32, 0.75), (0.25, 1.25)] {
+            osc.set_phase(splat(phase_a));
+            let out_a = lane0(next_output(&mut osc));
+            osc.set_phase(splat(phase_b));
+            let out_b = lane0(next_output(&mut osc));
+            assert!(
+                (out_a - out_b).abs() < 1e-6,
+                "phases {phase_a} and {phase_b} should wrap to the same output"
+            );
+        }
     }
 
     #[test]
     fn invalid_frequency_does_not_poison_phase() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::new([440.0, f32::NAN, f32::INFINITY, -1.0]));
 
-        for _ in 0..1024 {
-            let out = next_output(&mut osc).to_array();
-            for sample in out {
+        for frequency in [440.0, f32::NAN, f32::INFINITY, -1.0] {
+            osc.set_frequency(splat(frequency));
+            for _ in 0..1024 {
+                let sample = lane0(next_output(&mut osc));
                 assert!(sample.is_finite(), "oscillator produced non-finite sample");
             }
         }
@@ -1608,7 +1605,7 @@ mod tests {
     fn oscillator_enabled_gain_can_mute_without_stopping_phase() {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(WideF32::splat(440.0));
         osc.set_enabled(false);
 
         let muted = next_output(&mut osc).to_array()[0];
@@ -1630,7 +1627,7 @@ mod tests {
 
         let mut osc = AnalogOscillator::new(sr);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(freq));
+        osc.set_frequency(WideF32::splat(freq));
 
         let mut min_val = f32::MAX;
         let mut max_val = f32::MIN;
@@ -1652,7 +1649,7 @@ mod tests {
 
         let mut osc = AnalogOscillator::new(sr);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(freq));
+        osc.set_frequency(WideF32::splat(freq));
 
         let mut prev = 0.0;
         let mut max_jump = 0.0f32;
@@ -1673,7 +1670,7 @@ mod tests {
 
         let mut osc = AnalogOscillator::new(sr);
         osc.set_waveform(Waveform::Saw);
-        osc.set_frequency(f32x4::splat(freq));
+        osc.set_frequency(WideF32::splat(freq));
 
         let mut samples = [0.0f32; 300];
         for sample in &mut samples {
@@ -1704,9 +1701,9 @@ mod tests {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Saw);
         osc.set_saw_method(SawMethod::Blep);
-        osc.set_frequency(f32x4::splat(440.0));
+        osc.set_frequency(WideF32::splat(440.0));
 
-        osc.set_phase(f32x4::splat(0.999));
+        osc.set_phase(WideF32::splat(0.999));
         let out = next_output(&mut osc).to_array()[0];
         assert!(
             out < 0.6,
@@ -1722,7 +1719,7 @@ mod tests {
         let mut osc = AnalogOscillator::new(sr);
         osc.set_waveform(Waveform::Pulse);
         osc.set_shape(0.0);
-        osc.set_frequency(f32x4::splat(freq));
+        osc.set_frequency(WideF32::splat(freq));
 
         let mut prev = next_output(&mut osc).to_array()[0];
         let mut max_jump = 0.0f32;
@@ -1747,7 +1744,7 @@ mod tests {
         let mut osc = AnalogOscillator::new(sr);
         osc.set_waveform(Waveform::Pulse);
         osc.set_shape(0.0);
-        osc.set_frequency(f32x4::splat(freq));
+        osc.set_frequency(WideF32::splat(freq));
 
         let period = (1.0 / dt) as usize;
         let mut samples = [0.0f32; 128];
@@ -1778,7 +1775,7 @@ mod tests {
             let mut osc = AnalogOscillator::new(sr);
             osc.set_waveform(Waveform::Pulse);
             osc.set_shape(shape);
-            osc.set_frequency(f32x4::splat(freq));
+            osc.set_frequency(WideF32::splat(freq));
 
             let mut positive = 0usize;
             let mut peak = 0.0f32;
@@ -1819,8 +1816,8 @@ mod tests {
         let mut osc = AnalogOscillator::new(44100.0);
         osc.set_waveform(Waveform::Pulse);
         osc.set_shape(1.0);
-        osc.set_phase(f32x4::splat(0.123));
-        osc.set_frequency(f32x4::splat(220.0));
+        osc.set_phase(WideF32::splat(0.123));
+        osc.set_frequency(WideF32::splat(220.0));
 
         let sr = 44100.0f32;
         let freq = 220.0f32;

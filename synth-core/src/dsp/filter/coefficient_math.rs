@@ -1,6 +1,6 @@
 //! Target-specific coefficient math hidden behind filter-level intent.
 
-use crate::f32x4;
+use crate::math::WideF32;
 
 use super::MIN_CUTOFF_HZ;
 
@@ -10,19 +10,19 @@ use super::MIN_CUTOFF_HZ;
 /// Backends remain free to ignore it.
 #[derive(Clone, Copy)]
 pub(super) struct PreparedCutoffModulation {
-    lanes: f32x4,
+    lanes: WideF32,
     #[allow(dead_code)]
     uniform: Option<f32>,
 }
 
 impl PreparedCutoffModulation {
     #[inline(always)]
-    pub(super) fn new(lanes: f32x4, uniform: Option<f32>) -> Self {
+    pub(super) fn new(lanes: WideF32, uniform: Option<f32>) -> Self {
         Self { lanes, uniform }
     }
 
     #[inline(always)]
-    pub(super) fn lanes(self) -> f32x4 {
+    pub(super) fn lanes(self) -> WideF32 {
         self.lanes
     }
 
@@ -43,7 +43,7 @@ pub(super) fn modulated_tpt_coefficient(
     modulation: PreparedCutoffModulation,
     maximum_cutoff_hz: f32,
     processing_rate_hz: f32,
-) -> f32x4 {
+) -> WideF32 {
     backend::modulated_tpt_coefficient(
         base_cutoff_hz,
         modulation,
@@ -52,7 +52,7 @@ pub(super) fn modulated_tpt_coefficient(
     )
 }
 
-#[cfg(all(feature = "embedded-math", target_os = "none"))]
+#[cfg(feature = "fast-math")]
 mod backend {
     use super::*;
 
@@ -62,7 +62,7 @@ mod backend {
         modulation: PreparedCutoffModulation,
         maximum_cutoff_hz: f32,
         processing_rate_hz: f32,
-    ) -> f32x4 {
+    ) -> WideF32 {
         embedded_coefficient(
             base_cutoff_hz,
             modulation,
@@ -72,7 +72,7 @@ mod backend {
     }
 }
 
-#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+#[cfg(not(feature = "fast-math"))]
 mod backend {
     use super::*;
 
@@ -82,7 +82,7 @@ mod backend {
         modulation: PreparedCutoffModulation,
         maximum_cutoff_hz: f32,
         processing_rate_hz: f32,
-    ) -> f32x4 {
+    ) -> WideF32 {
         vector_coefficient(
             base_cutoff_hz,
             modulation.lanes(),
@@ -93,15 +93,15 @@ mod backend {
 }
 
 #[inline(always)]
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, feature = "fast-math"))]
 pub(super) fn embedded_coefficient(
     base_cutoff_hz: f32,
     modulation: PreparedCutoffModulation,
     maximum_cutoff_hz: f32,
     processing_rate_hz: f32,
-) -> f32x4 {
+) -> WideF32 {
     if let Some(uniform) = modulation.uniform() {
-        return f32x4::splat(lookup_coefficient(
+        return WideF32::splat(lookup_coefficient(
             base_cutoff_hz,
             uniform,
             maximum_cutoff_hz,
@@ -118,7 +118,7 @@ pub(super) fn embedded_coefficient(
 }
 
 #[inline(always)]
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, feature = "fast-math"))]
 fn lookup_coefficient(
     base_cutoff_hz: f32,
     modulation_semitones: f32,
@@ -144,7 +144,7 @@ fn lookup_coefficient(
 }
 
 #[inline(always)]
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, feature = "fast-math"))]
 fn low_cutoff_coefficient(normalized_cutoff: f32) -> f32 {
     let angle = core::f32::consts::PI * normalized_cutoff;
     angle
@@ -160,7 +160,7 @@ fn low_cutoff_coefficient(normalized_cutoff: f32) -> f32 {
 }
 
 #[inline(always)]
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, feature = "fast-math"))]
 fn embedded_exp2(value: f32) -> f32 {
     // Centered range reduction keeps the fifth-order exponential polynomial
     // on [-ln(2)/2, ln(2)/2]. The modulation domain only needs small integer
@@ -182,30 +182,19 @@ fn embedded_exp2(value: f32) -> f32 {
     f32::from_bits(exponent_bits) * exp_fraction
 }
 
-#[cfg(test)]
-fn scalar_reference_coefficient(
-    base_cutoff_hz: f32,
-    modulation_semitones: f32,
-    maximum_cutoff_hz: f32,
-    processing_rate_hz: f32,
-) -> f32 {
-    let scale = libm::exp2f(modulation_semitones * (1.0 / 12.0));
-    let cutoff_hz = (base_cutoff_hz * scale).clamp(MIN_CUTOFF_HZ, maximum_cutoff_hz);
-    let raw = crate::math::tan(core::f32::consts::PI * cutoff_hz / processing_rate_hz);
-    raw / (1.0 + raw)
-}
-
 #[inline(always)]
 pub(super) fn vector_coefficient(
     base_cutoff_hz: f32,
-    modulation_semitones: f32x4,
+    modulation_semitones: WideF32,
     maximum_cutoff_hz: f32,
     processing_rate_hz: f32,
-) -> f32x4 {
-    let scale = (modulation_semitones * f32x4::splat(1.0 / 12.0)).exp2();
+) -> WideF32 {
+    let scale = (modulation_semitones * WideF32::splat(1.0 / 12.0)).exp2();
     coefficients_from_cutoff(
-        (f32x4::splat(base_cutoff_hz) * scale)
-            .clamp(f32x4::splat(MIN_CUTOFF_HZ), f32x4::splat(maximum_cutoff_hz)),
+        (WideF32::splat(base_cutoff_hz) * scale).clamp(
+            WideF32::splat(MIN_CUTOFF_HZ),
+            WideF32::splat(maximum_cutoff_hz),
+        ),
         maximum_cutoff_hz,
         processing_rate_hz,
     )
@@ -213,22 +202,37 @@ pub(super) fn vector_coefficient(
 
 #[inline(always)]
 fn coefficients_from_cutoff(
-    cutoff_hz: f32x4,
+    cutoff_hz: WideF32,
     maximum_cutoff_hz: f32,
     processing_rate_hz: f32,
-) -> f32x4 {
+) -> WideF32 {
     let mut angles = cutoff_hz.to_array();
     for angle in &mut angles {
         let hz = angle.clamp(MIN_CUTOFF_HZ, maximum_cutoff_hz);
         *angle = core::f32::consts::PI * hz / processing_rate_hz;
     }
-    let raw = f32x4::new(angles).tan();
-    raw / (f32x4::splat(1.0) + raw)
+    let raw = WideF32::new(angles).tan();
+    raw / (WideF32::splat(1.0) + raw)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::F32;
+
+    fn scalar_reference_coefficient(
+        base_cutoff_hz: f32,
+        modulation_semitones: f32,
+        maximum_cutoff_hz: f32,
+        processing_rate_hz: f32,
+    ) -> f32 {
+        let scale = F32(modulation_semitones * (1.0 / 12.0)).exp2().as_f32();
+        let cutoff_hz = (base_cutoff_hz * scale).clamp(MIN_CUTOFF_HZ, maximum_cutoff_hz);
+        let raw = F32(core::f32::consts::PI * cutoff_hz / processing_rate_hz)
+            .tan()
+            .as_f32();
+        raw / (1.0 + raw)
+    }
 
     #[test]
     fn vector_backend_preserves_previous_operation_order_bit_exactly() {
@@ -237,7 +241,7 @@ mod tests {
             for index in 0..4096 {
                 let base = 20.0 + (maximum - 20.0) * index as f32 / 4095.0;
                 let modulation =
-                    f32x4::new([-48.0 + index as f32 * (96.0 / 4095.0), -24.0, 12.0, 47.0]);
+                    WideF32::new(core::array::from_fn(|i| [-48.0 + index as f32 * (96.0 / 4095.0), -24.0, 12.0, 47.0][i % 4]));
                 let expected = previous_vector_coefficient(base, modulation, maximum, sample_rate);
                 let actual = vector_coefficient(base, modulation, maximum, sample_rate);
                 assert_eq!(
@@ -259,7 +263,7 @@ mod tests {
                 let base = 20.0 + (maximum - 20.0) * index as f32 / 16_384.0;
                 let semitones = -48.0 + 96.0 * index as f32 / 16_384.0;
                 let modulation =
-                    PreparedCutoffModulation::new(f32x4::splat(semitones), Some(semitones));
+                    PreparedCutoffModulation::new(WideF32::splat(semitones), Some(semitones));
                 let actual =
                     embedded_coefficient(base, modulation, maximum, sample_rate).to_array()[0];
                 let expected = scalar_reference_coefficient(base, semitones, maximum, sample_rate);
@@ -289,7 +293,7 @@ mod tests {
 
     #[test]
     fn embedded_nonuniform_path_is_vector_bit_exact() {
-        let modulation = f32x4::new([-12.0, -6.0, 3.0, 18.0]);
+        let modulation = WideF32::new(core::array::from_fn(|i| [-12.0, -6.0, 3.0, 18.0][i % 4]));
         let expected = vector_coefficient(1_200.0, modulation, 18_000.0, 48_000.0);
         let actual = embedded_coefficient(
             1_200.0,
@@ -305,19 +309,21 @@ mod tests {
 
     fn previous_vector_coefficient(
         base_cutoff_hz: f32,
-        modulation_semitones: f32x4,
+        modulation_semitones: WideF32,
         maximum_cutoff_hz: f32,
         processing_rate_hz: f32,
-    ) -> f32x4 {
-        let scale = (modulation_semitones * f32x4::splat(1.0 / 12.0)).exp2();
-        let cutoff = (f32x4::splat(base_cutoff_hz) * scale)
-            .clamp(f32x4::splat(MIN_CUTOFF_HZ), f32x4::splat(maximum_cutoff_hz));
+    ) -> WideF32 {
+        let scale = (modulation_semitones * WideF32::splat(1.0 / 12.0)).exp2();
+        let cutoff = (WideF32::splat(base_cutoff_hz) * scale).clamp(
+            WideF32::splat(MIN_CUTOFF_HZ),
+            WideF32::splat(maximum_cutoff_hz),
+        );
         let mut values = cutoff.to_array();
         for value in &mut values {
             let hz = value.clamp(MIN_CUTOFF_HZ, maximum_cutoff_hz);
             *value = core::f32::consts::PI * hz / processing_rate_hz;
         }
-        let raw = f32x4::new(values).tan();
-        raw / (f32x4::splat(1.0) + raw)
+        let raw = WideF32::new(values).tan();
+        raw / (WideF32::splat(1.0) + raw)
     }
 }

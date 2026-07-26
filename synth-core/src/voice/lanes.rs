@@ -1,6 +1,4 @@
-use crate::f32x4;
-
-use crate::LANES;
+use crate::math::WideF32;
 
 use super::NoteGlide;
 use super::voice_pan_position;
@@ -51,7 +49,7 @@ impl Default for Lane {
 }
 
 pub(crate) struct Lanes {
-    lanes: [Lane; LANES],
+    lanes: [Lane; WideF32::LANES],
     pending_mask: u8,
 }
 
@@ -59,42 +57,42 @@ impl Lanes {
     pub fn new() -> Self {
         Self {
             lanes: core::array::from_fn(|lane| Lane {
-                pan_position: voice_pan_position(lane, LANES),
+                pan_position: voice_pan_position(lane, WideF32::LANES),
                 ..Lane::default()
             }),
             pending_mask: 0,
         }
     }
 
-    pub fn velocities(&self) -> f32x4 {
-        f32x4::new(self.lanes.map(|lane| lane.velocity))
+    pub fn velocities(&self) -> WideF32 {
+        WideF32::new(self.lanes.map(|lane| lane.velocity))
     }
 
-    pub fn notes_as_f32(&self) -> f32x4 {
-        f32x4::new(self.lanes.map(|lane| lane.note as f32))
+    pub fn notes_as_f32(&self) -> WideF32 {
+        WideF32::new(self.lanes.map(|lane| lane.note as f32))
     }
 
-    pub fn pan_positions(&self) -> f32x4 {
-        f32x4::new(self.lanes.map(|lane| lane.pan_position))
+    pub fn pan_positions(&self) -> WideF32 {
+        WideF32::new(self.lanes.map(|lane| lane.pan_position))
     }
 
-    pub fn note_semitones(&self) -> [f32; LANES] {
+    pub fn note_semitones(&self) -> [f32; WideF32::LANES] {
         core::array::from_fn(|lane| {
             f32::from(self.lanes[lane].note) + self.lanes[lane].tuning_cents / 100.0
         })
     }
 
-    pub fn tuning_cents_array(&self) -> [f32; LANES] {
+    pub fn tuning_cents_array(&self) -> [f32; WideF32::LANES] {
         self.lanes.map(|lane| lane.tuning_cents)
     }
 
-    pub fn set_tuning_cents_array(&mut self, tuning_cents: [f32; LANES]) {
+    pub fn set_tuning_cents_array(&mut self, tuning_cents: [f32; WideF32::LANES]) {
         for (lane, cents) in self.lanes.iter_mut().zip(tuning_cents) {
             lane.tuning_cents = cents;
         }
     }
 
-    pub fn set_pan_positions(&mut self, positions: [f32; LANES]) {
+    pub fn set_pan_positions(&mut self, positions: [f32; WideF32::LANES]) {
         for (lane, position) in self.lanes.iter_mut().zip(positions) {
             lane.pan_position = position.clamp(-1.0, 1.0);
         }
@@ -108,7 +106,7 @@ impl Lanes {
         self.lanes[lane].age
     }
 
-    pub(super) fn lifecycle_gains_array(&self) -> [f32; LANES] {
+    pub(super) fn lifecycle_gains_array(&self) -> [f32; WideF32::LANES] {
         self.lanes.map(|lane| lane.lifecycle_gain)
     }
 
@@ -246,7 +244,7 @@ impl Lanes {
         self.start_lifecycle_fade(lane, 0.0, shutdown_samples);
     }
 
-    pub fn next_lifecycle_gain(&mut self) -> f32x4 {
+    pub fn next_lifecycle_gain(&mut self) -> WideF32 {
         let mut gains = self.lifecycle_gains_array();
         for (lane, gain) in gains.iter_mut().enumerate() {
             let fade = &mut self.lanes[lane].lifecycle_fade;
@@ -267,7 +265,7 @@ impl Lanes {
             *gain = start + (fade.target - start) * smooth;
             self.lanes[lane].lifecycle_gain = *gain;
         }
-        f32x4::new(gains)
+        WideF32::new(gains)
     }
 
     fn start_lifecycle_fade(&mut self, lane: usize, target: f32, shutdown_samples: u32) {
@@ -296,15 +294,15 @@ impl Lanes {
 
 #[cfg(test)]
 impl Lanes {
-    pub(crate) fn pan_positions_array(&self) -> [f32; LANES] {
+    pub(crate) fn pan_positions_array(&self) -> [f32; WideF32::LANES] {
         self.lanes.map(|lane| lane.pan_position)
     }
 
-    pub(crate) fn gates_array(&self) -> [bool; LANES] {
+    pub(crate) fn gates_array(&self) -> [bool; WideF32::LANES] {
         self.lanes.map(|lane| lane.gate)
     }
 
-    pub(crate) fn notes_array(&self) -> [u8; LANES] {
+    pub(crate) fn notes_array(&self) -> [u8; WideF32::LANES] {
         self.lanes.map(|lane| lane.note)
     }
 

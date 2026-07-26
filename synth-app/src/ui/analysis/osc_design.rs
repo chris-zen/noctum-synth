@@ -7,7 +7,7 @@ use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::{Deserialize, Serialize};
 
 use synth_core::dsp::{AnalogOscillator, SawMethod, Waveform};
-use synth_core::f32x4;
+use synth_core::math::WideF32;
 
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
@@ -400,7 +400,7 @@ fn render_oscillator(state: &mut OscillatorViewState) {
     osc.set_saw_method(state.saw_method);
     osc.set_shape(state.shape);
     osc.start_phase_lane(0);
-    osc.set_frequency(f32x4::splat(freq));
+    osc.set_frequency(WideF32::splat(freq));
 
     state.samples.clear();
     state.samples.reserve(total_samples);

@@ -2,10 +2,10 @@
 
 use crate::dsp::analog_oscillator::EngineOscillator;
 use crate::dsp::{AnalogSubOscillator, Waveform, WhiteNoise};
-use crate::f32x4;
+use crate::math::{F32, WideF32};
 use crate::patch::{OscillatorPatch, Patch};
 use crate::profiling::{RenderContext, RenderStage};
-use crate::{GlideMode, LANES, ParamId};
+use crate::{GlideMode, ParamId};
 
 // Give unassigned, keyboard-tracked lanes a real pitch so their
 // phases advance before the first note when note reset is off.
@@ -40,30 +40,30 @@ const GLIDE_PITCH_SCALE: f32 = 65_536.0;
 
 #[derive(Clone, Copy)]
 struct GlideState {
-    current: [f32; LANES],
-    target: [f32; LANES],
-    current_pitch_q16: [i32; LANES],
-    target_pitch_q16: [i32; LANES],
-    step_q16: [i32; LANES],
-    remainder_q16: [i32; LANES],
-    error_q16: [i32; LANES],
-    total: [u32; LANES],
-    remaining: [u32; LANES],
+    current: [f32; WideF32::LANES],
+    target: [f32; WideF32::LANES],
+    current_pitch_q16: [i32; WideF32::LANES],
+    target_pitch_q16: [i32; WideF32::LANES],
+    step_q16: [i32; WideF32::LANES],
+    remainder_q16: [i32; WideF32::LANES],
+    error_q16: [i32; WideF32::LANES],
+    total: [u32; WideF32::LANES],
+    remaining: [u32; WideF32::LANES],
     active_mask: u8,
 }
 
 impl Default for GlideState {
     fn default() -> Self {
         Self {
-            current: [CENTER_FREQUENCY_SEMITONES; LANES],
-            target: [CENTER_FREQUENCY_SEMITONES; LANES],
-            current_pitch_q16: [60 * 65_536; LANES],
-            target_pitch_q16: [60 * 65_536; LANES],
-            step_q16: [0; LANES],
-            remainder_q16: [0; LANES],
-            error_q16: [0; LANES],
-            total: [0; LANES],
-            remaining: [0; LANES],
+            current: [CENTER_FREQUENCY_SEMITONES; WideF32::LANES],
+            target: [CENTER_FREQUENCY_SEMITONES; WideF32::LANES],
+            current_pitch_q16: [60 * 65_536; WideF32::LANES],
+            target_pitch_q16: [60 * 65_536; WideF32::LANES],
+            step_q16: [0; WideF32::LANES],
+            remainder_q16: [0; WideF32::LANES],
+            error_q16: [0; WideF32::LANES],
+            total: [0; WideF32::LANES],
+            remaining: [0; WideF32::LANES],
             active_mask: 0,
         }
     }
@@ -77,7 +77,7 @@ pub struct Oscillators {
     noise: WhiteNoise,
     params: OscillatorsParams,
     glide: [GlideState; 2],
-    last_frequency_modulation: [f32x4; 2],
+    last_frequency_modulation: [WideF32; 2],
     last_shape_modulation: [f32; 2],
     sample_rate: f32,
 }
@@ -91,7 +91,7 @@ impl Oscillators {
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
             glide: [GlideState::default(); 2],
-            last_frequency_modulation: [f32x4::splat(0.0); 2],
+            last_frequency_modulation: [WideF32::ZERO; 2],
             last_shape_modulation: [0.0; 2],
             sample_rate,
         };
@@ -104,7 +104,7 @@ impl Oscillators {
         &self.params
     }
 
-    pub fn osc1_frequency_hz(&self) -> f32x4 {
+    pub fn osc1_frequency_hz(&self) -> WideF32 {
         self.osc1.frequency_hz()
     }
 
@@ -322,7 +322,7 @@ impl Oscillators {
         self.osc2.set_slop_amount(self.params.osc_slop);
     }
 
-    pub fn set_note_frequency(&mut self, note_frequency_hz: f32x4) {
+    pub fn set_note_frequency(&mut self, note_frequency_hz: WideF32) {
         let semitones = note_frequency_hz.to_array().map(frequency_to_semitones);
         let pitches_q16 = semitones.map(pitch_to_q16);
         for state in &mut self.glide {
@@ -330,17 +330,20 @@ impl Oscillators {
             state.target = semitones;
             state.current_pitch_q16 = pitches_q16;
             state.target_pitch_q16 = pitches_q16;
-            state.step_q16 = [0; LANES];
-            state.remainder_q16 = [0; LANES];
-            state.error_q16 = [0; LANES];
-            state.total = [0; LANES];
-            state.remaining = [0; LANES];
+            state.step_q16 = [0; WideF32::LANES];
+            state.remainder_q16 = [0; WideF32::LANES];
+            state.error_q16 = [0; WideF32::LANES];
+            state.total = [0; WideF32::LANES];
+            state.remaining = [0; WideF32::LANES];
             state.active_mask = 0;
         }
         self.update_frequencies();
     }
 
-    pub(crate) fn set_note_semitones_preserving_glide(&mut self, target_semitones: [f32; LANES]) {
+    pub(crate) fn set_note_semitones_preserving_glide(
+        &mut self,
+        target_semitones: [f32; WideF32::LANES],
+    ) {
         for state in &mut self.glide {
             for (lane, &target) in target_semitones.iter().enumerate() {
                 let target_q16 = pitch_to_q16(target);
@@ -359,7 +362,7 @@ impl Oscillators {
         self.update_frequencies();
     }
 
-    pub fn note_on(&mut self, lane: usize, note_frequency_hz: f32x4) {
+    pub fn note_on(&mut self, lane: usize, note_frequency_hz: WideF32) {
         let target = note_frequency_hz.to_array().map(frequency_to_semitones);
         self.note_on_with_glide(lane, target, None, false);
     }
@@ -367,7 +370,7 @@ impl Oscillators {
     pub(crate) fn note_on_with_glide(
         &mut self,
         lane: usize,
-        target_semitones: [f32; LANES],
+        target_semitones: [f32; WideF32::LANES],
         start_semitones: Option<f32>,
         glide: bool,
     ) {
@@ -382,7 +385,7 @@ impl Oscillators {
     pub(crate) fn retune_with_glide(
         &mut self,
         lane: usize,
-        target_semitones: [f32; LANES],
+        target_semitones: [f32; WideF32::LANES],
         glide: bool,
     ) {
         self.set_glide_target(lane, target_semitones, None, glide);
@@ -391,7 +394,7 @@ impl Oscillators {
     fn set_glide_target(
         &mut self,
         lane: usize,
-        target_semitones: [f32; LANES],
+        target_semitones: [f32; WideF32::LANES],
         start_semitones: Option<f32>,
         should_glide: bool,
     ) {
@@ -445,7 +448,10 @@ impl Oscillators {
             base_seconds * distance / 12.0
         };
         let max_samples = i32::MAX as f32 - 128.0;
-        let samples = crate::math::round(seconds * self.sample_rate).clamp(1.0, max_samples) as u32;
+        let samples = F32(seconds * self.sample_rate)
+            .round()
+            .as_f32()
+            .clamp(1.0, max_samples) as u32;
         let samples_i32 = samples as i32;
         state.step_q16[lane] = distance_q16 / samples_i32;
         state.remainder_q16[lane] = distance_q16 % samples_i32;
@@ -456,7 +462,7 @@ impl Oscillators {
     }
 
     fn retime_glide(&mut self, oscillator: usize) {
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             if !self.params.glide_enabled || !self.oscillator_params(oscillator).keyboard_on {
                 self.snap_glide_lane(oscillator, lane);
             } else if self.glide[oscillator].remaining[lane] > 0 {
@@ -467,7 +473,7 @@ impl Oscillators {
     }
 
     fn snap_glide(&mut self, oscillator: usize) {
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             self.snap_glide_lane(oscillator, lane);
         }
     }
@@ -486,7 +492,7 @@ impl Oscillators {
             if state.active_mask == 0 {
                 continue;
             }
-            for lane in 0..LANES {
+            for lane in 0..WideF32::LANES {
                 if state.active_mask & (1 << lane) == 0 {
                     continue;
                 }
@@ -520,7 +526,7 @@ impl Oscillators {
     }
 
     pub fn update_frequencies(&mut self) {
-        self.update_frequencies_modulated(f32x4::splat(0.0), f32x4::splat(0.0));
+        self.update_frequencies_modulated(WideF32::ZERO, WideF32::ZERO);
     }
 
     pub fn next(
@@ -559,27 +565,27 @@ impl Oscillators {
 
         crate::profiler_begin!(ctx, RenderStage::OscillatorMix);
         let osc2 = osc2_step.output;
-        let sub_level = (f32x4::splat(self.params.sub_octave) + modulation.sub_level)
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let noise_level = (f32x4::splat(self.params.noise) + modulation.noise_level)
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let sub = if sub_level == f32x4::ZERO {
-            f32x4::splat(0.0)
+        let sub_level = (WideF32::splat(self.params.sub_octave) + modulation.sub_level)
+            .clamp(WideF32::ZERO, WideF32::splat(1.0));
+        let noise_level = (WideF32::splat(self.params.noise) + modulation.noise_level)
+            .clamp(WideF32::ZERO, WideF32::splat(1.0));
+        let sub = if sub_level == WideF32::ZERO {
+            WideF32::ZERO
         } else {
             self.sub_osc
                 .set_frequency(self.osc1.frequency_hz(), self.sample_rate);
             self.sub_osc.next() * sub_level
         };
-        let noise = if noise_level == f32x4::ZERO {
-            f32x4::splat(0.0)
+        let noise = if noise_level == WideF32::ZERO {
+            WideF32::ZERO
         } else {
             self.noise.next() * noise_level
         };
-        let mix = (f32x4::splat(self.params.osc_mix) + modulation.mix)
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let osc1_gain = (f32x4::splat(1.0) - mix + modulation.osc1_level)
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-        let osc2_gain = (mix + modulation.osc2_level).clamp(f32x4::splat(0.0), f32x4::splat(1.0));
+        let mix = (WideF32::splat(self.params.osc_mix) + modulation.mix)
+            .clamp(WideF32::ZERO, WideF32::splat(1.0));
+        let osc1_gain = (WideF32::splat(1.0) - mix + modulation.osc1_level)
+            .clamp(WideF32::ZERO, WideF32::splat(1.0));
+        let osc2_gain = (mix + modulation.osc2_level).clamp(WideF32::ZERO, WideF32::splat(1.0));
         let audio = osc1 * osc1_gain + osc2 * osc2_gain + sub + noise;
 
         let output = OscillatorsOutput {
@@ -588,10 +594,10 @@ impl Oscillators {
             sub,
             noise,
             audio,
-            audio_source_active: (self.params.osc1.enabled && osc1_gain != f32x4::ZERO)
-                || (self.params.osc2.enabled && osc2_gain != f32x4::ZERO)
-                || sub_level != f32x4::ZERO
-                || noise_level != f32x4::ZERO,
+            audio_source_active: (self.params.osc1.enabled && osc1_gain != WideF32::ZERO)
+                || (self.params.osc2.enabled && osc2_gain != WideF32::ZERO)
+                || sub_level != WideF32::ZERO
+                || noise_level != WideF32::ZERO,
         };
         crate::profiler_end!(ctx, RenderStage::OscillatorMix);
         output
@@ -608,18 +614,18 @@ impl Oscillators {
 
     fn update_frequencies_modulated(
         &mut self,
-        osc1_frequency_mod_semitones: f32x4,
-        osc2_frequency_mod_semitones: f32x4,
+        osc1_frequency_mod_semitones: WideF32,
+        osc2_frequency_mod_semitones: WideF32,
     ) {
         self.last_frequency_modulation =
             [osc1_frequency_mod_semitones, osc2_frequency_mod_semitones];
         let osc1 = oscillator_frequency(
-            f32x4::new(self.glide[0].current),
+            WideF32::new(self.glide[0].current),
             &self.params.osc1,
             osc1_frequency_mod_semitones,
         );
         let osc2 = oscillator_frequency(
-            f32x4::new(self.glide[1].current),
+            WideF32::new(self.glide[1].current),
             &self.params.osc2,
             osc2_frequency_mod_semitones,
         );
@@ -637,40 +643,40 @@ fn osc_mix_to_gains(mix: f32) -> (f32, f32) {
 /// Per-lane modulation offsets applied before the oscillator section renders.
 #[derive(Clone, Copy)]
 pub struct OscillatorModulation {
-    pub osc1_frequency_semitones: f32x4,
-    pub osc2_frequency_semitones: f32x4,
-    pub osc1_shape: f32x4,
-    pub osc2_shape: f32x4,
-    pub sub_level: f32x4,
-    pub noise_level: f32x4,
-    pub mix: f32x4,
-    pub osc1_level: f32x4,
-    pub osc2_level: f32x4,
+    pub osc1_frequency_semitones: WideF32,
+    pub osc2_frequency_semitones: WideF32,
+    pub osc1_shape: WideF32,
+    pub osc2_shape: WideF32,
+    pub sub_level: WideF32,
+    pub noise_level: WideF32,
+    pub mix: WideF32,
+    pub osc1_level: WideF32,
+    pub osc2_level: WideF32,
 }
 
 impl Default for OscillatorModulation {
     fn default() -> Self {
         Self {
-            osc1_frequency_semitones: f32x4::splat(0.0),
-            osc2_frequency_semitones: f32x4::splat(0.0),
-            osc1_shape: f32x4::splat(0.0),
-            osc2_shape: f32x4::splat(0.0),
-            sub_level: f32x4::splat(0.0),
-            noise_level: f32x4::splat(0.0),
-            mix: f32x4::splat(0.0),
-            osc1_level: f32x4::splat(0.0),
-            osc2_level: f32x4::splat(0.0),
+            osc1_frequency_semitones: WideF32::ZERO,
+            osc2_frequency_semitones: WideF32::ZERO,
+            osc1_shape: WideF32::ZERO,
+            osc2_shape: WideF32::ZERO,
+            sub_level: WideF32::ZERO,
+            noise_level: WideF32::ZERO,
+            mix: WideF32::ZERO,
+            osc1_level: WideF32::ZERO,
+            osc2_level: WideF32::ZERO,
         }
     }
 }
 
 /// Raw per-oscillator outputs and the mixed audio bus for one sample step.
 pub struct OscillatorsOutput {
-    pub osc1: f32x4,
-    pub osc2: f32x4,
-    pub sub: f32x4,
-    pub noise: f32x4,
-    pub audio: f32x4,
+    pub osc1: WideF32,
+    pub osc2: WideF32,
+    pub sub: WideF32,
+    pub noise: WideF32,
+    pub audio: WideF32,
     /// True when a configured source is audibly feeding the filter input.
     pub audio_source_active: bool,
 }
@@ -741,28 +747,32 @@ fn apply_shape_mod(osc: &mut EngineOscillator, params: &OscillatorParams) {
 }
 
 fn oscillator_frequency(
-    note_semitones: f32x4,
+    note_semitones: WideF32,
     params: &OscillatorParams,
-    mod_semitones: f32x4,
-) -> f32x4 {
+    mod_semitones: WideF32,
+) -> WideF32 {
     let keyboard_semitones = if params.keyboard_on {
         note_semitones
     } else {
-        f32x4::splat(CENTER_FREQUENCY_SEMITONES)
+        WideF32::splat(CENTER_FREQUENCY_SEMITONES)
     };
     let semitone_offset = params.frequency_semitones - CENTER_FREQUENCY_SEMITONES;
     let scalar_semitones = semitone_offset + params.fine_tune_cents / 100.0;
-    let total_semitones = keyboard_semitones + f32x4::splat(scalar_semitones) + mod_semitones;
-    f32x4::splat(440.0) * ((total_semitones - f32x4::splat(69.0)) * f32x4::splat(1.0 / 12.0)).exp2()
+    let total_semitones = keyboard_semitones + WideF32::splat(scalar_semitones) + mod_semitones;
+    WideF32::splat(440.0)
+        * ((total_semitones - WideF32::splat(69.0)) * WideF32::splat(1.0 / 12.0)).exp2()
 }
 
 fn frequency_to_semitones(frequency_hz: f32) -> f32 {
-    69.0 + 12.0 * crate::math::ln(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
-        / crate::math::ln(2.0)
+    69.0 + 12.0
+        * F32(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
+            .ln()
+            .as_f32()
+        / F32(2.0).ln().as_f32()
 }
 
 fn pitch_to_q16(semitones: f32) -> i32 {
-    crate::math::round(semitones * GLIDE_PITCH_SCALE) as i32
+    F32(semitones * GLIDE_PITCH_SCALE).round().as_f32() as i32
 }
 
 fn q16_to_pitch(pitch_q16: i32) -> f32 {
@@ -788,15 +798,16 @@ pub fn glide_seconds(amount: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{OscillatorModulation, Oscillators, Waveform, osc_mix_to_gains};
+    use crate::GlideMode;
+    use crate::math::WideF32;
     use crate::midi_to_hz;
-    use crate::{GlideMode, f32x4};
 
     const SAMPLE_RATE: f32 = 44_100.0;
 
     fn scalar_shape_modulation(modulation: OscillatorModulation) -> [f32; 2] {
         [
-            modulation.osc1_shape.reduce_add() * 0.25,
-            modulation.osc2_shape.reduce_add() * 0.25,
+            modulation.osc1_shape.reduce_mean(),
+            modulation.osc2_shape.reduce_mean(),
         ]
     }
 
@@ -827,11 +838,11 @@ mod tests {
     #[test]
     fn fixed_time_duration_is_independent_of_interval() {
         let mut octave = configured_glide(GlideMode::FixedTime, 0.5, 0.5);
-        octave.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        octave.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
         let octave_samples = octave.glide[0].remaining[0];
 
         let mut two_octaves = configured_glide(GlideMode::FixedTime, 0.5, 0.5);
-        two_octaves.note_on_with_glide(0, [84.0; 4], Some(60.0), true);
+        two_octaves.note_on_with_glide(0, [84.0; WideF32::LANES], Some(60.0), true);
 
         assert_eq!(two_octaves.glide[0].remaining[0], octave_samples);
     }
@@ -839,11 +850,11 @@ mod tests {
     #[test]
     fn fixed_rate_duration_scales_with_interval() {
         let mut octave = configured_glide(GlideMode::FixedRate, 0.5, 0.5);
-        octave.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        octave.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
         let octave_samples = octave.glide[0].remaining[0];
 
         let mut two_octaves = configured_glide(GlideMode::FixedRate, 0.5, 0.5);
-        two_octaves.note_on_with_glide(0, [84.0; 4], Some(60.0), true);
+        two_octaves.note_on_with_glide(0, [84.0; WideF32::LANES], Some(60.0), true);
 
         let expected = octave_samples * 2;
         assert!(two_octaves.glide[0].remaining[0].abs_diff(expected) <= 1);
@@ -852,7 +863,7 @@ mod tests {
     #[test]
     fn oscillator_glide_amounts_are_independent() {
         let mut oscillators = configured_glide(GlideMode::FixedTime, 0.25, 0.75);
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
 
         assert!(oscillators.glide[0].remaining[0] < oscillators.glide[1].remaining[0]);
     }
@@ -860,13 +871,13 @@ mod tests {
     #[test]
     fn glide_duration_is_sample_rate_independent() {
         let mut low_rate = configured_glide(GlideMode::FixedTime, 0.5, 0.5);
-        low_rate.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        low_rate.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
 
         let mut high_rate = Oscillators::new(2_000.0);
         high_rate.set_osc1_glide(0.5);
         high_rate.set_glide_mode(GlideMode::FixedTime);
         high_rate.set_glide_enabled(true);
-        high_rate.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        high_rate.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
 
         assert!(high_rate.glide[0].remaining[0].abs_diff(low_rate.glide[0].remaining[0] * 2) <= 1);
     }
@@ -875,7 +886,7 @@ mod tests {
     fn keyboard_tracking_off_bypasses_glide_for_that_oscillator() {
         let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
         oscillators.set_osc1_keyboard_on(false);
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
 
         assert_eq!(oscillators.glide[0].remaining[0], 0);
         assert!(oscillators.glide[1].remaining[0] > 0);
@@ -884,7 +895,7 @@ mod tests {
     #[test]
     fn disabling_glide_snaps_an_active_transition_to_target() {
         let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
         settle(&mut oscillators, 10);
         assert!(oscillators.glide[0].current[0] < 72.0);
 
@@ -897,11 +908,11 @@ mod tests {
     #[test]
     fn interrupted_glide_continues_from_current_pitch() {
         let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
         settle(&mut oscillators, 100);
         let before = oscillators.glide[0].current[0];
 
-        oscillators.retune_with_glide(0, [48.0; 4], true);
+        oscillators.retune_with_glide(0, [48.0; WideF32::LANES], true);
 
         assert_eq!(oscillators.glide[0].current[0], before);
         assert!(oscillators.glide[0].step_q16[0] < 0);
@@ -914,7 +925,7 @@ mod tests {
             oscillators.set_osc1_glide(1.0);
             oscillators.set_glide_mode(GlideMode::FixedTime);
             oscillators.set_glide_enabled(true);
-            oscillators.note_on_with_glide(0, [target; 4], Some(69.0), true);
+            oscillators.note_on_with_glide(0, [target; WideF32::LANES], Some(69.0), true);
             let duration = oscillators.glide[0].remaining[0];
 
             for _ in 0..duration / 2 {
@@ -937,14 +948,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn starting_another_lane_does_not_retarget_an_active_glide() {
         let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
         settle(&mut oscillators, 100);
         let current = oscillators.glide[0].current[0];
         let remaining = oscillators.glide[0].remaining[0];
 
-        oscillators.note_on_with_glide(1, [84.0, 67.0, 60.0, 60.0], Some(64.0), true);
+        oscillators.note_on_with_glide(
+            1,
+            core::array::from_fn(|i| [84.0, 67.0, 60.0, 60.0][i % 4]),
+            Some(64.0),
+            true,
+        );
 
         assert_eq!(oscillators.glide[0].target[0], 72.0);
         assert_eq!(oscillators.glide[0].current[0], current);
@@ -956,12 +973,14 @@ mod tests {
     #[test]
     fn tuning_updates_shift_active_glides_without_cancelling_them() {
         let mut oscillators = configured_glide(GlideMode::FixedTime, 1.0, 1.0);
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(60.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(60.0), true);
         settle(&mut oscillators, 100);
         let current = oscillators.glide[0].current[0];
         let remaining = oscillators.glide[0].remaining[0];
 
-        oscillators.set_note_semitones_preserving_glide([72.25, 60.0, 60.0, 60.0]);
+        oscillators.set_note_semitones_preserving_glide(core::array::from_fn(|i| {
+            if i == 0 { 72.25 } else { 60.0 }
+        }));
 
         assert_eq!(oscillators.glide[0].remaining[0], remaining);
         assert!((oscillators.glide[0].current[0] - (current + 0.25)).abs() < 0.000_02);
@@ -970,7 +989,7 @@ mod tests {
 
     #[test]
     fn note_reset_off_advances_phase_before_first_note() {
-        let frequency = f32x4::splat(midi_to_hz(60));
+        let frequency = WideF32::splat(midi_to_hz(60));
         let mut immediate = Oscillators::new(SAMPLE_RATE);
         let mut delayed = Oscillators::new(SAMPLE_RATE);
         immediate.set_osc1_note_reset(false);
@@ -994,7 +1013,7 @@ mod tests {
 
     #[test]
     fn disabled_osc2_keeps_advancing_when_note_reset_is_off() {
-        let frequency = f32x4::splat(220.0);
+        let frequency = WideF32::splat(220.0);
         let mut audible = Oscillators::new(SAMPLE_RATE);
         let mut muted = Oscillators::new(SAMPLE_RATE);
         for oscillators in [&mut audible, &mut muted] {
@@ -1044,7 +1063,7 @@ mod tests {
     #[test]
     fn pulse_shape_mod_controls_pwm_from_square() {
         fn positive_ratio(shape_mod: f32) -> f32 {
-            let frequency = f32x4::splat(110.0);
+            let frequency = WideF32::splat(110.0);
             let period = (SAMPLE_RATE / 110.0).round() as usize;
             let mut oscillators = Oscillators::new(SAMPLE_RATE);
             oscillators.set_osc1_waveform(Waveform::Pulse);
@@ -1096,7 +1115,7 @@ mod tests {
 
     #[test]
     fn mix_crossfade_routes_audio_between_oscillators() {
-        let frequency = f32x4::splat(440.0);
+        let frequency = WideF32::splat(440.0);
         let mut oscillators = Oscillators::new(SAMPLE_RATE);
         oscillators.set_note_frequency(frequency);
         oscillators.set_sub_octave(0.0);
@@ -1140,7 +1159,7 @@ mod tests {
     #[test]
     fn keyboard_off_uses_center_frequency_instead_of_note() {
         let mut oscillators = Oscillators::new(SAMPLE_RATE);
-        oscillators.set_note_frequency(f32x4::splat(midi_to_hz(72)));
+        oscillators.set_note_frequency(WideF32::splat(midi_to_hz(72)));
         oscillators.set_osc1_keyboard_on(false);
         oscillators.update_frequencies();
 
@@ -1154,7 +1173,7 @@ mod tests {
 
     #[test]
     fn hard_sync_increases_osc1_wrap_rate_with_faster_osc2() {
-        let frequency = f32x4::splat(midi_to_hz(60));
+        let frequency = WideF32::splat(midi_to_hz(60));
         let samples = 1_200;
 
         let mut without_sync = Oscillators::new(SAMPLE_RATE);
@@ -1181,7 +1200,7 @@ mod tests {
 
     #[test]
     fn hard_sync_does_not_reset_osc1_when_osc2_disabled() {
-        let frequency = f32x4::splat(midi_to_hz(60));
+        let frequency = WideF32::splat(midi_to_hz(60));
         let samples = 400;
 
         let mut reference = Oscillators::new(SAMPLE_RATE);
@@ -1204,7 +1223,7 @@ mod tests {
 
     #[test]
     fn modulation_levels_affect_sub_noise_and_mix() {
-        let frequency = f32x4::splat(220.0);
+        let frequency = WideF32::splat(220.0);
         let mut oscillators = Oscillators::new(SAMPLE_RATE);
         oscillators.set_note_frequency(frequency);
         oscillators.set_sub_octave(0.25);
@@ -1223,8 +1242,8 @@ mod tests {
         );
 
         let mut boosted = OscillatorModulation::default();
-        boosted.sub_level = f32x4::splat(0.75);
-        boosted.noise_level = f32x4::splat(0.75);
+        boosted.sub_level = WideF32::splat(0.75);
+        boosted.noise_level = WideF32::splat(0.75);
         let modulated = next(&mut oscillators, boosted);
 
         assert!(
@@ -1242,7 +1261,7 @@ mod tests {
         settle(&mut oscillators, 16);
 
         let mut mix_modulation = OscillatorModulation::default();
-        mix_modulation.mix = f32x4::splat(1.0);
+        mix_modulation.mix = WideF32::splat(1.0);
         let osc2_only = next(&mut oscillators, mix_modulation);
         assert!(
             (osc2_only.audio.to_array()[0] - osc2_only.osc2.to_array()[0]).abs() < 1e-4,
@@ -1252,7 +1271,7 @@ mod tests {
 
     #[test]
     fn note_on_resets_sub_only_when_osc1_note_reset() {
-        let frequency = f32x4::splat(220.0);
+        let frequency = WideF32::splat(220.0);
 
         let mut reference = Oscillators::new(SAMPLE_RATE);
         reference.set_sub_octave(1.0);
@@ -1296,7 +1315,7 @@ mod tests {
 
     #[test]
     fn runtime_shape_modulation_averages_across_lanes() {
-        let frequency = f32x4::splat(110.0);
+        let frequency = WideF32::splat(110.0);
         let period = (SAMPLE_RATE / 110.0).round() as usize;
 
         let positive_ratio = |shape_mod: f32, shape_modulation: f32| {
@@ -1306,7 +1325,7 @@ mod tests {
             oscillators.set_note_frequency(frequency);
 
             let mut modulation = OscillatorModulation::default();
-            modulation.osc1_shape = f32x4::splat(shape_modulation);
+            modulation.osc1_shape = WideF32::splat(shape_modulation);
 
             let mut positive = 0usize;
             for _ in 0..period {
@@ -1357,7 +1376,7 @@ mod tests {
         oscillators.set_glide_enabled(true);
 
         // 24-semitone glide from note 48 to note 72 (C3→C5).
-        oscillators.note_on_with_glide(0, [72.0; 4], Some(48.0), true);
+        oscillators.note_on_with_glide(0, [72.0; WideF32::LANES], Some(48.0), true);
 
         let initial_remaining = oscillators.glide[0].remaining[0];
         assert!(initial_remaining > 0, "glide should be active");

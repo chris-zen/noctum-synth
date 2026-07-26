@@ -853,8 +853,7 @@ pub fn show(
 
             ui.horizontal_top(|ui| {
                 let spacing = ui.spacing().item_spacing.x;
-                let effects_width =
-                    (ui.available_width() - MISC_PANEL_WIDTH - spacing).max(0.0);
+                let effects_width = (ui.available_width() - MISC_PANEL_WIDTH - spacing).max(0.0);
 
                 ui.allocate_ui_with_layout(
                     egui::vec2(effects_width, 0.0),
@@ -1403,8 +1402,7 @@ fn module_panel_with_header(
 
             if min_height > 0.0 {
                 let used = ui.cursor().top() - y0;
-                let pad =
-                    (min_height - used - top_margin - bottom_margin - stroke).max(0.0);
+                let pad = (min_height - used - top_margin - bottom_margin - stroke).max(0.0);
                 if pad > 0.0 {
                     ui.allocate_exact_size(
                         egui::vec2(ui.available_width().max(0.0), pad),

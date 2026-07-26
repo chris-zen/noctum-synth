@@ -1,8 +1,10 @@
 //! Post-voice effects.
 
-use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_TEMPO_BPM, EffectParams, EffectType, TAU, midi_to_hz};
 use core::marker::PhantomData;
+
+use crate::math::{F32, TAU};
+use crate::profiling::{RenderContext, RenderStage};
+use crate::{DEFAULT_TEMPO_BPM, EffectParams, EffectType, midi_to_hz};
 
 const DELAY_TIME_CROSSFADE_SECONDS: f32 = 0.035;
 const DELAY_TIME_CHANGE_THRESHOLD_SAMPLES: f32 = 8.0;
@@ -802,11 +804,11 @@ struct PreparedDelay {
     older_age: usize,
     /// Clamped delay retained so the reference interpolation fraction can be
     /// reconstructed from the live cursor without floor or modulo.
-    #[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+    #[cfg(any(test, not(target_arch = "arm")))]
     delay_samples: f32,
     /// Fast embedded interpolation weight. Desktop reconstructs the reference
     /// weight from the live cursor instead.
-    #[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+    #[cfg(any(test, target_arch = "arm"))]
     newer_weight: f32,
 }
 
@@ -818,13 +820,13 @@ impl PreparedDelay {
         // few low bits and can exceed the reverb's transparent-error gate.
         let length = maximum_delay as usize + 2;
         let read_position = length as f32 - delay;
-        let read_floor = crate::math::floor(read_position);
+        let read_floor = F32(read_position).floor().as_f32();
         let older_age = length - read_floor as usize;
         Self {
             older_age,
-            #[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+            #[cfg(any(test, not(target_arch = "arm")))]
             delay_samples: delay,
-            #[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+            #[cfg(any(test, target_arch = "arm"))]
             newer_weight: read_position - read_floor,
         }
     }
@@ -874,10 +876,10 @@ trait ReverbKernel {
     fn read(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32;
 }
 
-#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+#[cfg(any(test, not(target_arch = "arm")))]
 struct ExactReverbKernel;
 
-#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+#[cfg(any(test, not(target_arch = "arm")))]
 impl ReverbKernel for ExactReverbKernel {
     #[inline(always)]
     fn read(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
@@ -885,10 +887,10 @@ impl ReverbKernel for ExactReverbKernel {
     }
 }
 
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, target_arch = "arm"))]
 struct PreparedReverbKernel;
 
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, target_arch = "arm"))]
 impl ReverbKernel for PreparedReverbKernel {
     #[inline(always)]
     fn read(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
@@ -896,9 +898,9 @@ impl ReverbKernel for PreparedReverbKernel {
     }
 }
 
-#[cfg(all(feature = "embedded-math", target_os = "none"))]
+#[cfg(target_arch = "arm")]
 type EngineReverb = Reverb<PreparedReverbKernel>;
-#[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+#[cfg(not(target_arch = "arm"))]
 type EngineReverb = Reverb<ExactReverbKernel>;
 
 struct Reverb<K: ReverbKernel> {
@@ -1135,7 +1137,7 @@ impl<'a> DelayBuffer<'a> {
         let len = self.samples.len();
         let delay = delay_samples.clamp(MIN_DELAY_SAMPLES, self.max_delay());
         let read_position = self.state.index as f32 + len as f32 - delay;
-        let read_floor = crate::math::floor(read_position);
+        let read_floor = F32(read_position).floor().as_f32();
         let base = read_floor as usize % len;
         let fraction = read_position - read_floor;
         let next = (base + 1) % len;
@@ -1204,7 +1206,7 @@ impl OnePoleHighPass {
 }
 
 mod effect_coefficient_math {
-    #[cfg(all(feature = "embedded-math", target_os = "none"))]
+    #[cfg(target_arch = "arm")]
     const LOG2_600: f32 = 9.228_819;
 
     #[inline(always)]
@@ -1212,19 +1214,20 @@ mod effect_coefficient_math {
         backend::high_pass_cutoff(param)
     }
 
-    #[cfg(all(feature = "embedded-math", target_os = "none"))]
+    #[cfg(target_arch = "arm")]
     mod backend {
         #[inline(always)]
         pub(super) fn high_pass_cutoff(param: f32) -> f32 {
-            20.0 * crate::math::exp2(super::LOG2_600 * param)
+            20.0 * F32(super::LOG2_600 * param).exp2().as_f32()
         }
     }
 
-    #[cfg(not(all(feature = "embedded-math", target_os = "none")))]
+    #[cfg(not(target_arch = "arm"))]
     mod backend {
+        use crate::math::F32;
         #[inline(always)]
         pub(super) fn high_pass_cutoff(param: f32) -> f32 {
-            20.0 * crate::math::powf(600.0, param)
+            20.0 * F32(600.0).powf(F32(param)).as_f32()
         }
     }
 }
@@ -1237,7 +1240,7 @@ fn split_stereo(buffer: &mut [f32]) -> Option<(&mut [f32], &mut [f32])> {
 
 fn delay_seconds(context: ProcessContext) -> f32 {
     if context.clock_sync {
-        let index = crate::math::round(context.param1 * 10.0) as usize;
+        let index = F32(context.param1 * 10.0).round().as_f32() as usize;
         let beats = [
             4.0,
             3.0,
@@ -1291,7 +1294,7 @@ fn reverb_allpass<K: ReverbKernel>(
 }
 
 #[inline(always)]
-#[cfg(any(test, not(all(feature = "embedded-math", target_os = "none"))))]
+#[cfg(any(test, not(target_arch = "arm")))]
 fn reverb_read_exact(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
     let length = samples.len();
     let read_position = state.index as f32 + length as f32 - delay.delay_samples;
@@ -1327,7 +1330,7 @@ fn reverb_read_exact(samples: &[f32], state: &DelayLineState, delay: PreparedDel
 }
 
 #[inline(always)]
-#[cfg(any(test, all(feature = "embedded-math", target_os = "none")))]
+#[cfg(any(test, target_arch = "arm"))]
 fn reverb_read_fast(samples: &[f32], state: &DelayLineState, delay: PreparedDelay) -> f32 {
     let length = samples.len();
     let older_index = if state.index >= delay.older_age {
@@ -1376,11 +1379,11 @@ fn advance_phase(phase: f32, frequency: f32, sample_rate: f32) -> f32 {
 }
 
 fn wrap01(value: f32) -> f32 {
-    value - crate::math::floor(value)
+    value - F32(value).floor().as_f32()
 }
 
 fn sine(phase: f32) -> f32 {
-    crate::math::effect_sin(TAU * phase)
+    F32(TAU * phase).sin().as_f32()
 }
 
 fn smoothstep(value: f32) -> f32 {
@@ -1393,7 +1396,7 @@ fn crossfade(left: f32, right: f32, amount: f32) -> f32 {
 }
 
 fn soft_clip(input: f32, gain: f32) -> f32 {
-    crate::math::tanh(input * gain)
+    F32(input * gain).tanh().as_f32()
 }
 
 #[cfg(test)]

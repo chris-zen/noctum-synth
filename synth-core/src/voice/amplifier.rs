@@ -1,6 +1,5 @@
-use crate::f32x4;
-
 use crate::ParamId;
+use crate::math::WideF32;
 use crate::patch::AmplifierParams;
 
 pub struct Amplifier {
@@ -46,7 +45,7 @@ impl Amplifier {
         true
     }
 
-    pub fn next_envelope(&mut self) -> f32x4 {
+    pub fn next_envelope(&mut self) -> WideF32 {
         self.envelope.next()
     }
 
@@ -110,11 +109,11 @@ impl Amplifier {
         self.envelope.set_release_seconds(seconds);
     }
 
-    pub fn gain(&self, amp_env: f32x4, velocities: f32x4, amp_lfo_gain: f32x4) -> f32x4 {
-        let velocity_gain = f32x4::splat(1.0 - self.velocity_amount)
-            + velocities * f32x4::splat(self.velocity_amount);
-        let env_gain = f32x4::splat(self.initial_level)
-            + (f32x4::splat(1.0 - self.initial_level) * amp_env * self.env_amount);
+    pub fn gain(&self, amp_env: WideF32, velocities: WideF32, amp_lfo_gain: WideF32) -> WideF32 {
+        let velocity_gain = WideF32::splat(1.0 - self.velocity_amount)
+            + velocities * WideF32::splat(self.velocity_amount);
+        let env_gain = WideF32::splat(self.initial_level)
+            + (WideF32::splat(1.0 - self.initial_level) * amp_env * self.env_amount);
         velocity_gain * env_gain * amp_lfo_gain
     }
 }

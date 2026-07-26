@@ -12,21 +12,20 @@ mod pan;
 
 pub use manager::{ActiveNotes, VoiceManager, unison_detune_cents};
 
-use crate::f32x4;
-
 use crate::dsp::{FilterOversampling, FilterType, LfoWaveform, Waveform};
 use crate::effects::EffectModulation;
+use crate::math::{F32, WideF32};
 #[cfg(test)]
 use crate::patch::DedicatedModSource;
 use crate::patch::{ClockDivision, LFO_COUNT, LfoSyncDivision, ModDestination, PanModMode, Patch};
 use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_TEMPO_BPM, GlideMode, LANES, ModSource, ParamId, VOICE_COUNT};
+use crate::{DEFAULT_TEMPO_BPM, GlideMode, ModSource, ParamId, VOICE_COUNT};
 use amplifier::Amplifier;
 use aux_env::AuxEnv;
 use filter::Filter;
 use lanes::Lanes;
 use lfo::Lfo;
-use modulation::{ModSignalContext, average_lanes};
+use modulation::ModSignalContext;
 use pan::Pan;
 
 pub use modulation::PatchModulation;
@@ -148,11 +147,20 @@ impl VoiceBlock {
     }
 
     fn lifecycle_shutdown_samples(&self) -> u32 {
-        (crate::math::round(self.sample_rate * VOICE_STEAL_SHUTDOWN_SECONDS) as u32).max(1)
+        (F32(self.sample_rate * VOICE_STEAL_SHUTDOWN_SECONDS)
+            .round()
+            .as_f32() as u32)
+            .max(1)
     }
 
     pub fn note_on(&mut self, lane: usize, note: u8, velocity: f32, reset_key_synced_lfos: bool) {
-        self.note_on_tuned(lane, note, velocity, reset_key_synced_lfos, [0.0; LANES]);
+        self.note_on_tuned(
+            lane,
+            note,
+            velocity,
+            reset_key_synced_lfos,
+            [0.0; WideF32::LANES],
+        );
     }
 
     pub(crate) fn note_on_tuned(
@@ -161,7 +169,7 @@ impl VoiceBlock {
         note: u8,
         velocity: f32,
         reset_key_synced_lfos: bool,
-        tuning_cents: [f32; LANES],
+        tuning_cents: [f32; WideF32::LANES],
     ) {
         self.note_on_tuned_with_glide(
             lane,
@@ -179,7 +187,7 @@ impl VoiceBlock {
         note: u8,
         velocity: f32,
         reset_key_synced_lfos: bool,
-        tuning_cents: [f32; LANES],
+        tuning_cents: [f32; WideF32::LANES],
         glide: NoteGlide,
     ) {
         self.lanes.activate_lifecycle_lane(
@@ -211,7 +219,7 @@ impl VoiceBlock {
         lane: usize,
         note: u8,
         velocity: f32,
-        tuning_cents: [f32; LANES],
+        tuning_cents: [f32; WideF32::LANES],
         should_glide: bool,
     ) {
         if self
@@ -226,7 +234,7 @@ impl VoiceBlock {
             .retune_with_glide(lane, self.lanes.note_semitones(), should_glide);
     }
 
-    pub(crate) fn set_tuning_cents(&mut self, tuning_cents: [f32; LANES]) {
+    pub(crate) fn set_tuning_cents(&mut self, tuning_cents: [f32; WideF32::LANES]) {
         self.lanes.set_tuning_cents_array(tuning_cents);
         self.oscillators
             .set_note_semitones_preserving_glide(self.lanes.note_semitones());
@@ -245,7 +253,7 @@ impl VoiceBlock {
             note,
             velocity,
             reset_key_synced_lfos,
-            [0.0; LANES],
+            [0.0; WideF32::LANES],
             NoteGlide::default(),
         );
     }
@@ -256,7 +264,7 @@ impl VoiceBlock {
         note: u8,
         velocity: f32,
         reset_key_synced_lfos: bool,
-        tuning_cents: [f32; LANES],
+        tuning_cents: [f32; WideF32::LANES],
         glide: NoteGlide,
     ) {
         let shutdown_in_progress = self.lanes.has_pending(lane);
@@ -283,7 +291,7 @@ impl VoiceBlock {
     }
 
     pub fn note_off(&mut self, note: u8) {
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             if self.active_note(lane) == Some(note) {
                 self.note_off_lane(lane);
             }
@@ -330,7 +338,7 @@ impl VoiceBlock {
             aux_env,
             aux_signal,
         };
-        let pitch_bend = f32x4::splat(performance.pitch_bend * self.pitch_bend_range);
+        let pitch_bend = WideF32::splat(performance.pitch_bend * self.pitch_bend_range);
         let mut lfo_modulation = LfoModulation::default();
         lfo_modulation.oscillators.osc1_frequency_semitones = pitch_bend;
         lfo_modulation.oscillators.osc2_frequency_semitones = pitch_bend;
@@ -351,7 +359,7 @@ impl VoiceBlock {
             crate::profiler_begin!(ctx, RenderStage::AudioModulationRouting);
             if let Some(route) = plan.single_pwm_route {
                 lfo_modulation.osc1_shape =
-                    average_lanes(self.lfos[route.lfo_index as usize].output()) * route.amount;
+                    self.lfos[route.lfo_index as usize].output().reduce_mean() * route.amount;
             } else if let Some(route) = plan.single_filter_cutoff_route {
                 let index = route.lfo_index as usize;
                 let scale = route.amount * LFO_CUTOFF_DEPTH_SEMITONES;
@@ -362,7 +370,7 @@ impl VoiceBlock {
                 } else {
                     lfo_modulation
                         .filter_cutoff
-                        .add(self.lfos[index].output() * f32x4::splat(scale));
+                        .add(self.lfos[index].output() * WideF32::splat(scale));
                 }
             } else {
                 self.apply_audio_modulation_routes(modulation, &mut lfo_modulation, context);
@@ -400,8 +408,8 @@ impl VoiceBlock {
         crate::profiler_end!(ctx, RenderStage::Filter);
 
         crate::profiler_begin!(ctx, RenderStage::AmplifierAndPan);
-        let amp_lfo_gain = (f32x4::splat(1.0) + lfo_modulation.amp_gain)
-            .clamp(f32x4::splat(0.0), f32x4::splat(2.0));
+        let amp_lfo_gain = (WideF32::splat(1.0) + lfo_modulation.amp_gain)
+            .clamp(WideF32::ZERO, WideF32::splat(2.0));
         let output = filtered * self.amplifier.gain(amp, velocities, amp_lfo_gain) * lifecycle_gain;
 
         let stereo = self
@@ -419,7 +427,7 @@ impl VoiceBlock {
         let mut lfo_control = LfoControlModulation::default();
         for route in modulation.plan().control_routes() {
             let signal = route.signal(self, context);
-            lfo_control.apply(route.destination(), average_lanes(signal));
+            lfo_control.apply(route.destination(), signal.reduce_mean());
         }
         lfo_control
     }
@@ -445,15 +453,14 @@ impl VoiceBlock {
         let rates = if lfo_control.rate_mod == [0.0; LFO_COUNT] {
             base_rates
         } else {
-            (f32x4::new(base_rates) * (f32x4::new(lfo_control.rate_mod) * f32x4::splat(4.0)).exp2())
-                .to_array()
+            core::array::from_fn(|i| {
+                base_rates[i] * F32(lfo_control.rate_mod[i] * 4.0).exp2().as_f32()
+            })
         };
         let depths = if lfo_control.depth_mod == [0.0; LFO_COUNT] {
             base_depths
         } else {
-            (f32x4::new(base_depths) + f32x4::new(lfo_control.depth_mod))
-                .clamp(f32x4::splat(0.0), f32x4::splat(1.0))
-                .to_array()
+            core::array::from_fn(|i| (base_depths[i] + lfo_control.depth_mod[i]).clamp(0.0, 1.0))
         };
 
         for (index, lfo) in self.lfos.iter_mut().enumerate() {
@@ -493,11 +500,11 @@ impl VoiceBlock {
         }
         let context = ModSignalContext {
             performance,
-            velocities: f32x4::ZERO,
-            filter_env: f32x4::ZERO,
-            amp_env: f32x4::ZERO,
-            aux_env: f32x4::ZERO,
-            aux_signal: f32x4::ZERO,
+            velocities: WideF32::ZERO,
+            filter_env: WideF32::ZERO,
+            amp_env: WideF32::ZERO,
+            aux_env: WideF32::ZERO,
+            aux_signal: WideF32::ZERO,
         };
         let lfo_control = if modulation.plan().control_count == 0 {
             LfoControlModulation::default()
@@ -508,7 +515,7 @@ impl VoiceBlock {
     }
 
     #[cfg(test)]
-    fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
+    fn pan_lanes(&self, lanes: WideF32, pan_mod: WideF32) -> (f32, f32) {
         self.pan
             .pan_lanes(lanes, pan_mod, self.lanes.pan_positions())
     }
@@ -542,7 +549,7 @@ impl VoiceBlock {
         if self.lanes.pending_mask() == 0 {
             return;
         }
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             if self.lanes.pending_mask() & (1 << lane) == 0 {
                 continue;
             }
@@ -573,7 +580,7 @@ impl VoiceBlock {
     }
 
     pub fn active_lane_count(&self) -> usize {
-        (0..LANES)
+        (0..WideF32::LANES)
             .filter(|&lane| !self.is_lane_silent(lane))
             .count()
     }
@@ -583,7 +590,7 @@ impl VoiceBlock {
     }
 
     pub fn oldest_lane(&self) -> usize {
-        (0..LANES)
+        (0..WideF32::LANES)
             .max_by_key(|&lane| self.lanes.age(lane))
             .unwrap_or(0)
     }
@@ -808,7 +815,7 @@ impl VoiceBlock {
         self.pitch_bend_range = semitones.clamp(0.0, 12.0);
     }
 
-    pub(crate) fn set_pan_positions(&mut self, positions: [f32; LANES]) {
+    pub(crate) fn set_pan_positions(&mut self, positions: [f32; WideF32::LANES]) {
         self.lanes.set_pan_positions(positions);
     }
 
@@ -995,7 +1002,11 @@ impl VoiceBlock {
         }
     }
 
-    pub(crate) fn mod_source_signal(&self, source: ModSource, context: ModSignalContext) -> f32x4 {
+    pub(crate) fn mod_source_signal(
+        &self,
+        source: ModSource,
+        context: ModSignalContext,
+    ) -> WideF32 {
         match source {
             ModSource::Off
             | ModSource::Seq1
@@ -1003,7 +1014,7 @@ impl VoiceBlock {
             | ModSource::Seq3
             | ModSource::Seq4
             | ModSource::Noise
-            | ModSource::AudioOut => f32x4::splat(0.0),
+            | ModSource::AudioOut => WideF32::ZERO,
             ModSource::Lfo1 => self.lfos[0].output(),
             ModSource::Lfo2 => self.lfos[1].output(),
             ModSource::Lfo3 => self.lfos[2].output(),
@@ -1011,15 +1022,15 @@ impl VoiceBlock {
             ModSource::EnvLpf => context.filter_env,
             ModSource::EnvVca => context.amp_env,
             ModSource::Env3 => context.aux_env,
-            ModSource::PitchBend => f32x4::splat(context.performance.pitch_bend),
-            ModSource::ModWheel => f32x4::splat(context.performance.mod_wheel),
-            ModSource::Pressure => f32x4::splat(context.performance.pressure),
-            ModSource::Breath => f32x4::splat(context.performance.breath),
-            ModSource::FootPedal => f32x4::splat(context.performance.foot),
-            ModSource::ExpressionPedal => f32x4::splat(context.performance.expression),
+            ModSource::PitchBend => WideF32::splat(context.performance.pitch_bend),
+            ModSource::ModWheel => WideF32::splat(context.performance.mod_wheel),
+            ModSource::Pressure => WideF32::splat(context.performance.pressure),
+            ModSource::Breath => WideF32::splat(context.performance.breath),
+            ModSource::FootPedal => WideF32::splat(context.performance.foot),
+            ModSource::ExpressionPedal => WideF32::splat(context.performance.expression),
             ModSource::Velocity => context.velocities,
-            ModSource::NoteNumber => self.lanes.notes_as_f32() * f32x4::splat(1.0 / 127.0),
-            ModSource::Dc => f32x4::splat(1.0),
+            ModSource::NoteNumber => self.lanes.notes_as_f32() * WideF32::splat(1.0 / 127.0),
+            ModSource::Dc => WideF32::splat(1.0),
         }
     }
 }
@@ -1091,7 +1102,7 @@ impl VoiceBlock {
         &self,
         patch_modulation: &PatchModulation,
         context: ModSignalContext,
-        mut apply: impl FnMut(ModDestination, f32x4),
+        mut apply: impl FnMut(ModDestination, WideF32),
     ) {
         for lfo in &self.lfos {
             apply(lfo.destination(), lfo.output());
@@ -1104,7 +1115,7 @@ impl VoiceBlock {
                 continue;
             }
 
-            let signal = self.mod_source_signal(slot.source, context) * f32x4::splat(slot.amount);
+            let signal = self.mod_source_signal(slot.source, context) * WideF32::splat(slot.amount);
             apply(slot.destination, signal);
         }
 
@@ -1120,7 +1131,7 @@ impl VoiceBlock {
 
             let dedicated_source = DedicatedModSource::ALL[index].source();
             let signal =
-                self.mod_source_signal(dedicated_source, context) * f32x4::splat(slot.amount);
+                self.mod_source_signal(dedicated_source, context) * WideF32::splat(slot.amount);
             apply(slot.destination, signal);
         }
     }
@@ -1253,51 +1264,51 @@ struct LfoModulation {
     osc1_shape: f32,
     osc2_shape: f32,
     filter_cutoff: PreparedCutoffModulation,
-    filter_resonance: f32x4,
-    filter_audio_mod: f32x4,
-    amp_gain: f32x4,
-    pan: f32x4,
+    filter_resonance: WideF32,
+    filter_audio_mod: WideF32,
+    amp_gain: WideF32,
+    pan: WideF32,
     effects: EffectModulation,
 }
 
 impl LfoModulation {
-    fn apply_destination(&mut self, destination: ModDestination, signal: f32x4) {
+    fn apply_destination(&mut self, destination: ModDestination, signal: WideF32) {
         match destination {
             ModDestination::Off => {}
             ModDestination::Osc1Frequency => {
                 self.oscillators.osc1_frequency_semitones +=
-                    signal * f32x4::splat(LFO_PITCH_DEPTH_SEMITONES);
+                    signal * WideF32::splat(LFO_PITCH_DEPTH_SEMITONES);
             }
             ModDestination::Osc2Frequency => {
                 self.oscillators.osc2_frequency_semitones +=
-                    signal * f32x4::splat(LFO_PITCH_DEPTH_SEMITONES);
+                    signal * WideF32::splat(LFO_PITCH_DEPTH_SEMITONES);
             }
             ModDestination::OscAllFrequency => {
-                let pitch = signal * f32x4::splat(LFO_PITCH_DEPTH_SEMITONES);
+                let pitch = signal * WideF32::splat(LFO_PITCH_DEPTH_SEMITONES);
                 self.oscillators.osc1_frequency_semitones += pitch;
                 self.oscillators.osc2_frequency_semitones += pitch;
             }
             ModDestination::OscMix => self.oscillators.mix += signal,
             ModDestination::NoiseLevel => self.oscillators.noise_level += signal,
             ModDestination::SubOscLevel => self.oscillators.sub_level += signal,
-            ModDestination::Osc1ShapeMod => self.osc1_shape += average_lanes(signal),
-            ModDestination::Osc2ShapeMod => self.osc2_shape += average_lanes(signal),
+            ModDestination::Osc1ShapeMod => self.osc1_shape += signal.reduce_mean(),
+            ModDestination::Osc2ShapeMod => self.osc2_shape += signal.reduce_mean(),
             ModDestination::OscAllShapeMod => {
-                let shape = average_lanes(signal);
+                let shape = signal.reduce_mean();
                 self.osc1_shape += shape;
                 self.osc2_shape += shape;
             }
             ModDestination::FilterCutoff => {
                 self.filter_cutoff
-                    .add(signal * f32x4::splat(LFO_CUTOFF_DEPTH_SEMITONES));
+                    .add(signal * WideF32::splat(LFO_CUTOFF_DEPTH_SEMITONES));
             }
             ModDestination::FilterResonance => self.filter_resonance += signal,
             ModDestination::FilterAudioMod => self.filter_audio_mod += signal,
             ModDestination::Vca => self.amp_gain += signal,
             ModDestination::Pan => self.pan += signal,
-            ModDestination::FxMix => self.effects.mix += average_lanes(signal),
-            ModDestination::FxParam1 => self.effects.param1 += average_lanes(signal),
-            ModDestination::FxParam2 => self.effects.param2 += average_lanes(signal),
+            ModDestination::FxMix => self.effects.mix += signal.reduce_mean(),
+            ModDestination::FxParam1 => self.effects.param1 += signal.reduce_mean(),
+            ModDestination::FxParam2 => self.effects.param2 += signal.reduce_mean(),
             _ => {}
         }
     }
@@ -1305,14 +1316,14 @@ impl LfoModulation {
 
 #[derive(Clone, Copy)]
 struct PreparedCutoffModulation {
-    lanes: f32x4,
+    lanes: WideF32,
     uniform: Option<f32>,
 }
 
 impl Default for PreparedCutoffModulation {
     fn default() -> Self {
         Self {
-            lanes: f32x4::ZERO,
+            lanes: WideF32::ZERO,
             uniform: Some(0.0),
         }
     }
@@ -1321,12 +1332,12 @@ impl Default for PreparedCutoffModulation {
 impl PreparedCutoffModulation {
     #[inline(always)]
     fn set_uniform(&mut self, value: f32) {
-        self.lanes = f32x4::splat(value);
+        self.lanes = WideF32::splat(value);
         self.uniform = Some(value);
     }
 
     #[inline(always)]
-    fn add(&mut self, contribution: f32x4) {
+    fn add(&mut self, contribution: WideF32) {
         self.lanes += contribution;
         self.uniform = self.uniform.and_then(|value| {
             Self::uniform_lane_value(contribution).map(|contribution| value + contribution)
@@ -1334,7 +1345,7 @@ impl PreparedCutoffModulation {
     }
 
     #[inline(always)]
-    fn uniform_lane_value(value: f32x4) -> Option<f32> {
+    fn uniform_lane_value(value: WideF32) -> Option<f32> {
         let lanes = value.to_array();
         lanes[1..]
             .iter()
@@ -1494,11 +1505,11 @@ mod tests {
                 foot: 0.5,
                 expression: 0.75,
             },
-            velocities: f32x4::new([0.2, 0.4, 0.6, 0.8]),
-            filter_env: f32x4::splat(ramp),
-            amp_env: f32x4::splat(1.0 - ramp),
-            aux_env: f32x4::splat(0.5),
-            aux_signal: f32x4::splat(0.3),
+            velocities: WideF32::splat([0.2, 0.4, 0.6, 0.8][sample % 4]),
+            filter_env: WideF32::splat(ramp),
+            amp_env: WideF32::splat(1.0 - ramp),
+            aux_env: WideF32::splat(0.5),
+            aux_signal: WideF32::splat(0.3),
         }
     }
 
@@ -1521,14 +1532,14 @@ mod tests {
     ) -> LfoModulation {
         let mut control = LfoControlModulation::default();
         block.for_each_modulation_route(patch_modulation, context, |destination, signal| {
-            control.apply(destination, average_lanes(signal));
+            control.apply(destination, signal.reduce_mean());
         });
-        let rates = (f32x4::new(lfo::base_rates(&block.lfos))
-            * (f32x4::new(control.rate_mod) * f32x4::splat(4.0)).exp2())
-        .to_array();
-        let depths = (f32x4::new(lfo::base_depths(&block.lfos)) + f32x4::new(control.depth_mod))
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0))
-            .to_array();
+        let rates: [f32; LFO_COUNT] = core::array::from_fn(|i| {
+            lfo::base_rates(&block.lfos)[i] * F32(control.rate_mod[i] * 4.0).exp2().as_f32()
+        });
+        let depths: [f32; LFO_COUNT] = core::array::from_fn(|i| {
+            (lfo::base_depths(&block.lfos)[i] + control.depth_mod[i]).clamp(0.0, 1.0)
+        });
         for (index, lfo) in block.lfos.iter_mut().enumerate() {
             lfo.apply_engine_rate(rates[index]);
             lfo.apply_engine_depth(depths[index]);
@@ -1544,7 +1555,7 @@ mod tests {
     fn apply_destination_modulation_reference(
         modulation: &mut LfoModulation,
         destination: ModDestination,
-        signal: f32x4,
+        signal: WideF32,
     ) {
         match destination {
             ModDestination::Osc1ShapeMod => modulation.oscillators.osc1_shape += signal,
@@ -1557,7 +1568,7 @@ mod tests {
         }
     }
 
-    fn assert_lanes_equal(actual: f32x4, expected: f32x4) {
+    fn assert_lanes_equal(actual: WideF32, expected: WideF32) {
         assert_eq!(
             actual.to_array().map(f32::to_bits),
             expected.to_array().map(f32::to_bits)
@@ -1569,8 +1580,8 @@ mod tests {
             actual.oscillators.osc1_frequency_semitones,
             expected.oscillators.osc1_frequency_semitones,
         );
-        let expected_osc1_shape = average_lanes(expected.oscillators.osc1_shape);
-        let expected_osc2_shape = average_lanes(expected.oscillators.osc2_shape);
+        let expected_osc1_shape = expected.oscillators.osc1_shape.reduce_mean();
+        let expected_osc2_shape = expected.oscillators.osc2_shape.reduce_mean();
         assert!((actual.osc1_shape - expected_osc1_shape).abs() <= 2e-6);
         assert!((actual.osc2_shape - expected_osc2_shape).abs() <= 2e-6);
         assert_lanes_equal(actual.filter_cutoff.lanes, expected.filter_cutoff.lanes);
@@ -1715,49 +1726,53 @@ mod tests {
         assert!(patch_modulation.plan().single_pwm_route.is_none());
     }
 
-    fn pan_lanes_reference(block: &VoiceBlock, lanes: f32x4, pan_mod: f32x4) -> (f32, f32) {
-        let voice_position = f32x4::new(block.lanes().pan_positions_array());
+    fn pan_lanes_reference(block: &VoiceBlock, lanes: WideF32, pan_mod: WideF32) -> (f32, f32) {
+        let voice_position = WideF32::new(block.lanes().pan_positions_array());
         let position = match block.pan().mod_mode() {
             PanModMode::Alternate => {
-                let spread = (f32x4::splat(block.pan().spread()) + pan_mod)
-                    .clamp(f32x4::ZERO, f32x4::splat(1.0));
+                let spread = (WideF32::splat(block.pan().spread()) + pan_mod)
+                    .clamp(WideF32::ZERO, WideF32::splat(1.0));
                 voice_position * spread
             }
-            PanModMode::Fixed => (voice_position * f32x4::splat(block.pan().spread()) + pan_mod)
-                .clamp(f32x4::splat(-1.0), f32x4::splat(1.0)),
+            PanModMode::Fixed => (voice_position * WideF32::splat(block.pan().spread()) + pan_mod)
+                .clamp(WideF32::splat(-1.0), WideF32::splat(1.0)),
         };
-        let angle = (position + f32x4::splat(1.0)) * f32x4::splat(core::f32::consts::FRAC_PI_4);
+        let angle = (position + WideF32::splat(1.0)) * WideF32::splat(core::f32::consts::FRAC_PI_4);
         let (sin, cos) = angle.sin_cos();
 
         ((lanes * cos).reduce_add(), (lanes * sin).reduce_add())
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn pan_lanes_matches_rev2_mode_equations() {
-        let lanes = f32x4::new([0.75, -0.25, 0.125, -0.0625]);
+        let lanes = WideF32::new(core::array::from_fn(|i| {
+            [0.75, -0.25, 0.125, -0.0625][i % 4]
+        }));
         let mut block = VoiceBlock::new(44_100.0);
 
         block.set_pan_spread(1.0);
         block.note_on(0, 60, 1.0, false);
-        let expected = pan_lanes_reference(&block, lanes, f32x4::splat(0.75));
-        let actual = block.pan_lanes(lanes, f32x4::splat(0.75));
+        let expected = pan_lanes_reference(&block, lanes, WideF32::splat(0.75));
+        let actual = block.pan_lanes(lanes, WideF32::splat(0.75));
         assert_eq!(actual.0.to_bits(), expected.0.to_bits());
         assert_eq!(actual.1.to_bits(), expected.1.to_bits());
 
         block.set_pan_mod_mode(PanModMode::Fixed);
-        let expected = pan_lanes_reference(&block, lanes, f32x4::splat(-0.25));
-        let actual = block.pan_lanes(lanes, f32x4::splat(-0.25));
+        let expected = pan_lanes_reference(&block, lanes, WideF32::splat(-0.25));
+        let actual = block.pan_lanes(lanes, WideF32::splat(-0.25));
         assert_eq!(actual.0.to_bits(), expected.0.to_bits());
         assert_eq!(actual.1.to_bits(), expected.1.to_bits());
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn a_single_voice_keeps_its_physical_pan_position() {
-        let lanes = f32x4::new([1.0, 0.0, 0.0, 0.0]);
+        let lanes = WideF32::new(core::array::from_fn(|i| [1.0, 0.0, 0.0, 0.0][i % 4]));
         let mut block = VoiceBlock::new(44_100.0);
         block.set_pan_spread(1.0);
 
-        let (left, right) = block.pan_lanes(lanes, f32x4::ZERO);
+        let (left, right) = block.pan_lanes(lanes, WideF32::ZERO);
 
         assert!(
             left.abs() < 1.0e-6,
@@ -1770,16 +1785,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn alternate_modulation_changes_width_and_fixed_modulation_translates() {
-        let lanes = f32x4::new([1.0, 1.0, 0.0, 0.0]);
+        let lanes = WideF32::new(core::array::from_fn(|i| [1.0, 1.0, 0.0, 0.0][i % 4]));
         let mut block = VoiceBlock::new(44_100.0);
         block.set_pan_spread(0.5);
 
-        let alternate = block.pan_lanes(lanes, f32x4::splat(0.25));
+        let alternate = block.pan_lanes(lanes, WideF32::splat(0.25));
         assert!((alternate.0 - alternate.1).abs() < 1.0e-6);
 
         block.set_pan_mod_mode(PanModMode::Fixed);
-        let fixed = block.pan_lanes(lanes, f32x4::splat(0.25));
+        let fixed = block.pan_lanes(lanes, WideF32::splat(0.25));
         assert!(
             fixed.1 > fixed.0,
             "positive Fixed modulation should move the program right"
@@ -1825,6 +1841,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wide-4")]
     fn aux_envelope_route_can_modulate_lfo_frequency_as_internal_route() {
         fn lfo2_peak(aux_enabled: bool) -> f32 {
             let (mut block, mut patch_modulation) = test_block(100.0, &Patch::default());
@@ -2050,7 +2067,7 @@ mod tests {
             });
         }
         let stable_block = &stable[0];
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             let expected = crate::midi_to_hz(stable_block.lanes().notes_array()[lane]);
             let freq = stable_block.oscillators().osc1_frequency_hz().to_array()[lane];
             assert!(
@@ -2068,7 +2085,7 @@ mod tests {
             });
         }
         let sloppy_block = &sloppy[0];
-        let offsets: [f32; LANES] = core::array::from_fn(|lane| {
+        let offsets: [f32; WideF32::LANES] = core::array::from_fn(|lane| {
             let expected = crate::midi_to_hz(sloppy_block.lanes().notes_array()[lane]);
             sloppy_block.oscillators().osc1_frequency_hz().to_array()[lane] - expected
         });
@@ -2092,7 +2109,7 @@ mod tests {
 
         voices.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 0.0));
         let block = &voices[0];
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             let expected = crate::midi_to_hz(block.lanes().notes_array()[lane]);
             let freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
             assert!(
@@ -2264,10 +2281,11 @@ mod tests {
         for _ in 0..221 {
             voice_block_next(&mut block, &modulation);
         }
-        assert_eq!(
-            f32x4::new(block.lanes().lifecycle_gains_array()).to_array(),
-            [1.0, 0.0, 0.0, 0.0]
-        );
+        let gains = block.lanes().lifecycle_gains_array();
+        assert_eq!(gains[0], 1.0);
+        for gain in gains.iter().skip(1) {
+            assert_eq!(*gain, 0.0);
+        }
 
         block.schedule_note_on(0, 64, 1.0, false);
         for _ in 0..221 {

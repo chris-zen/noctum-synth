@@ -426,6 +426,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "serde")]
     fn legacy_bucket_brigade_name_loads_but_new_saves_use_the_expanded_name() {
         let effect_type: EffectType = serde_json::from_str("\"BbdDelay\"").unwrap();
         assert_eq!(effect_type, EffectType::BucketBrigadeDelay);
@@ -516,6 +517,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(not(feature = "downsampling"), not(feature = "wide-1")))]
     fn default_note_on_renders_oscillator_without_noise() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
@@ -1032,6 +1034,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(not(feature = "downsampling"), not(feature = "wide-1")))]
     fn enabling_hard_sync_on_active_note_keeps_osc1_audible() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));

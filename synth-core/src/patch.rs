@@ -1196,7 +1196,13 @@ pub enum ArpMode {
 }
 
 impl ArpMode {
-    pub const ALL: [Self; 5] = [Self::Up, Self::Down, Self::UpDown, Self::Random, Self::Assign];
+    pub const ALL: [Self; 5] = [
+        Self::Up,
+        Self::Down,
+        Self::UpDown,
+        Self::Random,
+        Self::Assign,
+    ];
 
     pub const fn from_index(index: usize) -> Self {
         match index {
@@ -1483,7 +1489,10 @@ impl Patch {
         f(ParamId::ArpEnabled, s(self.arp.enabled));
         f(ParamId::ArpMode, self.arp.mode.index() as f32);
         f(ParamId::ArpRange, (self.arp.range.saturating_sub(1)) as f32);
-        f(ParamId::ArpRepeats, (self.arp.repeats.saturating_sub(1)) as f32);
+        f(
+            ParamId::ArpRepeats,
+            (self.arp.repeats.saturating_sub(1)) as f32,
+        );
         f(ParamId::ArpRelatch, s(self.arp.relatch));
         f(ParamId::ArpHold, s(self.arp.hold));
         f(ParamId::ArpBeatSync, s(self.arp.beat_sync));

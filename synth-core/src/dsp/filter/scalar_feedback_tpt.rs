@@ -1,6 +1,6 @@
 //! Four-stage TPT cascade with one scalar nonlinear feedback solve.
 
-use crate::{LANES, f32x4};
+use crate::math::{F32, WideF32};
 
 use crate::dsp::filter::{
     FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_RESONANCE_START,
@@ -19,6 +19,7 @@ const NONLINEAR_STATE_LIMIT: f32 = 8.0;
 const RATIONAL_TANH_INPUT_LIMIT: f32 = 3.2;
 const NONLINEAR_NEWTON_STEPS: usize = 2;
 const FEEDBACK_TRANSITION_SCALE: f32 = 1.0;
+const CASCADE_STAGES: usize = 4;
 const OVERSAMPLE_DECIMATOR_POLES: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -33,9 +34,9 @@ struct StaticCoefficientCache {
 pub(super) struct ScalarFeedbackTpt {
     self_osc_pitch_tuning_cents: f32,
     static_coefficient_cache: StaticCoefficientCache,
-    z: [f32x4; 4],
-    oversample_decimator_z: [f32x4; OVERSAMPLE_DECIMATOR_POLES],
-    excitation_seed: [u32; LANES],
+    z: [WideF32; CASCADE_STAGES],
+    oversample_decimator_z: [WideF32; OVERSAMPLE_DECIMATOR_POLES],
+    excitation_seed: [u32; WideF32::LANES],
 }
 
 impl Default for ScalarFeedbackTpt {
@@ -43,16 +44,18 @@ impl Default for ScalarFeedbackTpt {
         Self {
             self_osc_pitch_tuning_cents: SELF_OSC_PITCH_TUNING_CENTS,
             static_coefficient_cache: StaticCoefficientCache::default(),
-            z: [f32x4::splat(0.0); 4],
-            oversample_decimator_z: [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES],
-            excitation_seed: [0x1234_5678, 0x8765_4321, 0x9e37_79b9, 0x7f4a_7c15],
+            z: [WideF32::ZERO; CASCADE_STAGES],
+            oversample_decimator_z: [WideF32::ZERO; OVERSAMPLE_DECIMATOR_POLES],
+            excitation_seed: core::array::from_fn(|i| {
+                [0x1234_5678u32, 0x8765_4321, 0x9e37_79b9, 0x7f4a_7c15][i % 4]
+            }),
         }
     }
 }
 
 impl ScalarFeedbackTpt {
     fn reset(&mut self) {
-        self.z = [f32x4::splat(0.0); 4];
+        self.z = [WideF32::ZERO; CASCADE_STAGES];
         self.clear_oversampling_state();
     }
 
@@ -64,15 +67,15 @@ impl ScalarFeedbackTpt {
         {
             let mut values = stage.to_array();
             values[lane] = 0.0;
-            *stage = f32x4::new(values);
+            *stage = WideF32::new(values);
         }
     }
 
     fn clear_oversampling_state(&mut self) {
-        self.oversample_decimator_z = [f32x4::splat(0.0); OVERSAMPLE_DECIMATOR_POLES];
+        self.oversample_decimator_z = [WideF32::ZERO; OVERSAMPLE_DECIMATOR_POLES];
     }
 
-    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+    fn process(&mut self, frame: FilterFrame) -> WideF32 {
         // The oversampling factor is fixed by the global setting and host
         // sample rate. It must not change when resonance crosses the
         // nonlinear threshold.
@@ -85,7 +88,7 @@ impl ScalarFeedbackTpt {
 
         let oversampled_rate = frame.sample_rate * factor as f32;
         let g = self.coefficients(frame, oversampled_rate);
-        let mut output = f32x4::splat(0.0);
+        let mut output = WideF32::ZERO;
         for _ in 0..factor {
             output = self.process_subsample(frame, g);
             output = self.decimate(output, frame.sample_rate, oversampled_rate);
@@ -93,16 +96,16 @@ impl ScalarFeedbackTpt {
         output
     }
 
-    fn process_subsample(&mut self, frame: FilterFrame, g: f32x4) -> f32x4 {
+    fn process_subsample(&mut self, frame: FilterFrame, g: WideF32) -> WideF32 {
         let amount = if frame.poles == 4 {
             self_oscillation_amount(frame.resonance_control)
         } else {
-            f32x4::splat(0.0)
+            WideF32::ZERO
         };
         let linear_feedback = if frame.poles == 2 {
-            frame.shaped_resonance * f32x4::splat(TWO_POLE_MAX_RESONANCE)
+            frame.shaped_resonance * WideF32::splat(TWO_POLE_MAX_RESONANCE)
         } else {
-            frame.shaped_resonance * f32x4::splat(FOUR_POLE_MAX_LINEAR_RESONANCE)
+            frame.shaped_resonance * WideF32::splat(FOUR_POLE_MAX_LINEAR_RESONANCE)
         };
         let feedback = if frame.poles == 4 {
             self_oscillation_feedback(linear_feedback, amount)
@@ -113,27 +116,27 @@ impl ScalarFeedbackTpt {
         let drive = if frame.poles == 4 {
             self_oscillation_drive(solver_amount)
         } else {
-            f32x4::splat(0.0)
+            WideF32::ZERO
         };
         let compensated_input = if frame.poles == 4 {
             frame.input
-                * (f32x4::splat(1.0)
+                * (WideF32::splat(1.0)
                     + frame.shaped_resonance
-                        * f32x4::splat(FOUR_POLE_MAX_LINEAR_RESONANCE * RESONANCE_BASS_COMP))
+                        * WideF32::splat(FOUR_POLE_MAX_LINEAR_RESONANCE * RESONANCE_BASS_COMP))
         } else {
             frame.input
         };
         let input = compensated_input + self.self_oscillation_excitation(solver_amount);
 
         let (a, b) = self.output_affine_form(g, frame.poles);
-        let mut u = (input - feedback * b) / (f32x4::splat(1.0) + feedback * a);
+        let mut u = (input - feedback * b) / (WideF32::splat(1.0) + feedback * a);
 
-        if frame.poles == 4 && solver_amount.simd_gt(f32x4::splat(0.0)).any() {
+        if frame.poles == 4 && solver_amount.simd_gt(WideF32::ZERO).any() {
             for _ in 0..NONLINEAR_NEWTON_STEPS {
                 let y4 = a * u + b;
                 let (saturated, derivative) = rational_tanh_with_derivative(y4, drive);
                 let function = u - input + feedback * saturated;
-                let slope = f32x4::splat(1.0) + feedback * a * derivative;
+                let slope = WideF32::splat(1.0) + feedback * a * derivative;
                 u = clamp_nonlinear_state(u - function / slope);
             }
         }
@@ -155,7 +158,7 @@ impl ScalarFeedbackTpt {
     }
 
     /// Returns `A` and `B` for the selected cascade tap, `y = A*u + B`.
-    fn output_affine_form(&self, g: f32x4, poles: u8) -> (f32x4, f32x4) {
+    fn output_affine_form(&self, g: WideF32, poles: u8) -> (WideF32, WideF32) {
         let s0 = stage_offset(self.z[0], g);
         let s1 = stage_offset(self.z[1], g);
         let g2 = g * g;
@@ -170,9 +173,9 @@ impl ScalarFeedbackTpt {
         (g4, g3 * s0 + g2 * s1 + g * s2 + s3)
     }
 
-    fn self_oscillation_excitation(&mut self, amount: f32x4) -> f32x4 {
-        let gains = (amount * amount * f32x4::splat(SELF_OSC_EXCITATION)).to_array();
-        let mut output = [0.0; LANES];
+    fn self_oscillation_excitation(&mut self, amount: WideF32) -> WideF32 {
+        let gains = (amount * amount * WideF32::splat(SELF_OSC_EXCITATION)).to_array();
+        let mut output = [0.0; WideF32::LANES];
         for (lane, sample) in output.iter_mut().enumerate() {
             if gains[lane] == 0.0 {
                 continue;
@@ -184,29 +187,31 @@ impl ScalarFeedbackTpt {
             let normalized = ((seed >> 8) as f32) * (1.0 / 16_777_216.0);
             *sample = (normalized * 2.0 - 1.0) * gains[lane];
         }
-        f32x4::new(output)
+        WideF32::new(output)
     }
 
-    fn decimate(&mut self, output: f32x4, sample_rate: f32, oversampled_rate: f32) -> f32x4 {
+    fn decimate(&mut self, output: WideF32, sample_rate: f32, oversampled_rate: f32) -> WideF32 {
         // Prime a cleared decimator from the current cascade output so a new
         // run or explicit global oversampling change does not begin with an
         // artificial drop to zero.
         let output_values = output.to_array();
         let first_state = self.oversample_decimator_z[0].to_array();
         let second_state = self.oversample_decimator_z[1].to_array();
-        for lane in 0..LANES {
+        for lane in 0..WideF32::LANES {
             if first_state[lane] == 0.0 && second_state[lane] == 0.0 {
                 for state in &mut self.oversample_decimator_z {
                     let mut values = state.to_array();
                     values[lane] = output_values[lane];
-                    *state = f32x4::new(values);
+                    *state = WideF32::new(values);
                 }
             }
         }
 
         let cutoff = sample_rate * 0.45;
-        let raw = crate::math::tan(core::f32::consts::PI * cutoff / oversampled_rate);
-        let g = f32x4::splat(raw / (1.0 + raw));
+        let raw = F32(core::f32::consts::PI * cutoff / oversampled_rate)
+            .tan()
+            .as_f32();
+        let g = WideF32::splat(raw / (1.0 + raw));
         let mut filtered = output;
         for z in &mut self.oversample_decimator_z {
             filtered = tpt_one_pole(filtered, z, g);
@@ -214,23 +219,23 @@ impl ScalarFeedbackTpt {
         filtered
     }
 
-    fn coefficients(&mut self, frame: FilterFrame, sample_rate: f32) -> f32x4 {
+    fn coefficients(&mut self, frame: FilterFrame, sample_rate: f32) -> WideF32 {
         if frame.static_cutoff {
-            return f32x4::splat(self.static_coefficient(frame, sample_rate));
+            return WideF32::splat(self.static_coefficient(frame, sample_rate));
         }
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
         let pitch_semitones = if frame.poles == 4 {
             smoothstep(self_oscillation_amount(frame.resonance_control))
-                * f32x4::splat(self.self_osc_pitch_tuning_cents / 100.0)
+                * WideF32::splat(self.self_osc_pitch_tuning_cents / 100.0)
         } else {
-            f32x4::splat(0.0)
+            WideF32::ZERO
         };
         let scale =
-            ((frame.cutoff_mod_semitones + pitch_semitones) * f32x4::splat(1.0 / 12.0)).exp2();
+            ((frame.cutoff_mod_semitones + pitch_semitones) * WideF32::splat(1.0 / 12.0)).exp2();
         coefficients_from_cutoff(
-            (f32x4::splat(frame.cutoff_hz) * scale)
-                .clamp(f32x4::splat(MIN_CUTOFF_HZ), f32x4::splat(max_cutoff)),
+            (WideF32::splat(frame.cutoff_hz) * scale)
+                .clamp(WideF32::splat(MIN_CUTOFF_HZ), WideF32::splat(max_cutoff)),
             max_cutoff,
             sample_rate,
         )
@@ -249,9 +254,11 @@ impl ScalarFeedbackTpt {
         }
 
         let max_cutoff = (sample_rate * 0.45).min(MAX_CUTOFF_HZ);
-        let cutoff = (frame.cutoff_hz * crate::math::exp2(pitch_cents / 1200.0))
+        let cutoff = (frame.cutoff_hz * F32(pitch_cents / 1200.0).exp2().as_f32())
             .clamp(MIN_CUTOFF_HZ, max_cutoff);
-        let raw = crate::math::tan(core::f32::consts::PI * cutoff / sample_rate);
+        let raw = F32(core::f32::consts::PI * cutoff / sample_rate)
+            .tan()
+            .as_f32();
         let value = raw / (1.0 + raw);
         self.static_coefficient_cache = StaticCoefficientCache { key, value };
         value
@@ -284,94 +291,97 @@ impl FilterAlgorithm for ScalarFeedbackTpt {
         self.self_osc_pitch_tuning_cents
     }
 
-    fn process(&mut self, frame: FilterFrame) -> f32x4 {
+    fn process(&mut self, frame: FilterFrame) -> WideF32 {
         ScalarFeedbackTpt::process(self, frame)
     }
 }
 
-fn self_oscillation_amount(resonance_control: f32x4) -> f32x4 {
-    ((resonance_control - f32x4::splat(SELF_OSC_RESONANCE_START))
-        / f32x4::splat(1.0 - SELF_OSC_RESONANCE_START))
-    .clamp(f32x4::splat(0.0), f32x4::splat(1.0))
+fn self_oscillation_amount(resonance_control: WideF32) -> WideF32 {
+    ((resonance_control - WideF32::splat(SELF_OSC_RESONANCE_START))
+        / WideF32::splat(1.0 - SELF_OSC_RESONANCE_START))
+    .clamp(WideF32::ZERO, WideF32::splat(1.0))
 }
 
-fn self_oscillation_feedback(linear: f32x4, amount: f32x4) -> f32x4 {
-    let target = f32x4::splat(FOUR_POLE_SELF_OSC_START_RESONANCE)
+fn self_oscillation_feedback(linear: WideF32, amount: WideF32) -> WideF32 {
+    let target = WideF32::splat(FOUR_POLE_SELF_OSC_START_RESONANCE)
         + smoothstep(amount)
-            * f32x4::splat(FOUR_POLE_SELF_OSC_MAX_RESONANCE - FOUR_POLE_SELF_OSC_START_RESONANCE);
+            * WideF32::splat(FOUR_POLE_SELF_OSC_MAX_RESONANCE - FOUR_POLE_SELF_OSC_START_RESONANCE);
     let transition = smoothstep(
-        (amount * f32x4::splat(FEEDBACK_TRANSITION_SCALE))
-            .clamp(f32x4::splat(0.0), f32x4::splat(1.0)),
+        (amount * WideF32::splat(FEEDBACK_TRANSITION_SCALE))
+            .clamp(WideF32::ZERO, WideF32::splat(1.0)),
     );
     linear + (target - linear) * transition
 }
 
-fn self_oscillation_drive(amount: f32x4) -> f32x4 {
-    smoothstep(amount) * f32x4::splat(SELF_OSC_LIMITER_DRIVE)
+fn self_oscillation_drive(amount: WideF32) -> WideF32 {
+    smoothstep(amount) * WideF32::splat(SELF_OSC_LIMITER_DRIVE)
 }
 
-fn self_oscillation_output_makeup(amount: f32x4) -> f32x4 {
-    f32x4::splat(1.0) + smoothstep(amount) * f32x4::splat(SELF_OSC_OUTPUT_MAKEUP - 1.0)
+fn self_oscillation_output_makeup(amount: WideF32) -> WideF32 {
+    WideF32::splat(1.0) + smoothstep(amount) * WideF32::splat(SELF_OSC_OUTPUT_MAKEUP - 1.0)
 }
 
-fn smoothstep(value: f32x4) -> f32x4 {
-    let value = value.clamp(f32x4::splat(0.0), f32x4::splat(1.0));
-    value * value * (f32x4::splat(3.0) - f32x4::splat(2.0) * value)
+fn smoothstep(value: WideF32) -> WideF32 {
+    let value = value.clamp(WideF32::ZERO, WideF32::splat(1.0));
+    value * value * (WideF32::splat(3.0) - WideF32::splat(2.0) * value)
 }
 
 /// Padé tanh and its normalized derivative for `tanh(drive*y) / drive`.
 ///
 /// Cancelling `drive` algebraically keeps the value exactly linear at zero
 /// drive and avoids a branch or division near the shared threshold.
-fn rational_tanh_with_derivative(value: f32x4, drive: f32x4) -> (f32x4, f32x4) {
-    let safe_drive = drive.clamp(f32x4::splat(1.0e-6), f32x4::splat(SELF_OSC_LIMITER_DRIVE));
-    let value_limit = f32x4::splat(RATIONAL_TANH_INPUT_LIMIT) / safe_drive;
+fn rational_tanh_with_derivative(value: WideF32, drive: WideF32) -> (WideF32, WideF32) {
+    let safe_drive = drive.clamp(
+        WideF32::splat(1.0e-6),
+        WideF32::splat(SELF_OSC_LIMITER_DRIVE),
+    );
+    let value_limit = WideF32::splat(RATIONAL_TANH_INPUT_LIMIT) / safe_drive;
     let unclipped_value = clamp_nonlinear_state(value);
     let inside_rational_range = unclipped_value.abs().simd_lt(value_limit);
     let value = unclipped_value.clamp(-value_limit, value_limit);
     let x = value * drive;
     let x2 = x * x;
-    let numerator_scale =
-        f32x4::splat(135_135.0) + x2 * (f32x4::splat(17_325.0) + x2 * (f32x4::splat(378.0) + x2));
-    let denominator = f32x4::splat(135_135.0)
-        + x2 * (f32x4::splat(62_370.0) + x2 * (f32x4::splat(3_150.0) + x2 * f32x4::splat(28.0)));
+    let numerator_scale = WideF32::splat(135_135.0)
+        + x2 * (WideF32::splat(17_325.0) + x2 * (WideF32::splat(378.0) + x2));
+    let denominator = WideF32::splat(135_135.0)
+        + x2 * (WideF32::splat(62_370.0)
+            + x2 * (WideF32::splat(3_150.0) + x2 * WideF32::splat(28.0)));
     let scale = numerator_scale / denominator;
     let tanh = x * scale;
-    let derivative =
-        inside_rational_range.blend(f32x4::splat(1.0) - tanh * tanh, f32x4::splat(0.0));
+    let derivative = inside_rational_range.blend(WideF32::splat(1.0) - tanh * tanh, WideF32::ZERO);
     (value * scale, derivative)
 }
 
-fn clamp_nonlinear_state(value: f32x4) -> f32x4 {
+fn clamp_nonlinear_state(value: WideF32) -> WideF32 {
     value.clamp(
-        f32x4::splat(-NONLINEAR_STATE_LIMIT),
-        f32x4::splat(NONLINEAR_STATE_LIMIT),
+        WideF32::splat(-NONLINEAR_STATE_LIMIT),
+        WideF32::splat(NONLINEAR_STATE_LIMIT),
     )
 }
 
-fn stage_offset(z: f32x4, g: f32x4) -> f32x4 {
-    z * (f32x4::splat(1.0) - g)
+fn stage_offset(z: WideF32, g: WideF32) -> WideF32 {
+    z * (WideF32::splat(1.0) - g)
 }
 
-fn commit_tpt_output(z: &mut f32x4, y: f32x4) {
+fn commit_tpt_output(z: &mut WideF32, y: WideF32) {
     *z = y + (y - *z);
 }
 
-fn tpt_one_pole(input: f32x4, z: &mut f32x4, g: f32x4) -> f32x4 {
+fn tpt_one_pole(input: WideF32, z: &mut WideF32, g: WideF32) -> WideF32 {
     let v = (input - *z) * g;
     let output = v + *z;
     *z = output + v;
     output
 }
 
-fn coefficients_from_cutoff(cutoff: f32x4, max_cutoff: f32, sample_rate: f32) -> f32x4 {
+fn coefficients_from_cutoff(cutoff: WideF32, max_cutoff: f32, sample_rate: f32) -> WideF32 {
     let mut values = cutoff.to_array();
     for value in &mut values {
         let hz = value.clamp(MIN_CUTOFF_HZ, max_cutoff);
         *value = core::f32::consts::PI * hz / sample_rate;
     }
-    let raw = f32x4::new(values).tan();
-    raw / (f32x4::splat(1.0) + raw)
+    let raw = WideF32::new(values).tan();
+    raw / (WideF32::splat(1.0) + raw)
 }
 
 #[cfg(test)]
@@ -381,10 +391,10 @@ mod tests {
 
     #[test]
     fn rational_tanh_is_linear_at_zero_drive() {
-        let input = f32x4::new([-8.0, -0.25, 0.25, 8.0]);
-        let (output, derivative) = rational_tanh_with_derivative(input, f32x4::splat(0.0));
+        let input = WideF32::new(core::array::from_fn(|i| [-8.0, -0.25, 0.25, 8.0][i % 4]));
+        let (output, derivative) = rational_tanh_with_derivative(input, WideF32::ZERO);
         assert_eq!(output, input);
-        assert_eq!(derivative, f32x4::splat(1.0));
+        assert_eq!(derivative, WideF32::splat(1.0));
     }
 
     #[test]
@@ -393,17 +403,17 @@ mod tests {
         let mut maximum_value_error = 0.0f32;
         let mut maximum_derivative_error = 0.0f32;
 
-        for start in (0..=SAMPLES).step_by(LANES) {
-            let values: [f32; LANES] = core::array::from_fn(|lane| {
+        for start in (0..=SAMPLES).step_by(WideF32::LANES) {
+            let values: [f32; WideF32::LANES] = core::array::from_fn(|lane| {
                 let fraction = (start + lane).min(SAMPLES) as f32 / SAMPLES as f32;
                 -NONLINEAR_STATE_LIMIT + 2.0 * NONLINEAR_STATE_LIMIT * fraction
             });
             for drive in [0.0, 0.05, 0.2, SELF_OSC_LIMITER_DRIVE] {
                 let (actual, derivative) =
-                    rational_tanh_with_derivative(f32x4::new(values), f32x4::splat(drive));
+                    rational_tanh_with_derivative(WideF32::new(values), WideF32::splat(drive));
                 let actual = actual.to_array();
                 let derivative = derivative.to_array();
-                for lane in 0..LANES {
+                for lane in 0..WideF32::LANES {
                     let rational_input = (values[lane] * drive)
                         .clamp(-RATIONAL_TANH_INPUT_LIMIT, RATIONAL_TANH_INPUT_LIMIT);
                     let expected = if drive == 0.0 {
@@ -439,9 +449,11 @@ mod tests {
         assert_eq!(NONLINEAR_NEWTON_STEPS, 2);
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
+    #[cfg(feature = "wide-4")]
     fn drive_ramp_is_gradual_across_074_to_075() {
-        let controls = f32x4::new([0.73, 0.74, 0.75, 0.76]);
+        let controls = WideF32::new(core::array::from_fn(|i| [0.73, 0.74, 0.75, 0.76][i % 4]));
         let drive = self_oscillation_drive(self_oscillation_amount(controls)).to_array();
         assert!(drive.windows(2).all(|pair| pair[1] > pair[0]));
         assert!(
@@ -454,12 +466,12 @@ mod tests {
     fn global_oversampling_runs_below_nonlinear_threshold() {
         let mut filter = ScalarFeedbackTpt::default();
         let frame = FilterFrame {
-            input: f32x4::splat(0.1),
+            input: WideF32::splat(0.1),
             cutoff_hz: 440.0,
-            cutoff_mod_semitones: f32x4::splat(0.0),
+            cutoff_mod_semitones: WideF32::ZERO,
             cutoff_mod_uniform_semitones: Some(0.0),
-            resonance_control: f32x4::splat(0.5),
-            shaped_resonance: f32x4::splat(0.3),
+            resonance_control: WideF32::splat(0.5),
+            shaped_resonance: WideF32::splat(0.3),
             poles: 4,
             oversampling: crate::dsp::FilterOversampling::X4,
             sample_rate: 48_000.0,
@@ -473,12 +485,12 @@ mod tests {
             filter
                 .oversample_decimator_z
                 .iter()
-                .any(|state| state.abs().simd_gt(f32x4::splat(0.0)).any())
+                .any(|state| state.abs().simd_gt(WideF32::ZERO).any())
         );
     }
 
     use crate::dsp::filter::{Filter, FilterOversampling, FilterType};
-    use crate::f32x4;
+    use crate::math::WideF32;
 
     extern crate std;
     use std::vec::Vec;
@@ -500,16 +512,16 @@ mod tests {
         filter
     }
 
-    fn process(filter: &mut Filter, input: f32x4, sample_rate: f32) -> f32x4 {
+    fn process(filter: &mut Filter, input: WideF32, sample_rate: f32) -> WideF32 {
         filter.process(
             input,
-            f32x4::splat(69.0),
-            f32x4::splat(0.0),
-            f32x4::splat(1.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
+            WideF32::splat(69.0),
+            WideF32::ZERO,
+            WideF32::splat(1.0),
+            WideF32::ZERO,
+            WideF32::ZERO,
+            WideF32::ZERO,
+            WideF32::ZERO,
             sample_rate,
         )
     }
@@ -566,7 +578,7 @@ mod tests {
         for _ in 0..frames {
             let _ = process(
                 &mut filter,
-                f32x4::splat(phase.sin() * amplitude),
+                WideF32::splat(phase.sin() * amplitude),
                 sample_rate,
             );
             phase += phase_step;
@@ -577,7 +589,7 @@ mod tests {
         for _ in 0..frames {
             let sine = phase.sin();
             let output =
-                process(&mut filter, f32x4::splat(sine * amplitude), sample_rate).to_array()[0];
+                process(&mut filter, WideF32::splat(sine * amplitude), sample_rate).to_array()[0];
             sin_sum += output * sine;
             cos_sum += output * phase.cos();
             phase += phase_step;
@@ -592,11 +604,11 @@ mod tests {
     ) -> Vec<f32> {
         let mut filter = configured_filter(filter_type, resonance, 4, oversampling);
         for _ in 0..128 {
-            let _ = process(&mut filter, f32x4::splat(0.1), SAMPLE_RATE);
+            let _ = process(&mut filter, WideF32::splat(0.1), SAMPLE_RATE);
         }
         let mut samples = Vec::with_capacity(48_000);
         for _ in 0..48_000 {
-            samples.push(process(&mut filter, f32x4::splat(0.0), SAMPLE_RATE).to_array()[0]);
+            samples.push(process(&mut filter, WideF32::ZERO, SAMPLE_RATE).to_array()[0]);
         }
         samples
     }
@@ -788,6 +800,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "fast-math"))]
     fn scalar_feedback_tpt_resonance_boosts_cutoff_smoothly() {
         let gains = [0.0, 0.5, 0.65, 0.7, 0.71, 0.72, 0.8].map(|resonance| {
             sine_gain_with_oversampling(
@@ -842,7 +855,7 @@ mod tests {
         let mut previous = 0.0f32;
         for _ in 0..24_000 {
             previous =
-                process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
+                process(&mut filter, WideF32::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
             phase += phase_step;
         }
         let mut found_peak = previous.abs() >= 0.12;
@@ -851,7 +864,7 @@ mod tests {
                 break;
             }
             previous =
-                process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
+                process(&mut filter, WideF32::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
             phase += phase_step;
             found_peak = previous.abs() >= 0.12;
         }
@@ -862,7 +875,7 @@ mod tests {
 
         filter.set_resonance(0.72);
         let crossed =
-            process(&mut filter, f32x4::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
+            process(&mut filter, WideF32::splat(phase.sin() * 0.1), SAMPLE_RATE).to_array()[0];
         assert!(
             (crossed - previous).abs() < 0.04,
             "threshold crossing dropped or jumped: before={previous} after={crossed}"
@@ -880,7 +893,7 @@ mod tests {
         let mut energy = 0.0;
         let mut peak = 0.0f32;
         for frame in 0..96_000 {
-            let output = process(&mut filter, f32x4::splat(0.0), SAMPLE_RATE).to_array()[0];
+            let output = process(&mut filter, WideF32::ZERO, SAMPLE_RATE).to_array()[0];
             assert!(output.is_finite());
             if frame >= 72_000 {
                 energy += output * output;
@@ -923,12 +936,12 @@ mod tests {
             FilterOversampling::X4,
         );
         for _ in 0..128 {
-            let _ = process(&mut filter, f32x4::splat(0.1), SAMPLE_RATE);
+            let _ = process(&mut filter, WideF32::splat(0.1), SAMPLE_RATE);
         }
         let mut first_energy = 0.0;
         let mut last_energy = 0.0;
         for frame in 0..24_000 {
-            let output = process(&mut filter, f32x4::splat(0.0), SAMPLE_RATE).to_array()[0];
+            let output = process(&mut filter, WideF32::ZERO, SAMPLE_RATE).to_array()[0];
             if frame < 2_000 {
                 first_energy += output * output;
             } else if frame >= 22_000 {
@@ -964,14 +977,17 @@ mod tests {
                         for frame in 0..256 {
                             let phase = frame as f32;
                             let output = filter.process(
-                                f32x4::new([0.8, -0.8, 0.25, -0.25]),
-                                f32x4::new([24.0, 60.0, 96.0, 120.0]),
-                                f32x4::new([0.0, 0.33, 0.66, 1.0]),
-                                f32x4::new([0.0, 0.33, 0.66, 1.0]),
-                                f32x4::new([phase.sin(), phase.cos(), -phase.sin(), -phase.cos()]),
-                                f32x4::new([-48.0, -12.0, 12.0, 48.0]),
-                                f32x4::new([-0.2, -0.05, 0.05, 0.2]),
-                                f32x4::new([-0.25, 0.0, 0.25, 0.5]),
+                                WideF32::new(core::array::from_fn(|i| [0.8, -0.8, 0.25, -0.25][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [24.0, 60.0, 96.0, 120.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [0.0, 0.33, 0.66, 1.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [0.0, 0.33, 0.66, 1.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [phase.sin(),
+                                    phase.cos(),
+                                    -phase.sin(),
+                                    -phase.cos(),][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [-48.0, -12.0, 12.0, 48.0][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [-0.2, -0.05, 0.05, 0.2][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| [-0.25, 0.0, 0.25, 0.5][i % 4])),
                                 sample_rate,
                             );
                             for value in output.to_array() {
@@ -987,6 +1003,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
     fn scalar_feedback_tpt_reset_and_simd_lanes_are_independent() {
         let mut filter = configured_filter(
@@ -1002,23 +1019,28 @@ mod tests {
             FilterOversampling::Off,
         );
         for _ in 0..128 {
-            let _ = process(&mut filter, f32x4::new([0.2, -0.1, 0.4, -0.3]), SAMPLE_RATE);
+            let _ = process(
+                &mut filter,
+                WideF32::new(core::array::from_fn(|i| [0.2, -0.1, 0.4, -0.3][i % 4])),
+                SAMPLE_RATE,
+            );
         }
         filter.reset_lane(2);
-        let reset_lane = process(&mut filter, f32x4::splat(0.1), SAMPLE_RATE).to_array();
-        let fresh_lane = process(&mut fresh, f32x4::splat(0.1), SAMPLE_RATE).to_array();
+        let reset_lane = process(&mut filter, WideF32::splat(0.1), SAMPLE_RATE).to_array();
+        let fresh_lane = process(&mut fresh, WideF32::splat(0.1), SAMPLE_RATE).to_array();
         assert_eq!(reset_lane[2], fresh_lane[2]);
         assert_ne!(reset_lane[0], fresh_lane[0]);
 
         filter.reset();
         fresh.reset();
-        let reset = process(&mut filter, f32x4::splat(0.1), SAMPLE_RATE);
-        let fresh = process(&mut fresh, f32x4::splat(0.1), SAMPLE_RATE);
+        let reset = process(&mut filter, WideF32::splat(0.1), SAMPLE_RATE);
+        let fresh = process(&mut fresh, WideF32::splat(0.1), SAMPLE_RATE);
         assert_eq!(reset, fresh);
         let lanes = reset.to_array();
         assert!(lanes.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
+    #[cfg(not(feature = "wide-1"))]
     #[test]
     fn scalar_feedback_tpt_mixed_lane_oversampling_is_independent() {
         let mut mixed = configured_filter(
@@ -1041,23 +1063,23 @@ mod tests {
         );
 
         for frame in 0..512 {
-            let input = f32x4::splat((frame as f32 * 0.037).sin() * 0.1);
-            let render = |filter: &mut Filter, resonance_mod: f32x4| {
+            let input = WideF32::splat((frame as f32 * 0.037).sin() * 0.1);
+            let render = |filter: &mut Filter, resonance_mod: WideF32| {
                 filter.process(
                     input,
-                    f32x4::splat(69.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(1.0),
-                    f32x4::splat(0.0),
-                    f32x4::splat(0.0),
+                    WideF32::splat(69.0),
+                    WideF32::ZERO,
+                    WideF32::splat(1.0),
+                    WideF32::ZERO,
+                    WideF32::ZERO,
                     resonance_mod,
-                    f32x4::splat(0.0),
+                    WideF32::ZERO,
                     SAMPLE_RATE,
                 )
             };
-            let mixed_output = render(&mut mixed, f32x4::new([0.0, 0.4, 0.0, 0.4])).to_array();
-            let linear_output = render(&mut linear, f32x4::splat(0.0)).to_array();
-            let nonlinear_output = render(&mut nonlinear, f32x4::splat(0.4)).to_array();
+            let mixed_output = render(&mut mixed, WideF32::new(core::array::from_fn(|i| [0.0, 0.4, 0.0, 0.4][i % 4]))).to_array();
+            let linear_output = render(&mut linear, WideF32::ZERO).to_array();
+            let nonlinear_output = render(&mut nonlinear, WideF32::splat(0.4)).to_array();
             assert!(
                 (mixed_output[0] - linear_output[0]).abs() < 1.0e-6,
                 "linear lane frame={frame} mixed={} reference={}",

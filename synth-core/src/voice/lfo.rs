@@ -1,6 +1,5 @@
-use crate::f32x4;
-
 use crate::dsp::{LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
+use crate::math::WideF32;
 use crate::patch::{ClockDivision, LFO_COUNT, LfoParams, LfoSyncDivision, ModDestination};
 
 pub struct Lfo {
@@ -10,7 +9,7 @@ pub struct Lfo {
     sync_division: LfoSyncDivision,
     base_rate_hz: f32,
     base_depth: f32,
-    last_output: f32x4,
+    last_output: WideF32,
 }
 
 impl Lfo {
@@ -22,7 +21,7 @@ impl Lfo {
             sync_division: LfoSyncDivision::default(),
             base_rate_hz: MIN_LFO_RATE_HZ,
             base_depth: 0.0,
-            last_output: f32x4::ZERO,
+            last_output: WideF32::ZERO,
         }
     }
 
@@ -43,7 +42,7 @@ impl Lfo {
         self.refresh_engine_rate(tempo_bpm, clock_division);
     }
 
-    pub fn output(&self) -> f32x4 {
+    pub fn output(&self) -> WideF32 {
         self.last_output
     }
 
@@ -122,14 +121,14 @@ impl Lfo {
         self.engine.set_depth(depth);
     }
 
-    pub fn generate(&mut self) -> f32x4 {
+    pub fn generate(&mut self) -> WideF32 {
         self.last_output = self.engine.next();
         self.last_output
     }
 
     pub fn advance_idle(&mut self) {
         self.engine.advance_silent();
-        self.last_output = f32x4::ZERO;
+        self.last_output = WideF32::ZERO;
     }
 
     pub fn reset_if_key_synced(&mut self) {

@@ -1,11 +1,11 @@
-use crate::f32x4;
+use crate::math::WideF32;
 
 use crate::ParamId;
 use crate::patch::PanModMode;
 
-const CENTERED_PAN_SCALE: f32 = 0.7071067811865476;
-const CENTERED_PAN_SIN: f32x4 = f32x4::splat(CENTERED_PAN_SCALE);
-const CENTERED_PAN_COS: f32x4 = CENTERED_PAN_SIN;
+const CENTERED_PAN_SCALE: f32 = core::f32::consts::FRAC_1_SQRT_2;
+const CENTERED_PAN_SIN: WideF32 = WideF32::splat(CENTERED_PAN_SCALE);
+const CENTERED_PAN_COS: WideF32 = CENTERED_PAN_SIN;
 
 pub struct Pan {
     spread: f32,
@@ -52,8 +52,13 @@ impl Pan {
         self.mode
     }
 
-    pub fn pan_lanes(&self, lanes: f32x4, pan_mod: f32x4, voice_position: f32x4) -> (f32, f32) {
-        if self.spread == 0.0 && (self.mode == PanModMode::Alternate || pan_mod == f32x4::ZERO) {
+    pub fn pan_lanes(
+        &self,
+        lanes: WideF32,
+        pan_mod: WideF32,
+        voice_position: WideF32,
+    ) -> (f32, f32) {
+        if self.spread == 0.0 && (self.mode == PanModMode::Alternate || pan_mod == WideF32::ZERO) {
             return (
                 (lanes * CENTERED_PAN_COS).reduce_add(),
                 (lanes * CENTERED_PAN_SIN).reduce_add(),
@@ -62,14 +67,14 @@ impl Pan {
 
         let position = match self.mode {
             PanModMode::Alternate => {
-                let spread =
-                    (f32x4::splat(self.spread) + pan_mod).clamp(f32x4::ZERO, f32x4::splat(1.0));
+                let spread = (WideF32::splat(self.spread) + pan_mod)
+                    .clamp(WideF32::ZERO, WideF32::splat(1.0));
                 voice_position * spread
             }
-            PanModMode::Fixed => (voice_position * f32x4::splat(self.spread) + pan_mod)
-                .clamp(f32x4::splat(-1.0), f32x4::splat(1.0)),
+            PanModMode::Fixed => (voice_position * WideF32::splat(self.spread) + pan_mod)
+                .clamp(WideF32::splat(-1.0), WideF32::splat(1.0)),
         };
-        let angle = (position + f32x4::splat(1.0)) * f32x4::splat(core::f32::consts::FRAC_PI_4);
+        let angle = (position + WideF32::splat(1.0)) * WideF32::splat(core::f32::consts::FRAC_PI_4);
         let (sin, cos) = angle.sin_cos();
 
         ((lanes * cos).reduce_add(), (lanes * sin).reduce_add())

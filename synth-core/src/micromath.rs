@@ -161,6 +161,11 @@ impl f32x4 {
     }
 
     #[inline]
+    pub fn reduce_mean(self) -> f32 {
+        self.reduce_add() / 4.0
+    }
+
+    #[inline]
     pub fn exp2(self) -> Self {
         Self([
             accurate_exp2(self.0[0]),

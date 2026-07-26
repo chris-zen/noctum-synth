@@ -1,7 +1,6 @@
-use crate::f32x4;
-
 use crate::ParamId;
 use crate::dsp::{FilterOversampling, FilterType};
+use crate::math::WideF32;
 use crate::patch::FilterParams;
 
 pub struct Filter {
@@ -51,7 +50,7 @@ impl Filter {
         true
     }
 
-    pub fn next_envelope(&mut self) -> f32x4 {
+    pub fn next_envelope(&mut self) -> WideF32 {
         self.envelope.next()
     }
 
@@ -154,17 +153,17 @@ impl Filter {
     #[allow(clippy::too_many_arguments)]
     pub fn process_prepared(
         &mut self,
-        input: f32x4,
-        note: f32x4,
-        filter_env: f32x4,
-        velocity: f32x4,
-        osc1_audio: f32x4,
-        cutoff_mod_semitones: f32x4,
+        input: WideF32,
+        note: WideF32,
+        filter_env: WideF32,
+        velocity: WideF32,
+        osc1_audio: WideF32,
+        cutoff_mod_semitones: WideF32,
         cutoff_mod_uniform_semitones: Option<f32>,
-        resonance_mod: f32x4,
-        audio_mod: f32x4,
+        resonance_mod: WideF32,
+        audio_mod: WideF32,
         sample_rate: f32,
-    ) -> f32x4 {
+    ) -> WideF32 {
         self.engine.process_prepared(
             input,
             note,

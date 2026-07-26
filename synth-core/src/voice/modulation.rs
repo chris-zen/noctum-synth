@@ -1,10 +1,9 @@
-use crate::f32x4;
-
+use crate::math::WideF32;
 use crate::patch::{
     AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LfoParams,
     MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, Patch,
 };
-use crate::{LANES, ModSource, ModulationParam};
+use crate::{ModSource, ModulationParam};
 
 use super::VoiceBlock;
 
@@ -206,11 +205,11 @@ fn lfo_destinations(params: &[LfoParams; LFO_COUNT]) -> [ModDestination; LFO_COU
 #[derive(Clone, Copy)]
 pub(crate) struct ModSignalContext {
     pub performance: super::PerformanceModulation,
-    pub velocities: f32x4,
-    pub filter_env: f32x4,
-    pub amp_env: f32x4,
-    pub aux_env: f32x4,
-    pub aux_signal: f32x4,
+    pub velocities: WideF32,
+    pub filter_env: WideF32,
+    pub amp_env: WideF32,
+    pub aux_env: WideF32,
+    pub aux_signal: WideF32,
 }
 
 #[derive(Clone, Copy)]
@@ -470,12 +469,12 @@ impl CompiledModRoute {
         amount: 0.0,
     };
 
-    pub fn signal(self, block: &VoiceBlock, context: ModSignalContext) -> f32x4 {
+    pub fn signal(self, block: &VoiceBlock, context: ModSignalContext) -> WideF32 {
         let signal = match self.source {
             CompiledModSource::Standard(source) => block.mod_source_signal(source, context),
             CompiledModSource::AuxSignal => context.aux_signal,
         };
-        signal * f32x4::splat(self.amount)
+        signal * WideF32::splat(self.amount)
     }
 
     pub fn destination(self) -> ModDestination {
@@ -499,8 +498,4 @@ pub(crate) struct SinglePwmRoute {
 pub(crate) struct SingleFilterCutoffRoute {
     pub lfo_index: u8,
     pub amount: f32,
-}
-
-pub(crate) fn average_lanes(value: f32x4) -> f32 {
-    value.reduce_add() / LANES as f32
 }

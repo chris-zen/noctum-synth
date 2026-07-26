@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
+
 use synth_core::dsp::{Filter, FilterOversampling, FilterType, filter::SELF_OSC_RESONANCE_START};
-use synth_core::{LANES, f32x4};
+use synth_core::math::WideF32;
 
 use crate::engine::SynthEngineControl;
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
@@ -663,32 +664,15 @@ fn compute_sine_probe_range(
     let mut response_db = vec![params.db_floor; end_bin - start_bin];
     let mut peak_db = params.db_floor;
     let mut peak_freq_hz = 0.0;
-    let mut bin = start_bin;
 
-    while bin < end_bin {
-        let mut freqs = [0.0f32; LANES];
-        let mut active = [false; LANES];
-        for lane in 0..LANES {
-            let target_bin = bin + lane;
-            if target_bin < end_bin {
-                freqs[lane] = target_bin as f32 * bin_hz;
-                active[lane] = true;
-            }
+    for bin in start_bin..end_bin {
+        let freq_hz = bin as f32 * bin_hz;
+        let db = measure_sine_probe_response(params, freq_hz);
+        response_db[bin - start_bin] = db;
+        if db > peak_db {
+            peak_db = db;
+            peak_freq_hz = freq_hz;
         }
-
-        let responses = measure_sine_probe_responses(params, freqs);
-        for lane in 0..LANES {
-            if active[lane] {
-                let target_bin = bin + lane;
-                let db = responses[lane];
-                response_db[target_bin - start_bin] = db;
-                if db > peak_db {
-                    peak_db = db;
-                    peak_freq_hz = freqs[lane];
-                }
-            }
-        }
-        bin += LANES;
     }
 
     SineProbeChunk {
@@ -699,10 +683,10 @@ fn compute_sine_probe_range(
     }
 }
 
-fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -> [f32; LANES] {
+fn measure_sine_probe_response(params: AnalysisParams, freq_hz: f32) -> f32 {
     let sr = params.sample_rate;
-    let phase_step = freq_hz.map(|freq| std::f32::consts::TAU * freq / sr);
-    let mut phase = [0.0f32; LANES];
+    let phase_step = std::f32::consts::TAU * freq_hz / sr;
+    let mut phase = 0.0f32;
     let mut filter = Filter::new(params.filter_type);
     filter.set_oversampling(params.oversampling);
     filter.set_cutoff(params.cutoff);
@@ -711,41 +695,26 @@ fn measure_sine_probe_responses(params: AnalysisParams, freq_hz: [f32; LANES]) -
     filter.reset();
 
     for _ in 0..SINE_PROBE_SETTLE_FRAMES {
-        let mut input = [0.0f32; LANES];
-        for lane in 0..LANES {
-            input[lane] = phase[lane].sin() * ANALYSIS_SINE_GAIN;
-            phase[lane] += phase_step[lane];
-        }
-        let _ = process_analysis_vector_output(&mut filter, f32x4::new(input), sr);
+        let input = phase.sin() * ANALYSIS_SINE_GAIN;
+        phase += phase_step;
+        let _ = process_analysis_sample(&mut filter, input, sr);
     }
 
-    let mut sin_sum = [0.0f32; LANES];
-    let mut cos_sum = [0.0f32; LANES];
+    let mut sin_sum = 0.0f32;
+    let mut cos_sum = 0.0f32;
     for _ in 0..SINE_PROBE_MEASURE_FRAMES {
-        let mut input = [0.0f32; LANES];
-        let mut sin = [0.0f32; LANES];
-        let mut cos = [0.0f32; LANES];
-        for lane in 0..LANES {
-            sin[lane] = phase[lane].sin();
-            cos[lane] = phase[lane].cos();
-            input[lane] = sin[lane] * ANALYSIS_SINE_GAIN;
-            phase[lane] += phase_step[lane];
-        }
-        let output = process_analysis_vector_output(&mut filter, f32x4::new(input), sr);
-        for lane in 0..LANES {
-            sin_sum[lane] += output[lane] * sin[lane];
-            cos_sum[lane] += output[lane] * cos[lane];
-        }
+        let sin = phase.sin();
+        let cos = phase.cos();
+        let input = sin * ANALYSIS_SINE_GAIN;
+        phase += phase_step;
+        let output = process_analysis_sample(&mut filter, input, sr);
+        sin_sum += output * sin;
+        cos_sum += output * cos;
     }
 
-    let mut db = [0.0f32; LANES];
-    for lane in 0..LANES {
-        let output_amp = 2.0
-            * (sin_sum[lane] * sin_sum[lane] + cos_sum[lane] * cos_sum[lane]).sqrt()
-            / SINE_PROBE_MEASURE_FRAMES as f32;
-        db[lane] = 20.0 * (output_amp / ANALYSIS_SINE_GAIN).max(1e-10).log10();
-    }
-    db
+    let output_amp =
+        2.0 * (sin_sum * sin_sum + cos_sum * cos_sum).sqrt() / SINE_PROBE_MEASURE_FRAMES as f32;
+    20.0 * (output_amp / ANALYSIS_SINE_GAIN).max(1e-10).log10()
 }
 
 fn render_analysis_response(params: AnalysisParams, impulse_gain: f32) -> Vec<f32> {
@@ -760,34 +729,26 @@ fn render_analysis_response(params: AnalysisParams, impulse_gain: f32) -> Vec<f3
 
     let mut impulse = vec![0.0f32; fft_size];
     for sample_index in 0..fft_size {
-        let input = if sample_index == 0 {
-            f32x4::splat(impulse_gain)
-        } else {
-            f32x4::splat(0.0)
-        };
-        impulse[sample_index] = process_analysis_vector_output(&mut filter, input, sr)[0];
+        let input = if sample_index == 0 { impulse_gain } else { 0.0 };
+        impulse[sample_index] = process_analysis_sample(&mut filter, input, sr);
     }
     impulse
 }
 
-fn process_analysis_vector_output(
-    filter: &mut Filter,
-    input: f32x4,
-    sample_rate: f32,
-) -> [f32; LANES] {
+fn process_analysis_sample(filter: &mut Filter, input: f32, sample_rate: f32) -> f32 {
     filter
         .process(
-            input,
-            f32x4::splat(60.0),
-            f32x4::splat(0.0),
-            f32x4::splat(1.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
+            WideF32::splat(input),
+            WideF32::splat(60.0),
+            WideF32::ZERO,
+            WideF32::splat(1.0),
+            WideF32::ZERO,
+            WideF32::ZERO,
+            WideF32::ZERO,
+            WideF32::ZERO,
             sample_rate,
         )
-        .to_array()
+        .to_array()[0]
 }
 
 fn analysis_resonance(params: AnalysisParams) -> f32 {
