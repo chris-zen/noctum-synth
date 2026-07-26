@@ -1,6 +1,7 @@
 pub mod config;
 pub mod filter_design;
 pub mod osc_design;
+pub mod oscilloscope;
 pub mod real_time;
 pub mod spectrum;
 

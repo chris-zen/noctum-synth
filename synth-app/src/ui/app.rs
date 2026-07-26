@@ -92,6 +92,9 @@ impl App {
         engine
             .control
             .set_midi_output_port(config.settings.midi_output_port.as_deref());
+        engine
+            .control
+            .set_input_enabled(config.input_enabled);
 
         let mut analysis = AnalysisState::default();
         config.analysis.apply_to(&mut analysis);
@@ -174,6 +177,7 @@ impl App {
         self.config.analysis = AnalysisConfig::from_state(&self.analysis.lock());
         self.config.filter_type = *self.filter_type.lock();
         self.config.muted = self.muted;
+        self.config.input_enabled = self.engine.control.input_enabled();
         self.config.save();
         self.patch_mgr.save_autosave(&Patch::from(&self.ui_state));
     }

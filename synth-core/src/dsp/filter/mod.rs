@@ -51,6 +51,7 @@ pub const SELF_OSC_PITCH_TUNING_CENTS: f32 = 133.0;
 pub enum FilterType {
     /// Existing Rev2-inspired distributed-Newton TPT model.
     #[default]
+    #[cfg_attr(feature = "serde", serde(alias = "pass_through"))]
     DistributedNewtonTpt,
     /// Rev2-inspired scalar-feedback TPT candidate (introduced in Phase 1).
     ScalarFeedbackTpt,

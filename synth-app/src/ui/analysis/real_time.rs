@@ -1,50 +1,21 @@
 use eframe::egui;
-use eframe::egui::PointerButton;
-use eframe::egui::epaint::PathShape;
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
-use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
+use crate::engine::AudioBlock;
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
-const MAX_SCOPE_SAMPLES: usize = 65536;
+use super::oscilloscope::{self, OscilloscopeState, OscilloscopeViewConfig};
 
 const INPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 150, 45);
-const INPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
 const OUTPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 205, 255);
-const OUTPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 125, 255);
 
-pub struct RealTimeState {
-    pub sample_rate: f32,
-    pub osc: OscilloscopeState,
-    pub fft: FftState,
-}
-
-impl Default for RealTimeState {
-    fn default() -> Self {
-        Self {
-            sample_rate: 44100.0,
-            osc: OscilloscopeState::default(),
-            fft: FftState::default(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OscilloscopeDisplayModeConfig {
-    Left,
-    Right,
-    Stereo,
-}
-
-impl Default for OscilloscopeDisplayModeConfig {
-    fn default() -> Self {
-        Self::Left
-    }
-}
+// ---------------------------------------------------------------------------
+// Shared enums
+// ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpectrumChannel {
@@ -72,670 +43,22 @@ impl Default for SignalSource {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct OscilloscopeViewConfig {
-    pub timebase_ms: f32,
-    pub trigger_level: f32,
-    pub y_range: f32,
-    pub display_mode: OscilloscopeDisplayModeConfig,
-    #[serde(default)]
-    pub source: SignalSource,
-}
+// ---------------------------------------------------------------------------
+// FFT State
+// ---------------------------------------------------------------------------
 
-#[derive(Serialize, Deserialize)]
-pub struct FftViewConfig {
+pub(crate) struct FftState {
+    pub(crate) input_buffer: [f32; 4096],
+    pub(crate) output_buffer: [f32; 4096],
+    pub(crate) input_latest_db: [f32; 2048],
+    pub(crate) output_latest_db: [f32; 2048],
+    pub(crate) input_peak_hold: [f32; 2048],
+    pub(crate) output_peak_hold: [f32; 2048],
+    pub(crate) peak_decay: f32,
+    pub(crate) frame_count: u32,
     pub fft_size: usize,
-    pub window_type: usize,
-    pub db_floor: f32,
-    pub db_top: f32,
-    pub log_scale: bool,
-    #[serde(default)]
-    pub show_peak_hold: bool,
-    #[serde(default)]
-    pub channel: SpectrumChannel,
-    #[serde(default)]
-    pub source: SignalSource,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RealTimeViewConfig {
-    pub oscilloscope: OscilloscopeViewConfig,
-    pub fft: FftViewConfig,
-}
-
-impl Default for OscilloscopeViewConfig {
-    fn default() -> Self {
-        Self::from_state(&OscilloscopeState::default())
-    }
-}
-
-impl OscilloscopeViewConfig {
-    pub fn from_state(state: &OscilloscopeState) -> Self {
-        Self {
-            timebase_ms: state.timebase_ms,
-            trigger_level: state.trigger_level,
-            y_range: state.y_range,
-            display_mode: display_mode_to_config(state.display_mode),
-            source: state.source,
-        }
-    }
-
-    pub fn apply_to(&self, state: &mut OscilloscopeState) {
-        state.timebase_ms = self.timebase_ms;
-        state.trigger_level = self.trigger_level;
-        state.y_range = self.y_range;
-        state.display_mode = display_mode_from_config(self.display_mode);
-        state.source = self.source;
-    }
-}
-
-impl Default for FftViewConfig {
-    fn default() -> Self {
-        Self::from_state(&FftState::default())
-    }
-}
-
-impl FftViewConfig {
-    pub fn from_state(state: &FftState) -> Self {
-        Self {
-            fft_size: state.fft_size,
-            window_type: state.window_type,
-            db_floor: state.db_floor,
-            db_top: state.db_top,
-            log_scale: state.log_scale,
-            show_peak_hold: state.show_peak_hold,
-            channel: state.channel,
-            source: state.source,
-        }
-    }
-
-    pub fn apply_to(&self, state: &mut FftState) {
-        state.fft_size = self.fft_size;
-        state.window_type = self.window_type;
-        state.db_floor = self.db_floor;
-        state.db_top = self.db_top;
-        state.log_scale = self.log_scale;
-        state.show_peak_hold = self.show_peak_hold;
-        state.channel = self.channel;
-        state.source = self.source;
-        if state.complex_buf.len() != self.fft_size {
-            state.complex_buf = vec![Complex32::new(0.0, 0.0); self.fft_size];
-            state.fft = None;
-        }
-    }
-}
-
-impl Default for RealTimeViewConfig {
-    fn default() -> Self {
-        Self::from_state(&RealTimeState::default())
-    }
-}
-
-impl RealTimeViewConfig {
-    pub fn from_state(state: &RealTimeState) -> Self {
-        Self {
-            oscilloscope: OscilloscopeViewConfig::from_state(&state.osc),
-            fft: FftViewConfig::from_state(&state.fft),
-        }
-    }
-
-    pub fn apply_to(&self, state: &mut RealTimeState) {
-        self.oscilloscope.apply_to(&mut state.osc);
-        self.fft.apply_to(&mut state.fft);
-    }
-}
-
-fn display_mode_to_config(mode: OscilloscopeDisplayMode) -> OscilloscopeDisplayModeConfig {
-    match mode {
-        OscilloscopeDisplayMode::Left => OscilloscopeDisplayModeConfig::Left,
-        OscilloscopeDisplayMode::Right => OscilloscopeDisplayModeConfig::Right,
-        OscilloscopeDisplayMode::Stereo => OscilloscopeDisplayModeConfig::Stereo,
-    }
-}
-
-fn display_mode_from_config(mode: OscilloscopeDisplayModeConfig) -> OscilloscopeDisplayMode {
-    match mode {
-        OscilloscopeDisplayModeConfig::Left => OscilloscopeDisplayMode::Left,
-        OscilloscopeDisplayModeConfig::Right => OscilloscopeDisplayMode::Right,
-        OscilloscopeDisplayModeConfig::Stereo => OscilloscopeDisplayMode::Stereo,
-    }
-}
-
-fn copy_channel(dest: &mut [f32], left: &[f32], right: &[f32], channel: SpectrumChannel) {
-    match channel {
-        SpectrumChannel::Left => dest.copy_from_slice(left),
-        SpectrumChannel::Right => dest.copy_from_slice(right),
-        SpectrumChannel::Sum => {
-            for ((dest, left), right) in dest.iter_mut().zip(left).zip(right) {
-                *dest = 0.5 * (*left + *right);
-            }
-        }
-    }
-}
-
-pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut RealTimeState) {
-    if state.osc.frozen {
-    } else {
-        for block in audio_blocks {
-            let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
-            let osc = &mut state.osc;
-
-            osc.input_buffer_l
-                .extend_from_slice(&block.input_left[..block_len]);
-            osc.input_buffer_r
-                .extend_from_slice(&block.input_right[..block_len]);
-            osc.output_buffer_l
-                .extend_from_slice(&block.output_left[..block_len]);
-            osc.output_buffer_r
-                .extend_from_slice(&block.output_right[..block_len]);
-
-            let excess = osc.input_buffer_l.len().saturating_sub(MAX_SCOPE_SAMPLES);
-            if excess > 0 {
-                osc.input_buffer_l.drain(..excess);
-                osc.input_buffer_r.drain(..excess);
-                osc.output_buffer_l.drain(..excess);
-                osc.output_buffer_r.drain(..excess);
-            }
-            osc.buf_len = osc.input_buffer_l.len();
-
-            let fft_size = state.fft.fft_size;
-            let copy_len = block_len.min(fft_size);
-            let shift = fft_size - copy_len;
-            state.fft.output_buffer.copy_within(copy_len..fft_size, 0);
-            state.fft.input_buffer.copy_within(copy_len..fft_size, 0);
-            copy_channel(
-                &mut state.fft.output_buffer[shift..fft_size],
-                &block.output_left[..copy_len],
-                &block.output_right[..copy_len],
-                state.fft.channel,
-            );
-            copy_channel(
-                &mut state.fft.input_buffer[shift..fft_size],
-                &block.input_left[..copy_len],
-                &block.input_right[..copy_len],
-                state.fft.channel,
-            );
-            state.fft.frame_count += 1;
-        }
-    }
-
-    let available = ui.available_size();
-    let gap = 12.0;
-    let osc_h = (available.y * 0.4).max(120.0);
-    let fft_h = (available.y - osc_h - gap).max(120.0);
-
-    ui.allocate_ui(egui::vec2(available.x, osc_h), |ui| {
-        ui.strong("Oscilloscope");
-        ui.add_space(6.0);
-        draw_oscilloscope(ui, &mut state.osc, state.sample_rate);
-    });
-    ui.add_space(gap);
-    ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
-        ui.strong("Spectrum Analyzer");
-        ui.add_space(6.0);
-        draw_fft(ui, &mut state.fft, state.osc.frozen, state.sample_rate);
-    });
-}
-
-pub struct OscilloscopeState {
-    input_buffer_l: Vec<f32>,
-    input_buffer_r: Vec<f32>,
-    output_buffer_l: Vec<f32>,
-    output_buffer_r: Vec<f32>,
-    buf_len: usize,
-    timebase_ms: f32,
-    trigger_level: f32,
-    y_range: f32,
-    display_mode: OscilloscopeDisplayMode,
-    source: SignalSource,
-    frozen: bool,
-    frozen_input_l: Vec<f32>,
-    frozen_input_r: Vec<f32>,
-    frozen_output_l: Vec<f32>,
-    frozen_output_r: Vec<f32>,
-    frozen_len: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OscilloscopeDisplayMode {
-    Left,
-    Right,
-    Stereo,
-}
-
-impl Default for OscilloscopeState {
-    fn default() -> Self {
-        Self {
-            input_buffer_l: Vec::with_capacity(MAX_SCOPE_SAMPLES),
-            input_buffer_r: Vec::with_capacity(MAX_SCOPE_SAMPLES),
-            output_buffer_l: Vec::with_capacity(MAX_SCOPE_SAMPLES),
-            output_buffer_r: Vec::with_capacity(MAX_SCOPE_SAMPLES),
-            buf_len: 0,
-            timebase_ms: 5.0,
-            trigger_level: 0.0,
-            y_range: 1.0,
-            display_mode: OscilloscopeDisplayMode::Left,
-            source: SignalSource::Output,
-            frozen: false,
-            frozen_input_l: Vec::new(),
-            frozen_input_r: Vec::new(),
-            frozen_output_l: Vec::new(),
-            frozen_output_r: Vec::new(),
-            frozen_len: 0,
-        }
-    }
-}
-
-fn find_trigger(buf: &[f32], len: usize, level: f32) -> f32 {
-    for index in (1..len).rev() {
-        if buf[index - 1] < level && buf[index] >= level {
-            let fraction = (level - buf[index - 1]) / (buf[index] - buf[index - 1]);
-            return (index - 1) as f32 + fraction;
-        }
-    }
-    0.0
-}
-
-fn find_combined_trigger(first: &[f32], second: &[f32], len: usize, level: f32) -> f32 {
-    for index in (1..len).rev() {
-        let prev = (first[index - 1] + second[index - 1]).clamp(-1.0, 1.0);
-        let curr = (first[index] + second[index]).clamp(-1.0, 1.0);
-        if prev < level && curr >= level {
-            let fraction = (level - prev) / (curr - prev);
-            return (index - 1) as f32 + fraction;
-        }
-    }
-    0.0
-}
-
-fn freeze_scope(state: &mut OscilloscopeState) {
-    state.frozen_input_l = state.input_buffer_l.clone();
-    state.frozen_input_r = state.input_buffer_r.clone();
-    state.frozen_output_l = state.output_buffer_l.clone();
-    state.frozen_output_r = state.output_buffer_r.clone();
-    state.frozen_len = state.buf_len;
-}
-
-fn source_selector(ui: &mut egui::Ui, source: &mut SignalSource) -> bool {
-    let before = *source;
-    ui.label("Signal:");
-    for (value, label, color) in [
-        (SignalSource::Input, "I", Some(INPUT_LEFT_COLOR)),
-        (SignalSource::Output, "O", Some(OUTPUT_LEFT_COLOR)),
-        (SignalSource::InputAndOutput, "I+O", None),
-    ] {
-        let text = color.map_or_else(
-            || egui::RichText::new(label),
-            |color| egui::RichText::new(label).color(color),
-        );
-        if ui.selectable_label(*source == value, text).clicked() {
-            *source = value;
-        }
-    }
-    before != *source
-}
-
-fn draw_oscilloscope(ui: &mut egui::Ui, state: &mut OscilloscopeState, sample_rate: f32) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Timebase:");
-        ui.add(
-            egui::Slider::new(&mut state.timebase_ms, 1.0..=500.0)
-                .logarithmic(true)
-                .text("ms"),
-        );
-        ui.separator();
-        ui.label("Trigger:");
-        ui.add(egui::Slider::new(&mut state.trigger_level, -1.0..=1.0).text(""));
-        ui.separator();
-        ui.label("Y Range:");
-        ui.add(
-            egui::Slider::new(&mut state.y_range, 0.001..=1.0)
-                .logarithmic(true)
-                .text(""),
-        );
-        ui.separator();
-        source_selector(ui, &mut state.source);
-        ui.separator();
-        ui.label("Trace:");
-        for (mode, label) in [
-            (OscilloscopeDisplayMode::Left, "L"),
-            (OscilloscopeDisplayMode::Right, "R"),
-            (OscilloscopeDisplayMode::Stereo, "L+R"),
-        ] {
-            if ui
-                .selectable_label(state.display_mode == mode, label)
-                .clicked()
-            {
-                state.display_mode = mode;
-            }
-        }
-        ui.separator();
-        if ui
-            .button(if state.frozen { "Unfreeze" } else { "Freeze" })
-            .clicked()
-        {
-            state.frozen = !state.frozen;
-            if state.frozen {
-                freeze_scope(state);
-            }
-        }
-    });
-    ui.add_space(6.0);
-
-    let available = ui.available_size();
-    let y_label_w = 28.0;
-    let x_label_h = 14.0;
-    let top_pad = 8.0;
-    let plot_h = available.y.max(40.0);
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(available.x, plot_h),
-        egui::Sense::click_and_drag(),
-    );
-    let plot_left = rect.left() + y_label_w;
-    let plot_rect = egui::Rect::from_min_max(
-        egui::pos2(plot_left, rect.top() + top_pad),
-        egui::pos2(rect.right(), rect.bottom() - x_label_h),
-    );
-    let painter = ui.painter_at(rect);
-
-    painter.rect_filled(plot_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
-
-    let y_scale = plot_rect.height() * 0.4;
-    let center_y = plot_rect.center().y;
-    let range = state.y_range;
-    let display_yscale = y_scale / range;
-    let font_id = egui::FontId::monospace(8.0);
-    let label_color = egui::Color32::from_rgb(120, 120, 130);
-    let grid_color = egui::Color32::from_rgb(50, 50, 58);
-
-    // Y-axis labels + horizontal grid lines
-    for row in 0..=8 {
-        let grid_y = plot_rect.top() + plot_rect.height() * (row as f32 / 8.0);
-        painter.line_segment(
-            [
-                egui::pos2(plot_rect.left(), grid_y),
-                egui::pos2(plot_rect.right(), grid_y),
-            ],
-            egui::Stroke::new(1.0_f32, grid_color),
-        );
-        let val = (1.0 - row as f32 * 0.25) * range;
-        painter.text(
-            egui::pos2(plot_rect.left() - 4.0, grid_y),
-            egui::Align2::RIGHT_CENTER,
-            format!("{:.2}", val),
-            font_id.clone(),
-            label_color,
-        );
-    }
-    painter.line_segment(
-        [
-            egui::pos2(plot_rect.left(), center_y),
-            egui::pos2(plot_rect.right(), center_y),
-        ],
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 80)),
-    );
-
-    // Trigger level — orange dotted line
-    let trig_y = center_y - state.trigger_level * display_yscale;
-    let trig_y = trig_y.clamp(plot_rect.top(), plot_rect.bottom());
-    let dot_len = 4.0;
-    let gap = 4.0;
-    let mut dot_x = plot_rect.left();
-    while dot_x < plot_rect.right() {
-        let end = (dot_x + dot_len).min(plot_rect.right());
-        painter.line_segment(
-            [egui::pos2(dot_x, trig_y), egui::pos2(end, trig_y)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 160, 40)),
-        );
-        dot_x += dot_len + gap;
-    }
-
-    if response.clicked_by(PointerButton::Secondary) {
-        state.timebase_ms = 5.0;
-    }
-
-    // Freeze on middle-click or toggle
-    if response.clicked_by(PointerButton::Middle) {
-        state.frozen = !state.frozen;
-        if state.frozen {
-            freeze_scope(state);
-        }
-    }
-
-    let (input_l, input_r, output_l, output_r) = if state.frozen {
-        (
-            &state.frozen_input_l[..],
-            &state.frozen_input_r[..],
-            &state.frozen_output_l[..],
-            &state.frozen_output_r[..],
-        )
-    } else {
-        (
-            &state.input_buffer_l[..],
-            &state.input_buffer_r[..],
-            &state.output_buffer_l[..],
-            &state.output_buffer_r[..],
-        )
-    };
-    let len = if state.frozen {
-        state.frozen_len
-    } else {
-        state.buf_len
-    };
-
-    if len > 1 {
-        let (input_trigger, output_trigger) = match state.display_mode {
-            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => (input_l, output_l),
-            OscilloscopeDisplayMode::Right => (input_r, output_r),
-        };
-        let mut trig_f32 = match state.source {
-            SignalSource::Input => find_trigger(input_trigger, len, state.trigger_level),
-            SignalSource::Output => find_trigger(output_trigger, len, state.trigger_level),
-            SignalSource::InputAndOutput => {
-                find_combined_trigger(input_trigger, output_trigger, len, state.trigger_level)
-            }
-        };
-        let samples_to_show = (state.timebase_ms / 1000.0 * sample_rate) as usize;
-        let samples_to_show = samples_to_show.max(2);
-        let mut trig_idx = trig_f32 as usize;
-        if trig_idx + samples_to_show > len {
-            trig_idx = len.saturating_sub(samples_to_show);
-            trig_f32 = trig_idx as f32;
-        }
-        let start = trig_idx;
-        let end = (start + samples_to_show).min(len);
-
-        let overlay = state.source == SignalSource::InputAndOutput;
-        if matches!(
-            state.source,
-            SignalSource::Output | SignalSource::InputAndOutput
-        ) {
-            draw_scope_source(
-                &painter,
-                plot_rect,
-                center_y,
-                display_yscale,
-                output_l,
-                output_r,
-                state.display_mode,
-                start,
-                end,
-                trig_f32,
-                samples_to_show,
-                OUTPUT_LEFT_COLOR,
-                OUTPUT_RIGHT_COLOR,
-                overlay,
-            );
-        }
-        if matches!(
-            state.source,
-            SignalSource::Input | SignalSource::InputAndOutput
-        ) {
-            draw_scope_source(
-                &painter,
-                plot_rect,
-                center_y,
-                display_yscale,
-                input_l,
-                input_r,
-                state.display_mode,
-                start,
-                end,
-                trig_f32,
-                samples_to_show,
-                INPUT_LEFT_COLOR,
-                INPUT_RIGHT_COLOR,
-                overlay,
-            );
-        }
-
-        // X-axis time labels
-        let visible_ms = state.timebase_ms;
-        let tick_interval = nice_tick_interval(visible_ms, 5.0);
-        let mut tick_ms = 0.0;
-        while tick_ms <= visible_ms {
-            let tick_x = plot_rect.left() + plot_rect.width() * (tick_ms / visible_ms);
-            if tick_x <= plot_rect.right() {
-                painter.line_segment(
-                    [
-                        egui::pos2(tick_x, plot_rect.bottom()),
-                        egui::pos2(tick_x, plot_rect.bottom() + 4.0),
-                    ],
-                    egui::Stroke::new(1.0_f32, grid_color),
-                );
-                let label = if tick_ms < 1.0 {
-                    format!("{:.1}ms", tick_ms)
-                } else {
-                    format!("{:.0}ms", tick_ms)
-                };
-                painter.text(
-                    egui::pos2(tick_x, plot_rect.bottom() + 4.0),
-                    egui::Align2::CENTER_TOP,
-                    label,
-                    font_id.clone(),
-                    label_color,
-                );
-            }
-            tick_ms += tick_interval;
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_scope_source(
-    painter: &egui::Painter,
-    plot_rect: egui::Rect,
-    center_y: f32,
-    display_yscale: f32,
-    left: &[f32],
-    right: &[f32],
-    mode: OscilloscopeDisplayMode,
-    start: usize,
-    end: usize,
-    trigger: f32,
-    samples_to_show: usize,
-    left_color: egui::Color32,
-    right_color: egui::Color32,
-    translucent: bool,
-) {
-    let color = |color: egui::Color32| {
-        if translucent {
-            egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 190)
-        } else {
-            color
-        }
-    };
-    if matches!(
-        mode,
-        OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo
-    ) {
-        draw_oscilloscope_trace(
-            painter,
-            plot_rect,
-            center_y,
-            display_yscale,
-            left,
-            start,
-            end,
-            trigger,
-            samples_to_show,
-            color(left_color),
-        );
-    }
-    if matches!(
-        mode,
-        OscilloscopeDisplayMode::Right | OscilloscopeDisplayMode::Stereo
-    ) {
-        draw_oscilloscope_trace(
-            painter,
-            plot_rect,
-            center_y,
-            display_yscale,
-            right,
-            start,
-            end,
-            trigger,
-            samples_to_show,
-            color(right_color),
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_oscilloscope_trace(
-    painter: &egui::Painter,
-    plot_rect: egui::Rect,
-    center_y: f32,
-    display_yscale: f32,
-    buffer: &[f32],
-    start: usize,
-    end: usize,
-    trig_f32: f32,
-    samples_to_show: usize,
-    color: egui::Color32,
-) {
-    let pts: Vec<egui::Pos2> = (start..end)
-        .map(|sample_index| {
-            let point_x = plot_rect.left()
-                + plot_rect.width() * (sample_index as f32 - trig_f32) / samples_to_show as f32;
-            let point_y = center_y - buffer[sample_index] * display_yscale;
-            egui::pos2(point_x, point_y.clamp(plot_rect.top(), plot_rect.bottom()))
-        })
-        .collect();
-
-    if pts.len() >= 2 {
-        painter.add(PathShape::line(pts, egui::Stroke::new(1.2_f32, color)));
-    }
-}
-
-fn nice_tick_interval(range: f32, target_ticks: f32) -> f32 {
-    let rough = range / target_ticks;
-    let exp = 10.0f32.powf(rough.log10().floor());
-    let mant = rough / exp;
-    let nice = if mant < 1.5 {
-        1.0
-    } else if mant < 3.5 {
-        2.0
-    } else if mant < 7.5 {
-        5.0
-    } else {
-        10.0
-    };
-    nice * exp
-}
-
-pub struct FftState {
-    input_buffer: [f32; 4096],
-    output_buffer: [f32; 4096],
-    input_latest_db: [f32; 2048],
-    output_latest_db: [f32; 2048],
-    input_peak_hold: [f32; 2048],
-    output_peak_hold: [f32; 2048],
-    peak_decay: f32,
-    frame_count: u32,
-    pub fft_size: usize,
-    complex_buf: Vec<Complex32>,
-    fft: Option<Arc<dyn Fft<f32>>>,
+    pub(crate) complex_buf: Vec<Complex32>,
+    pub(crate) fft: Option<Arc<dyn Fft<f32>>>,
     pub window_type: usize,
     pub db_floor: f32,
     pub db_top: f32,
@@ -789,8 +112,204 @@ impl FftState {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn process_fft_trace(
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct FftViewConfig {
+    pub fft_size: usize,
+    pub window_type: usize,
+    pub db_floor: f32,
+    pub db_top: f32,
+    pub log_scale: bool,
+    #[serde(default)]
+    pub show_peak_hold: bool,
+    #[serde(default)]
+    pub channel: SpectrumChannel,
+    #[serde(default)]
+    pub source: SignalSource,
+}
+
+impl Default for FftViewConfig {
+    fn default() -> Self {
+        Self::from_state(&FftState::default())
+    }
+}
+
+impl FftViewConfig {
+    pub fn from_state(state: &FftState) -> Self {
+        Self {
+            fft_size: state.fft_size,
+            window_type: state.window_type,
+            db_floor: state.db_floor,
+            db_top: state.db_top,
+            log_scale: state.log_scale,
+            show_peak_hold: state.show_peak_hold,
+            channel: state.channel,
+            source: state.source,
+        }
+    }
+
+    pub fn apply_to(&self, state: &mut FftState) {
+        state.fft_size = self.fft_size;
+        state.window_type = self.window_type;
+        state.db_floor = self.db_floor;
+        state.db_top = self.db_top;
+        state.log_scale = self.log_scale;
+        state.show_peak_hold = self.show_peak_hold;
+        state.channel = self.channel;
+        state.source = self.source;
+        if state.complex_buf.len() != self.fft_size {
+            state.complex_buf = vec![Complex32::new(0.0, 0.0); self.fft_size];
+            state.fft = None;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RealTime root state
+// ---------------------------------------------------------------------------
+
+pub struct RealTimeState {
+    pub sample_rate: f32,
+    pub osc: OscilloscopeState,
+    pub fft: FftState,
+}
+
+impl Default for RealTimeState {
+    fn default() -> Self {
+        Self {
+            sample_rate: 44100.0,
+            osc: OscilloscopeState::default(),
+            fft: FftState::default(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RealTimeViewConfig {
+    pub oscilloscope: OscilloscopeViewConfig,
+    pub fft: FftViewConfig,
+}
+
+impl Default for RealTimeViewConfig {
+    fn default() -> Self {
+        Self::from_state(&RealTimeState::default())
+    }
+}
+
+impl RealTimeViewConfig {
+    pub fn from_state(state: &RealTimeState) -> Self {
+        Self {
+            oscilloscope: OscilloscopeViewConfig::from_state(&state.osc),
+            fft: FftViewConfig::from_state(&state.fft),
+        }
+    }
+
+    pub fn apply_to(&self, state: &mut RealTimeState) {
+        self.oscilloscope.apply_to(&mut state.osc);
+        self.fft.apply_to(&mut state.fft);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers (used by oscilloscope module)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn copy_channel(
+    dest: &mut [f32],
+    left: &[f32],
+    right: &[f32],
+    channel: SpectrumChannel,
+) {
+    match channel {
+        SpectrumChannel::Left => dest.copy_from_slice(left),
+        SpectrumChannel::Right => dest.copy_from_slice(right),
+        SpectrumChannel::Sum => {
+            for ((dest, left), right) in dest.iter_mut().zip(left).zip(right) {
+                *dest = 0.5 * (*left + *right);
+            }
+        }
+    }
+}
+
+pub(crate) fn fill_fft_from_captured(
+    fft_state: &mut FftState,
+    captured_in_l: &[f32],
+    captured_in_r: &[f32],
+    captured_out_l: &[f32],
+    captured_out_r: &[f32],
+    captured_len: usize,
+    view_offset: f32,
+    timebase_ms: f32,
+    sample_rate: f32,
+    fft_window_start: Option<f32>,
+) {
+    let fft_size = fft_state.fft_size;
+    let end = if let Some(w) = fft_window_start {
+        let start = (w as usize).min(captured_len.saturating_sub(fft_size));
+        (start + fft_size).min(captured_len)
+    } else {
+        let visible = ((timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+        let offset = view_offset as usize;
+        (offset + visible).min(captured_len)
+    };
+    if end < fft_size {
+        return;
+    }
+    let start = end.saturating_sub(fft_size);
+    let slice_len = (end - start).min(fft_size);
+    fft_state.output_buffer.fill(0.0);
+    fft_state.input_buffer.fill(0.0);
+    let shift = fft_size - slice_len;
+    copy_channel(
+        &mut fft_state.output_buffer[shift..fft_size],
+        &captured_out_l[start..end],
+        &captured_out_r[start..end],
+        fft_state.channel,
+    );
+    copy_channel(
+        &mut fft_state.input_buffer[shift..fft_size],
+        &captured_in_l[start..end],
+        &captured_in_r[start..end],
+        fft_state.channel,
+    );
+}
+
+pub(crate) fn fill_fft_from_live(
+    fft_state: &mut FftState,
+    live_in_l: &[f32],
+    live_in_r: &[f32],
+    live_out_l: &[f32],
+    live_out_r: &[f32],
+    live_len: usize,
+) {
+    let fft_size = fft_state.fft_size;
+    if live_len < fft_size {
+        return;
+    }
+    let start = live_len.saturating_sub(fft_size);
+    let end = live_len;
+    let slice_len = end - start;
+    fft_state.output_buffer.fill(0.0);
+    fft_state.input_buffer.fill(0.0);
+    let shift = fft_size - slice_len;
+    copy_channel(
+        &mut fft_state.output_buffer[shift..fft_size],
+        &live_out_l[start..end],
+        &live_out_r[start..end],
+        fft_state.channel,
+    );
+    copy_channel(
+        &mut fft_state.input_buffer[shift..fft_size],
+        &live_in_l[start..end],
+        &live_in_r[start..end],
+        fft_state.channel,
+    );
+}
+
+pub(crate) fn process_fft_trace(
     samples: &[f32],
     latest_db: &mut [f32],
     peak_hold: &mut [f32],
@@ -829,14 +348,136 @@ fn process_fft_trace(
     }
 }
 
-fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool, sample_rate: f32) {
+// ---------------------------------------------------------------------------
+// Main show
+// ---------------------------------------------------------------------------
+
+pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut RealTimeState) {
+    oscilloscope::feed_audio(
+        &mut state.osc,
+        &mut state.fft,
+        audio_blocks,
+        state.sample_rate,
+    );
+
+    let available = ui.available_size();
+    let gap = 12.0;
+    let osc_h = (available.y * 0.4).max(120.0);
+    let fft_h = (available.y - osc_h - gap).max(120.0);
+
+    ui.allocate_ui(egui::vec2(available.x, osc_h), |ui| {
+        ui.strong("Oscilloscope");
+        ui.add_space(6.0);
+        oscilloscope::draw_oscilloscope(ui, &mut state.osc, state.sample_rate, state.fft.fft_size);
+    });
+    ui.add_space(gap);
+    ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
+        ui.strong("Spectrum Analyzer");
+        ui.add_space(6.0);
+        draw_fft(
+            ui,
+            &mut state.fft,
+            &state.osc,
+            state.sample_rate,
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// FFT drawing
+// ---------------------------------------------------------------------------
+
+fn source_selector(ui: &mut egui::Ui, source: &mut SignalSource) -> bool {
+    let before = *source;
+    ui.label("Signal:");
+    for (value, label, color) in [
+        (SignalSource::Input, "I", Some(INPUT_LEFT_COLOR)),
+        (SignalSource::Output, "O", Some(OUTPUT_LEFT_COLOR)),
+        (SignalSource::InputAndOutput, "I+O", None),
+    ] {
+        let text = color.map_or_else(
+            || egui::RichText::new(label),
+            |color| egui::RichText::new(label).color(color),
+        );
+        if ui.selectable_label(*source == value, text).clicked() {
+            *source = value;
+        }
+    }
+    before != *source
+}
+
+fn draw_fft(
+    ui: &mut egui::Ui,
+    state: &mut FftState,
+    osc: &OscilloscopeState,
+    sample_rate: f32,
+) {
     let fft_size = state.fft_size;
-    if !frozen && state.frame_count % 4 == 0 {
+    if osc.captured {
         if state.complex_buf.len() != fft_size || state.fft.is_none() {
             state.complex_buf = vec![Complex32::new(0.0, 0.0); fft_size];
             let mut planner = FftPlanner::new();
             state.fft = Some(planner.plan_fft_forward(fft_size));
         }
+        fill_fft_from_captured(
+            state,
+            &osc.captured_input_l,
+            &osc.captured_input_r,
+            &osc.captured_output_l,
+            &osc.captured_output_r,
+            osc.captured_len,
+            osc.captured_view_offset,
+            osc.timebase_ms,
+            sample_rate,
+            osc.fft_window_start,
+        );
+        let fft = state.fft.as_ref().cloned();
+        if let Some(fft) = fft {
+            if matches!(
+                state.source,
+                SignalSource::Input | SignalSource::InputAndOutput
+            ) {
+                process_fft_trace(
+                    &state.input_buffer,
+                    &mut state.input_latest_db,
+                    &mut state.input_peak_hold,
+                    &mut state.complex_buf,
+                    &fft,
+                    fft_size,
+                    state.window_type,
+                    state.peak_decay,
+                );
+            }
+            if matches!(
+                state.source,
+                SignalSource::Output | SignalSource::InputAndOutput
+            ) {
+                process_fft_trace(
+                    &state.output_buffer,
+                    &mut state.output_latest_db,
+                    &mut state.output_peak_hold,
+                    &mut state.complex_buf,
+                    &fft,
+                    fft_size,
+                    state.window_type,
+                    state.peak_decay,
+                );
+            }
+        }
+    } else if state.frame_count % 4 == 0 {
+        if state.complex_buf.len() != fft_size || state.fft.is_none() {
+            state.complex_buf = vec![Complex32::new(0.0, 0.0); fft_size];
+            let mut planner = FftPlanner::new();
+            state.fft = Some(planner.plan_fft_forward(fft_size));
+        }
+        fill_fft_from_live(
+            state,
+            &osc.input_buffer_l,
+            &osc.input_buffer_r,
+            &osc.output_buffer_l,
+            &osc.output_buffer_r,
+            osc.buf_len,
+        );
         let fft = state.fft.as_ref().expect("FFT plan initialized").clone();
         if matches!(
             state.source,
@@ -870,7 +511,6 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool, sample_rate: 
         }
     }
 
-    // Controls
     ui.horizontal_wrapped(|ui| {
         ui.label("Mode:");
         if ui
@@ -905,7 +545,10 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool, sample_rate: 
             (SpectrumChannel::Right, "R"),
             (SpectrumChannel::Sum, "L+R"),
         ] {
-            if ui.selectable_label(state.channel == chan, label).clicked() && state.channel != chan
+            if ui
+                .selectable_label(state.channel == chan, label)
+                .clicked()
+                && state.channel != chan
             {
                 state.channel = chan;
                 state.clear_history();
@@ -993,7 +636,12 @@ fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, frozen: bool, sample_rate: 
             spectrum::render_spectra(ui, &[output_trace], &config, HOVER_READOUT_H)
         }
         SignalSource::InputAndOutput => {
-            spectrum::render_spectra(ui, &[output_trace, input_trace], &config, HOVER_READOUT_H)
+            spectrum::render_spectra(
+                ui,
+                &[output_trace, input_trace],
+                &config,
+                HOVER_READOUT_H,
+            )
         }
     };
 
@@ -1077,8 +725,6 @@ fn format_hz(hz: f32) -> String {
     }
 }
 
-/// Convert a frequency to the nearest MIDI note, returning both the numeric
-/// note number and its letter notation (e.g. "63 (D#4)").
 fn format_midi_note(hz: f32) -> String {
     if hz <= 0.0 {
         return "-".to_string();
@@ -1097,7 +743,8 @@ fn format_midi_note(hz: f32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SignalSource, SpectrumChannel, copy_channel, find_combined_trigger};
+    use super::{SignalSource, SpectrumChannel, copy_channel};
+    use super::super::oscilloscope::{TriggerSlope, find_combined_trigger};
 
     #[test]
     fn source_defaults_to_internal_output() {
@@ -1120,8 +767,28 @@ mod tests {
         let input = [-0.4, -0.2, 0.1, 0.2];
         let output = [-0.4, -0.1, 0.2, 0.3];
 
-        let trigger = find_combined_trigger(&input, &output, input.len(), 0.0);
+        let trigger = find_combined_trigger(
+            &input,
+            &output,
+            input.len(),
+            0.0,
+            TriggerSlope::Rising,
+        );
 
-        assert!((trigger - 1.5).abs() < f32::EPSILON);
+        assert!(trigger.is_some());
+        assert!((trigger.unwrap() - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn falling_edge_trigger() {
+        let buf = [0.3, 0.2, -0.1, -0.2];
+        let trigger = super::super::oscilloscope::find_trigger(
+            &buf,
+            buf.len(),
+            0.0,
+            TriggerSlope::Falling,
+        );
+        assert!(trigger.is_some());
+        assert!((trigger.unwrap() - (1.0 + 2.0 / 3.0)).abs() < 0.001);
     }
 }

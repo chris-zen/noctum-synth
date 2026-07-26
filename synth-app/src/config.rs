@@ -47,6 +47,8 @@ pub struct Config {
     pub analysis: AnalysisConfig,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
+    pub input_enabled: bool,
     #[serde(default, skip_serializing, rename = "analysis_tab")]
     analysis_tab_legacy: Option<AnalysisTab>,
 }
