@@ -5,7 +5,7 @@ use synth_core::dsp::{
     AnalogOscillator, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
     WavetableOscillator, generate_wavetable_bank,
 };
-use synth_core::f32x4;
+use synth_core::math::WideF32;
 
 const SAMPLE_RATE: u32 = 48_000;
 const SAMPLES: usize = SAMPLE_RATE as usize * 3;
@@ -33,7 +33,7 @@ fn main() {
         blep.set_saw_method(SawMethod::Blep);
         blep.set_waveform(waveform);
         blep.set_shape(shape);
-        blep.set_frequency(f32x4::splat(997.0));
+        blep.set_frequency(WideF32::splat(997.0));
         let mut ctx = synth_core::create_render_context!();
         write_wav(
             &output.join(format!("blep-{name}.wav")),
@@ -44,7 +44,7 @@ fn main() {
             WavetableOscillator::new_wavetable(SAMPLE_RATE as f32, reference_wavetable_bank());
         wavetable.set_waveform(waveform);
         wavetable.set_shape(shape);
-        wavetable.set_frequency(f32x4::splat(997.0));
+        wavetable.set_frequency(WideF32::splat(997.0));
         let mut ctx = synth_core::create_render_context!();
         write_wav(
             &output.join(format!("wavetable-{name}.wav")),
@@ -61,7 +61,7 @@ fn main() {
         (0..SAMPLES).map(|index| {
             let position = index as f32 / (SAMPLES - 1) as f32;
             let frequency = 110.0 * 2.0_f32.powf(position * 6.0);
-            sweep.set_frequency(f32x4::splat(frequency));
+            sweep.set_frequency(WideF32::splat(frequency));
             sweep.next(&mut ctx).output.to_array()[0] * 0.35
         }),
     );

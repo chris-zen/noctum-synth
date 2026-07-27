@@ -54,8 +54,8 @@ Some integration tests (notably `engine_tests`) construct a large
 RUST_MIN_STACK=16777216 cargo test -p synth-core
 RUST_MIN_STACK=16777216 cargo test -p synth-core --tests
 make -C synth-core test-matrix
-cargo run --release -p synth-core --example voice_block_perf
-cargo run --release -p synth-core --example filter_perf
+cargo run --release -p synth-tools --bin voice_block_perf
+cargo run --release -p synth-tools --bin filter_perf
 ```
 
 The `synth-core` Makefile sets `RUST_MIN_STACK` and runs a curated feature

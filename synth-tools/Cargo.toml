@@ -1,0 +1,11 @@
+[package]
+name = "synth-tools"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Host-side perf, measurement, and wavetable tooling for synth-core"
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+rustfft = "6"

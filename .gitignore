@@ -1,3 +1,4 @@
+.DS_Store
 target/
 *.wav
 Prophet_08_Manual_v1.0.pdf

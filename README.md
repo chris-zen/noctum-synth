@@ -1,7 +1,7 @@
-# Noctum
+# Noctum Synth
 
 A hobby project to build a virtual-analog synthesizer inspired by the
-**Sequential Prophet Rev2** — the 16-voice, modulation-rich polysynth that
+**Sequential Prophet Rev2** — the 8/16-voice, modulation-rich polysynth that
 defined a generation of pad, lead, and bass sounds. It is not a clone, but the
 voice architecture and modulation philosophy follow the Rev2 closely enough that
 familiar patches should translate in spirit.
@@ -12,6 +12,9 @@ parallel.
 
 ## Models
 
+The same DSP internals will ship across multiple hardware models — different
+voice counts and form factors, one shared engine.
+
 | Model | Platform | Voices | Status |
 | --- | --- | --- | --- |
 | [Micro 4](docs/src/models/micro-4.md) | Daisy Seed 1.1 | 4 | Current |
@@ -20,20 +23,17 @@ parallel.
 
 ## Project structure
 
-- `synth-core` — portable `#![no_std]` DSP library (voice engine, effects, MIDI codec)
-- `synth-app` — desktop development harness (egui + CPAL + midir)
+- `synth-core` — portable `#![no_std]` DSP & Synth library (voice engine, effects, MIDI codec)
+- `synth-app` — desktop development harness
+- `synth-tools` — host-side perf, measurement, and wavetable tooling
 - `hardware/daisy/firmware` — Micro firmware (`noctum-micro`) for Daisy Seed 1.1
-- `hardware/daisy/embassy-daisy` — Embassy-based BSP for Daisy Seed
+- `hardware/daisy/embassy-daisy` — Embassy-based Board Support Package (BSP) for Daisy Seed
 
 ## Running the development harness
 
 ```bash
 cargo build --release
 cargo run --release -p synth-app
-```
-
-```bash
-cargo run --release -p synth-app -- "MIDI Port Name" "Output Device Name" "Input Device Name"
 ```
 
 ## Documentation
@@ -57,8 +57,8 @@ mdbook serve docs
 ```bash
 RUST_MIN_STACK=16777216 cargo test --workspace
 cargo doc --no-deps --open -p synth-core
-cargo run --release -p synth-core --example voice_block_perf
-cargo run --release -p synth-core --example filter_perf
+cargo run --release -p synth-tools --bin voice_block_perf
+cargo run --release -p synth-tools --bin filter_perf
 ```
 
 Some `synth-core` integration tests build large `SynthEngine` values on the
@@ -70,4 +70,4 @@ RUST_MIN_STACK=16777216 cargo test -p synth-core --tests
 
 ## License
 
-MIT — see the `license` field in each crate's `Cargo.toml`.
+MIT — see the [LICENSE](LICENSE) field in each crate's `Cargo.toml`.

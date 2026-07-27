@@ -38,11 +38,11 @@ Run the development harness:
 cargo run --release -p synth-app
 ```
 
-Run performance examples:
+Run performance tools:
 
 ```bash
-cargo run --release -p synth-core --example voice_block_perf
-cargo run --release -p synth-core --example filter_perf
+cargo run --release -p synth-tools --bin voice_block_perf
+cargo run --release -p synth-tools --bin filter_perf
 ```
 
 Serve or build the documentation site:

@@ -1,7 +1,7 @@
 //! Deterministic per-model response and self-oscillation measurements.
 
 use synth_core::dsp::{Filter, FilterOversampling, FilterType};
-use synth_core::f32x4;
+use synth_core::math::WideF32;
 
 const CUTOFF_HZ: f32 = 440.0;
 
@@ -249,14 +249,14 @@ fn self_oscillation_tail_rms(filter_type: FilterType, sample_rate: f32, resonanc
 fn process(filter: &mut Filter, input: f32, sample_rate: f32) -> f32 {
     filter
         .process(
-            f32x4::splat(input),
-            f32x4::splat(69.0),
-            f32x4::splat(0.0),
-            f32x4::splat(1.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
-            f32x4::splat(0.0),
+            WideF32::splat(input),
+            WideF32::splat(69.0),
+            WideF32::splat(0.0),
+            WideF32::splat(1.0),
+            WideF32::splat(0.0),
+            WideF32::splat(0.0),
+            WideF32::splat(0.0),
+            WideF32::splat(0.0),
             sample_rate,
         )
         .to_array()[0]

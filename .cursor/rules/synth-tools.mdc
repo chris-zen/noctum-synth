@@ -1,0 +1,31 @@
+---
+description: Put host tooling binaries in synth-tools, not synth-core examples
+alwaysApply: true
+---
+
+# Host tooling lives in `synth-tools`
+
+`synth-core` is a portable `#![no_std]` library. Do **not** add Cargo
+`examples/` under `synth-core` for perf harnesses, measurements, generators,
+or other host-only utilities.
+
+## Where to put new tools
+
+1. Add a binary at `synth-tools/src/bin/<name>.rs`.
+2. Depend on `synth-core` (and any host-only crates) from
+   [`synth-tools/Cargo.toml`](synth-tools/Cargo.toml).
+3. Run with:
+
+```bash
+cargo run --release -p synth-tools --bin <name>
+```
+
+## Document every tool
+
+When adding or renaming a binary, update [`synth-tools/README.md`](synth-tools/README.md)
+in the same change: short purpose, run command, and any CLI args.
+
+## Anti-patterns
+
+- `synth-core/examples/…` for timing, FFT, file generators, or debug dumps
+- `[[bin]]` / `src/bin` inside `synth-core` (keeps host CLIs out of the library crate)
