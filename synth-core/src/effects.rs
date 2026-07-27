@@ -404,8 +404,8 @@ where
         };
         crate::profiler_begin!(ctx, RenderStage::EffectsMix);
         let output = (
-            crossfade(left, wet_left, mix).clamp(-1.0, 1.0),
-            crossfade(right, wet_right, mix).clamp(-1.0, 1.0),
+            crossfade(left, wet_left, mix),
+            crossfade(right, wet_right, mix),
         );
         crate::profiler_end!(ctx, RenderStage::EffectsMix);
         output
