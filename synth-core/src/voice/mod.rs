@@ -2007,12 +2007,12 @@ mod tests {
             .iter()
             .position(|gate| *gate)
             .unwrap();
-        let expected = crate::midi_to_hz(76);
+        let expected = crate::midi_to_hz(112);
         let osc1_freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
         assert_eq!(block.lanes().note(lane), 64);
         assert!(
             (osc1_freq - expected).abs() < 0.1,
-            "osc1 should track MIDI note + tuning offset, got {} expected {expected}",
+            "osc1 should track MIDI note + (freq - 24), got {} expected {expected}",
             osc1_freq
         );
     }
@@ -2023,7 +2023,7 @@ mod tests {
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 240.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1FineTune, 99.0));
         voices.handle_control(ControlMessage::NoteOn {
-            note: 60,
+            note: 24,
             velocity: 1.0,
         });
 
@@ -2037,12 +2037,20 @@ mod tests {
             .iter()
             .position(|gate| *gate)
             .unwrap();
+        assert!(
+            (block.oscillators().params().osc1.frequency_semitones - 120.0).abs() < f32::EPSILON,
+            "osc1 frequency param should clamp to 120"
+        );
+        assert!(
+            (block.oscillators().params().osc1.fine_tune_cents - 50.0).abs() < f32::EPSILON,
+            "osc1 fine tune should clamp to +50 cents"
+        );
         let expected = crate::midi_to_hz(120) * 2.0f32.powf(50.0 / 1200.0);
         let osc1_freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
 
         assert!(
             (osc1_freq - expected).abs() < 0.5,
-            "osc1 frequency should clamp to 120 semitones and +50 cents, got {osc1_freq}, expected {expected}"
+            "note 24 + clamped freq 120 should be MIDI 120 +50c, got {osc1_freq}, expected {expected}"
         );
     }
 

@@ -8,7 +8,7 @@ the Rust parameter identifiers used by hosts.
 | Control | Use it for |
 | --- | --- |
 | Waveform | Choose saw, saw/triangle, triangle, or pulse as the starting harmonic content. |
-| Frequency and fine tune | Set interval and detuning between the two main oscillators. |
+| Frequency and fine tune | Set interval and detuning between the two main oscillators. Frequency is a note index (0–120). |
 | Shape Mod | Vary pulse width / waveshape depth. |
 | Level and oscillator mix | Balance the two main oscillators. |
 | Sub oscillator and noise | Add bass weight or noisy texture. |

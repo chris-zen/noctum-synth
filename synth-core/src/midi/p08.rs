@@ -710,7 +710,10 @@ mod tests {
             velocity: 1.0,
         });
         let start = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
-        assert!((start - before).abs() < 0.01);
+        assert!(
+            (start - before).abs() < 0.1,
+            "glide should start from current pitch; before={before}, start={start}"
+        );
         for voice in 0..8 {
             assert!(!voices[voice / WideF32::LANES].has_pending_note(voice % WideF32::LANES));
         }

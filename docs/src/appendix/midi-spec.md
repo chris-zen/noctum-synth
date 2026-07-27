@@ -142,10 +142,10 @@ All CC values are 7-bit (0–127).
 |---|---|---|---|
 | 8  | Sub Oscillator Level | 0–127 → 0%–100% | |
 | 9  | Oscillator Slop | 0–127 → 0%–100% | Analog drift amount |
-| 20 | Oscillator 1 Frequency | 0–127 → 0–120 semitones | Coarse tuning |
+| 20 | Oscillator 1 Frequency | 0–127 → 0–120 note index | Coarse tuning |
 | 21 | Oscillator 1 Fine Tune | 0–127 → −50 to +50 cents | |
 | 22 | Oscillator 1 Shape | 0–127 → off / saw / saw-tri / tri / pulse | 5-position switch |
-| 24 | Oscillator 2 Frequency | 0–127 → 0–120 semitones | Coarse tuning |
+| 24 | Oscillator 2 Frequency | 0–127 → 0–120 note index | Coarse tuning |
 | 25 | Oscillator 2 Fine Tune | 0–127 → −50 to +50 cents | |
 | 26 | Oscillator 2 Shape | 0–127 → off / saw / saw-tri / tri / pulse | 5-position switch |
 | 28 | Oscillator Mix | 0–127 → 0%–100% | Blend between osc 1 and osc 2 |
@@ -217,10 +217,10 @@ value shown in the Max column. Values beyond this maximum are clamped.
 
 | NRPN | Parameter | Raw Range | Max |
 |---|---|---|---|
-| 0  | Oscillator 1 Frequency | 0–120 semitones | 120 |
+| 0  | Oscillator 1 Frequency | 0–120 note index | 120 |
 | 1  | Oscillator 1 Fine Tune | −50 to +50 cents | 100 |
 | 2  | Oscillator 1 Shape | 0=off, 1=saw, 2=saw-tri, 3=tri, 4=pulse | 4 |
-| 5  | Oscillator 2 Frequency | 0–120 semitones | 120 |
+| 5  | Oscillator 2 Frequency | 0–120 note index | 120 |
 | 6  | Oscillator 2 Fine Tune | −50 to +50 cents | 100 |
 | 7  | Oscillator 2 Shape | 0=off, 1=saw, 2=saw-tri, 3=tri, 4=pulse | 4 |
 | 10 | Hard Sync | 0=off, 1=on | 1 |
@@ -233,6 +233,9 @@ value shown in the Max column. Values beyond this maximum are clamped.
 | 103 | Oscillator 2 Shape Mod | 0–99 → 0%–100% | 99 |
 | 104 | Oscillator 2 Note Reset | 0=off, 1=on | 1 |
 | 110 | Sub Oscillator Level | 0–127 → 0%–100% | 127 |
+
+Oscillator Frequency (`0–120`) is a panel note index (C0…C10), not a bipolar
+offset from MIDI 60.
 
 ### Filter
 
@@ -397,8 +400,8 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 
 | Offset | Parameter | Range / Values |
 |---|---|---|
-| 0 | Oscillator 1 Frequency | 0–120 semitones |
-| 1 | Oscillator 2 Frequency | 0–120 semitones |
+| 0 | Oscillator 1 Frequency | 0–120 note index |
+| 1 | Oscillator 2 Frequency | 0–120 note index |
 | 2 | Oscillator 1 Fine Tune | 0–100 (−50 to +50 cents; 50 = centered) |
 | 3 | Oscillator 2 Fine Tune | 0–100 (−50 to +50 cents; 50 = centered) |
 | 4 | Oscillator 1 Shape | 0 = off, 1 = saw, 2 = saw/tri mix, 3 = triangle, 4 = pulse |
@@ -620,12 +623,12 @@ All documented MSB sidebands are listed below.
 
 | Offset | Parameter | Range / Values |
 |---|---|---|
-| 0 | Oscillator 1 Frequency | 0–120 semitones |
+| 0 | Oscillator 1 Frequency | 0–120 note index |
 | 1 | Oscillator 1 Fine Tune | 0–100 (−50 to +50 cents; 50 = centered) |
 | 2 | Oscillator 1 Shape | 0 = off, 1 = saw, 2 = triangle, 3 = saw/tri mix, 4–103 = pulse (width 0–99) |
 | 3 | Oscillator 1 Glide | 0–127 |
 | 4 | Oscillator 1 Keyboard | 0 = off, 1 = on |
-| 5 | Oscillator 2 Frequency | 0–120 semitones |
+| 5 | Oscillator 2 Frequency | 0–120 note index |
 | 6 | Oscillator 2 Fine Tune | 0–100 (−50 to +50 cents; 50 = centered) |
 | 7 | Oscillator 2 Shape | 0 = off, 1 = saw, 2 = triangle, 3 = saw/tri mix, 4–103 = pulse (width 0–99) |
 | 8 | Oscillator 2 Glide | 0–127 |

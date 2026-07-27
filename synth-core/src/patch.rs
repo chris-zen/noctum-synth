@@ -1173,7 +1173,7 @@ impl Default for OscillatorPatch {
         Self {
             waveform: 0,
             enabled: false,
-            frequency: 60.0,
+            frequency: 24.0,
             fine_tune: 0.0,
             shape_mod: 0.0,
             level: 1.0,

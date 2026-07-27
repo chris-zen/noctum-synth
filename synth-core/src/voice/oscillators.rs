@@ -9,7 +9,11 @@ use crate::{GlideMode, ParamId};
 
 // Give unassigned, keyboard-tracked lanes a real pitch so their
 // phases advance before the first note when note reset is off.
-const CENTER_FREQUENCY_SEMITONES: f32 = 60.0;
+const DEFAULT_NOTE_SEMITONES: f32 = 60.0;
+// Rev2 Osc Freq home (panel C2). Key-on zero transpose: pitch = note + (raw - 24).
+const FREQ_HOME_SEMITONES: f32 = 24.0;
+// Key-off reference (MIDI C2). With raw at home, Key off plays ~65 Hz; raw 0 ≈ 16 Hz.
+const KEY_OFF_REF_SEMITONES: f32 = 36.0;
 // The guides specify direction and mode semantics but not measured timing.
 // Keep this curve isolated for future hardware calibration.
 //
@@ -55,8 +59,8 @@ struct GlideState {
 impl Default for GlideState {
     fn default() -> Self {
         Self {
-            current: [CENTER_FREQUENCY_SEMITONES; WideF32::LANES],
-            target: [CENTER_FREQUENCY_SEMITONES; WideF32::LANES],
+            current: [DEFAULT_NOTE_SEMITONES; WideF32::LANES],
+            target: [DEFAULT_NOTE_SEMITONES; WideF32::LANES],
             current_pitch_q16: [60 * 65_536; WideF32::LANES],
             target_pitch_q16: [60 * 65_536; WideF32::LANES],
             step_q16: [0; WideF32::LANES],
@@ -731,7 +735,7 @@ impl Default for OscillatorParams {
         Self {
             enabled: true,
             waveform: Waveform::Saw,
-            frequency_semitones: CENTER_FREQUENCY_SEMITONES,
+            frequency_semitones: FREQ_HOME_SEMITONES,
             fine_tune_cents: 0.0,
             shape_mod: 0.0,
             keyboard_on: true,
@@ -754,9 +758,9 @@ fn oscillator_frequency(
     let keyboard_semitones = if params.keyboard_on {
         note_semitones
     } else {
-        WideF32::splat(CENTER_FREQUENCY_SEMITONES)
+        WideF32::splat(KEY_OFF_REF_SEMITONES)
     };
-    let semitone_offset = params.frequency_semitones - CENTER_FREQUENCY_SEMITONES;
+    let semitone_offset = params.frequency_semitones - FREQ_HOME_SEMITONES;
     let scalar_semitones = semitone_offset + params.fine_tune_cents / 100.0;
     let total_semitones = keyboard_semitones + WideF32::splat(scalar_semitones) + mod_semitones;
     WideF32::splat(440.0)
@@ -1157,17 +1161,47 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_off_uses_center_frequency_instead_of_note() {
+    fn keyboard_off_uses_key_off_ref_at_freq_home() {
         let mut oscillators = Oscillators::new(SAMPLE_RATE);
         oscillators.set_note_frequency(WideF32::splat(midi_to_hz(72)));
         oscillators.set_osc1_keyboard_on(false);
         oscillators.update_frequencies();
 
         let freq = oscillators.osc1_frequency_hz().to_array()[0];
+        let expected = midi_to_hz(36);
+        assert!(
+            (freq - expected).abs() < 0.1,
+            "keyboard off at freq home should play MIDI 36, got {freq} expected {expected}"
+        );
+    }
+
+    #[test]
+    fn freq_home_with_key_on_tracks_played_note_at_concert_pitch() {
+        let mut oscillators = Oscillators::new(SAMPLE_RATE);
+        oscillators.set_osc1_frequency_semitones(24.0);
+        oscillators.set_note_frequency(WideF32::splat(midi_to_hz(60)));
+        oscillators.update_frequencies();
+
+        let freq = oscillators.osc1_frequency_hz().to_array()[0];
         let expected = midi_to_hz(60);
         assert!(
             (freq - expected).abs() < 0.1,
-            "keyboard off should use center pitch, got {freq} expected {expected}"
+            "raw 24 + note 60 should be concert pitch, got {freq} expected {expected}"
+        );
+    }
+
+    #[test]
+    fn key_off_raw_zero_matches_rev2_sixteen_hz_floor() {
+        let mut oscillators = Oscillators::new(SAMPLE_RATE);
+        oscillators.set_osc1_frequency_semitones(0.0);
+        oscillators.set_osc1_keyboard_on(false);
+        oscillators.update_frequencies();
+
+        let freq = oscillators.osc1_frequency_hz().to_array()[0];
+        let expected = midi_to_hz(12);
+        assert!(
+            (freq - expected).abs() < 0.5,
+            "keyboard off at raw 0 should be ~16 Hz (MIDI 12), got {freq} expected {expected}"
         );
     }
 
