@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
-
-use super::real_time::{FftState, SignalSource, fill_fft_from_captured, process_fft_trace};
+use crate::ui::analysis::real_time::{HoverStatus, SignalSource};
+use crate::ui::analysis::spectrum_analyzer::{FftState, fill_fft_from_captured, process_fft_trace};
 
 pub(crate) const MAX_SCOPE_SAMPLES: usize = 65536;
 const DEFAULT_JUMP_THRESHOLD: f32 = 0.5;
@@ -400,6 +400,107 @@ pub(crate) fn finalize_capture(osc: &mut OscilloscopeState, fft: &mut FftState, 
     compute_fft_on_capture(fft, osc, sample_rate);
 }
 
+fn arm_capture(osc: &mut OscilloscopeState, sample_rate: f32) {
+    osc.input_buffer_l.clear();
+    osc.input_buffer_r.clear();
+    osc.output_buffer_l.clear();
+    osc.output_buffer_r.clear();
+    osc.buf_len = 0;
+    let tgt = ((osc.capture_duration_ms / 1000.0 * sample_rate) as usize).max(64);
+    osc.capture_circ_il = vec![0.0f32; tgt];
+    osc.capture_circ_ir = vec![0.0f32; tgt];
+    osc.capture_circ_ol = vec![0.0f32; tgt];
+    osc.capture_circ_or = vec![0.0f32; tgt];
+    osc.capture_circ_target = tgt;
+    osc.capture_circ_write = 0;
+    osc.capture_circ_start = 0;
+    osc.capture_circ_count = 0;
+    osc.capture_trig_pos = 0.0;
+    osc.capture_armed = true;
+    osc.capture_trigger_found = false;
+}
+
+fn freeze_from_live(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate: f32) {
+    let n = osc.buf_len;
+    if n <= 1 {
+        return;
+    }
+    let view_offset = live_view_offset(osc, sample_rate).unwrap_or(0.0);
+    osc.captured_input_l = osc.input_buffer_l[..n].to_vec();
+    osc.captured_input_r = osc.input_buffer_r[..n].to_vec();
+    osc.captured_output_l = osc.output_buffer_l[..n].to_vec();
+    osc.captured_output_r = osc.output_buffer_r[..n].to_vec();
+    osc.captured_len = n;
+    osc.captured_view_offset = view_offset;
+    osc.capture_armed = false;
+    osc.capture_trigger_found = false;
+    osc.captured = true;
+    compute_fft_on_capture(fft, osc, sample_rate);
+}
+
+fn live_view_offset(state: &OscilloscopeState, sample_rate: f32) -> Option<f32> {
+    let elen = state.buf_len;
+    if elen <= 1 {
+        return None;
+    }
+
+    let il = state.input_buffer_l.as_slice();
+    let ir = state.input_buffer_r.as_slice();
+    let ol = state.output_buffer_l.as_slice();
+    let or = state.output_buffer_r.as_slice();
+
+    let trigger_buf_l = match state.source {
+        SignalSource::Input => il,
+        SignalSource::Output => ol,
+        SignalSource::InputAndOutput => ol,
+    };
+    let trigger_buf_r = match state.source {
+        SignalSource::Input => ir,
+        SignalSource::Output => or,
+        SignalSource::InputAndOutput => or,
+    };
+    let trigger_buf_l_final = match state.display_mode {
+        OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => trigger_buf_l,
+        OscilloscopeDisplayMode::Right => trigger_buf_r,
+    };
+    let trigger_buf_r_for_combined = match state.display_mode {
+        OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => match state.source {
+            SignalSource::Input => ir,
+            SignalSource::Output => or,
+            SignalSource::InputAndOutput => or,
+        },
+        OscilloscopeDisplayMode::Right => trigger_buf_r,
+    };
+
+    let trig = match state.source {
+        SignalSource::InputAndOutput => find_combined_trigger(
+            trigger_buf_l_final,
+            trigger_buf_r_for_combined,
+            elen,
+            state.trigger_level,
+            state.trigger_slope,
+        ),
+        _ => find_trigger(
+            trigger_buf_l_final,
+            elen,
+            state.trigger_level,
+            state.trigger_slope,
+        ),
+    };
+
+    let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+    let trig_f32 = match trig {
+        None => elen.saturating_sub(samples_to_show) as f32,
+        Some(t) => t,
+    };
+
+    let mut trig_idx = trig_f32 as usize;
+    if trig_idx + samples_to_show > elen {
+        trig_idx = elen.saturating_sub(samples_to_show);
+    }
+    Some(trig_idx as f32)
+}
+
 fn compute_fft_on_capture(fft_state: &mut FftState, osc: &OscilloscopeState, sample_rate: f32) {
     let fft_size = fft_state.fft_size;
     if fft_state.complex_buf.len() != fft_size || fft_state.fft.is_none() {
@@ -757,12 +858,15 @@ fn draw_oscilloscope_trace(
 pub(crate) fn draw_oscilloscope(
     ui: &mut egui::Ui,
     state: &mut OscilloscopeState,
+    fft: &mut FftState,
     sample_rate: f32,
-    fft_size: usize,
+    hover: &mut Option<HoverStatus>,
 ) {
+    let fft_size = fft.fft_size;
     let scroll_input = ui.ctx().input(|i| i.smooth_scroll_delta);
     let zoom_input = ui.ctx().input(|i| i.zoom_delta());
     let cmd_held = ui.ctx().input(|i| i.modifiers.command);
+    let alt_held = ui.ctx().input(|i| i.modifiers.alt);
     let cursor_pos = ui.ctx().input(|i| i.pointer.hover_pos());
 
     // -- Bar 1: Capture / Trigger --
@@ -806,28 +910,25 @@ pub(crate) fn draw_oscilloscope(
                 state.capture_circ_or.clear();
                 state.capture_circ_target = 0;
             }
-        } else if ui
-            .button("Capture")
-            .on_hover_text("Arm capture; freezes on next trigger")
-            .clicked()
-        {
-            state.input_buffer_l.clear();
-            state.input_buffer_r.clear();
-            state.output_buffer_l.clear();
-            state.output_buffer_r.clear();
-            state.buf_len = 0;
-            let tgt = ((state.capture_duration_ms / 1000.0 * sample_rate) as usize).max(64);
-            state.capture_circ_il = vec![0.0f32; tgt];
-            state.capture_circ_ir = vec![0.0f32; tgt];
-            state.capture_circ_ol = vec![0.0f32; tgt];
-            state.capture_circ_or = vec![0.0f32; tgt];
-            state.capture_circ_target = tgt;
-            state.capture_circ_write = 0;
-            state.capture_circ_start = 0;
-            state.capture_circ_count = 0;
-            state.capture_trig_pos = 0.0;
-            state.capture_armed = true;
-            state.capture_trigger_found = false;
+        } else {
+            let key_capture = ui.input(|i| i.key_pressed(egui::Key::C));
+            let key_freeze = ui.input(|i| i.key_pressed(egui::Key::F));
+            if ui
+                .button("Capture")
+                .on_hover_text("Arm capture; freezes on next trigger (C)")
+                .clicked()
+                || key_capture
+            {
+                arm_capture(state, sample_rate);
+            }
+            if ui
+                .add_enabled(state.buf_len > 1, egui::Button::new("Freeze"))
+                .on_hover_text("Instant freeze of the current live buffer (F)")
+                .clicked()
+                || (key_freeze && state.buf_len > 1)
+            {
+                freeze_from_live(state, fft, sample_rate);
+            }
         }
         ui.separator();
         ui.label("Level:");
@@ -895,11 +996,7 @@ pub(crate) fn draw_oscilloscope(
             state.buf_len as f32 / sample_rate * 1000.0
         };
 
-        let clamp_ms = if state.captured {
-            state.captured_len as f32 / sample_rate * 1000.0
-        } else {
-            state.capture_duration_ms
-        };
+        let clamp_ms = timebase_max_ms(state, sample_rate);
         state.timebase_ms = state.timebase_ms.clamp(1.0, clamp_ms);
 
         let slider_max = buf_duration_ms.max(state.timebase_ms).max(1.0);
@@ -939,10 +1036,8 @@ pub(crate) fn draw_oscilloscope(
     let x_label_h = 14.0;
     let top_pad = 8.0;
     let plot_h = available.y.max(40.0);
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(available.x, plot_h),
-        egui::Sense::click_and_drag(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(available.x, plot_h), egui::Sense::click());
     let plot_left = rect.left() + y_label_w;
     let plot_rect = egui::Rect::from_min_max(
         egui::pos2(plot_left, rect.top() + top_pad),
@@ -959,8 +1054,12 @@ pub(crate) fn draw_oscilloscope(
     let label_color = egui::Color32::from_rgb(120, 120, 130);
     let grid_color = egui::Color32::from_rgb(50, 50, 58);
 
-    for row in 0..=8 {
-        let grid_y = plot_rect.top() + plot_rect.height() * (row as f32 / 8.0);
+    for step in -4..=4 {
+        let val = step as f32 * 0.25 * state.y_range;
+        let grid_y = center_y - val * display_yscale;
+        if !plot_rect.y_range().contains(grid_y) {
+            continue;
+        }
         painter.line_segment(
             [
                 egui::pos2(plot_rect.left(), grid_y),
@@ -968,7 +1067,6 @@ pub(crate) fn draw_oscilloscope(
             ],
             egui::Stroke::new(1.0_f32, grid_color),
         );
-        let val = (1.0 - row as f32 * 0.25) * state.y_range;
         painter.text(
             egui::pos2(plot_rect.left() - 4.0, grid_y),
             egui::Align2::RIGHT_CENTER,
@@ -1014,6 +1112,7 @@ pub(crate) fn draw_oscilloscope(
         let scroll = scroll_input;
         let zoom = zoom_input;
         let cmd = cmd_held;
+        let alt = alt_held;
         let has_zoom = (zoom - 1.0).abs() > 0.001;
 
         let x_frac = cursor_pos
@@ -1022,7 +1121,8 @@ pub(crate) fn draw_oscilloscope(
 
         if cmd && has_zoom {
             let old_ms = state.timebase_ms;
-            state.timebase_ms = (state.timebase_ms * zoom).clamp(1.0, 500.0);
+            let max_ms = timebase_max_ms(state, sample_rate);
+            state.timebase_ms = (state.timebase_ms * zoom).clamp(1.0, max_ms);
             if state.captured && state.captured_len > 1 {
                 let old_samples = old_ms / 1000.0 * sample_rate;
                 let new_samples = state.timebase_ms / 1000.0 * sample_rate;
@@ -1031,13 +1131,12 @@ pub(crate) fn draw_oscilloscope(
                 let max_offset = (state.captured_len as f32 - new_samples).max(0.0);
                 state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
             }
-        } else if !cmd && has_zoom {
-            state.y_range = (state.y_range * zoom).clamp(0.001, 1.0);
         }
 
         if cmd && scroll.y != 0.0 && !has_zoom {
             let old_ms = state.timebase_ms;
-            state.timebase_ms = (state.timebase_ms * (1.0 - scroll.y * 0.005)).clamp(1.0, 500.0);
+            let max_ms = timebase_max_ms(state, sample_rate);
+            state.timebase_ms = (state.timebase_ms * (1.0 - scroll.y * 0.005)).clamp(1.0, max_ms);
             if state.captured && state.captured_len > 1 {
                 let old_samples = old_ms / 1000.0 * sample_rate;
                 let new_samples = state.timebase_ms / 1000.0 * sample_rate;
@@ -1046,8 +1145,34 @@ pub(crate) fn draw_oscilloscope(
                 let max_offset = (state.captured_len as f32 - new_samples).max(0.0);
                 state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
             }
-        } else if !cmd && scroll.y != 0.0 && !has_zoom {
-            state.y_range = (state.y_range * (1.0 - scroll.y * 0.005)).clamp(0.001, 1.0);
+        }
+
+        if alt && !cmd {
+            // Read raw wheel events (not smooth_scroll_delta). With Opt held, egui's
+            // default vertical_scroll_modifier remaps axes into smooth_scroll_delta;
+            // event deltas keep the platform sign: positive y = finger/content down.
+            let mut wheel_y = 0.0_f32;
+            ui.input(|input| {
+                for event in &input.events {
+                    if let egui::Event::MouseWheel {
+                        delta, modifiers, ..
+                    } = event
+                    {
+                        if modifiers.alt && !modifiers.command {
+                            wheel_y += delta.y;
+                        }
+                    }
+                }
+            });
+            if wheel_y != 0.0 {
+                // Finger/content down (positive y) increases Y range.
+                let steps = (wheel_y / 8.0).abs().max(1.0).round();
+                let delta = wheel_y.signum() * steps * 0.01;
+                state.y_range = quantize_y_range(state.y_range + delta);
+            } else if has_zoom {
+                // Pinch with Opt: zoom>1 (spread) decreases Y range.
+                state.y_range = quantize_y_range(state.y_range / zoom);
+            }
         }
 
         if cmd && state.captured {
@@ -1067,18 +1192,6 @@ pub(crate) fn draw_oscilloscope(
                 let max_offset = (state.captured_len as f32 - visible_samples).max(0.0);
                 state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
             }
-        }
-    }
-
-    if state.captured && response.dragged_by(PointerButton::Primary) {
-        let delta = response.drag_delta();
-        let visible_samples = state.timebase_ms / 1000.0 * sample_rate;
-        let samples_per_px = visible_samples / plot_rect.width();
-        state.captured_view_offset =
-            (state.captured_view_offset + delta.x * samples_per_px).round();
-        if state.captured_len > 1 {
-            let max_offset = (state.captured_len as f32 - visible_samples).max(0.0);
-            state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
         }
     }
 
@@ -1109,63 +1222,8 @@ pub(crate) fn draw_oscilloscope(
             return;
         }
 
-        let trigger_buf_l = match state.source {
-            SignalSource::Input => il,
-            SignalSource::Output => ol,
-            SignalSource::InputAndOutput => ol,
-        };
-        let trigger_buf_r = match state.source {
-            SignalSource::Input => ir,
-            SignalSource::Output => or,
-            SignalSource::InputAndOutput => or,
-        };
-        let trigger_buf_l_final = match state.display_mode {
-            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => trigger_buf_l,
-            OscilloscopeDisplayMode::Right => trigger_buf_r,
-        };
-        let trigger_buf_r_for_combined = match state.display_mode {
-            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => {
-                let trigger_r = match state.source {
-                    SignalSource::Input => ir,
-                    SignalSource::Output => or,
-                    SignalSource::InputAndOutput => or,
-                };
-                trigger_r
-            }
-            OscilloscopeDisplayMode::Right => trigger_buf_r,
-        };
-
-        let trig = match state.source {
-            SignalSource::InputAndOutput => find_combined_trigger(
-                trigger_buf_l_final,
-                trigger_buf_r_for_combined,
-                elen,
-                state.trigger_level,
-                state.trigger_slope,
-            ),
-            _ => find_trigger(
-                trigger_buf_l_final,
-                elen,
-                state.trigger_level,
-                state.trigger_slope,
-            ),
-        };
-
-        let trig_f32 = match trig {
-            None => {
-                let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
-                elen.saturating_sub(samples_to_show) as f32
-            }
-            Some(t) => t,
-        };
-
-        let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
-        let mut trig_idx = trig_f32 as usize;
-        if trig_idx + samples_to_show > elen {
-            trig_idx = elen.saturating_sub(samples_to_show);
-        }
-
-        (il, ir, ol, or, elen, Some(trig_idx as f32))
+        let trig_idx = live_view_offset(state, sample_rate).unwrap_or(0.0);
+        (il, ir, ol, or, elen, Some(trig_idx))
     };
 
     if len <= 1 {
@@ -1310,6 +1368,25 @@ pub(crate) fn draw_oscilloscope(
                 ],
                 egui::Stroke::new(1.0_f32, grid_color),
             );
+
+            let x_frac = ((cursor.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
+            let offset_ms = if state.captured {
+                state.captured_view_offset / sample_rate * 1000.0
+            } else {
+                0.0
+            };
+            let time_ms = offset_ms + x_frac * state.timebase_ms;
+            let sample_idx = ((start as f32 + x_frac * samples_to_show as f32).round() as usize)
+                .clamp(start, end.saturating_sub(1).max(start));
+            let levels = format_scope_levels(
+                state.source,
+                state.display_mode,
+                sample_at(input_l, sample_idx),
+                sample_at(input_r, sample_idx),
+                sample_at(output_l, sample_idx),
+                sample_at(output_r, sample_idx),
+            );
+            *hover = Some(HoverStatus::Scope { time_ms, levels });
         }
     }
 
@@ -1348,5 +1425,97 @@ pub(crate) fn draw_oscilloscope(
             );
         }
         tick_ms += tick_interval;
+    }
+}
+
+fn sample_at(buf: &[f32], index: usize) -> f32 {
+    buf.get(index).copied().unwrap_or(0.0)
+}
+
+fn timebase_max_ms(state: &OscilloscopeState, sample_rate: f32) -> f32 {
+    if state.captured {
+        (state.captured_len as f32 / sample_rate * 1000.0).max(1.0)
+    } else {
+        state.capture_duration_ms.max(1.0)
+    }
+}
+
+fn quantize_y_range(value: f32) -> f32 {
+    ((value * 100.0).round() / 100.0).clamp(0.01, 1.0)
+}
+
+fn format_scope_levels(
+    source: SignalSource,
+    mode: OscilloscopeDisplayMode,
+    input_l: f32,
+    input_r: f32,
+    output_l: f32,
+    output_r: f32,
+) -> String {
+    let (left, right) = match source {
+        SignalSource::Input => (input_l, input_r),
+        SignalSource::Output => (output_l, output_r),
+        SignalSource::InputAndOutput => (0.0, 0.0),
+    };
+    match (source, mode) {
+        (SignalSource::InputAndOutput, OscilloscopeDisplayMode::Stereo) => {
+            format!(
+                "I L: {input_l:+.3}   I R: {input_r:+.3}   O L: {output_l:+.3}   O R: {output_r:+.3}"
+            )
+        }
+        (SignalSource::InputAndOutput, OscilloscopeDisplayMode::Left) => {
+            format!("I: {input_l:+.3}   O: {output_l:+.3}")
+        }
+        (SignalSource::InputAndOutput, OscilloscopeDisplayMode::Right) => {
+            format!("I: {input_r:+.3}   O: {output_r:+.3}")
+        }
+        (_, OscilloscopeDisplayMode::Stereo) => {
+            format!("L: {left:+.3}   R: {right:+.3}")
+        }
+        (_, OscilloscopeDisplayMode::Left) => format!("Level: {left:+.3}"),
+        (_, OscilloscopeDisplayMode::Right) => format!("Level: {right:+.3}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OscilloscopeDisplayMode, format_scope_levels};
+    use crate::ui::analysis::real_time::SignalSource;
+
+    #[test]
+    fn scope_levels_format_by_source_and_mode() {
+        assert_eq!(
+            format_scope_levels(
+                SignalSource::Output,
+                OscilloscopeDisplayMode::Left,
+                0.1,
+                0.2,
+                0.3,
+                0.4
+            ),
+            "Level: +0.300"
+        );
+        assert_eq!(
+            format_scope_levels(
+                SignalSource::Input,
+                OscilloscopeDisplayMode::Stereo,
+                0.1,
+                -0.2,
+                0.3,
+                0.4
+            ),
+            "L: +0.100   R: -0.200"
+        );
+        assert_eq!(
+            format_scope_levels(
+                SignalSource::InputAndOutput,
+                OscilloscopeDisplayMode::Right,
+                0.1,
+                0.2,
+                0.3,
+                0.4
+            ),
+            "I: +0.200   O: +0.400"
+        );
     }
 }

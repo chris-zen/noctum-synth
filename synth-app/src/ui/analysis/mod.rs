@@ -4,6 +4,7 @@ pub mod osc_design;
 pub mod oscilloscope;
 pub mod real_time;
 pub mod spectrum;
+pub mod spectrum_analyzer;
 
 use eframe::egui;
 use std::collections::VecDeque;
