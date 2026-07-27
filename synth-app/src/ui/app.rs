@@ -92,9 +92,7 @@ impl App {
         engine
             .control
             .set_midi_output_port(config.settings.midi_output_port.as_deref());
-        engine
-            .control
-            .set_input_enabled(config.input_enabled);
+        engine.control.set_input_enabled(config.input_enabled);
 
         let mut analysis = AnalysisState::default();
         config.analysis.apply_to(&mut analysis);

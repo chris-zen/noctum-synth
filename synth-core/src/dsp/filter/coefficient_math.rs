@@ -240,8 +240,9 @@ mod tests {
             let maximum = (sample_rate * 0.45).min(super::super::MAX_CUTOFF_HZ);
             for index in 0..4096 {
                 let base = 20.0 + (maximum - 20.0) * index as f32 / 4095.0;
-                let modulation =
-                    WideF32::new(core::array::from_fn(|i| [-48.0 + index as f32 * (96.0 / 4095.0), -24.0, 12.0, 47.0][i % 4]));
+                let modulation = WideF32::new(core::array::from_fn(|i| {
+                    [-48.0 + index as f32 * (96.0 / 4095.0), -24.0, 12.0, 47.0][i % 4]
+                }));
                 let expected = previous_vector_coefficient(base, modulation, maximum, sample_rate);
                 let actual = vector_coefficient(base, modulation, maximum, sample_rate);
                 assert_eq!(

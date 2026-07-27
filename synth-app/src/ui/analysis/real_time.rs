@@ -374,12 +374,7 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
     ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
         ui.strong("Spectrum Analyzer");
         ui.add_space(6.0);
-        draw_fft(
-            ui,
-            &mut state.fft,
-            &state.osc,
-            state.sample_rate,
-        );
+        draw_fft(ui, &mut state.fft, &state.osc, state.sample_rate);
     });
 }
 
@@ -406,12 +401,7 @@ fn source_selector(ui: &mut egui::Ui, source: &mut SignalSource) -> bool {
     before != *source
 }
 
-fn draw_fft(
-    ui: &mut egui::Ui,
-    state: &mut FftState,
-    osc: &OscilloscopeState,
-    sample_rate: f32,
-) {
+fn draw_fft(ui: &mut egui::Ui, state: &mut FftState, osc: &OscilloscopeState, sample_rate: f32) {
     let fft_size = state.fft_size;
     if osc.captured {
         if state.complex_buf.len() != fft_size || state.fft.is_none() {
@@ -545,10 +535,7 @@ fn draw_fft(
             (SpectrumChannel::Right, "R"),
             (SpectrumChannel::Sum, "L+R"),
         ] {
-            if ui
-                .selectable_label(state.channel == chan, label)
-                .clicked()
-                && state.channel != chan
+            if ui.selectable_label(state.channel == chan, label).clicked() && state.channel != chan
             {
                 state.channel = chan;
                 state.clear_history();
@@ -636,12 +623,7 @@ fn draw_fft(
             spectrum::render_spectra(ui, &[output_trace], &config, HOVER_READOUT_H)
         }
         SignalSource::InputAndOutput => {
-            spectrum::render_spectra(
-                ui,
-                &[output_trace, input_trace],
-                &config,
-                HOVER_READOUT_H,
-            )
+            spectrum::render_spectra(ui, &[output_trace, input_trace], &config, HOVER_READOUT_H)
         }
     };
 
@@ -743,8 +725,8 @@ fn format_midi_note(hz: f32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SignalSource, SpectrumChannel, copy_channel};
     use super::super::oscilloscope::{TriggerSlope, find_combined_trigger};
+    use super::{SignalSource, SpectrumChannel, copy_channel};
 
     #[test]
     fn source_defaults_to_internal_output() {
@@ -767,13 +749,8 @@ mod tests {
         let input = [-0.4, -0.2, 0.1, 0.2];
         let output = [-0.4, -0.1, 0.2, 0.3];
 
-        let trigger = find_combined_trigger(
-            &input,
-            &output,
-            input.len(),
-            0.0,
-            TriggerSlope::Rising,
-        );
+        let trigger =
+            find_combined_trigger(&input, &output, input.len(), 0.0, TriggerSlope::Rising);
 
         assert!(trigger.is_some());
         assert!((trigger.unwrap() - 1.5).abs() < f32::EPSILON);
@@ -782,12 +759,8 @@ mod tests {
     #[test]
     fn falling_edge_trigger() {
         let buf = [0.3, 0.2, -0.1, -0.2];
-        let trigger = super::super::oscilloscope::find_trigger(
-            &buf,
-            buf.len(),
-            0.0,
-            TriggerSlope::Falling,
-        );
+        let trigger =
+            super::super::oscilloscope::find_trigger(&buf, buf.len(), 0.0, TriggerSlope::Falling);
         assert!(trigger.is_some());
         assert!((trigger.unwrap() - (1.0 + 2.0 / 3.0)).abs() < 0.001);
     }

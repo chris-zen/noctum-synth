@@ -639,8 +639,12 @@ mod tests {
 
     #[test]
     fn simd_comparisons_and_blend_lane0_scenarios() {
-        for (a, b, expected) in [(1.0, 2.0, 1.0), (5.0, 3.0, 3.0), (2.0, 3.0, 2.0), (8.0, 3.0, 3.0)]
-        {
+        for (a, b, expected) in [
+            (1.0, 2.0, 1.0),
+            (5.0, 3.0, 3.0),
+            (2.0, 3.0, 2.0),
+            (8.0, 3.0, 3.0),
+        ] {
             let left = splat(a);
             let right = splat(b);
             let lt = left.simd_lt(right);

@@ -856,17 +856,30 @@ mod tests {
                         for frame in 0..256 {
                             let phase = frame as f32;
                             let output = filter.process(
-                                WideF32::new(core::array::from_fn(|i| [0.8, -0.8, 0.25, -0.25][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [24.0, 60.0, 96.0, 120.0][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [0.0, 0.33, 0.66, 1.0][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [0.0, 0.33, 0.66, 1.0][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [phase.sin(),
-                                    phase.cos(),
-                                    -phase.sin(),
-                                    -phase.cos(),][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [-48.0, -12.0, 12.0, 48.0][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [-0.2, -0.05, 0.05, 0.2][i % 4])),
-                                WideF32::new(core::array::from_fn(|i| [-0.25, 0.0, 0.25, 0.5][i % 4])),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [0.8, -0.8, 0.25, -0.25][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [24.0, 60.0, 96.0, 120.0][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [0.0, 0.33, 0.66, 1.0][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [0.0, 0.33, 0.66, 1.0][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [phase.sin(), phase.cos(), -phase.sin(), -phase.cos()][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [-48.0, -12.0, 12.0, 48.0][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [-0.2, -0.05, 0.05, 0.2][i % 4]
+                                })),
+                                WideF32::new(core::array::from_fn(|i| {
+                                    [-0.25, 0.0, 0.25, 0.5][i % 4]
+                                })),
                                 sample_rate,
                             );
                             assert!(
@@ -912,8 +925,11 @@ mod tests {
                     SAMPLE_RATE,
                 )
             };
-            let mixed_output =
-                render(&mut mixed, WideF32::new(core::array::from_fn(|i| [-0.25, 0.05, -0.25, 0.05][i % 4]))).to_array();
+            let mixed_output = render(
+                &mut mixed,
+                WideF32::new(core::array::from_fn(|i| [-0.25, 0.05, -0.25, 0.05][i % 4])),
+            )
+            .to_array();
             let low_output = render(&mut low, WideF32::splat(-0.25)).to_array();
             let high_output = render(&mut high, WideF32::splat(0.05)).to_array();
             assert!(

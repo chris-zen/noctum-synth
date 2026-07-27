@@ -693,10 +693,14 @@ mod tests {
         let mut output = [0u32; 32];
         for frame in 0..520 {
             let phase = frame as f32;
-            let input = WideF32::new(core::array::from_fn(|i| [(phase * 0.071).sin() * 0.21,
-                (phase * 0.047).cos() * 0.17,
-                if frame % 11 < 5 { 0.13 } else { -0.09 },
-                ((frame * 37 % 101) as f32 / 50.0 - 1.0) * 0.08,][i % 4]));
+            let input = WideF32::new(core::array::from_fn(|i| {
+                [
+                    (phase * 0.071).sin() * 0.21,
+                    (phase * 0.047).cos() * 0.17,
+                    if frame % 11 < 5 { 0.13 } else { -0.09 },
+                    ((frame * 37 % 101) as f32 / 50.0 - 1.0) * 0.08,
+                ][i % 4]
+            }));
             let rendered = filter.process(
                 input,
                 WideF32::new(core::array::from_fn(|i| [36.0, 52.0, 67.0, 83.0][i % 4])),
@@ -707,10 +711,14 @@ mod tests {
                 },
                 WideF32::new(core::array::from_fn(|i| [0.2, 0.45, 0.75, 1.0][i % 4])),
                 if modulation_heavy {
-                    WideF32::new(core::array::from_fn(|i| [(phase * 0.031).sin(),
-                        (phase * 0.043).cos(),
-                        (phase * 0.059).sin(),
-                        (phase * 0.073).cos(),][i % 4]))
+                    WideF32::new(core::array::from_fn(|i| {
+                        [
+                            (phase * 0.031).sin(),
+                            (phase * 0.043).cos(),
+                            (phase * 0.059).sin(),
+                            (phase * 0.073).cos(),
+                        ][i % 4]
+                    }))
                 } else {
                     WideF32::ZERO
                 },

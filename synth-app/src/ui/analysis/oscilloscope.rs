@@ -6,9 +6,7 @@ use std::collections::VecDeque;
 
 use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
 
-use super::real_time::{
-    fill_fft_from_captured, process_fft_trace, FftState, SignalSource,
-};
+use super::real_time::{FftState, SignalSource, fill_fft_from_captured, process_fft_trace};
 
 pub(crate) const MAX_SCOPE_SAMPLES: usize = 65536;
 const DEFAULT_JUMP_THRESHOLD: f32 = 0.5;
@@ -247,8 +245,7 @@ pub(crate) fn find_trigger(
         TriggerSlope::Rising => {
             for index in (1..len).rev() {
                 if buf[index - 1] < level && buf[index] >= level {
-                    let fraction =
-                        (level - buf[index - 1]) / (buf[index] - buf[index - 1]);
+                    let fraction = (level - buf[index - 1]) / (buf[index] - buf[index - 1]);
                     return Some((index - 1) as f32 + fraction);
                 }
             }
@@ -256,8 +253,7 @@ pub(crate) fn find_trigger(
         TriggerSlope::Falling => {
             for index in (1..len).rev() {
                 if buf[index - 1] > level && buf[index] <= level {
-                    let fraction =
-                        (buf[index - 1] - level) / (buf[index - 1] - buf[index]);
+                    let fraction = (buf[index - 1] - level) / (buf[index - 1] - buf[index]);
                     return Some((index - 1) as f32 + fraction);
                 }
             }
@@ -394,11 +390,7 @@ fn capture_scope(state: &mut OscilloscopeState) {
     state.captured = true;
 }
 
-pub(crate) fn finalize_capture(
-    osc: &mut OscilloscopeState,
-    fft: &mut FftState,
-    sample_rate: f32,
-) {
+pub(crate) fn finalize_capture(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate: f32) {
     osc.capture_armed = false;
     osc.capture_trigger_found = false;
     let trig = osc.capture_trig_pos;
@@ -408,11 +400,7 @@ pub(crate) fn finalize_capture(
     compute_fft_on_capture(fft, osc, sample_rate);
 }
 
-fn compute_fft_on_capture(
-    fft_state: &mut FftState,
-    osc: &OscilloscopeState,
-    sample_rate: f32,
-) {
+fn compute_fft_on_capture(fft_state: &mut FftState, osc: &OscilloscopeState, sample_rate: f32) {
     let fft_size = fft_state.fft_size;
     if fft_state.complex_buf.len() != fft_size || fft_state.fft.is_none() {
         fft_state.complex_buf = vec![rustfft::num_complex::Complex32::new(0.0, 0.0); fft_size];
@@ -514,30 +502,30 @@ pub(crate) fn feed_audio(
             let mut trig_in_block = false;
             let mut trig_offset = 0;
             if !osc.capture_trigger_found {
-                let use_left = osc.display_mode
-                    != OscilloscopeDisplayMode::Right;
+                let use_left = osc.display_mode != OscilloscopeDisplayMode::Right;
                 let trig_chan = match osc.source {
-                    SignalSource::Input => if use_left {
-                        &block.input_left[..block_len]
-                    } else {
-                        &block.input_right[..block_len]
-                    },
-                    SignalSource::Output | SignalSource::InputAndOutput => if use_left {
-                        &block.output_left[..block_len]
-                    } else {
-                        &block.output_right[..block_len]
-                    },
+                    SignalSource::Input => {
+                        if use_left {
+                            &block.input_left[..block_len]
+                        } else {
+                            &block.input_right[..block_len]
+                        }
+                    }
+                    SignalSource::Output | SignalSource::InputAndOutput => {
+                        if use_left {
+                            &block.output_left[..block_len]
+                        } else {
+                            &block.output_right[..block_len]
+                        }
+                    }
                 };
-                if let Some(off) = find_trigger_offset(
-                    trig_chan,
-                    osc.trigger_level,
-                    osc.trigger_slope,
-                ) {
+                if let Some(off) =
+                    find_trigger_offset(trig_chan, osc.trigger_level, osc.trigger_slope)
+                {
                     trig_in_block = true;
                     trig_offset = off;
                     osc.capture_trigger_found = true;
-                    osc.capture_circ_start =
-                        (write_before + off) % tgt;
+                    osc.capture_circ_start = (write_before + off) % tgt;
                     osc.capture_trig_pos = 0.0;
                 }
             }
@@ -545,17 +533,14 @@ pub(crate) fn feed_audio(
             let write_len = if trig_in_block {
                 block_len.min(tgt)
             } else if osc.capture_trigger_found {
-                let need = tgt
-                    .saturating_sub(1)
-                    .saturating_sub(osc.capture_circ_count);
+                let need = tgt.saturating_sub(1).saturating_sub(osc.capture_circ_count);
                 block_len.min(need)
             } else {
                 block_len
             };
 
             if trig_in_block {
-                osc.capture_circ_count =
-                    write_len.saturating_sub(trig_offset + 1);
+                osc.capture_circ_count = write_len.saturating_sub(trig_offset + 1);
             } else if osc.capture_trigger_found {
                 osc.capture_circ_count += write_len;
             }
@@ -593,8 +578,7 @@ pub(crate) fn feed_audio(
 
     if osc.capture_armed
         && osc.capture_trigger_found
-        && osc.capture_circ_count
-            >= osc.capture_circ_target.saturating_sub(1)
+        && osc.capture_circ_count >= osc.capture_circ_target.saturating_sub(1)
     {
         finalize_capture(osc, fft, sample_rate);
         captured = true;
@@ -755,18 +739,14 @@ fn draw_oscilloscope_trace(
     let pts: Vec<egui::Pos2> = (start..end.min(buffer.len()))
         .map(|sample_index| {
             let point_x = plot_rect.left()
-                + plot_rect.width() * (sample_index as f32 - trig_f32)
-                    / samples_to_show as f32;
+                + plot_rect.width() * (sample_index as f32 - trig_f32) / samples_to_show as f32;
             let point_y = center_y - buffer[sample_index] * display_yscale;
             egui::pos2(point_x, point_y.clamp(plot_rect.top(), plot_rect.bottom()))
         })
         .collect();
 
     if pts.len() >= 2 {
-        painter.add(PathShape::line(
-            pts,
-            egui::Stroke::new(1.2_f32, color),
-        ));
+        painter.add(PathShape::line(pts, egui::Stroke::new(1.2_f32, color)));
     }
 }
 
@@ -800,8 +780,7 @@ pub(crate) fn draw_oscilloscope(
             if state.capture_trigger_found {
                 let pct = if state.capture_circ_target > 1 {
                     let c = state.capture_circ_count;
-                    ((c as f32 / (state.capture_circ_target - 1) as f32) * 100.0)
-                        .min(99.0) as u32
+                    ((c as f32 / (state.capture_circ_target - 1) as f32) * 100.0).min(99.0) as u32
                 } else {
                     0
                 };
@@ -811,8 +790,7 @@ pub(crate) fn draw_oscilloscope(
                 );
             } else {
                 ui.label(
-                    egui::RichText::new("Waiting...")
-                        .color(egui::Color32::from_rgb(180, 180, 100)),
+                    egui::RichText::new("Waiting...").color(egui::Color32::from_rgb(180, 180, 100)),
                 );
             }
             if ui
@@ -838,9 +816,7 @@ pub(crate) fn draw_oscilloscope(
             state.output_buffer_l.clear();
             state.output_buffer_r.clear();
             state.buf_len = 0;
-            let tgt =
-                ((state.capture_duration_ms / 1000.0 * sample_rate) as usize)
-                    .max(64);
+            let tgt = ((state.capture_duration_ms / 1000.0 * sample_rate) as usize).max(64);
             state.capture_circ_il = vec![0.0f32; tgt];
             state.capture_circ_ir = vec![0.0f32; tgt];
             state.capture_circ_ol = vec![0.0f32; tgt];
@@ -903,11 +879,8 @@ pub(crate) fn draw_oscilloscope(
         if state.captured {
             ui.separator();
             ui.label("Jmp:");
-            ui.add(
-                egui::Slider::new(&mut state.jump_threshold, 0.0..=1.0)
-                    .text(""),
-            )
-            .on_hover_text("Show sample-to-sample jumps exceeding this threshold");
+            ui.add(egui::Slider::new(&mut state.jump_threshold, 0.0..=1.0).text(""))
+                .on_hover_text("Show sample-to-sample jumps exceeding this threshold");
         }
     });
 
@@ -1056,8 +1029,7 @@ pub(crate) fn draw_oscilloscope(
                 let anchor = state.captured_view_offset + x_frac * old_samples;
                 state.captured_view_offset = (anchor - x_frac * new_samples).round();
                 let max_offset = (state.captured_len as f32 - new_samples).max(0.0);
-                state.captured_view_offset =
-                    state.captured_view_offset.clamp(0.0, max_offset);
+                state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
             }
         } else if !cmd && has_zoom {
             state.y_range = (state.y_range * zoom).clamp(0.001, 1.0);
@@ -1065,20 +1037,17 @@ pub(crate) fn draw_oscilloscope(
 
         if cmd && scroll.y != 0.0 && !has_zoom {
             let old_ms = state.timebase_ms;
-            state.timebase_ms =
-                (state.timebase_ms * (1.0 - scroll.y * 0.005)).clamp(1.0, 500.0);
+            state.timebase_ms = (state.timebase_ms * (1.0 - scroll.y * 0.005)).clamp(1.0, 500.0);
             if state.captured && state.captured_len > 1 {
                 let old_samples = old_ms / 1000.0 * sample_rate;
                 let new_samples = state.timebase_ms / 1000.0 * sample_rate;
                 let anchor = state.captured_view_offset + x_frac * old_samples;
                 state.captured_view_offset = (anchor - x_frac * new_samples).round();
                 let max_offset = (state.captured_len as f32 - new_samples).max(0.0);
-                state.captured_view_offset =
-                    state.captured_view_offset.clamp(0.0, max_offset);
+                state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
             }
         } else if !cmd && scroll.y != 0.0 && !has_zoom {
-            state.y_range =
-                (state.y_range * (1.0 - scroll.y * 0.005)).clamp(0.001, 1.0);
+            state.y_range = (state.y_range * (1.0 - scroll.y * 0.005)).clamp(0.001, 1.0);
         }
 
         if cmd && state.captured {
@@ -1086,21 +1055,17 @@ pub(crate) fn draw_oscilloscope(
             let cursor_sample = state.captured_view_offset + x_frac * visible_samples;
             let half = fft_size as f32 * 0.5;
             let max_start = (state.captured_len as f32 - fft_size as f32).max(0.0);
-            state.fft_window_start =
-                Some((cursor_sample - half).clamp(0.0, max_start));
+            state.fft_window_start = Some((cursor_sample - half).clamp(0.0, max_start));
         }
 
         if state.captured && scroll.x != 0.0 {
             let visible_samples = state.timebase_ms / 1000.0 * sample_rate;
             let samples_per_px = visible_samples / plot_rect.width();
             let shift = scroll.x * samples_per_px * 2.0;
-            state.captured_view_offset =
-                (state.captured_view_offset - shift).round();
+            state.captured_view_offset = (state.captured_view_offset - shift).round();
             if state.captured_len > 1 {
-                let max_offset =
-                    (state.captured_len as f32 - visible_samples).max(0.0);
-                state.captured_view_offset =
-                    state.captured_view_offset.clamp(0.0, max_offset);
+                let max_offset = (state.captured_len as f32 - visible_samples).max(0.0);
+                state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
             }
         }
     }
@@ -1112,10 +1077,8 @@ pub(crate) fn draw_oscilloscope(
         state.captured_view_offset =
             (state.captured_view_offset + delta.x * samples_per_px).round();
         if state.captured_len > 1 {
-            let max_offset =
-                (state.captured_len as f32 - visible_samples).max(0.0);
-            state.captured_view_offset =
-                state.captured_view_offset.clamp(0.0, max_offset);
+            let max_offset = (state.captured_len as f32 - visible_samples).max(0.0);
+            state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
         }
     }
 
@@ -1157,9 +1120,7 @@ pub(crate) fn draw_oscilloscope(
             SignalSource::InputAndOutput => or,
         };
         let trigger_buf_l_final = match state.display_mode {
-            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => {
-                trigger_buf_l
-            }
+            OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => trigger_buf_l,
             OscilloscopeDisplayMode::Right => trigger_buf_r,
         };
         let trigger_buf_r_for_combined = match state.display_mode {
@@ -1192,15 +1153,13 @@ pub(crate) fn draw_oscilloscope(
 
         let trig_f32 = match trig {
             None => {
-                let samples_to_show =
-                    ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+                let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
                 elen.saturating_sub(samples_to_show) as f32
             }
             Some(t) => t,
         };
 
-        let samples_to_show =
-            ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+        let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
         let mut trig_idx = trig_f32 as usize;
         if trig_idx + samples_to_show > elen {
             trig_idx = elen.saturating_sub(samples_to_show);
@@ -1215,8 +1174,7 @@ pub(crate) fn draw_oscilloscope(
 
     let trig_f32 = trig_idx_opt.unwrap_or(0.0);
 
-    let samples_to_show =
-        ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+    let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
 
     let start = trig_f32 as usize;
     let end = (start + samples_to_show).min(len);
@@ -1224,37 +1182,70 @@ pub(crate) fn draw_oscilloscope(
     if state.captured {
         if let Some(w) = state.fft_window_start {
             let win_end = (w + fft_size as f32).min(state.captured_len as f32);
-            let x0 = plot_rect.left()
-                + plot_rect.width() * (w - trig_f32) / samples_to_show as f32;
+            let x0 = plot_rect.left() + plot_rect.width() * (w - trig_f32) / samples_to_show as f32;
             let x1 = plot_rect.left()
                 + plot_rect.width() * (win_end - trig_f32) / samples_to_show as f32;
             let color = egui::Color32::from_rgba_premultiplied(255, 255, 255, 50);
             for x in [x0, x1] {
                 if x >= plot_rect.left() && x <= plot_rect.right() {
                     painter.line_segment(
-                        [egui::pos2(x, plot_rect.top()), egui::pos2(x, plot_rect.bottom())],
+                        [
+                            egui::pos2(x, plot_rect.top()),
+                            egui::pos2(x, plot_rect.bottom()),
+                        ],
                         egui::Stroke::new(1.0_f32, color),
                     );
                 }
             }
         }
-        let disc_color =
-            egui::Color32::from_rgba_premultiplied(220, 40, 40, 120);
+        let disc_color = egui::Color32::from_rgba_premultiplied(220, 40, 40, 120);
         draw_discontinuities(
-            &painter, plot_rect, center_y, output_l, start, end, trig_f32,
-            samples_to_show, state.jump_threshold, disc_color,
+            &painter,
+            plot_rect,
+            center_y,
+            output_l,
+            start,
+            end,
+            trig_f32,
+            samples_to_show,
+            state.jump_threshold,
+            disc_color,
         );
         draw_discontinuities(
-            &painter, plot_rect, center_y, output_r, start, end, trig_f32,
-            samples_to_show, state.jump_threshold, disc_color,
+            &painter,
+            plot_rect,
+            center_y,
+            output_r,
+            start,
+            end,
+            trig_f32,
+            samples_to_show,
+            state.jump_threshold,
+            disc_color,
         );
         draw_discontinuities(
-            &painter, plot_rect, center_y, input_l, start, end, trig_f32,
-            samples_to_show, state.jump_threshold, disc_color,
+            &painter,
+            plot_rect,
+            center_y,
+            input_l,
+            start,
+            end,
+            trig_f32,
+            samples_to_show,
+            state.jump_threshold,
+            disc_color,
         );
         draw_discontinuities(
-            &painter, plot_rect, center_y, input_r, start, end, trig_f32,
-            samples_to_show, state.jump_threshold, disc_color,
+            &painter,
+            plot_rect,
+            center_y,
+            input_r,
+            start,
+            end,
+            trig_f32,
+            samples_to_show,
+            state.jump_threshold,
+            disc_color,
         );
     }
 

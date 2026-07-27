@@ -350,10 +350,14 @@ mod tests {
                     let dt = WideF32::splat(phase_inc);
                     let width = WideF32::splat(width);
                     for index in (0..4096).step_by(4) {
-                        let phases = WideF32::new(core::array::from_fn(|i| [index as f32 / 4096.0,
-                            (index + 1) as f32 / 4096.0,
-                            (index + 2) as f32 / 4096.0,
-                            (index + 3) as f32 / 4096.0,][i % 4]));
+                        let phases = WideF32::new(core::array::from_fn(|i| {
+                            [
+                                index as f32 / 4096.0,
+                                (index + 1) as f32 / 4096.0,
+                                (index + 2) as f32 / 4096.0,
+                                (index + 3) as f32 / 4096.0,
+                            ][i % 4]
+                        }));
                         let expected = blep_pulse_reference(phases, dt, width, method).to_array();
                         let actual = blep_pulse(phases, dt, width, method).to_array();
 

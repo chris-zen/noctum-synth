@@ -643,9 +643,8 @@ mod embedded_solver_tests {
         let mut maximum_error = 0.0f32;
 
         for start in (0..=SAMPLES).step_by(WideF32::LANES) {
-            let fractions: [f32; WideF32::LANES] = core::array::from_fn(|lane| {
-                (start + lane).min(SAMPLES) as f32 / SAMPLES as f32
-            });
+            let fractions: [f32; WideF32::LANES] =
+                core::array::from_fn(|lane| (start + lane).min(SAMPLES) as f32 / SAMPLES as f32);
             let left = WideF32::new(fractions.map(|fraction| -8.0 + 16.0 * fraction));
             let right = WideF32::new(fractions.map(|fraction| 8.0 - 16.0 * fraction));
             let denominator = WideF32::new(fractions.map(|fraction| 0.5 + 3.5 * fraction));

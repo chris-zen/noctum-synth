@@ -355,7 +355,9 @@ mod tests {
     #[cfg(feature = "wide-4")]
     fn mip_state_is_per_lane_and_crossfade_restarts_safely() {
         let mut kernel = WavetableOscillatorKernel::new(reference_bank());
-        kernel.prepare(WideF32::new(core::array::from_fn(|i| [0.000_1, 0.001, 0.01, 0.1][i % 4])));
+        kernel.prepare(WideF32::new(core::array::from_fn(|i| {
+            [0.000_1, 0.001, 0.01, 0.1][i % 4]
+        })));
         assert!(
             kernel
                 .current
@@ -379,7 +381,9 @@ mod tests {
                 .all(f32::is_finite)
         );
         kernel.finish();
-        kernel.prepare(WideF32::new(core::array::from_fn(|i| [0.1, 0.01, 0.001, 0.000_1][i % 4])));
+        kernel.prepare(WideF32::new(core::array::from_fn(|i| {
+            [0.1, 0.01, 0.001, 0.000_1][i % 4]
+        })));
         assert_eq!(kernel.fade_remaining, [CROSSFADE_SAMPLES; WideF32::LANES]);
     }
 

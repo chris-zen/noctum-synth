@@ -1249,10 +1249,7 @@ mod tests {
             osc.set_phase(splat(0.4));
             next_output(&mut osc);
 
-            osc.hard_sync_reset(
-                mask_lane(0),
-                splat(reset_offset),
-            );
+            osc.hard_sync_reset(mask_lane(0), splat(reset_offset));
             let phase = lane0(osc.phase);
 
             assert!(
