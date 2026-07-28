@@ -63,31 +63,22 @@ impl WideF32 {
 
     #[inline]
     pub fn is_finite(self) -> Self {
-        Self(
-            self.0
-                .map(|v| f32::from_bits(if v.is_finite() { u32::MAX } else { 0 })),
-        )
+        Self::mask(core::array::from_fn(|i| self.0[i].is_finite()))
     }
 
     #[inline]
     pub fn simd_lt(self, other: Self) -> Self {
-        Self(core::array::from_fn(|i| {
-            f32::from_bits(if self.0[i] < other.0[i] { u32::MAX } else { 0 })
-        }))
+        Self::mask(core::array::from_fn(|i| self.0[i] < other.0[i]))
     }
 
     #[inline]
     pub fn simd_gt(self, other: Self) -> Self {
-        Self(core::array::from_fn(|i| {
-            f32::from_bits(if self.0[i] > other.0[i] { u32::MAX } else { 0 })
-        }))
+        Self::mask(core::array::from_fn(|i| self.0[i] > other.0[i]))
     }
 
     #[inline]
     pub fn simd_ge(self, other: Self) -> Self {
-        Self(core::array::from_fn(|i| {
-            f32::from_bits(if self.0[i] >= other.0[i] { u32::MAX } else { 0 })
-        }))
+        Self::mask(core::array::from_fn(|i| self.0[i] >= other.0[i]))
     }
 
     #[inline]

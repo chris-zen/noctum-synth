@@ -1,5 +1,9 @@
 //! Resonance-control shaping selected at the filter subsystem boundary.
 
+/// Exponent applied to the public resonance control before model calibration.
+#[cfg(any(not(target_arch = "arm"), test))]
+const RESONANCE_CONTROL_EXPONENT: f32 = 1.75;
+
 #[inline(always)]
 pub(super) fn shape(value: f32) -> f32 {
     backend::shape(value)
@@ -34,7 +38,7 @@ mod backend {
 
 #[cfg(not(target_arch = "arm"))]
 mod backend {
-    use crate::dsp::filter::RESONANCE_CONTROL_EXPONENT;
+    use super::RESONANCE_CONTROL_EXPONENT;
     use crate::math::F32;
 
     #[inline(always)]
@@ -45,7 +49,7 @@ mod backend {
 
 #[cfg(test)]
 mod tests {
-    use crate::dsp::filter::RESONANCE_CONTROL_EXPONENT;
+    use super::RESONANCE_CONTROL_EXPONENT;
 
     #[test]
     fn hardware_sqrt_form_tracks_reference_power() {

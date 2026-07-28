@@ -5,6 +5,7 @@ mod cascaded_tpt_svf;
 mod coefficient_math;
 #[cfg(feature = "filter-distributed-newton")]
 mod distributed_newton_tpt;
+#[cfg(feature = "filter-gain-limited")]
 mod gain_limited_tpt;
 #[cfg(feature = "filter-huovilainen")]
 mod huovilainen_ladder;
@@ -20,6 +21,7 @@ use crate::math::WideF32;
 use cascaded_tpt_svf::CascadedTptSvf;
 #[cfg(feature = "filter-distributed-newton")]
 use distributed_newton_tpt::DistributedNewtonTpt;
+#[cfg(feature = "filter-gain-limited")]
 use gain_limited_tpt::GainLimitedTpt;
 #[cfg(feature = "filter-huovilainen")]
 use huovilainen_ladder::HuovilainenLadder;
@@ -43,8 +45,6 @@ const AUDIO_MOD_DEPTH_SEMITONES: f32 = 12.0;
 const KEY_TRACK_REFERENCE_NOTE: f32 = -12.0;
 /// Prophet Key Amount max (raw 127) relative to unity at raw 64.
 const MAX_KEY_TRACK: f32 = 127.0 / 64.0;
-/// Exponent applied to the public resonance control before model calibration.
-const RESONANCE_CONTROL_EXPONENT: f32 = 1.75;
 
 /// Public resonance value where 4-pole nonlinear self-oscillation begins.
 pub const SELF_OSC_RESONANCE_START: f32 = 0.71;
@@ -52,12 +52,11 @@ pub const SELF_OSC_RESONANCE_START: f32 = 0.71;
 pub const SELF_OSC_PITCH_TUNING_CENTS: f32 = 133.0;
 
 /// Runtime-selectable filter model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum FilterType {
     /// Existing Rev2-inspired distributed-Newton TPT model.
-    #[default]
     #[cfg_attr(feature = "serde", serde(alias = "pass_through"))]
     DistributedNewtonTpt,
     /// Rev2-inspired scalar-feedback TPT candidate (introduced in Phase 1).
@@ -68,6 +67,34 @@ pub enum FilterType {
     HuovilainenLadder,
     /// Cascaded trapezoidal SVF reference (introduced in Phase 4).
     CascadedTptSvf,
+}
+
+impl Default for FilterType {
+    fn default() -> Self {
+        #[cfg(any(
+            feature = "filter-all",
+            all(not(feature = "filter-all"), feature = "filter-distributed-newton"),
+        ))]
+        {
+            Self::DistributedNewtonTpt
+        }
+        #[cfg(all(not(feature = "filter-all"), feature = "filter-scalar-feedback"))]
+        {
+            Self::ScalarFeedbackTpt
+        }
+        #[cfg(all(not(feature = "filter-all"), feature = "filter-gain-limited"))]
+        {
+            Self::GainLimitedTpt
+        }
+        #[cfg(all(not(feature = "filter-all"), feature = "filter-huovilainen"))]
+        {
+            Self::HuovilainenLadder
+        }
+        #[cfg(all(not(feature = "filter-all"), feature = "filter-cascaded-svf"))]
+        {
+            Self::CascadedTptSvf
+        }
+    }
 }
 
 impl FilterType {
@@ -232,15 +259,47 @@ impl FilterAlgorithmState {
     }
 }
 
-/// Daisy production filter bank. The public control surface is retained, but
-/// the hot path contains only the firmware's selected Gain-Limited TPT model.
-#[cfg(not(feature = "filter-all"))]
+#[cfg(not(any(
+    feature = "filter-all",
+    feature = "filter-distributed-newton",
+    feature = "filter-scalar-feedback",
+    feature = "filter-gain-limited",
+    feature = "filter-huovilainen",
+    feature = "filter-cascaded-svf",
+)))]
+compile_error!(
+    "enable exactly one filter feature: filter-distributed-newton, \
+     filter-scalar-feedback, filter-gain-limited, filter-huovilainen, \
+     or filter-cascaded-svf (or use filter-all)"
+);
+
+#[cfg(all(not(feature = "filter-all"), feature = "filter-distributed-newton"))]
+struct FilterAlgorithmState(DistributedNewtonTpt);
+#[cfg(all(not(feature = "filter-all"), feature = "filter-scalar-feedback"))]
+struct FilterAlgorithmState(ScalarFeedbackTpt);
+#[cfg(all(not(feature = "filter-all"), feature = "filter-gain-limited"))]
 struct FilterAlgorithmState(GainLimitedTpt);
+#[cfg(all(not(feature = "filter-all"), feature = "filter-huovilainen"))]
+struct FilterAlgorithmState(HuovilainenLadder);
+#[cfg(all(not(feature = "filter-all"), feature = "filter-cascaded-svf"))]
+struct FilterAlgorithmState(CascadedTptSvf);
 
 #[cfg(not(feature = "filter-all"))]
 impl FilterAlgorithmState {
-    fn new(_filter_type: FilterType) -> Self {
-        Self(GainLimitedTpt::default())
+    fn new(filter_type: FilterType) -> Self {
+        match filter_type {
+            #[cfg(feature = "filter-distributed-newton")]
+            FilterType::DistributedNewtonTpt => Self(DistributedNewtonTpt::default()),
+            #[cfg(feature = "filter-scalar-feedback")]
+            FilterType::ScalarFeedbackTpt => Self(ScalarFeedbackTpt::default()),
+            #[cfg(feature = "filter-gain-limited")]
+            FilterType::GainLimitedTpt => Self(GainLimitedTpt::default()),
+            #[cfg(feature = "filter-huovilainen")]
+            FilterType::HuovilainenLadder => Self(HuovilainenLadder::default()),
+            #[cfg(feature = "filter-cascaded-svf")]
+            FilterType::CascadedTptSvf => Self(CascadedTptSvf::default()),
+            _ => panic!("filter model not enabled in this build"),
+        }
     }
 
     fn reset(&mut self) {
@@ -309,8 +368,6 @@ impl Filter {
             shaped_resonance: 0.0,
             oversampling: FilterOversampling::Auto,
             self_oscillation_color_enabled: true,
-            // Later model variants intentionally use the bit-identical baseline
-            // until their sequential implementation phase lands.
             algorithm: FilterAlgorithmState::new(filter_type),
         }
     }

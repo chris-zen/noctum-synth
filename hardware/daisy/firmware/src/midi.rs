@@ -5,7 +5,7 @@ use embassy_daisy::usb::{Builder, Config, EndpointError};
 use embassy_executor::InterruptExecutor;
 use embassy_stm32::interrupt;
 
-use synth_core::midi::rev2::{MidiEncoder, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN};
+use synth_core::midi::rev2::PROGRAM_DATA_SYSEX_LEN;
 
 use crate::audio::{ControlQueue, PatchQueue, PerformanceQueue};
 use crate::pending_releases::PendingReleases;
@@ -226,6 +226,7 @@ mod tests {
     use embassy_daisy::usb::midi::{
         DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket, dispatch_events,
     };
+    use synth_core::midi::rev2::{MidiEncoder, PROGRAM_EDIT_BUFFER_SYSEX_LEN};
 
     #[derive(Default)]
     struct Collector {

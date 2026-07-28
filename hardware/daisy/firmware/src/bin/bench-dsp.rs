@@ -3,22 +3,24 @@
 
 use core::hint::black_box;
 use cortex_m::peripheral::DWT;
-use embassy_daisy::Board;
 use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::sdram::Sdram;
+use embassy_daisy::Board;
 use {defmt_rtt as _, panic_probe as _};
 
-use noctum_micro::audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue};
+use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, BLOCK_CYCLE_BUDGET};
+use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use synth_core::dsp::{FilterOversampling, FilterType, Waveform};
-use synth_core::{ControlMessage, DedicatedModSource, EffectType, GlideMode, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SynthEngineWithMemory, profiling::RenderStage};
+use synth_core::dsp::{FilterOversampling, Waveform};
+use synth_core::{
+    profiling::RenderStage, ControlMessage, DedicatedModSource, EffectType, GlideMode,
+    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SynthEngineWithMemory,
+};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
 const EFFECTS_SAMPLES: usize = 48_000 * 2;
 const WARMUP_BLOCKS: usize = 128;
 const MEASURED_BLOCKS: usize = 512;
-const DEFAULT_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
-const DEFAULT_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
 
 type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
 
@@ -298,8 +300,8 @@ fn run_scenario(sdram: &mut Sdram, name: &str, configure: impl FnOnce(&mut Hardw
 fn configure_benchmark_defaults(engine: &mut HardwareSynth) {
     // Match production firmware unless a filter-comparison scenario
     // explicitly selects another model or oversampling mode.
-    engine.set_filter_type(DEFAULT_FILTER_TYPE);
-    engine.set_filter_oversampling(DEFAULT_FILTER_OVERSAMPLING);
+    engine.set_filter_type(FILTER_TYPE);
+    engine.set_filter_oversampling(FILTER_OVERSAMPLING);
 }
 
 /// Prophet Rev2 factory preset U1-001, "LosVangelis2041".
@@ -541,7 +543,12 @@ fn configure_active_glide(engine: &mut HardwareSynth) {
 
 fn configure_pwm(engine: &mut HardwareSynth) {
     configure_single_oscillator_pulse(engine, 0.5);
-    configure_lfo_route(engine, ModRoute::Free(0), ModDestination::Osc1ShapeMod, 0.49);
+    configure_lfo_route(
+        engine,
+        ModRoute::Free(0),
+        ModDestination::Osc1ShapeMod,
+        0.49,
+    );
 }
 
 fn configure_cutoff_matrix_lfo(engine: &mut HardwareSynth) {

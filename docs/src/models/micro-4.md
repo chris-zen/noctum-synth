@@ -32,7 +32,20 @@ oscillator 1.
 
 This is the CPU-floor filter candidate selected for the STM32H750. The desktop
 application offers four additional filter models for auditioning during
-development; on the Micro, Gain-Limited TPT is the only filter.
+development; the Micro 4 firmware compiles only Gain-Limited TPT
+(`filter-gain-limited`).
+
+## Build
+
+```sh
+cd hardware/daisy
+make run-micro-4
+make bench-dsp-micro-4
+make bench-factory-banks-micro-4
+```
+
+Feature set: `fast-math,wide-4,downsampling,filter-gain-limited`. See the
+[Daisy Seed](../hardware/daisy.md) guide for the full flag list.
 
 ## MIDI and program storage
 

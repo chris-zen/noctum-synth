@@ -17,6 +17,7 @@ pub mod patch_transition;
 pub mod pending_releases;
 #[cfg(all(target_arch = "arm", feature = "audio-profiling"))]
 pub mod profiling;
+pub mod model;
 pub mod program;
 #[cfg(target_arch = "arm")]
 pub mod synth;

@@ -7,12 +7,12 @@ use embassy_sync::channel::Channel;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
-use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::midi::clock::MidiClockMode;
 
 use noctum_micro::audio::{
     ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,
 };
+use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use noctum_micro::pending_releases::PendingReleases;
 use noctum_micro::{audio, diagnostics, fatal, indicator, midi, program, usb_audio};
 
@@ -20,8 +20,6 @@ const SAMPLE_RATE_HZ: f32 = usb_audio::SAMPLE_RATE_HZ as f32;
 // One second of float delay history per stereo channel. The buffer remains a
 // shared pool because only one global effect is active at a time.
 const EFFECTS_SAMPLES: usize = usb_audio::SAMPLE_RATE_HZ * 2;
-const FIRMWARE_FILTER_TYPE: FilterType = FilterType::GainLimitedTpt;
-const FIRMWARE_FILTER_OVERSAMPLING: FilterOversampling = FilterOversampling::Off;
 const FIRMWARE_MIDI_CLOCK_MODE: MidiClockMode = MidiClockMode::Off;
 
 static ENGINE: StaticCell<HardwareSynth> = StaticCell::new();
@@ -73,8 +71,8 @@ async fn main(spawner: embassy_executor::Spawner) {
 
     let Some(engine) = ENGINE.try_init_with(|| {
         let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
-        engine.set_filter_type(FIRMWARE_FILTER_TYPE);
-        engine.set_filter_oversampling(FIRMWARE_FILTER_OVERSAMPLING);
+        engine.set_filter_type(FILTER_TYPE);
+        engine.set_filter_oversampling(FILTER_OVERSAMPLING);
         engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
         engine.apply_patch(&initial_patch);
         engine

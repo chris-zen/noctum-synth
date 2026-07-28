@@ -3,9 +3,29 @@
 A monophonic variant of the Micro platform built on the same Daisy Seed 1.1.
 
 With one voice, the internal engine runs at the full **48 kHz** rate without
-the half-band interpolator used by the Micro 4. This means the Gain-Limited TPT
-filter and oscillators operate at double the internal bandwidth, trading
-polyphony for fidelity.
+the half-band interpolator used by the Micro 4. Oscillators and the filter
+therefore operate at double the Micro 4 internal bandwidth, trading polyphony
+for fidelity.
 
-All other characteristics — MIDI protocol, program storage, USB audio capture,
-and physical I/O — are shared with the [Micro 4](micro-4.md).
+## Low-pass filter
+
+**Huovilainen Ladder** — nonlinear Moog-style ladder reference. Self-oscillating
+at high resonance. Same modulation controls as Micro 4 (keyboard tracking,
+envelope amount, velocity, audio-rate mod from oscillator 1).
+
+## Other characteristics
+
+MIDI protocol, program storage, USB audio capture, and physical I/O are shared
+with the [Micro 4](micro-4.md).
+
+## Build
+
+```sh
+cd hardware/daisy
+make run-micro-1
+make bench-dsp-micro-1
+make bench-factory-banks-micro-1
+```
+
+Feature set: `fast-math,wide-1,filter-huovilainen`. See the
+[Daisy Seed](../hardware/daisy.md) guide for the full flag list.

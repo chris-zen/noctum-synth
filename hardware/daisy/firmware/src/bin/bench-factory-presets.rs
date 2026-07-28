@@ -11,7 +11,7 @@ use embassy_daisy::Board;
 use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET};
 use noctum_micro::patch_transition::PatchTransition;
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use synth_core::dsp::{FilterOversampling, FilterType};
+use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use synth_core::midi::rev2::{MidiDecoder, PROGRAM_DATA_SYSEX_LEN};
 use synth_core::{
     profiling::RenderStage, ControlMessage, ModDestination, ParamId, SynthEngineWithMemory,
@@ -81,8 +81,8 @@ fn main() -> ! {
         // reborrowed and reused; initialization is outside every timed region.
         let mut engine =
             HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory);
-        engine.set_filter_type(FilterType::GainLimitedTpt);
-        engine.set_filter_oversampling(FilterOversampling::Off);
+        engine.set_filter_type(FILTER_TYPE);
+        engine.set_filter_oversampling(FILTER_OVERSAMPLING);
         for note in [60, 64, 67, 72] {
             engine.note_on(note, 1.0);
         }
@@ -436,8 +436,8 @@ impl AdaptiveBudgetSummary {
     ) {
         let mut engine =
             HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory);
-        engine.set_filter_type(FilterType::GainLimitedTpt);
-        engine.set_filter_oversampling(FilterOversampling::Off);
+        engine.set_filter_type(FILTER_TYPE);
+        engine.set_filter_oversampling(FILTER_OVERSAMPLING);
         engine.apply_patch(patch);
 
         let controls = ControlQueue::new();

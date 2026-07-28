@@ -289,7 +289,6 @@ fn decimator_coefficient(factor: usize) -> f32 {
 }
 
 mod decimator_math {
-    use crate::math::F32;
     #[cfg(feature = "fast-math")]
     #[inline(always)]
     pub(super) fn coefficient(factor: usize) -> f32 {
@@ -303,6 +302,7 @@ mod decimator_math {
     #[cfg(not(feature = "fast-math"))]
     #[inline(always)]
     pub(super) fn coefficient(factor: usize) -> f32 {
+        use crate::math::F32;
         let angle = core::f32::consts::PI * 0.45 / factor as f32;
         let raw = F32(angle).tan().as_f32();
         raw / (1.0 + raw)

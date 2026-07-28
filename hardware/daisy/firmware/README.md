@@ -2,5 +2,9 @@
 
 Hardware firmware for Daisy Seed 1.1. Package name: `noctum-micro`.
 
-- Instrument specs: see the [Micro 4](../../docs/src/models/micro-4.md) model page
-- Build, flash, feature flags, diagnostics, and profiling: see the [Daisy Seed](../../docs/src/hardware/daisy.md) hardware guide
+- Instrument specs: [Micro 4](../../../docs/src/models/micro-4.md),
+  [Micro 1](../../../docs/src/models/micro-1.md)
+- Build, flash, feature flags, diagnostics, and profiling: see the
+  [Daisy Seed](../../../docs/src/hardware/daisy.md) hardware guide
+
+Model feature sets: [Makefile](../Makefile). Filter defaults: [`src/model.rs`](src/model.rs).

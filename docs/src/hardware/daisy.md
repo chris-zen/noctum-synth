@@ -33,9 +33,14 @@ arm-none-eabi-objcopy -O binary \
 
 ## Feature flags
 
-Features are additive. The default set is `fast-math`, `wide-4`, and
-`downsampling`; use `--no-default-features` when selecting a different lane
-width or full-rate DSP.
+Features are additive. The default set is `fast-math`, `wide-4`,
+`downsampling`, and `filter-gain-limited` (Micro 4). Use
+`--no-default-features` when selecting a different model:
+
+| Model | Features |
+| --- | --- |
+| Micro 4 | `fast-math,wide-4,downsampling,filter-gain-limited` |
+| Micro 1 | `fast-math,wide-1,filter-huovilainen` |
 
 | Feature | Effect |
 | --- | --- |
@@ -43,18 +48,25 @@ width or full-rate DSP.
 | `wide-4` | Processes four voices per SIMD-style block (default) |
 | `wide-1` | Processes one voice per scalar block; use instead of `wide-4` |
 | `downsampling` | Runs DSP at 24 kHz and reconstructs 48 kHz output (default for four voices) |
+| `filter-gain-limited` | Compiles Gain-Limited TPT (Micro 4; default) |
+| `filter-huovilainen` | Compiles Huovilainen Ladder (Micro 1) |
 | `oscillator-polyblep` | Uses PolyBLEP anti-aliasing instead of the default BLEP |
 | `diagnostics` | Enables RTT logging, MIDI debug output, and overrun warnings |
 | `audio-profiling` | Enables DWT cycle-count profiling per DSP stage |
 | `usb-audio-test-tone` | Substitutes USB audio with a 1 kHz reference tone (DAC unaffected) |
 | `usb-audio-raw-test` | Exposes raw USB interface without UAC1 class claim (diagnostic only) |
 
+Exactly one `filter-*` feature must be enabled (or the build fails). Model
+defaults live in `firmware/src/model.rs` and are driven by these features.
+Makefile targets `run-micro-4` / `run-micro-1` (and the matching
+`bench-*-micro-*` targets) pass the feature sets above.
+
 Examples:
 
 ```sh
 cargo build --release -p noctum-micro --features diagnostics
 cargo build --release -p noctum-micro --no-default-features \
-  --features fast-math,wide-4,diagnostics
+  --features fast-math,wide-4,downsampling,filter-gain-limited,diagnostics
 ```
 
 ## Flashing
