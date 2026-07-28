@@ -6,7 +6,7 @@ use synth_core::dsp::{
     FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
 };
 use synth_core::midi::clock::MidiClockMode;
-use synth_core::midi::prophet::{FILTER_KEY_TRACK_MAX, filter_cutoff_max_hz};
+use synth_core::midi::prophet::filter_cutoff_max_hz;
 use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
     EffectParams, EffectType, GlideMode, KeyMode, LfoSyncDivision, ModDestination, ModMatrix,
@@ -19,8 +19,8 @@ use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
     KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
     master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
-    param_knob_f32_offset, param_knob_filter_cutoff, param_knob_log_hz, param_knob_note,
-    param_toggle, param_toggle_sized,
+    param_knob_f32_offset, param_knob_filter_cutoff, param_knob_filter_key_amount,
+    param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -2747,12 +2747,10 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                     );
                 });
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    param_knob_filter_key_amount(
                         ui,
                         "Key Amt",
                         &mut state.filter_key_track,
-                        0.0..=FILTER_KEY_TRACK_MAX,
-                        0.0,
                         ParamId::FilterKeyTrack,
                         control,
                     );

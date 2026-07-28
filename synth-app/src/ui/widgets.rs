@@ -1,8 +1,11 @@
 use eframe::egui;
 use egui_knob::{Knob, KnobStyle};
 
-use synth_core::midi::prophet::{FILTER_CUTOFF_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz};
 use synth_core::ParamId;
+use synth_core::midi::prophet::{
+    FILTER_CUTOFF_RAW_MAX, FILTER_KEY_TRACK_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz,
+    key_track_from_raw, key_track_to_raw,
+};
 
 use crate::engine::SynthEngineControl;
 
@@ -413,6 +416,67 @@ pub fn param_knob_filter_cutoff(
 
     if edited || response.changed() {
         control.set_param(param, *value_hz);
+    }
+}
+
+pub fn param_knob_filter_key_amount(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
+    let max_raw = f32::from(FILTER_KEY_TRACK_RAW_MAX);
+    let mut raw = f32::from(key_track_to_raw(*value));
+    let text_color = ui.visuals().text_color();
+    let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let accent = ui.visuals().selection.bg_fill;
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let response = ui.add(
+        Knob::new(&mut raw, 0.0, max_raw, KnobStyle::Wiper)
+            .with_size(KNOB_SIZE)
+            .with_stroke_width(2.0)
+            .with_colors(knob_color, accent, text_color)
+            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+            .with_double_click_reset(0.0)
+            .with_background_arc(true)
+            .with_show_filled_segments(true),
+    );
+    if response.changed() {
+        raw = raw.round().clamp(0.0, max_raw);
+        *value = key_track_from_raw(raw as u16);
+    }
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+    ui.label(
+        egui::RichText::new(label)
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    let edit_id = knob_edit_id(param);
+    let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
+    let format_raw = format_knob_value(0.0, max_raw);
+    let edited = knob_value_edit(
+        ui,
+        edit_id,
+        &mut raw,
+        0.0,
+        max_raw,
+        0.0,
+        &format_raw,
+        font_id,
+        text_color,
+    );
+    if edited {
+        raw = raw.round().clamp(0.0, max_raw);
+        *value = key_track_from_raw(raw as u16);
+    }
+
+    if edited || response.changed() {
+        control.set_param(param, *value);
     }
 }
 
