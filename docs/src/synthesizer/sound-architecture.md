@@ -59,8 +59,10 @@ without changing patch or MIDI behavior.
 The ladder low-pass filter offers a gentler 2-pole slope and a steeper 4-pole
 slope. Cutoff sets brightness; resonance emphasizes frequencies around the
 cutoff and can become self-oscillating at high settings. Keyboard tracking
-opens the filter on higher notes. The filter envelope, velocity, and audio-rate
-modulation add movement.
+opens the filter on higher notes. Cutoff modulation is additive in Prophet
+semitone ticks: filter envelope amount ±127 opens or closes by that many
+semitones at envelope peak, audio mod spans one octave at full depth, and
+mod-matrix / LFO routes to cutoff use the same ±127-tick scale.
 
 The amplifier envelope determines a note's volume contour. Pan spread assigns
 new voices alternately to each side, so a chord can occupy a wider stereo image

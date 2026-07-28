@@ -5,12 +5,12 @@ use core::ops::{Deref, DerefMut, Index, IndexMut};
 use crate::arp::{ArpEngine, ArpEvent};
 #[cfg(test)]
 use crate::dsp::filter::MAX_CUTOFF_HZ;
-use crate::dsp::filter::MIN_CUTOFF_HZ;
 use crate::dsp::{FilterOversampling, FilterType};
 use crate::effects::EffectModulation;
 use crate::fixed_index_list::FixedIndexList;
 use crate::math::F32;
 use crate::math::WideF32;
+use crate::midi::cutoff_raw_to_hz;
 use crate::pressed_keys::PressedKeys;
 use crate::profiling::RenderContext;
 use crate::voice::{
@@ -1041,8 +1041,8 @@ fn key_mode_retriggers(mode: KeyMode) -> bool {
 }
 
 fn midi_filter_cutoff_hz(value: f32) -> f32 {
-    const CUTOFF_RANGE_OCTAVES: f32 = 9.813_781;
-    MIN_CUTOFF_HZ * F32(CUTOFF_RANGE_OCTAVES * value).exp2().as_f32()
+    let raw = F32(value.clamp(0.0, 1.0) * 127.0).round().as_f32() as u16;
+    cutoff_raw_to_hz(raw)
 }
 
 #[cfg(test)]
@@ -2014,7 +2014,7 @@ mod tests {
             value: 0.75,
         });
 
-        let expected_cutoff = (MIN_CUTOFF_HZ * MAX_CUTOFF_HZ).sqrt();
+        let expected_cutoff = cutoff_raw_to_hz(64);
         for block in &voices.blocks {
             assert!((block.filter().cutoff() - expected_cutoff).abs() < 0.001);
             assert_eq!(block.filter().resonance(), 0.75);

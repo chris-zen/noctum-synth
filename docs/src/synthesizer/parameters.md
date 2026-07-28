@@ -46,7 +46,10 @@ portion for cycling modulation.
 Amplifier envelope amount controls how strongly the volume contour gates a
 voice. VCA Level sets a static amplifier bias before the envelope is applied; at
 full level the envelope amount has no effect, which is useful for drone or
-bypass-style patches. Amplifier velocity changes loudness response. Pan spread increases the
+bypass-style patches. Amplifier velocity changes loudness response. Filter envelope
+amount, filter velocity, and auxiliary envelope amount and velocity use the same
+short (~5 ms) de-zippering on live knob or MIDI changes; patch recall snaps those
+values instantly. Pan spread increases the
 left/right placement applied to successive voices, while master volume sets the
 final output level.
 

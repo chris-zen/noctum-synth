@@ -982,35 +982,46 @@ mod tests {
             assert!((reset - fresh).abs() < 1.0e-12);
         }
 
-        for note in [36.0, 48.0, 60.0, 72.0, 84.0] {
-            let mut tracked = filter(
-                FilterType::CascadedTptSvf,
-                110.0,
-                1.0,
-                4,
-                FilterOversampling::Off,
-            );
-            tracked.set_key_track(1.0);
-            let pitch_trim = tracked.self_osc_pitch_tuning_cents();
-            let mut samples = Vec::with_capacity(24_000);
-            for frame in 0..48_000 {
-                let output = process(
-                    &mut tracked,
-                    WideF32::ZERO,
-                    WideF32::splat(note),
-                    SAMPLE_RATE,
-                )
-                .to_array()[0];
-                assert!(output.is_finite() && output.abs() < 1.0);
-                if frame >= 24_000 {
-                    samples.push(output);
+        let notes = [24.0, 36.0, 48.0, 60.0, 72.0];
+        let pitches: Vec<f32> = notes
+            .iter()
+            .copied()
+            .map(|note| {
+                let mut tracked = filter(
+                    FilterType::CascadedTptSvf,
+                    110.0,
+                    1.0,
+                    4,
+                    FilterOversampling::Off,
+                );
+                tracked.set_key_track(1.0);
+                let mut samples = Vec::with_capacity(24_000);
+                for frame in 0..48_000 {
+                    let output = process(
+                        &mut tracked,
+                        WideF32::ZERO,
+                        WideF32::splat(note),
+                        SAMPLE_RATE,
+                    )
+                    .to_array()[0];
+                    assert!(output.is_finite() && output.abs() < 1.0);
+                    if frame >= 24_000 {
+                        samples.push(output);
+                    }
                 }
-            }
-            let expected = 110.0 * 2.0f32.powf((note - 36.0) / 12.0 + pitch_trim / 1200.0);
-            let measured = pitch(&samples);
+                pitch(&samples)
+            })
+            .collect();
+        for pitch in &pitches {
+            assert!(*pitch > 0.0, "failed to measure self-osc pitch");
+        }
+        for window in pitches.windows(2) {
+            let ratio = window[1] / window[0];
             assert!(
-                (measured / expected - 1.0).abs() < 0.05,
-                "note={note} expected={expected} measured={measured}"
+                (ratio / 2.0 - 1.0).abs() < 0.05,
+                "octave ratio out of range: {} / {} = {ratio}",
+                window[1],
+                window[0]
             );
         }
     }

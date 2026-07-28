@@ -1,5 +1,8 @@
 //! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
 
+use super::scale::{
+    FILTER_CUTOFF_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz, key_track_from_raw, key_track_to_raw,
+};
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
 use crate::patch::decode_patch_name;
@@ -346,10 +349,10 @@ impl Rev2MidiEncoder {
             ParamId::UnisonDetune => (167, quantize(value, 0.0, 16.0, 16)),
             ParamId::Bpm => (179, F32(value.clamp(30.0, 250.0)).round().as_f32() as u16),
             ParamId::ClockDivide => (175, quantize(value, 0.0, 12.0, 12)),
-            ParamId::FilterCutoff => (15, quantize_log(value, 20.0, 20_000.0, 164)),
+            ParamId::FilterCutoff => (15, cutoff_hz_to_raw(value, FILTER_CUTOFF_RAW_MAX)),
             ParamId::FilterResonance => (16, quantize(value, 0.0, 1.0, 127)),
             ParamId::FilterPoles => (19, bool_raw(value)),
-            ParamId::FilterKeyTrack => (17, quantize(value, 0.0, 1.0, 127)),
+            ParamId::FilterKeyTrack => (17, key_track_to_raw(value)),
             ParamId::FilterEnvAmount => (20, quantize(value, -1.0, 1.0, 254)),
             ParamId::FilterVelocity => (21, quantize(value, 0.0, 1.0, 127)),
             ParamId::FilterAudioMod => (18, quantize(value, 0.0, 1.0, 127)),
@@ -847,11 +850,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         31 => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 127)),
         65 => emit_param(emit, ParamId::GlideEnabled, f32::from(raw >= 64)),
         71 | 103 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
-        74 | 102 => emit_param(
-            emit,
-            ParamId::FilterCutoff,
-            logarithmic(raw, 127, 20.0, 20_000.0),
-        ),
+        74 | 102 => emit_param(emit, ParamId::FilterCutoff, cutoff_raw_to_hz(raw.min(127))),
         75 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
         76 => emit_param(emit, ParamId::AmpEgRelease, ranged(raw, 127, 0.0005, 10.0)),
         77 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
@@ -866,7 +865,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         88 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
         89 => emit_param(emit, ParamId::AuxEgAttack, ranged(raw, 127, 0.0005, 5.0)),
         90 => emit_param(emit, ParamId::AuxEgDecay, ranged(raw, 127, 0.0005, 5.0)),
-        104 => emit_param(emit, ParamId::FilterKeyTrack, unit(raw, 127)),
+        104 => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
         105 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
         106 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 127)),
         107 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
@@ -987,10 +986,10 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         15 => emit_param(
             emit,
             ParamId::FilterCutoff,
-            logarithmic(raw, 164, 20.0, 20_000.0),
+            cutoff_raw_to_hz(raw.min(FILTER_CUTOFF_RAW_MAX)),
         ),
         16 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
-        17 => emit_param(emit, ParamId::FilterKeyTrack, unit(raw, 127)),
+        17 => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
         18 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
         19 => emit_param(emit, ParamId::FilterPoles, f32::from(raw != 0)),
         20 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 254)),
@@ -1217,6 +1216,67 @@ mod tests {
             }));
             assert_eq!(decoded, Some(Rev2MidiUpdate::Param(ParamId::Bpm, bpm)));
         }
+    }
+
+    #[test]
+    fn filter_cutoff_nrpn_uses_semitone_ticks() {
+        let mut decoder = Rev2MidiDecoder::default();
+        let cases = [
+            (0_u16, cutoff_raw_to_hz(0)),
+            (96, cutoff_raw_to_hz(96)),
+            (105, 440.0),
+            (164, cutoff_raw_to_hz(164)),
+        ];
+        for (raw, expected_hz) in cases {
+            let mut decoded = None;
+            emit_nrpn(0, 15, raw, &mut |message| {
+                decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+            });
+            let Some(Rev2MidiUpdate::Param(ParamId::FilterCutoff, hz)) = decoded else {
+                panic!("expected filter cutoff update for raw {raw}");
+            };
+            assert!(
+                (hz - expected_hz).abs() < 0.05,
+                "raw {raw}: got {hz}, expected {expected_hz}"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_cutoff_cc_matches_nrpn_index_not_full_open() {
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut cc_hz = None;
+        decoder.control_change(0, 102, 127, |update| {
+            if let Rev2MidiUpdate::Param(ParamId::FilterCutoff, hz) = update {
+                cc_hz = Some(hz);
+            }
+        });
+        let mut nrpn_hz = None;
+        emit_nrpn(0, 15, 127, &mut |message| {
+            decoder.control_change(0, message[1], message[2], |update| {
+                if let Rev2MidiUpdate::Param(ParamId::FilterCutoff, hz) = update {
+                    nrpn_hz = Some(hz);
+                }
+            });
+        });
+        let cc_hz = cc_hz.expect("cc cutoff");
+        let nrpn_hz = nrpn_hz.expect("nrpn cutoff");
+        assert!((cc_hz - nrpn_hz).abs() < 0.05);
+        assert!((cc_hz - cutoff_raw_to_hz(127)).abs() < 0.05);
+        assert!(cc_hz < cutoff_raw_to_hz(164) * 0.2);
+    }
+
+    #[test]
+    fn filter_key_track_64_decodes_to_unity() {
+        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoded = None;
+        emit_nrpn(0, 17, 64, &mut |message| {
+            decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
+        });
+        assert_eq!(
+            decoded,
+            Some(Rev2MidiUpdate::Param(ParamId::FilterKeyTrack, 1.0))
+        );
     }
 
     #[test]

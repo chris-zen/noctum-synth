@@ -7,7 +7,8 @@ use crate::engine::{MidiUiUpdate, SynthEngineControl};
 use crate::ui::widgets::{
     KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
     master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
-    param_knob_f32_offset, param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
+    param_knob_f32_offset, param_knob_filter_cutoff, param_knob_log_hz, param_knob_note,
+    param_toggle, param_toggle_sized,
 };
 use synth_core::dsp::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
@@ -15,9 +16,9 @@ use synth_core::dsp::{
 };
 use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, GlideMode, KeyMode, LfoSyncDivision, MidiClockMode, ModDestination,
-    ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode,
-    ParamId, Patch, UnisonMode, glide_seconds,
+    EffectParams, EffectType, FILTER_KEY_TRACK_MAX, GlideMode, KeyMode, LfoSyncDivision,
+    MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam,
+    OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode, filter_cutoff_max_hz, glide_seconds,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -216,7 +217,7 @@ impl Default for UiState {
             arp_sustain_mode: 1,
             sub_level: 0.0,
             noise_level: 0.0,
-            filter_cutoff: 20_000.0,
+            filter_cutoff: filter_cutoff_max_hz(),
             filter_resonance: 0.0,
             filter_poles: 1,
             filter_key_track: 0.0,
@@ -2697,13 +2698,10 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
             .spacing(egui::vec2(12.0, 12.0))
             .show(ui, |ui| {
                 control_cell(ui, |ui| {
-                    param_knob_log_hz(
+                    param_knob_filter_cutoff(
                         ui,
                         "Cutoff",
                         &mut state.filter_cutoff,
-                        20.0,
-                        20_000.0,
-                        20_000.0,
                         ParamId::FilterCutoff,
                         control,
                     );
@@ -2745,7 +2743,7 @@ fn filter_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineCo
                         ui,
                         "Key Amt",
                         &mut state.filter_key_track,
-                        0.0..=1.0,
+                        0.0..=FILTER_KEY_TRACK_MAX,
                         0.0,
                         ParamId::FilterKeyTrack,
                         control,
@@ -3664,7 +3662,7 @@ mod tests {
         state.filter_cutoff = 5_000.0;
         assert!(mgr.is_modified(&Patch::from(&state)));
 
-        state.filter_cutoff = 20_000.0;
+        state.filter_cutoff = filter_cutoff_max_hz();
         assert!(!mgr.is_modified(&Patch::from(&state)));
     }
 

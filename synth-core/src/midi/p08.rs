@@ -1,6 +1,7 @@
 //! Sequential Prophet '08-compatible program SysEx decoder.
 
 use super::rev2::Rev2SysexError;
+use super::scale::{FILTER_CUTOFF_RAW_MAX, cutoff_raw_to_hz, key_track_from_raw};
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
 use crate::patch::decode_patch_name;
@@ -339,7 +340,7 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
         14 => emit(P08MidiUpdate::Param(ParamId::NoiseLevel, unit(raw, 127))),
         15 => emit(P08MidiUpdate::Param(
             ParamId::FilterCutoff,
-            logarithmic(raw, 164, 20.0, 20_000.0),
+            cutoff_raw_to_hz(raw.min(FILTER_CUTOFF_RAW_MAX)),
         )),
         16 => emit(P08MidiUpdate::Param(
             ParamId::FilterResonance,
@@ -347,7 +348,7 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(P08MidiUpdate)) {
         )),
         17 => emit(P08MidiUpdate::Param(
             ParamId::FilterKeyTrack,
-            unit(raw, 127),
+            key_track_from_raw(raw),
         )),
         18 => emit(P08MidiUpdate::Param(
             ParamId::FilterAudioMod,

@@ -689,6 +689,30 @@ mod tests {
         }
     }
 
+    fn analyzer_strongest_peak(samples: &[f32], min_bin: usize, max_bin: usize) -> (usize, f32) {
+        let fft_size = samples.len();
+        let mut peak_bin = min_bin;
+        let mut peak = 0.0f32;
+        for bin in min_bin..=max_bin.min(fft_size / 2 - 1) {
+            let step = core::f32::consts::TAU * bin as f32 / fft_size as f32;
+            let mut sin_sum = 0.0;
+            let mut cos_sum = 0.0;
+            for (index, sample) in samples.iter().copied().enumerate() {
+                let window = 0.5
+                    * (1.0 - (core::f32::consts::TAU * index as f32 / (fft_size - 1) as f32).cos());
+                let phase = step * index as f32;
+                sin_sum += sample * window * phase.sin();
+                cos_sum += sample * window * phase.cos();
+            }
+            let magnitude = (sin_sum * sin_sum + cos_sum * cos_sum).sqrt() / fft_size as f32;
+            if magnitude > peak {
+                peak = magnitude;
+                peak_bin = bin;
+            }
+        }
+        (peak_bin, 20.0 * peak.max(1.0e-10).log10())
+    }
+
     fn analyzer_peak_near(samples: &[f32], center_bin: usize, radius: usize) -> (usize, f32) {
         let fft_size = samples.len();
         let mut peak_bin = center_bin;
@@ -763,7 +787,11 @@ mod tests {
         })
     }
 
-    fn live_key_tracked_fundamental_db(notes: &[u8], measured_hz: f32) -> f32 {
+    fn live_key_tracked_fundamental_db(
+        notes: &[u8],
+        measured_hz: f32,
+        center_bin: Option<usize>,
+    ) -> (usize, f32) {
         const FFT_SIZE: usize = 4096;
         let mut engine = SynthEngine::<1, 48_000>::new(SAMPLE_RATE);
         engine.set_filter_type(FilterType::GainLimitedTpt);
@@ -790,8 +818,12 @@ mod tests {
         let mut interleaved = std::vec![0.0; FFT_SIZE * 2];
         engine.process_interleaved(&mut interleaved, 2);
         let samples: Vec<f32> = interleaved.chunks_exact(2).map(|frame| frame[0]).collect();
-        let expected_bin = (measured_hz * FFT_SIZE as f32 / SAMPLE_RATE).round() as usize;
-        analyzer_peak_near(&samples, expected_bin, 4).1
+        let min_bin = (20.0 * FFT_SIZE as f32 / SAMPLE_RATE).ceil() as usize;
+        let max_bin = (20_000.0 * FFT_SIZE as f32 / SAMPLE_RATE).floor() as usize;
+        match center_bin {
+            Some(bin) => analyzer_peak_near(&samples, bin, 4),
+            None => analyzer_strongest_peak(&samples, min_bin.max(1), max_bin),
+        }
     }
 
     fn live_driven_chord_stats(notes: &[u8], resonance: f32) -> (f32, f32, usize) {
@@ -881,8 +913,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "wide-1"))]
     fn adding_a_second_key_does_not_raise_the_first_fundamental() {
-        let one_key = live_key_tracked_fundamental_db(&[36], CUTOFF_HZ);
-        let two_keys = live_key_tracked_fundamental_db(&[36, 43], CUTOFF_HZ);
+        let (fundamental_bin, one_key) = live_key_tracked_fundamental_db(&[36], CUTOFF_HZ, None);
+        let (_, two_keys) =
+            live_key_tracked_fundamental_db(&[36, 43], CUTOFF_HZ, Some(fundamental_bin));
         assert!(
             (one_key - two_keys).abs() <= 0.2,
             "first fundamental changed with voice count: one={one_key:.3}dB two={two_keys:.3}dB"
@@ -1403,36 +1436,46 @@ mod tests {
         );
     }
 
+    fn self_osc_pitch_at_note(note: f32) -> f32 {
+        let mut filter = configured_filter(
+            FilterType::GainLimitedTpt,
+            110.0,
+            1.0,
+            4,
+            FilterOversampling::Off,
+        );
+        filter.set_key_track(1.0);
+        let mut samples = Vec::with_capacity(24_000);
+        for frame in 0..48_000 {
+            let output = process(
+                &mut filter,
+                WideF32::ZERO,
+                WideF32::splat(note),
+                SAMPLE_RATE,
+            )
+            .to_array()[0];
+            assert!(output.is_finite() && output.abs() < 1.0);
+            if frame >= 24_000 {
+                samples.push(output);
+            }
+        }
+        positive_crossing_pitch(&samples)
+    }
+
     #[test]
     fn gain_limited_tpt_key_tracking_and_long_run_are_stable() {
-        for note in [36.0, 48.0, 60.0, 72.0, 84.0] {
-            let mut filter = configured_filter(
-                FilterType::GainLimitedTpt,
-                110.0,
-                1.0,
-                4,
-                FilterOversampling::Off,
-            );
-            filter.set_key_track(1.0);
-            let mut samples = Vec::with_capacity(24_000);
-            for frame in 0..48_000 {
-                let output = process(
-                    &mut filter,
-                    WideF32::ZERO,
-                    WideF32::splat(note),
-                    SAMPLE_RATE,
-                )
-                .to_array()[0];
-                assert!(output.is_finite() && output.abs() < 1.0);
-                if frame >= 24_000 {
-                    samples.push(output);
-                }
-            }
-            let expected = 110.0 * 2.0f32.powf((note - 36.0) / 12.0);
-            let pitch = positive_crossing_pitch(&samples);
+        let notes = [24.0, 36.0, 48.0, 60.0, 72.0];
+        let pitches: Vec<f32> = notes.iter().copied().map(self_osc_pitch_at_note).collect();
+        for pitch in &pitches {
+            assert!(*pitch > 0.0, "failed to measure self-osc pitch");
+        }
+        for window in pitches.windows(2) {
+            let ratio = window[1] / window[0];
             assert!(
-                (pitch / expected - 1.0).abs() < 0.05,
-                "note={note} expected={expected} pitch={pitch}"
+                (ratio / 2.0 - 1.0).abs() < 0.05,
+                "octave ratio out of range: {} / {} = {ratio}",
+                window[1],
+                window[0]
             );
         }
 

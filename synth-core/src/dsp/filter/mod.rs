@@ -26,16 +26,23 @@ use huovilainen_ladder::HuovilainenLadder;
 #[cfg(feature = "filter-scalar-feedback")]
 use scalar_feedback_tpt::ScalarFeedbackTpt;
 
-/// Lowest cutoff accepted by every filter model.
+/// Lowest cutoff used when applying filter coefficients after modulation.
 pub(crate) const MIN_CUTOFF_HZ: f32 = 20.0;
+/// Lowest base cutoff stored on the voice (Prophet program raw 0 ≈ 1 Hz).
+/// Key-track / envelope modulation is applied to this base, then the result is
+/// clamped to [`MIN_CUTOFF_HZ`] for coefficient calculation.
+pub(crate) const MIN_BASE_CUTOFF_HZ: f32 = 1.0;
 /// Highest cutoff accepted by every filter model.
 pub(crate) const MAX_CUTOFF_HZ: f32 = 18_000.0;
-/// Full filter-envelope modulation depth in semitones.
-const ENV_DEPTH_SEMITONES: f32 = 96.0;
-/// Full audio-rate filter modulation depth in semitones.
-const AUDIO_MOD_DEPTH_SEMITONES: f32 = 48.0;
+/// Full filter-envelope modulation depth in semitones (Prophet Env Amount ±127 ticks).
+const ENV_DEPTH_SEMITONES: f32 = 127.0;
+/// Full audio-rate filter modulation depth in semitones (Appendix F: one octave).
+const AUDIO_MOD_DEPTH_SEMITONES: f32 = 12.0;
 /// MIDI note that produces zero semitones of filter keyboard tracking.
-const KEY_TRACK_REFERENCE_NOTE: f32 = 36.0;
+/// Prophet Key Amount 64 is 1:1; with cutoff raw 0, C4 tracks to C2 (−2 octaves).
+const KEY_TRACK_REFERENCE_NOTE: f32 = -12.0;
+/// Prophet Key Amount max (raw 127) relative to unity at raw 64.
+const MAX_KEY_TRACK: f32 = 127.0 / 64.0;
 /// Exponent applied to the public resonance control before model calibration.
 const RESONANCE_CONTROL_EXPONENT: f32 = 1.75;
 
@@ -322,7 +329,7 @@ impl Filter {
     }
 
     pub fn set_cutoff(&mut self, cutoff: f32) {
-        self.cutoff = cutoff.clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ);
+        self.cutoff = cutoff.clamp(MIN_BASE_CUTOFF_HZ, MAX_CUTOFF_HZ);
         self.algorithm.invalidate_coefficients();
     }
 
@@ -344,16 +351,11 @@ impl Filter {
     }
 
     pub fn set_key_track(&mut self, key_track: f32) {
-        self.key_track = key_track.clamp(0.0, 1.0);
+        self.key_track = key_track.clamp(0.0, MAX_KEY_TRACK);
     }
 
     pub fn set_env_amount(&mut self, env_amount: f32) {
         self.env_amount = env_amount.clamp(-1.0, 1.0);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn env_amount(&self) -> f32 {
-        self.env_amount
     }
 
     pub fn set_env_velocity_amount(&mut self, env_velocity_amount: f32) {
@@ -421,11 +423,13 @@ impl Filter {
             resonance_mod,
             audio_mod,
             sample_rate,
+            self.env_amount,
+            self.env_velocity_amount,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn process_prepared(
+    pub(crate) fn process_prepared_env(
         &mut self,
         input: WideF32,
         note: WideF32,
@@ -437,6 +441,8 @@ impl Filter {
         resonance_mod: WideF32,
         audio_mod: WideF32,
         sample_rate: f32,
+        env_amount: f32,
+        env_velocity_amount: f32,
     ) -> WideF32 {
         self.process_inner(
             input,
@@ -449,6 +455,8 @@ impl Filter {
             resonance_mod,
             audio_mod,
             sample_rate,
+            env_amount,
+            env_velocity_amount,
         )
     }
 
@@ -465,6 +473,8 @@ impl Filter {
         resonance_mod: WideF32,
         audio_mod: WideF32,
         sample_rate: f32,
+        env_amount: f32,
+        env_velocity_amount: f32,
     ) -> WideF32 {
         let resonance_control = (WideF32::splat(self.resonance) + resonance_mod)
             .clamp(WideF32::ZERO, WideF32::splat(1.0));
@@ -475,12 +485,12 @@ impl Filter {
         };
         let key_semitones =
             (note - WideF32::splat(KEY_TRACK_REFERENCE_NOTE)) * WideF32::splat(self.key_track);
-        let velocity_scale = WideF32::splat(1.0 - self.env_velocity_amount)
+        let velocity_scale = WideF32::splat(1.0 - env_velocity_amount)
             + velocity.clamp(WideF32::ZERO, WideF32::splat(1.0))
-                * WideF32::splat(self.env_velocity_amount);
+                * WideF32::splat(env_velocity_amount);
         let env_semitones = filter_env.clamp(WideF32::ZERO, WideF32::splat(1.0))
             * velocity_scale
-            * WideF32::splat(self.env_amount * ENV_DEPTH_SEMITONES);
+            * WideF32::splat(env_amount * ENV_DEPTH_SEMITONES);
         let audio_mod_amount =
             (WideF32::splat(self.audio_mod) + audio_mod).clamp(WideF32::ZERO, WideF32::splat(1.0));
         let audio_semitones = osc1_audio.clamp(WideF32::splat(-1.0), WideF32::splat(1.0))
@@ -490,12 +500,12 @@ impl Filter {
             key_semitones + env_semitones + audio_semitones + cutoff_mod_semitones;
         let cutoff_mod_uniform_semitones = cutoff_mod_uniform_semitones.filter(|_| {
             self.key_track == 0.0
-                && self.env_amount == 0.0
+                && env_amount == 0.0
                 && self.audio_mod == 0.0
                 && all_lanes_near_zero(audio_mod)
         });
         let static_cutoff = self.key_track == 0.0
-            && self.env_amount == 0.0
+            && env_amount == 0.0
             && self.audio_mod == 0.0
             && all_lanes_near_zero(cutoff_mod_semitones)
             && all_lanes_near_zero(resonance_mod)
@@ -562,8 +572,8 @@ mod embedded_tests {
 #[cfg(all(test, feature = "filter-all"))]
 mod tests {
     use super::{
-        Filter, FilterOversampling, FilterType, LadderFilter, SELF_OSC_PITCH_TUNING_CENTS,
-        SELF_OSC_RESONANCE_START,
+        ENV_DEPTH_SEMITONES, Filter, FilterOversampling, FilterType, LadderFilter,
+        MIN_BASE_CUTOFF_HZ, SELF_OSC_PITCH_TUNING_CENTS, SELF_OSC_RESONANCE_START,
     };
     use crate::math::WideF32;
     use crate::midi_to_hz;
@@ -783,11 +793,11 @@ mod tests {
                 0xbf59cc04, 0xbe74018c, 0xbe4b44ab, 0xbe99fe3a,
             ],
             [
-                0xbee811f6, 0xbec6aa4a, 0xbe2e55d5, 0x3ef14c6a, 0xbee5d209, 0xbecca551, 0xbe2827c7,
-                0x3f1c4431, 0xbee3a348, 0xbed29791, 0xbe2197ef, 0x3f19fe52, 0xbee187db, 0xbed8844c,
-                0xbe1a91ce, 0x3ede101a, 0xbedf8127, 0xbede6e98, 0xbe12fdee, 0x3e19d9cb, 0xbedd8ff8,
-                0xbee45978, 0xbe0ac13e, 0xbe300bc6, 0xbedbb4a3, 0xbeea47c3, 0xbe01bc5f, 0xbee85f63,
-                0xbed9ef23, 0xbef03c2f, 0xbdef9573, 0xbf1ffa5b,
+                0xbf37490c, 0x3f284687, 0x3f275a16, 0xbeeda0ce, 0xbf29cf14, 0x3f035b89, 0x3f27f016,
+                0xbf1c2fbe, 0xbf15dd01, 0x3e9ef8b1, 0x3f2187da, 0xbf25d1bc, 0xbef9c525, 0x3da0c9aa,
+                0x3f13e7b7, 0xbf102c5f, 0xbec0f28a, 0xbe1c3f80, 0x3efe70ea, 0xbebe87c1, 0xbe847920,
+                0xbeb526d1, 0x3ec81f68, 0xbdec26ed, 0xbe0eb78f, 0xbeff0814, 0x3e86e5ca, 0x3e206159,
+                0xbcc4b4d0, 0xbf102191, 0x3df7026c, 0x3ecb1248,
             ],
         ];
         assert_eq!(actual, expected);
@@ -1687,14 +1697,26 @@ mod tests {
     }
 
     #[test]
+    fn set_cutoff_preserves_prophet_program_zero_base() {
+        let mut filter = LadderFilter::default();
+        filter.set_cutoff(1.021_975);
+        assert!(
+            (filter.cutoff() - 1.021_975).abs() < 0.001,
+            "base cutoff must keep Prophet raw 0 (~1 Hz) so key-track/env modulate from the true base"
+        );
+        filter.set_cutoff(0.5);
+        assert_eq!(filter.cutoff(), MIN_BASE_CUTOFF_HZ);
+    }
+
+    #[test]
     fn test_key_tracking_opens_cutoff_for_higher_notes() {
         let sr = 44100.0;
         let mut low_note = LadderFilter::default();
-        low_note.set_cutoff(700.0);
+        low_note.set_cutoff(40.0);
         low_note.set_key_track(1.0);
 
         let mut high_note = LadderFilter::default();
-        high_note.set_cutoff(700.0);
+        high_note.set_cutoff(40.0);
         high_note.set_key_track(1.0);
 
         let low_amp = measure_modulated_response(&mut low_note, 2500.0, 48.0, 0.0, 0.0, sr, 0.1);
@@ -1749,29 +1771,36 @@ mod tests {
         let sr = 44100.0;
         let c4 = midi_to_hz(60);
         let target_hz = c4 * 7.0;
-        let pitch_hz =
-            estimate_self_oscillation_pitch_hz(444.0, 60.0, 1.0, SELF_OSC_PITCH_TUNING_CENTS, sr);
+        let base_cutoff_hz = 444.0 / 64.0 * 4.0;
+        let pitch_hz = estimate_self_oscillation_pitch_hz(
+            base_cutoff_hz,
+            60.0,
+            1.0,
+            SELF_OSC_PITCH_TUNING_CENTS,
+            sr,
+        );
         let beat_hz = (pitch_hz - target_hz).abs();
 
         assert!(
             beat_hz <= 8.0,
-            "key-tracked cutoff 444 Hz self-oscillation should beat slowly against C4's 7th harmonic near the audible mix point: pitch={pitch_hz:.2}Hz target={target_hz:.2}Hz beat={beat_hz:.2}Hz tuning={SELF_OSC_PITCH_TUNING_CENTS:.1}c"
+            "key-tracked self-oscillation should beat slowly against C4's 7th harmonic near the audible mix point: pitch={pitch_hz:.2}Hz target={target_hz:.2}Hz beat={beat_hz:.2}Hz tuning={SELF_OSC_PITCH_TUNING_CENTS:.1}c"
         );
     }
 
     #[test]
-    #[ignore = "prints the best cents trim for the C4/key-tracked/cutoff 444 Hz self-oscillation beat-rate target"]
+    #[ignore = "prints the best cents trim for the C4/key-tracked self-oscillation beat-rate target"]
     fn calibrate_self_oscillation_pitch_tuning_cents_for_key_tracked_c4() {
         let sr = 44100.0;
         let c4 = midi_to_hz(60);
         let target_hz = c4 * 7.0;
+        let base_cutoff_hz = 444.0 / 64.0 * 4.0;
         let mut best_cents = 0.0;
         let mut best_pitch_hz = 0.0;
         let mut best_beat_hz = f32::INFINITY;
 
         for cents in 110..=150 {
             let cents = cents as f32;
-            let pitch_hz = estimate_self_oscillation_pitch_hz(444.0, 60.0, 1.0, cents, sr);
+            let pitch_hz = estimate_self_oscillation_pitch_hz(base_cutoff_hz, 60.0, 1.0, cents, sr);
             let beat_hz = (pitch_hz - target_hz).abs();
 
             if beat_hz < best_beat_hz {
@@ -1795,12 +1824,14 @@ mod tests {
     fn test_prophet_reference_key_tracking_pushes_c4_self_oscillation_high() {
         let sr = 44100.0;
         let mut filter = LadderFilter::default();
-        let samples = render_self_oscillation_with_note(&mut filter, 444.0, 60.0, 1.0, sr, 70_000);
+        let base_cutoff_hz = 444.0 / 64.0 * 4.0;
+        let samples =
+            render_self_oscillation_with_note(&mut filter, base_cutoff_hz, 60.0, 1.0, sr, 70_000);
         let pitch_hz = estimate_frequency_from_positive_crossings(&samples[50_000..], sr);
 
         assert!(
             (1750.0..=2050.0).contains(&pitch_hz),
-            "max key tracking at C4 should move cutoff 444 Hz self-oscillation near the measured Prophet 1.9 kHz region, got {pitch_hz:.2} Hz"
+            "max key tracking at C4 should move Prophet-offset self-oscillation near the measured 1.9 kHz region, got {pitch_hz:.2} Hz"
         );
     }
 
@@ -1821,6 +1852,65 @@ mod tests {
         assert!(
             opened_amp > closed_amp * 4.0,
             "positive filter EG amount should open cutoff: closed={closed_amp:.4} opened={opened_amp:.4}"
+        );
+    }
+
+    #[test]
+    fn test_prophet_env_amount_depth_is_one_semitone_per_tick() {
+        let sr = 44100.0;
+        let base_hz = 200.0;
+        let env_amount = 12.0 / ENV_DEPTH_SEMITONES;
+
+        let mut closed = LadderFilter::default();
+        closed.set_cutoff(base_hz);
+        closed.set_resonance(1.0);
+        closed.set_poles(4);
+        closed.set_env_amount(env_amount);
+        closed.set_self_osc_pitch_tuning_cents(SELF_OSC_PITCH_TUNING_CENTS);
+
+        let mut opened = LadderFilter::default();
+        opened.set_cutoff(base_hz);
+        opened.set_resonance(1.0);
+        opened.set_poles(4);
+        opened.set_env_amount(env_amount);
+        opened.set_self_osc_pitch_tuning_cents(SELF_OSC_PITCH_TUNING_CENTS);
+
+        let closed_samples: Vec<f32> = (0..70_000)
+            .map(|_| {
+                process_modulated(
+                    &mut closed,
+                    WideF32::ZERO,
+                    WideF32::splat(60.0),
+                    WideF32::ZERO,
+                    WideF32::splat(1.0),
+                    WideF32::ZERO,
+                    sr,
+                )
+                .to_array()[0]
+            })
+            .collect();
+        let opened_samples: Vec<f32> = (0..70_000)
+            .map(|_| {
+                process_modulated(
+                    &mut opened,
+                    WideF32::ZERO,
+                    WideF32::splat(60.0),
+                    WideF32::splat(1.0),
+                    WideF32::splat(1.0),
+                    WideF32::ZERO,
+                    sr,
+                )
+                .to_array()[0]
+            })
+            .collect();
+
+        let closed_hz = estimate_frequency_from_positive_crossings(&closed_samples[50_000..], sr);
+        let opened_hz = estimate_frequency_from_positive_crossings(&opened_samples[50_000..], sr);
+        let ratio = opened_hz / closed_hz;
+
+        assert!(
+            (1.9..=2.1).contains(&ratio),
+            "Env Amount +12 should raise self-osc by one octave (ratio≈2), got closed={closed_hz:.2} opened={opened_hz:.2} ratio={ratio:.3}"
         );
     }
 

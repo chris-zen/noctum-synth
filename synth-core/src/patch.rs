@@ -1320,7 +1320,7 @@ impl Default for Patch {
             bpm: crate::DEFAULT_TEMPO_BPM,
             clock_divide: ClockDivision::default(),
             filter: FilterParams {
-                cutoff: 20_000.0,
+                cutoff: crate::midi::filter_cutoff_max_hz(),
                 ..FilterParams::default()
             },
             amplifier: AmplifierParams::default(),

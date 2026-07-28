@@ -189,9 +189,7 @@ impl Filter {
     ) -> WideF32 {
         let env_amount = self.env_amount.next();
         let env_velocity_amount = self.env_velocity_amount.next();
-        self.engine.set_env_amount(env_amount);
-        self.engine.set_env_velocity_amount(env_velocity_amount);
-        self.engine.process_prepared(
+        self.engine.process_prepared_env(
             input,
             note,
             filter_env,
@@ -202,6 +200,8 @@ impl Filter {
             resonance_mod,
             audio_mod,
             sample_rate,
+            env_amount,
+            env_velocity_amount,
         )
     }
 }

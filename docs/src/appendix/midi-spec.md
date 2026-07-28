@@ -93,7 +93,9 @@ The same formulas are inverted when encoding output.
 |---|---|---|
 | **Linear 0–1** | `raw / max` | Volume, resonance, mix levels, pan spread |
 | **Linear range** | `lo + (raw / max) × (hi − lo)` | Envelope times, semitone offsets, cents |
-| **Logarithmic** | `lo × (hi / lo)^(raw / max)` | Filter cutoff (20 Hz – 20 kHz), LFO rate |
+| **Semitone cutoff** | `440 × 2^((raw − 105) / 12)` (~1 Hz–13.3 kHz; raw 105 = A4) | Filter cutoff (Prophet program/NRPN). Converted to Hz at the MIDI frontier; patches store Hz. |
+| **Key track** | `raw / 64` | Filter keyboard amount (64 = 1:1) |
+| **Logarithmic** | `lo × (hi / lo)^(raw / max)` | LFO rate |
 | **Bipolar** | `(raw / max) × 2 − 1` | Envelope amounts, modulation depth |
 
 Booleans are decoded as `raw ≥ 64` (CC) or `raw ≠ 0` (NRPN).
@@ -157,11 +159,11 @@ All CC values are 7-bit (0–127).
 
 | CC | Parameter | Range | Description |
 |---|---|---|---|
-| 74, 102 | Filter Cutoff | 0–127 → 20 Hz – 20 kHz | Logarithmic scale |
+| 74, 102 | Filter Cutoff | 0–127 → semitone ticks (same as NRPN 0–127; max ~1.57 kHz) | `440 × 2^((raw − 105) / 12)` |
 | 71, 103 | Filter Resonance | 0–127 → 0%–100% | |
-| 104 | Filter Keyboard Track | 0–127 → 0%–100% | |
+| 104 | Filter Keyboard Track | 0–127 → 0–~1.98 (64 = 1:1) | `raw / 64` |
 | 105 | Filter Audio Mod | 0–127 → 0%–100% | Oscillator 1 FM of filter cutoff |
-| 106 | Filter Envelope Amount | 0–127 → −100% to +100% | Bipolar |
+| 106 | Filter Envelope Amount | 0–127 → −100% to +100% | Bipolar; full scale ±127 semitone ticks |
 | 107 | Filter Envelope Velocity | 0–127 → 0%–100% | |
 | 108 | Filter Envelope Delay | 0–127 → 0–5 seconds | |
 | 109 | Filter Envelope Attack | 0–127 → 0.5 ms – 5 seconds | |
@@ -241,12 +243,12 @@ offset from MIDI 60.
 
 | NRPN | Parameter | Raw Range | Max |
 |---|---|---|---|
-| 15 | Filter Cutoff | 0–164 → 20 Hz – 20 kHz (log) | 164 |
+| 15 | Filter Cutoff | 0–164 → Hz via semitone ticks (`440 × 2^((raw − 105) / 12)`; ~1 Hz–13.3 kHz) | 164 |
 | 16 | Filter Resonance | 0–127 → 0%–100% | 127 |
-| 17 | Filter Keyboard Track | 0–127 → 0%–100% | 127 |
+| 17 | Filter Keyboard Track | 0–127 → 0–~1.98 (64 = 1:1) | 127 |
 | 18 | Filter Audio Mod | 0–127 → 0%–100% | 127 |
 | 19 | Filter Poles | 0=2-pole, 1=4-pole | 1 |
-| 20 | Filter Envelope Amount | 0–254 → −100% to +100% (bipolar) | 254 |
+| 20 | Filter Envelope Amount | 0–254 → −100% to +100% (bipolar; ±127 semitone ticks) | 254 |
 | 21 | Filter Envelope Velocity | 0–127 → 0%–100% | 127 |
 | 22 | Filter Envelope Delay | 0–127 → 0–5 s | 127 |
 | 23 | Filter Envelope Attack | 0–127 → 0.5 ms – 5 s | 127 |
@@ -422,7 +424,7 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 19 | Glide On/Off | 0 = off, 1 = on |
 | 20 | Pitch Bend Range | 0–12 semitones |
 | 21 | Oscillator Slop | 0–127 |
-| 22 | Filter Cutoff | 0–164 (logarithmic; 20 Hz – 20 kHz when decoded) |
+| 22 | Filter Cutoff | 0–164 (semitone ticks; ~1 Hz–13.3 kHz when decoded) |
 | 23 | Filter Resonance | 0–127 |
 | 24 | Filter Keyboard Track | 0–127 |
 | 25 | Filter Audio Mod | 0–127 |
@@ -638,7 +640,7 @@ All documented MSB sidebands are listed below.
 | 12 | Oscillator Slop | 0–5 |
 | 13 | Oscillator 1–2 Mix | 0–127 |
 | 14 | Noise Level (low 7 bits); bit 7 is MSB for Filter Envelope Amount | 0–127 |
-| 15 | Filter Cutoff (low 7 bits; MSB in byte 19) | 0–164 (logarithmic; 20 Hz – 20 kHz when decoded) |
+| 15 | Filter Cutoff (low 7 bits; MSB in byte 19) | 0–164 (semitone ticks; ~1 Hz–13.3 kHz when decoded) |
 | 16 | Filter Resonance | 0–127 |
 | 17 | Filter Keyboard Amount | 0–127 |
 | 18 | Filter Audio Modulation | 0–127 |

@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui_knob::{Knob, KnobStyle};
-use synth_core::ParamId;
+use synth_core::{FILTER_CUTOFF_RAW_MAX, ParamId, cutoff_hz_to_raw, cutoff_raw_to_hz};
 
 use crate::engine::SynthEngineControl;
 
@@ -350,6 +350,70 @@ pub fn param_knob_log_hz(
     }
 }
 
+pub fn param_knob_filter_cutoff(
+    ui: &mut egui::Ui,
+    label: &str,
+    value_hz: &mut f32,
+    param: ParamId,
+    control: &SynthEngineControl,
+) {
+    let max_raw = f32::from(FILTER_CUTOFF_RAW_MAX);
+    let min_hz = cutoff_raw_to_hz(0);
+    let max_hz = cutoff_raw_to_hz(FILTER_CUTOFF_RAW_MAX);
+    let reset_raw = max_raw;
+    let mut raw = f32::from(cutoff_hz_to_raw(*value_hz, FILTER_CUTOFF_RAW_MAX));
+    let text_color = ui.visuals().text_color();
+    let knob_color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let accent = ui.visuals().selection.bg_fill;
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    let response = ui.add(
+        Knob::new(&mut raw, 0.0, max_raw, KnobStyle::Wiper)
+            .with_size(KNOB_SIZE)
+            .with_stroke_width(2.0)
+            .with_colors(knob_color, accent, text_color)
+            .with_sweep_range(KNOB_SWEEP_START, KNOB_SWEEP_RANGE)
+            .with_double_click_reset(reset_raw)
+            .with_background_arc(true)
+            .with_show_filled_segments(true),
+    );
+
+    if response.changed() {
+        raw = raw.round().clamp(0.0, max_raw);
+        *value_hz = cutoff_raw_to_hz(raw as u16);
+    }
+
+    ui.add_space(KNOB_LABEL_OVERLAP);
+
+    ui.label(
+        egui::RichText::new(label)
+            .font(egui::FontId::proportional(KNOB_FONT_SIZE))
+            .color(text_color),
+    );
+
+    let edit_id = knob_edit_id(param);
+    let font_id = egui::FontId::proportional(KNOB_FONT_SIZE);
+    let edited =
+        knob_filter_cutoff_hz_edit(ui, edit_id, value_hz, min_hz, max_hz, font_id, text_color);
+    if edited {
+        *value_hz = cutoff_raw_to_hz(cutoff_hz_to_raw(*value_hz, FILTER_CUTOFF_RAW_MAX));
+    }
+
+    ui.label(
+        egui::RichText::new(filter_cutoff_raw_to_note_name(f32::from(cutoff_hz_to_raw(
+            *value_hz,
+            FILTER_CUTOFF_RAW_MAX,
+        ))))
+        .font(egui::FontId::proportional(KNOB_FONT_SIZE - 1.0))
+        .color(text_color.gamma_multiply(0.75)),
+    );
+
+    if edited || response.changed() {
+        control.set_param(param, *value_hz);
+    }
+}
+
 pub fn param_knob_discrete(
     ui: &mut egui::Ui,
     label: &str,
@@ -576,6 +640,77 @@ fn format_hz(value: f32) -> String {
     }
 }
 
+fn format_filter_cutoff_hz(value: f32) -> String {
+    if value >= 1000.0 {
+        format!("{:.2} kHz", value / 1000.0)
+    } else if value >= 100.0 {
+        format!("{value:.0} Hz")
+    } else if value >= 10.0 {
+        format!("{value:.1} Hz")
+    } else {
+        format!("{value:.2} Hz")
+    }
+}
+
+fn parse_hz_text(text: &str) -> Option<f32> {
+    let trimmed = text.trim().to_ascii_lowercase();
+    let (number, scale) = if let Some(rest) = trimmed.strip_suffix("khz") {
+        (rest.trim(), 1000.0)
+    } else if let Some(rest) = trimmed.strip_suffix("hz") {
+        (rest.trim(), 1.0)
+    } else {
+        (trimmed.as_str(), 1.0)
+    };
+    Some(number.parse::<f32>().ok()? * scale)
+}
+
+fn knob_filter_cutoff_hz_edit(
+    ui: &mut egui::Ui,
+    edit_id: egui::Id,
+    value_hz: &mut f32,
+    min_hz: f32,
+    max_hz: f32,
+    font_id: egui::FontId,
+    text_color: egui::Color32,
+) -> bool {
+    let mut edit_text = ui
+        .memory_mut(|mem| mem.data.get_temp::<String>(edit_id))
+        .unwrap_or_default();
+
+    let edit_has_focus = ui.memory(|mem| mem.has_focus(edit_id));
+    if !edit_has_focus {
+        edit_text = format_filter_cutoff_hz(*value_hz);
+    }
+    if edit_text.is_empty() {
+        edit_text = format_filter_cutoff_hz(*value_hz);
+    }
+
+    let edit_response = ui.add(
+        egui::TextEdit::singleline(&mut edit_text)
+            .id(edit_id)
+            .font(font_id)
+            .desired_width(64.0)
+            .horizontal_align(egui::Align::Center)
+            .frame(egui::Frame::NONE)
+            .text_color(text_color),
+    );
+
+    let mut changed = false;
+    if edit_response.lost_focus() && !edit_text.trim().is_empty() {
+        if let Some(parsed) = parse_hz_text(&edit_text) {
+            let clamped = parsed.clamp(min_hz, max_hz);
+            if (*value_hz - clamped).abs() > f32::EPSILON {
+                *value_hz = clamped;
+                changed = true;
+            }
+        }
+        edit_text = format_filter_cutoff_hz(*value_hz);
+    }
+
+    ui.memory_mut(|mem| mem.data.insert_temp(edit_id, edit_text));
+    changed
+}
+
 fn format_knob_value(min: f32, max: f32) -> impl Fn(f32) -> String + 'static {
     move |value| {
         if min < 0.0 && max <= 1.0 {
@@ -598,6 +733,13 @@ fn value_to_note_name(value: f32) -> String {
     let v = value.clamp(0.0, 120.0) as i32;
     let note = NOTE_NAMES[(v % 12) as usize];
     let octave = v / 12 - 2;
+    format!("{note}{octave}")
+}
+
+fn filter_cutoff_raw_to_note_name(raw: f32) -> String {
+    let midi = raw.round() as i32 - 36;
+    let note = NOTE_NAMES[midi.rem_euclid(12) as usize];
+    let octave = midi.div_euclid(12) - 1;
     format!("{note}{octave}")
 }
 

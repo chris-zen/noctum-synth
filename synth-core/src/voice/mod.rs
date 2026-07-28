@@ -38,7 +38,7 @@ pub use oscillators::{
 };
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
-const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 48.0;
+const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 127.0;
 /// Short smooth release used before replacing an audible voice (SynthLab precedent).
 const VOICE_STEAL_SHUTDOWN_SECONDS: f32 = 0.005;
 
