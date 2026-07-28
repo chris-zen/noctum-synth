@@ -107,8 +107,9 @@ together in time and frequency. Input capture for analysis does not require
 **Audio In** mixing into the speakers; that toggle only sums input into the
 audible output.
 
-Oscilloscope controls cover timebase, trigger level, vertical range, and left /
-right / stereo traces. The spectrum analyzer offers FFT size, window type,
+Oscilloscope controls cover trigger mode (Free / Auto / Normal / Single),
+timebase, trigger level and slope, acquisition length, vertical range, and
+left / right / stereo traces. The spectrum analyzer offers FFT size, window type,
 linear or log frequency axis, optional peak hold, and left / right / sum
 channel selection. Hover readouts report frequency, level, and nearest note.
 

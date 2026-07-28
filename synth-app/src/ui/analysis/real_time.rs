@@ -61,13 +61,13 @@ fn draw_hover_status(ui: &mut egui::Ui, hover: Option<&HoverStatus>) {
                 .show(|ui| {
                     ui.set_min_width(280.0);
                     ui.strong("Oscilloscope");
-                    ui.label("C: arm capture (freezes on next trigger)");
-                    ui.label("F: freeze current live buffer");
+                    ui.label("Mode: Free / Auto / Normal / Single");
+                    ui.label("Space: Run / Stop");
                     ui.label("Cmd + two-finger vertical: X zoom (around cursor)");
                     ui.label("Opt + two-finger vertical: Y range (down increases, up decreases)");
-                    ui.label("Two-finger horizontal: pan left/right (when captured)");
+                    ui.label("Two-finger horizontal: pan left/right (inspectable buffer)");
                     ui.label("Right-click: reset timebase / view offset");
-                    ui.label("Cmd + hover (captured): set FFT window");
+                    ui.label("Cmd + hover: set FFT window (inspectable buffer)");
                     ui.add_space(8.0);
                     ui.strong("Spectrum");
                     ui.label("Hover: frequency, level, note in status bar");

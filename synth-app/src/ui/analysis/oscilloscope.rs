@@ -9,7 +9,12 @@ use crate::ui::analysis::real_time::{HoverStatus, SignalSource};
 use crate::ui::analysis::spectrum_analyzer::{FftState, fill_fft_from_captured, process_fft_trace};
 
 pub(crate) const MAX_SCOPE_SAMPLES: usize = 65536;
-const DEFAULT_JUMP_THRESHOLD: f32 = 0.5;
+const DEFAULT_CLICK_SENSITIVITY: f32 = 0.5;
+const PRE_TRIGGER_FRAC: f32 = 0.2;
+const VIEW_PRE_TRIGGER_SAMPLES: f32 = 8.0;
+const CLICK_MAD_WINDOW: usize = 64;
+const CLICK_MAD_EPS: f32 = 1e-4;
+const CLICK_MAD_SCALE: f32 = 1.4826;
 
 const INPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 150, 45);
 const INPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
@@ -46,15 +51,23 @@ impl Default for TriggerSlope {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TriggerMode {
+    Free,
     Auto,
     Normal,
+    Single,
 }
 
 impl Default for TriggerMode {
     fn default() -> Self {
         Self::Auto
+    }
+}
+
+impl TriggerMode {
+    fn is_triggered(self) -> bool {
+        matches!(self, Self::Auto | Self::Normal | Self::Single)
     }
 }
 
@@ -82,8 +95,8 @@ pub struct OscilloscopeViewConfig {
     pub trigger_slope: TriggerSlope,
     #[serde(default)]
     pub trigger_mode: TriggerMode,
-    #[serde(default = "default_jump_threshold_val")]
-    pub jump_threshold: f32,
+    #[serde(default = "default_click_sensitivity_val", alias = "jump_threshold")]
+    pub click_sensitivity: f32,
     #[serde(default = "default_capture_duration")]
     pub capture_duration_ms: f32,
 }
@@ -92,8 +105,8 @@ fn default_capture_duration() -> f32 {
     500.0
 }
 
-fn default_jump_threshold_val() -> f32 {
-    DEFAULT_JUMP_THRESHOLD
+fn default_click_sensitivity_val() -> f32 {
+    DEFAULT_CLICK_SENSITIVITY
 }
 
 impl Default for OscilloscopeViewConfig {
@@ -112,7 +125,7 @@ impl OscilloscopeViewConfig {
             source: state.source,
             trigger_slope: state.trigger_slope,
             trigger_mode: state.trigger_mode,
-            jump_threshold: state.jump_threshold,
+            click_sensitivity: state.click_sensitivity,
             capture_duration_ms: state.capture_duration_ms,
         }
     }
@@ -125,7 +138,7 @@ impl OscilloscopeViewConfig {
         state.source = self.source;
         state.trigger_slope = self.trigger_slope;
         state.trigger_mode = self.trigger_mode;
-        state.jump_threshold = self.jump_threshold;
+        state.click_sensitivity = self.click_sensitivity;
         state.capture_duration_ms = self.capture_duration_ms;
     }
 }
@@ -167,7 +180,7 @@ pub struct OscilloscopeState {
     pub(crate) source: SignalSource,
     pub(crate) trigger_slope: TriggerSlope,
     pub(crate) trigger_mode: TriggerMode,
-    pub(crate) jump_threshold: f32,
+    pub(crate) click_sensitivity: f32,
     pub(crate) capture_duration_ms: f32,
 
     pub(crate) captured: bool,
@@ -181,7 +194,11 @@ pub struct OscilloscopeState {
     capture_circ_write: usize,
     capture_circ_start: usize,
     capture_circ_count: usize,
+    capture_circ_filled: usize,
+    capture_post_needed: usize,
     capture_trig_pos: f32,
+    acq_wait_samples: usize,
+    trigger_prev_sample: Option<f32>,
     pub(crate) captured_input_l: Vec<f32>,
     pub(crate) captured_input_r: Vec<f32>,
     pub(crate) captured_output_l: Vec<f32>,
@@ -206,7 +223,7 @@ impl Default for OscilloscopeState {
             source: SignalSource::Output,
             trigger_slope: TriggerSlope::Rising,
             trigger_mode: TriggerMode::Auto,
-            jump_threshold: DEFAULT_JUMP_THRESHOLD,
+            click_sensitivity: DEFAULT_CLICK_SENSITIVITY,
             capture_duration_ms: 500.0,
             captured: false,
             capture_armed: false,
@@ -219,7 +236,11 @@ impl Default for OscilloscopeState {
             capture_circ_write: 0,
             capture_circ_start: 0,
             capture_circ_count: 0,
+            capture_circ_filled: 0,
+            capture_post_needed: 0,
             capture_trig_pos: 0.0,
+            acq_wait_samples: 0,
+            trigger_prev_sample: None,
             captured_input_l: Vec::new(),
             captured_input_r: Vec::new(),
             captured_output_l: Vec::new(),
@@ -235,6 +256,7 @@ impl Default for OscilloscopeState {
 // Trigger functions
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 pub(crate) fn find_trigger(
     buf: &[f32],
     len: usize,
@@ -276,6 +298,7 @@ pub(crate) fn find_trigger(
     None
 }
 
+#[cfg(test)]
 pub(crate) fn find_combined_trigger(
     first: &[f32],
     second: &[f32],
@@ -322,45 +345,99 @@ pub(crate) fn find_combined_trigger(
     None
 }
 
-fn find_trigger_offset(buf: &[f32], level: f32, slope: TriggerSlope) -> Option<usize> {
-    if buf.len() < 2 {
+pub(crate) fn find_trigger_offset_with_prev(
+    prev: Option<f32>,
+    buf: &[f32],
+    level: f32,
+    slope: TriggerSlope,
+) -> Option<usize> {
+    if buf.is_empty() {
         return None;
     }
-    match slope {
-        TriggerSlope::Rising => {
-            for i in 1..buf.len() {
-                if buf[i - 1] < level && buf[i] >= level {
-                    return Some(i - 1);
-                }
-            }
+    let crosses = |a: f32, b: f32| -> bool {
+        match slope {
+            TriggerSlope::Rising => a < level && b >= level,
+            TriggerSlope::Falling => a > level && b <= level,
+            TriggerSlope::Both => (a < level && b >= level) || (a > level && b <= level),
         }
-        TriggerSlope::Falling => {
-            for i in 1..buf.len() {
-                if buf[i - 1] > level && buf[i] <= level {
-                    return Some(i - 1);
-                }
-            }
+    };
+    if let Some(p) = prev {
+        if crosses(p, buf[0]) {
+            return Some(0);
         }
-        TriggerSlope::Both => {
-            for i in 1..buf.len() {
-                let p = buf[i - 1];
-                let c = buf[i];
-                if (p < level && c >= level) || (p > level && c <= level) {
-                    return Some(i - 1);
-                }
-            }
+    }
+    for i in 1..buf.len() {
+        if crosses(buf[i - 1], buf[i]) {
+            return Some(i);
         }
     }
     None
 }
 
-// ---------------------------------------------------------------------------
-// Capture
-// ---------------------------------------------------------------------------
+fn pre_trigger_samples(tgt: usize) -> usize {
+    ((tgt as f32 * PRE_TRIGGER_FRAC) as usize).min(tgt.saturating_sub(1))
+}
 
-fn capture_scope(state: &mut OscilloscopeState) {
+fn auto_timeout_samples(osc: &OscilloscopeState, sample_rate: f32) -> usize {
+    let ms = (2.0 * osc.capture_duration_ms).max(100.0);
+    ((ms / 1000.0) * sample_rate) as usize
+}
+
+fn trigger_channel_from_block<'a>(
+    block: &'a AudioBlock,
+    block_len: usize,
+    source: SignalSource,
+    display_mode: OscilloscopeDisplayMode,
+) -> &'a [f32] {
+    let use_left = display_mode != OscilloscopeDisplayMode::Right;
+    match source {
+        SignalSource::Input => {
+            if use_left {
+                &block.input_left[..block_len]
+            } else {
+                &block.input_right[..block_len]
+            }
+        }
+        SignalSource::Output | SignalSource::InputAndOutput => {
+            if use_left {
+                &block.output_left[..block_len]
+            } else {
+                &block.output_right[..block_len]
+            }
+        }
+    }
+}
+
+fn write_circ_samples(osc: &mut OscilloscopeState, block: &AudioBlock, write_len: usize) {
+    if write_len == 0 {
+        return;
+    }
+    let tgt = osc.capture_circ_target;
+    let mut write = osc.capture_circ_write;
+    let first = write_len.min(tgt - write);
+    osc.capture_circ_il[write..write + first].copy_from_slice(&block.input_left[..first]);
+    osc.capture_circ_ir[write..write + first].copy_from_slice(&block.input_right[..first]);
+    osc.capture_circ_ol[write..write + first].copy_from_slice(&block.output_left[..first]);
+    osc.capture_circ_or[write..write + first].copy_from_slice(&block.output_right[..first]);
+    write = (write + first) % tgt;
+    if write_len > first {
+        let second = write_len - first;
+        osc.capture_circ_il[0..second].copy_from_slice(&block.input_left[first..write_len]);
+        osc.capture_circ_ir[0..second].copy_from_slice(&block.input_right[first..write_len]);
+        osc.capture_circ_ol[0..second].copy_from_slice(&block.output_left[first..write_len]);
+        osc.capture_circ_or[0..second].copy_from_slice(&block.output_right[first..write_len]);
+        write = second % tgt;
+    }
+    osc.capture_circ_write = write;
+    osc.capture_circ_filled = (osc.capture_circ_filled + write_len).min(tgt);
+}
+
+fn unwrap_capture_to_display(state: &mut OscilloscopeState) {
     let start = state.capture_circ_start;
     let n = state.capture_circ_target;
+    if n == 0 || state.capture_circ_il.len() != n {
+        return;
+    }
     let il = &state.capture_circ_il;
     let ir = &state.capture_circ_ir;
     let ol = &state.capture_circ_ol;
@@ -386,46 +463,89 @@ fn capture_scope(state: &mut OscilloscopeState) {
     state.captured_output_l = out_ol;
     state.captured_output_r = out_or;
     state.captured_len = n;
-    state.captured_view_offset = 0.0;
-    state.captured = true;
 }
 
-pub(crate) fn finalize_capture(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate: f32) {
-    osc.capture_armed = false;
+fn rearm_trigger(osc: &mut OscilloscopeState) {
     osc.capture_trigger_found = false;
-    let trig = osc.capture_trig_pos;
-    capture_scope(osc);
-    let visible = (osc.timebase_ms / 1000.0 * sample_rate).max(2.0);
-    osc.captured_view_offset = (trig - 0.2 * visible).max(0.0);
-    compute_fft_on_capture(fft, osc, sample_rate);
-}
-
-fn arm_capture(osc: &mut OscilloscopeState, sample_rate: f32) {
-    osc.input_buffer_l.clear();
-    osc.input_buffer_r.clear();
-    osc.output_buffer_l.clear();
-    osc.output_buffer_r.clear();
-    osc.buf_len = 0;
-    let tgt = ((osc.capture_duration_ms / 1000.0 * sample_rate) as usize).max(64);
-    osc.capture_circ_il = vec![0.0f32; tgt];
-    osc.capture_circ_ir = vec![0.0f32; tgt];
-    osc.capture_circ_ol = vec![0.0f32; tgt];
-    osc.capture_circ_or = vec![0.0f32; tgt];
-    osc.capture_circ_target = tgt;
-    osc.capture_circ_write = 0;
-    osc.capture_circ_start = 0;
     osc.capture_circ_count = 0;
+    osc.capture_post_needed = 0;
+    osc.acq_wait_samples = 0;
+    osc.trigger_prev_sample = None;
+}
+
+fn finalize_acquisition(
+    osc: &mut OscilloscopeState,
+    fft: &mut FftState,
+    sample_rate: f32,
+    stop: bool,
+) {
+    let trig = osc.capture_trig_pos;
+    unwrap_capture_to_display(osc);
+    osc.captured_view_offset = (trig - VIEW_PRE_TRIGGER_SAMPLES).max(0.0);
+    compute_fft_on_capture(fft, osc, sample_rate);
+    if stop {
+        osc.captured = true;
+        osc.capture_armed = false;
+        osc.capture_trigger_found = false;
+    } else {
+        rearm_trigger(osc);
+    }
+}
+
+fn force_auto_sweep(osc: &mut OscilloscopeState) {
+    let tgt = osc.capture_circ_target;
+    if tgt == 0 || osc.capture_circ_filled < tgt {
+        return;
+    }
+    osc.capture_circ_start = osc.capture_circ_write % tgt;
     osc.capture_trig_pos = 0.0;
+}
+
+fn arm_acquisition(osc: &mut OscilloscopeState, sample_rate: f32) {
+    let tgt = ((osc.capture_duration_ms / 1000.0 * sample_rate) as usize)
+        .max(64)
+        .min(MAX_SCOPE_SAMPLES);
+    if osc.capture_circ_target != tgt || osc.capture_circ_il.len() != tgt {
+        osc.capture_circ_il = vec![0.0f32; tgt];
+        osc.capture_circ_ir = vec![0.0f32; tgt];
+        osc.capture_circ_ol = vec![0.0f32; tgt];
+        osc.capture_circ_or = vec![0.0f32; tgt];
+        osc.capture_circ_target = tgt;
+        osc.capture_circ_write = 0;
+        osc.capture_circ_start = 0;
+        osc.capture_circ_filled = 0;
+    }
     osc.capture_armed = true;
-    osc.capture_trigger_found = false;
+    rearm_trigger(osc);
+}
+
+fn start_run(osc: &mut OscilloscopeState, sample_rate: f32) {
+    osc.captured = false;
+    osc.fft_window_start = None;
+    if osc.trigger_mode.is_triggered() {
+        arm_acquisition(osc, sample_rate);
+    } else {
+        osc.capture_armed = false;
+        osc.capture_trigger_found = false;
+        osc.capture_circ_target = 0;
+        osc.trigger_prev_sample = None;
+    }
 }
 
 fn freeze_from_live(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate: f32) {
+    if osc.captured_len > 1 && osc.trigger_mode.is_triggered() {
+        osc.captured = true;
+        osc.capture_armed = false;
+        osc.capture_trigger_found = false;
+        compute_fft_on_capture(fft, osc, sample_rate);
+        return;
+    }
     let n = osc.buf_len;
     if n <= 1 {
         return;
     }
-    let view_offset = live_view_offset(osc, sample_rate).unwrap_or(0.0);
+    let samples_to_show = ((osc.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+    let view_offset = n.saturating_sub(samples_to_show) as f32;
     osc.captured_input_l = osc.input_buffer_l[..n].to_vec();
     osc.captured_input_r = osc.input_buffer_r[..n].to_vec();
     osc.captured_output_l = osc.output_buffer_l[..n].to_vec();
@@ -438,67 +558,88 @@ fn freeze_from_live(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate
     compute_fft_on_capture(fft, osc, sample_rate);
 }
 
-fn live_view_offset(state: &OscilloscopeState, sample_rate: f32) -> Option<f32> {
-    let elen = state.buf_len;
-    if elen <= 1 {
-        return None;
+fn stop_acquisition(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate: f32) {
+    if osc.captured {
+        return;
+    }
+    freeze_from_live(osc, fft, sample_rate);
+}
+
+fn mark_trigger(osc: &mut OscilloscopeState, trig_circ_idx: usize) {
+    let tgt = osc.capture_circ_target;
+    let pre = pre_trigger_samples(tgt);
+    osc.capture_trigger_found = true;
+    osc.capture_circ_start = (trig_circ_idx + tgt - pre) % tgt;
+    osc.capture_trig_pos = pre as f32;
+    osc.capture_post_needed = tgt.saturating_sub(pre + 1);
+    osc.capture_circ_count = 0;
+}
+
+fn process_triggered_block(
+    osc: &mut OscilloscopeState,
+    fft: &mut FftState,
+    block: &AudioBlock,
+    block_len: usize,
+    sample_rate: f32,
+) -> bool {
+    let tgt = osc.capture_circ_target;
+    if tgt == 0 || !osc.capture_armed {
+        return false;
     }
 
-    let il = state.input_buffer_l.as_slice();
-    let ir = state.input_buffer_r.as_slice();
-    let ol = state.output_buffer_l.as_slice();
-    let or = state.output_buffer_r.as_slice();
+    let trig_chan = trigger_channel_from_block(block, block_len, osc.source, osc.display_mode);
+    let write_before = osc.capture_circ_write;
+    let mut completed = false;
 
-    let trigger_buf_l = match state.source {
-        SignalSource::Input => il,
-        SignalSource::Output => ol,
-        SignalSource::InputAndOutput => ol,
-    };
-    let trigger_buf_r = match state.source {
-        SignalSource::Input => ir,
-        SignalSource::Output => or,
-        SignalSource::InputAndOutput => or,
-    };
-    let trigger_buf_l_final = match state.display_mode {
-        OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => trigger_buf_l,
-        OscilloscopeDisplayMode::Right => trigger_buf_r,
-    };
-    let trigger_buf_r_for_combined = match state.display_mode {
-        OscilloscopeDisplayMode::Left | OscilloscopeDisplayMode::Stereo => match state.source {
-            SignalSource::Input => ir,
-            SignalSource::Output => or,
-            SignalSource::InputAndOutput => or,
-        },
-        OscilloscopeDisplayMode::Right => trigger_buf_r,
-    };
-
-    let trig = match state.source {
-        SignalSource::InputAndOutput => find_combined_trigger(
-            trigger_buf_l_final,
-            trigger_buf_r_for_combined,
-            elen,
-            state.trigger_level,
-            state.trigger_slope,
-        ),
-        _ => find_trigger(
-            trigger_buf_l_final,
-            elen,
-            state.trigger_level,
-            state.trigger_slope,
-        ),
-    };
-
-    let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
-    let trig_f32 = match trig {
-        None => elen.saturating_sub(samples_to_show) as f32,
-        Some(t) => t,
-    };
-
-    let mut trig_idx = trig_f32 as usize;
-    if trig_idx + samples_to_show > elen {
-        trig_idx = elen.saturating_sub(samples_to_show);
+    if !osc.capture_trigger_found {
+        osc.acq_wait_samples = osc.acq_wait_samples.saturating_add(block_len);
+        if let Some(off) = find_trigger_offset_with_prev(
+            osc.trigger_prev_sample,
+            trig_chan,
+            osc.trigger_level,
+            osc.trigger_slope,
+        ) {
+            let trig_circ_idx = (write_before + off) % tgt;
+            let pre = pre_trigger_samples(tgt);
+            let post_needed = tgt.saturating_sub(pre + 1);
+            let samples_after = block_len.saturating_sub(off + 1);
+            let write_after = samples_after.min(post_needed);
+            let write_len = off + 1 + write_after;
+            write_circ_samples(osc, block, write_len);
+            mark_trigger(osc, trig_circ_idx);
+            osc.capture_circ_count = write_after;
+        } else if osc.trigger_mode == TriggerMode::Auto
+            && osc.capture_circ_filled >= tgt
+            && osc.acq_wait_samples >= auto_timeout_samples(osc, sample_rate)
+        {
+            write_circ_samples(osc, block, block_len);
+            force_auto_sweep(osc);
+            finalize_acquisition(osc, fft, sample_rate, false);
+            completed = true;
+        } else {
+            write_circ_samples(osc, block, block_len);
+        }
+    } else {
+        let need = osc
+            .capture_post_needed
+            .saturating_sub(osc.capture_circ_count);
+        let write_len = block_len.min(need);
+        write_circ_samples(osc, block, write_len);
+        osc.capture_circ_count += write_len;
     }
-    Some(trig_idx as f32)
+
+    if let Some(last) = trig_chan.last().copied() {
+        osc.trigger_prev_sample = Some(last);
+    }
+
+    if osc.capture_trigger_found && osc.capture_circ_count >= osc.capture_post_needed && !completed
+    {
+        let stop = osc.trigger_mode == TriggerMode::Single;
+        finalize_acquisition(osc, fft, sample_rate, stop);
+        completed = true;
+    }
+
+    completed
 }
 
 fn compute_fft_on_capture(fft_state: &mut FftState, osc: &OscilloscopeState, sample_rate: f32) {
@@ -559,18 +700,37 @@ fn compute_fft_on_capture(fft_state: &mut FftState, osc: &OscilloscopeState, sam
 // Audio feed
 // ---------------------------------------------------------------------------
 
-/// Feeds audio blocks into live buffers and circular capture buffer.
-/// Returns true if capture just finalized (caller should compute FFT).
+/// Feeds audio blocks into live buffers and triggered acquisition.
+/// Returns true if an acquisition just completed.
 pub(crate) fn feed_audio(
     osc: &mut OscilloscopeState,
     fft: &mut FftState,
     audio_blocks: VecDeque<AudioBlock>,
     sample_rate: f32,
 ) -> bool {
-    let mut captured = false;
+    let mut completed = false;
     if osc.captured {
         return false;
     }
+
+    if osc.trigger_mode.is_triggered() && !osc.capture_armed {
+        arm_acquisition(osc, sample_rate);
+    } else if osc.trigger_mode == TriggerMode::Free && osc.capture_armed {
+        osc.capture_armed = false;
+        osc.capture_trigger_found = false;
+        osc.capture_circ_target = 0;
+        osc.trigger_prev_sample = None;
+    }
+
+    if osc.trigger_mode.is_triggered() && osc.capture_armed {
+        let tgt = ((osc.capture_duration_ms / 1000.0 * sample_rate) as usize)
+            .max(64)
+            .min(MAX_SCOPE_SAMPLES);
+        if tgt != osc.capture_circ_target {
+            arm_acquisition(osc, sample_rate);
+        }
+    }
+
     for block in audio_blocks {
         let block_len = (block.len as usize).min(MAX_AUDIO_BUF);
 
@@ -595,97 +755,16 @@ pub(crate) fn feed_audio(
         }
         osc.buf_len = osc.input_buffer_l.len();
 
-        // Circular capture buffer
-        let tgt = osc.capture_circ_target;
-        if osc.capture_armed && tgt > 0 {
-            let write_before = osc.capture_circ_write;
-
-            let mut trig_in_block = false;
-            let mut trig_offset = 0;
-            if !osc.capture_trigger_found {
-                let use_left = osc.display_mode != OscilloscopeDisplayMode::Right;
-                let trig_chan = match osc.source {
-                    SignalSource::Input => {
-                        if use_left {
-                            &block.input_left[..block_len]
-                        } else {
-                            &block.input_right[..block_len]
-                        }
-                    }
-                    SignalSource::Output | SignalSource::InputAndOutput => {
-                        if use_left {
-                            &block.output_left[..block_len]
-                        } else {
-                            &block.output_right[..block_len]
-                        }
-                    }
-                };
-                if let Some(off) =
-                    find_trigger_offset(trig_chan, osc.trigger_level, osc.trigger_slope)
-                {
-                    trig_in_block = true;
-                    trig_offset = off;
-                    osc.capture_trigger_found = true;
-                    osc.capture_circ_start = (write_before + off) % tgt;
-                    osc.capture_trig_pos = 0.0;
-                }
-            }
-
-            let write_len = if trig_in_block {
-                block_len.min(tgt)
-            } else if osc.capture_trigger_found {
-                let need = tgt.saturating_sub(1).saturating_sub(osc.capture_circ_count);
-                block_len.min(need)
-            } else {
-                block_len
-            };
-
-            if trig_in_block {
-                osc.capture_circ_count = write_len.saturating_sub(trig_offset + 1);
-            } else if osc.capture_trigger_found {
-                osc.capture_circ_count += write_len;
-            }
-
-            if write_len > 0 {
-                let mut write = write_before;
-                let first = write_len.min(tgt - write);
-                osc.capture_circ_il[write..write + first]
-                    .copy_from_slice(&block.input_left[..first]);
-                osc.capture_circ_ir[write..write + first]
-                    .copy_from_slice(&block.input_right[..first]);
-                osc.capture_circ_ol[write..write + first]
-                    .copy_from_slice(&block.output_left[..first]);
-                osc.capture_circ_or[write..write + first]
-                    .copy_from_slice(&block.output_right[..first]);
-                write = (write + first) % tgt;
-                if write_len > first {
-                    let second = write_len - first;
-                    osc.capture_circ_il[0..second]
-                        .copy_from_slice(&block.input_left[first..write_len]);
-                    osc.capture_circ_ir[0..second]
-                        .copy_from_slice(&block.input_right[first..write_len]);
-                    osc.capture_circ_ol[0..second]
-                        .copy_from_slice(&block.output_left[first..write_len]);
-                    osc.capture_circ_or[0..second]
-                        .copy_from_slice(&block.output_right[first..write_len]);
-                    write = second % tgt;
-                }
-                osc.capture_circ_write = write;
+        if osc.trigger_mode.is_triggered() {
+            if process_triggered_block(osc, fft, &block, block_len, sample_rate) {
+                completed = true;
             }
         }
 
         fft.frame_count += 1;
     }
 
-    if osc.capture_armed
-        && osc.capture_trigger_found
-        && osc.capture_circ_count >= osc.capture_circ_target.saturating_sub(1)
-    {
-        finalize_capture(osc, fft, sample_rate);
-        captured = true;
-    }
-
-    captured
+    completed
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +807,79 @@ fn nice_tick_interval(range: f32, target_ticks: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Click / discontinuity detection
+// ---------------------------------------------------------------------------
+
+fn second_diff_residual(x0: f32, x1: f32, x2: f32) -> f32 {
+    (x2 - 2.0 * x1 + x0).abs()
+}
+
+fn median_sorted(sorted: &mut [f32]) -> f32 {
+    let n = sorted.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        0.5 * (sorted[n / 2 - 1] + sorted[n / 2])
+    }
+}
+
+fn mad(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = median_sorted(&mut sorted);
+    for v in &mut sorted {
+        *v = (*v - med).abs();
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    median_sorted(&mut sorted)
+}
+
+fn click_sensitivity_to_k(sensitivity: f32) -> f32 {
+    let s = sensitivity.clamp(0.0, 1.0);
+    3.0 + (1.0 - s) * 12.0
+}
+
+fn click_score(residual: f32, window_residuals: &[f32]) -> f32 {
+    let mad_s = CLICK_MAD_SCALE * mad(window_residuals);
+    let prior = if window_residuals.len() > 1 {
+        &window_residuals[..window_residuals.len() - 1]
+    } else {
+        window_residuals
+    };
+    let peak = prior.iter().copied().fold(0.0_f32, f32::max);
+    let scale = CLICK_MAD_EPS + mad_s.max(peak);
+    residual / scale
+}
+
+fn find_click_indices(buffer: &[f32], start: usize, end: usize, sensitivity: f32) -> Vec<usize> {
+    let end = end.min(buffer.len());
+    if end <= start + 2 {
+        return Vec::new();
+    }
+    let k = click_sensitivity_to_k(sensitivity);
+    let mut residuals = Vec::with_capacity(end.saturating_sub(start + 2));
+    for n in (start + 2)..end {
+        residuals.push(second_diff_residual(buffer[n - 2], buffer[n - 1], buffer[n]));
+    }
+    let mut flags = Vec::new();
+    for (i, &r) in residuals.iter().enumerate() {
+        let n = start + 2 + i;
+        let win_start = i.saturating_sub(CLICK_MAD_WINDOW.saturating_sub(1));
+        let score = click_score(r, &residuals[win_start..=i]);
+        if score > k {
+            flags.push(n);
+        }
+    }
+    flags
+}
+
+// ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
 
@@ -740,26 +892,21 @@ fn draw_discontinuities(
     end: usize,
     trig_f32: f32,
     samples_to_show: usize,
-    threshold: f32,
+    sensitivity: f32,
     color: egui::Color32,
 ) {
-    if end <= start + 1 {
-        return;
-    }
-    for idx in (start + 1)..end {
-        let diff = (buffer[idx] - buffer[idx - 1]).abs();
-        if diff > threshold {
-            let x = plot_rect.left()
-                + plot_rect.width() * (idx as f32 - trig_f32) / samples_to_show as f32;
-            if x >= plot_rect.left() && x <= plot_rect.right() {
-                painter.line_segment(
-                    [
-                        egui::pos2(x, plot_rect.top()),
-                        egui::pos2(x, plot_rect.bottom()),
-                    ],
-                    egui::Stroke::new(1.0_f32, color),
-                );
-            }
+    let stroke = egui::Stroke::new(1.0_f32, color);
+    for idx in find_click_indices(buffer, start, end, sensitivity) {
+        let x = plot_rect.left()
+            + plot_rect.width() * (idx as f32 - trig_f32) / samples_to_show as f32;
+        if x >= plot_rect.left() && x <= plot_rect.right() {
+            painter.add(PathShape::line(
+                vec![
+                    egui::pos2(x, plot_rect.top()),
+                    egui::pos2(x, plot_rect.bottom()),
+                ],
+                stroke,
+            ));
         }
     }
 }
@@ -869,67 +1016,60 @@ pub(crate) fn draw_oscilloscope(
     let alt_held = ui.ctx().input(|i| i.modifiers.alt);
     let cursor_pos = ui.ctx().input(|i| i.pointer.hover_pos());
 
-    // -- Bar 1: Capture / Trigger --
+    // -- Bar 1: Run / Mode / Trigger --
     ui.horizontal_wrapped(|ui| {
+        let key_toggle = ui.input(|i| i.key_pressed(egui::Key::Space));
         if state.captured {
             if ui
-                .button("▶ Live")
-                .on_hover_text("Return to live streaming")
+                .button("▶ Run")
+                .on_hover_text("Resume acquisition (Space)")
                 .clicked()
+                || key_toggle
             {
-                state.captured = false;
-                state.fft_window_start = None;
+                start_run(state, sample_rate);
             }
-        } else if state.capture_armed {
-            if state.capture_trigger_found {
-                let pct = if state.capture_circ_target > 1 {
-                    let c = state.capture_circ_count;
-                    ((c as f32 / (state.capture_circ_target - 1) as f32) * 100.0).min(99.0) as u32
-                } else {
-                    0
-                };
-                ui.label(
-                    egui::RichText::new(format!("Capturing {pct}%"))
-                        .color(egui::Color32::from_rgb(100, 200, 100)),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new("Waiting...").color(egui::Color32::from_rgb(180, 180, 100)),
-                );
-            }
+        } else if ui
+            .button("⏹ Stop")
+            .on_hover_text("Stop acquisition and hold the current view (Space)")
+            .clicked()
+            || key_toggle
+        {
+            stop_acquisition(state, fft, sample_rate);
+        }
+
+        ui.separator();
+        ui.label("Mode:");
+        let prev_mode = state.trigger_mode;
+        for (mode, label, tip) in [
+            (TriggerMode::Free, "Free", "Free-run: waveform always scrolls"),
+            (
+                TriggerMode::Auto,
+                "Auto",
+                "Triggered sweeps; free-run if no trigger within timeout",
+            ),
+            (
+                TriggerMode::Normal,
+                "Normal",
+                "Triggered sweeps only; hold last acquisition while waiting",
+            ),
+            (
+                TriggerMode::Single,
+                "Single",
+                "One triggered acquisition, then stop",
+            ),
+        ] {
             if ui
-                .button("Cancel")
-                .on_hover_text("Cancel capture and return to live")
+                .selectable_label(state.trigger_mode == mode, label)
+                .on_hover_text(tip)
                 .clicked()
             {
-                state.capture_armed = false;
-                state.capture_trigger_found = false;
-                state.capture_circ_il.clear();
-                state.capture_circ_ir.clear();
-                state.capture_circ_ol.clear();
-                state.capture_circ_or.clear();
-                state.capture_circ_target = 0;
-            }
-        } else {
-            let key_capture = ui.input(|i| i.key_pressed(egui::Key::C));
-            let key_freeze = ui.input(|i| i.key_pressed(egui::Key::F));
-            if ui
-                .button("Capture")
-                .on_hover_text("Arm capture; freezes on next trigger (C)")
-                .clicked()
-                || key_capture
-            {
-                arm_capture(state, sample_rate);
-            }
-            if ui
-                .add_enabled(state.buf_len > 1, egui::Button::new("Freeze"))
-                .on_hover_text("Instant freeze of the current live buffer (F)")
-                .clicked()
-                || (key_freeze && state.buf_len > 1)
-            {
-                freeze_from_live(state, fft, sample_rate);
+                state.trigger_mode = mode;
             }
         }
+        if state.trigger_mode != prev_mode && !state.captured {
+            start_run(state, sample_rate);
+        }
+
         ui.separator();
         ui.label("Level:");
         ui.add(
@@ -937,7 +1077,7 @@ pub(crate) fn draw_oscilloscope(
                 .text("")
                 .trailing_fill(true),
         )
-        .on_hover_text("Trigger threshold: higher = only louder signals capture");
+        .on_hover_text("Trigger threshold");
         ui.separator();
         ui.label("Slope:");
         if ui
@@ -976,19 +1116,20 @@ pub(crate) fn draw_oscilloscope(
             egui::Slider::new(&mut state.capture_duration_ms, 100.0..=5000.0)
                 .logarithmic(true)
                 .text("ms"),
-        );
+        )
+        .on_hover_text("Acquisition buffer length");
         if state.captured {
             ui.separator();
-            ui.label("Jmp:");
-            ui.add(egui::Slider::new(&mut state.jump_threshold, 0.0..=1.0).text(""))
-                .on_hover_text("Show sample-to-sample jumps exceeding this threshold");
+            ui.label("Click:");
+            ui.add(egui::Slider::new(&mut state.click_sensitivity, 0.0..=1.0).text(""))
+                .on_hover_text("Click sensitivity: higher marks more candidates");
         }
     });
 
     // -- Bar 2: View parameters --
     ui.horizontal_wrapped(|ui| {
-        ui.label("X (ms):");
-        let buf_duration_ms = if state.captured {
+        ui.label("X:");
+        let buf_duration_ms = if state.captured || uses_display_hold(state) {
             state.captured_len as f32 / sample_rate * 1000.0
         } else if state.capture_armed {
             state.capture_duration_ms
@@ -1080,7 +1221,7 @@ pub(crate) fn draw_oscilloscope(
             egui::pos2(plot_rect.left(), center_y),
             egui::pos2(plot_rect.right(), center_y),
         ],
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 80)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(200, 120, 30)),
     );
 
     // Trigger level line
@@ -1101,8 +1242,17 @@ pub(crate) fn draw_oscilloscope(
     if response.clicked_by(PointerButton::Secondary) {
         state.timebase_ms = 5.0;
         state.fft_window_start = None;
-        if state.captured {
-            state.captured_view_offset = 0.0;
+        if has_inspectable_buffer(state) {
+            lock_scope_view(state, fft, sample_rate);
+            if state.trigger_mode.is_triggered() {
+                state.captured_view_offset =
+                    (state.capture_trig_pos - VIEW_PRE_TRIGGER_SAMPLES).max(0.0);
+            } else {
+                state.captured_view_offset = 0.0;
+            }
+            let visible = (state.timebase_ms / 1000.0 * sample_rate).max(2.0);
+            let max_offset = (state.captured_len as f32 - visible).max(0.0);
+            state.captured_view_offset = state.captured_view_offset.clamp(0.0, max_offset);
         }
     }
 
@@ -1114,6 +1264,7 @@ pub(crate) fn draw_oscilloscope(
         let cmd = cmd_held;
         let alt = alt_held;
         let has_zoom = (zoom - 1.0).abs() > 0.001;
+        let inspectable = has_inspectable_buffer(state);
 
         let x_frac = cursor_pos
             .map(|c| ((c.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0))
@@ -1123,7 +1274,8 @@ pub(crate) fn draw_oscilloscope(
             let old_ms = state.timebase_ms;
             let max_ms = timebase_max_ms(state, sample_rate);
             state.timebase_ms = (state.timebase_ms * zoom).clamp(1.0, max_ms);
-            if state.captured && state.captured_len > 1 {
+            if inspectable {
+                lock_scope_view(state, fft, sample_rate);
                 let old_samples = old_ms / 1000.0 * sample_rate;
                 let new_samples = state.timebase_ms / 1000.0 * sample_rate;
                 let anchor = state.captured_view_offset + x_frac * old_samples;
@@ -1137,7 +1289,8 @@ pub(crate) fn draw_oscilloscope(
             let old_ms = state.timebase_ms;
             let max_ms = timebase_max_ms(state, sample_rate);
             state.timebase_ms = (state.timebase_ms * (1.0 - scroll.y * 0.005)).clamp(1.0, max_ms);
-            if state.captured && state.captured_len > 1 {
+            if inspectable {
+                lock_scope_view(state, fft, sample_rate);
                 let old_samples = old_ms / 1000.0 * sample_rate;
                 let new_samples = state.timebase_ms / 1000.0 * sample_rate;
                 let anchor = state.captured_view_offset + x_frac * old_samples;
@@ -1175,7 +1328,8 @@ pub(crate) fn draw_oscilloscope(
             }
         }
 
-        if cmd && state.captured {
+        if cmd && inspectable {
+            lock_scope_view(state, fft, sample_rate);
             let visible_samples = state.timebase_ms / 1000.0 * sample_rate;
             let cursor_sample = state.captured_view_offset + x_frac * visible_samples;
             let half = fft_size as f32 * 0.5;
@@ -1183,7 +1337,8 @@ pub(crate) fn draw_oscilloscope(
             state.fft_window_start = Some((cursor_sample - half).clamp(0.0, max_start));
         }
 
-        if state.captured && scroll.x != 0.0 {
+        if inspectable && scroll.x != 0.0 {
+            lock_scope_view(state, fft, sample_rate);
             let visible_samples = state.timebase_ms / 1000.0 * sample_rate;
             let samples_per_px = visible_samples / plot_rect.width();
             let shift = scroll.x * samples_per_px * 2.0;
@@ -1196,35 +1351,38 @@ pub(crate) fn draw_oscilloscope(
     }
 
     // -- Acquire data --
-    let (input_l, input_r, output_l, output_r, len, trig_idx_opt) = if state.captured {
-        let il = &state.captured_input_l;
-        let ir = &state.captured_input_r;
-        let ol = &state.captured_output_l;
-        let or = &state.captured_output_r;
-        let clen = state.captured_len;
-        let view_offset = state.captured_view_offset as usize;
-        (
-            il.as_slice(),
-            ir.as_slice(),
-            ol.as_slice(),
-            or.as_slice(),
-            clen,
-            Some(view_offset as f32),
-        )
-    } else {
-        let il = state.input_buffer_l.as_slice();
-        let ir = state.input_buffer_r.as_slice();
-        let ol = state.output_buffer_l.as_slice();
-        let or = state.output_buffer_r.as_slice();
-        let elen = state.buf_len;
-
-        if elen <= 1 {
+    let use_hold = uses_display_hold(state);
+    let (input_l, input_r, output_l, output_r, len, trig_idx_opt) =
+        if state.captured || use_hold {
+            let il = &state.captured_input_l;
+            let ir = &state.captured_input_r;
+            let ol = &state.captured_output_l;
+            let or = &state.captured_output_r;
+            let clen = state.captured_len;
+            let view_offset = state.captured_view_offset as usize;
+            (
+                il.as_slice(),
+                ir.as_slice(),
+                ol.as_slice(),
+                or.as_slice(),
+                clen,
+                Some(view_offset as f32),
+            )
+        } else if state.trigger_mode == TriggerMode::Free {
+            let il = state.input_buffer_l.as_slice();
+            let ir = state.input_buffer_r.as_slice();
+            let ol = state.output_buffer_l.as_slice();
+            let or = state.output_buffer_r.as_slice();
+            let elen = state.buf_len;
+            if elen <= 1 {
+                return;
+            }
+            let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+            let start = elen.saturating_sub(samples_to_show) as f32;
+            (il, ir, ol, or, elen, Some(start))
+        } else {
             return;
-        }
-
-        let trig_idx = live_view_offset(state, sample_rate).unwrap_or(0.0);
-        (il, ir, ol, or, elen, Some(trig_idx))
-    };
+        };
 
     if len <= 1 {
         return;
@@ -1266,7 +1424,7 @@ pub(crate) fn draw_oscilloscope(
             end,
             trig_f32,
             samples_to_show,
-            state.jump_threshold,
+            state.click_sensitivity,
             disc_color,
         );
         draw_discontinuities(
@@ -1278,7 +1436,7 @@ pub(crate) fn draw_oscilloscope(
             end,
             trig_f32,
             samples_to_show,
-            state.jump_threshold,
+            state.click_sensitivity,
             disc_color,
         );
         draw_discontinuities(
@@ -1290,7 +1448,7 @@ pub(crate) fn draw_oscilloscope(
             end,
             trig_f32,
             samples_to_show,
-            state.jump_threshold,
+            state.click_sensitivity,
             disc_color,
         );
         draw_discontinuities(
@@ -1302,7 +1460,7 @@ pub(crate) fn draw_oscilloscope(
             end,
             trig_f32,
             samples_to_show,
-            state.jump_threshold,
+            state.click_sensitivity,
             disc_color,
         );
     }
@@ -1370,7 +1528,7 @@ pub(crate) fn draw_oscilloscope(
             );
 
             let x_frac = ((cursor.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
-            let offset_ms = if state.captured {
+            let offset_ms = if state.captured || use_hold {
                 state.captured_view_offset / sample_rate * 1000.0
             } else {
                 0.0
@@ -1392,7 +1550,7 @@ pub(crate) fn draw_oscilloscope(
 
     // X-axis time labels
     let visible_ms = state.timebase_ms;
-    let offset_ms = if state.captured {
+    let offset_ms = if state.captured || use_hold {
         state.captured_view_offset / sample_rate * 1000.0
     } else {
         0.0
@@ -1432,8 +1590,22 @@ fn sample_at(buf: &[f32], index: usize) -> f32 {
     buf.get(index).copied().unwrap_or(0.0)
 }
 
+fn uses_display_hold(state: &OscilloscopeState) -> bool {
+    !state.captured && state.trigger_mode.is_triggered() && state.captured_len > 1
+}
+
+fn has_inspectable_buffer(state: &OscilloscopeState) -> bool {
+    state.captured_len > 1 && (state.captured || uses_display_hold(state))
+}
+
+fn lock_scope_view(osc: &mut OscilloscopeState, fft: &mut FftState, sample_rate: f32) {
+    if !osc.captured {
+        stop_acquisition(osc, fft, sample_rate);
+    }
+}
+
 fn timebase_max_ms(state: &OscilloscopeState, sample_rate: f32) -> f32 {
-    if state.captured {
+    if state.captured || uses_display_hold(state) {
         (state.captured_len as f32 / sample_rate * 1000.0).max(1.0)
     } else {
         state.capture_duration_ms.max(1.0)
@@ -1479,7 +1651,12 @@ fn format_scope_levels(
 
 #[cfg(test)]
 mod tests {
-    use super::{OscilloscopeDisplayMode, format_scope_levels};
+    use super::{
+        OscilloscopeDisplayMode, OscilloscopeState, TriggerMode, TriggerSlope,
+        click_sensitivity_to_k, find_click_indices, find_trigger_offset_with_prev,
+        format_scope_levels, mark_trigger, pre_trigger_samples, second_diff_residual,
+        unwrap_capture_to_display,
+    };
     use crate::ui::analysis::real_time::SignalSource;
 
     #[test]
@@ -1517,5 +1694,105 @@ mod tests {
             ),
             "I: +0.200   O: +0.400"
         );
+    }
+
+    #[test]
+    fn trigger_offset_detects_block_boundary_crossing() {
+        let buf = [0.2, 0.4, 0.5];
+        let hit = find_trigger_offset_with_prev(Some(-0.1), &buf, 0.0, TriggerSlope::Rising);
+        assert_eq!(hit, Some(0));
+    }
+
+    #[test]
+    fn trigger_offset_finds_rising_edge_inside_block() {
+        let buf = [-0.2, -0.1, 0.1, 0.2];
+        let hit = find_trigger_offset_with_prev(None, &buf, 0.0, TriggerSlope::Rising);
+        assert_eq!(hit, Some(2));
+    }
+
+    #[test]
+    fn pre_trigger_places_trigger_near_twenty_percent() {
+        let mut osc = OscilloscopeState::default();
+        let tgt = 100;
+        osc.capture_circ_il = (0..tgt).map(|i| i as f32).collect();
+        osc.capture_circ_ir = vec![0.0; tgt];
+        osc.capture_circ_ol = vec![0.0; tgt];
+        osc.capture_circ_or = vec![0.0; tgt];
+        osc.capture_circ_target = tgt;
+        let trig_idx = 50;
+        mark_trigger(&mut osc, trig_idx);
+        let pre = pre_trigger_samples(tgt);
+        assert_eq!(osc.capture_trig_pos, pre as f32);
+        assert_eq!(osc.capture_circ_start, (trig_idx + tgt - pre) % tgt);
+        unwrap_capture_to_display(&mut osc);
+        assert_eq!(osc.captured_len, tgt);
+        assert!((osc.captured_input_l[pre] - trig_idx as f32).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn trigger_mode_default_is_auto() {
+        assert_eq!(TriggerMode::default(), TriggerMode::Auto);
+        assert!(TriggerMode::Auto.is_triggered());
+        assert!(TriggerMode::Normal.is_triggered());
+        assert!(TriggerMode::Single.is_triggered());
+        assert!(!TriggerMode::Free.is_triggered());
+    }
+
+    #[test]
+    fn second_diff_is_zero_on_linear_ramp() {
+        assert!((second_diff_residual(0.0, 0.1, 0.2)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn smooth_sine_has_no_click_flags_at_default_sensitivity() {
+        let n = 512;
+        let buf: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * 0.08).sin())
+            .collect();
+        let flags = find_click_indices(&buf, 0, n, 0.5);
+        assert!(
+            flags.is_empty(),
+            "expected no flags on smooth sine, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn hard_step_is_flagged_at_default_sensitivity() {
+        let mut buf = vec![0.0_f32; 256];
+        for sample in buf.iter_mut().take(256).skip(128) {
+            *sample = 0.8;
+        }
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags.iter().any(|&i| (i as isize - 128).abs() <= 2),
+            "expected a flag near the step, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn consistent_bright_saw_flags_fewer_than_period_count() {
+        let period = 32;
+        let cycles = 16;
+        let n = period * cycles;
+        let mut buf = Vec::with_capacity(n);
+        for _ in 0..cycles {
+            for i in 0..period {
+                let t = i as f32 / period as f32;
+                buf.push(2.0 * t - 1.0);
+            }
+        }
+        let flags = find_click_indices(&buf, 0, n, 0.5);
+        assert!(
+            flags.len() < cycles,
+            "adaptive detector should not mark every saw wrap; flags={} cycles={cycles}",
+            flags.len()
+        );
+    }
+
+    #[test]
+    fn click_sensitivity_maps_higher_to_lower_k() {
+        assert!(click_sensitivity_to_k(1.0) < click_sensitivity_to_k(0.0));
+        assert!((click_sensitivity_to_k(1.0) - 3.0).abs() < 1e-5);
+        assert!((click_sensitivity_to_k(0.0) - 15.0).abs() < 1e-5);
     }
 }
