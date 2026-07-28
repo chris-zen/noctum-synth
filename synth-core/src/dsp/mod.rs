@@ -12,6 +12,7 @@ pub mod filter;
 pub mod lfo;
 pub(crate) mod lookahead_limiter;
 pub mod noise;
+pub mod parameter_smoother;
 pub(crate) mod rng;
 #[cfg(any(test, feature = "downsampling"))]
 pub(crate) mod upsampler;
@@ -28,6 +29,10 @@ pub use envelope::{
 pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
 pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
+pub use parameter_smoother::{
+    DEFAULT_PARAMETER_SMOOTHING_SECONDS, ParameterSmoother, WideParameterSmoother,
+    smoothing_coefficient, smoothing_coefficient_euler_approx,
+};
 pub use wavetable::{
     WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
     generate_wavetable_bank,

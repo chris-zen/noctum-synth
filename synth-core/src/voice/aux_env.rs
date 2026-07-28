@@ -1,22 +1,27 @@
 use crate::ParamId;
+use crate::dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, ParameterSmoother};
 use crate::math::WideF32;
 use crate::patch::AuxEnvelopeParams;
 
 pub struct AuxEnv {
     envelope: crate::dsp::DadsrEnvelope,
-    velocity_amount: f32,
+    velocity_amount: ParameterSmoother,
 }
 
 impl AuxEnv {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             envelope: crate::dsp::DadsrEnvelope::analog(sample_rate),
-            velocity_amount: 0.0,
+            velocity_amount: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
         }
     }
 
     pub fn apply_params(&mut self, params: &AuxEnvelopeParams) {
-        self.set_velocity_amount(params.velocity);
+        self.snap_velocity_amount(params.velocity);
         self.set_delay_seconds(params.delay);
         self.set_attack_seconds(params.attack);
         self.set_decay_seconds(params.decay);
@@ -39,10 +44,15 @@ impl AuxEnv {
         true
     }
 
+    pub fn advance_smoothers(&mut self) {
+        self.velocity_amount.next();
+    }
+
     pub fn next_signal(&mut self, velocities: WideF32, aux_amount: f32) -> (WideF32, WideF32) {
         let aux_env = self.envelope.next();
-        let aux_velocity_scale = WideF32::splat(1.0 - self.velocity_amount)
-            + velocities * WideF32::splat(self.velocity_amount);
+        let velocity_amount = self.velocity_amount.value();
+        let aux_velocity_scale =
+            WideF32::splat(1.0 - velocity_amount) + velocities * WideF32::splat(velocity_amount);
         let aux_signal = aux_env * WideF32::splat(aux_amount) * aux_velocity_scale;
         (aux_env, aux_signal)
     }
@@ -64,7 +74,11 @@ impl AuxEnv {
     }
 
     pub fn set_velocity_amount(&mut self, amount: f32) {
-        self.velocity_amount = amount.clamp(0.0, 1.0);
+        self.velocity_amount.set_target(amount.clamp(0.0, 1.0));
+    }
+
+    fn snap_velocity_amount(&mut self, amount: f32) {
+        self.velocity_amount.snap(amount.clamp(0.0, 1.0));
     }
 
     pub fn set_delay_seconds(&mut self, seconds: f32) {

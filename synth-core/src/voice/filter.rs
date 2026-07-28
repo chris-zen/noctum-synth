@@ -1,11 +1,15 @@
 use crate::ParamId;
-use crate::dsp::{FilterOversampling, FilterType};
+use crate::dsp::{
+    DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, ParameterSmoother,
+};
 use crate::math::WideF32;
 use crate::patch::FilterParams;
 
 pub struct Filter {
     engine: crate::dsp::Filter,
     envelope: crate::dsp::DadsrEnvelope,
+    env_amount: ParameterSmoother,
+    env_velocity_amount: ParameterSmoother,
 }
 
 impl Filter {
@@ -13,6 +17,16 @@ impl Filter {
         Self {
             engine: crate::dsp::Filter::default(),
             envelope: crate::dsp::DadsrEnvelope::analog(sample_rate),
+            env_amount: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
+            env_velocity_amount: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
         }
     }
 
@@ -21,8 +35,8 @@ impl Filter {
         self.set_resonance(params.resonance);
         self.set_poles(params.poles);
         self.set_key_track(params.key_track);
-        self.set_env_amount(params.env_amount);
-        self.set_env_velocity_amount(params.velocity);
+        self.snap_env_amount(params.env_amount);
+        self.snap_env_velocity_amount(params.velocity);
         self.set_audio_mod(params.audio_mod);
         self.set_delay_seconds(params.eg_delay);
         self.set_attack_seconds(params.eg_attack);
@@ -110,16 +124,25 @@ impl Filter {
     }
 
     pub fn set_env_amount(&mut self, env_amount: f32) {
-        self.engine.set_env_amount(env_amount);
+        self.env_amount.set_target(env_amount.clamp(-1.0, 1.0));
+    }
+
+    fn snap_env_amount(&mut self, env_amount: f32) {
+        self.env_amount.snap(env_amount.clamp(-1.0, 1.0));
     }
 
     #[cfg(test)]
     pub(crate) fn env_amount(&self) -> f32 {
-        self.engine.env_amount()
+        self.env_amount.target()
     }
 
     pub fn set_env_velocity_amount(&mut self, velocity: f32) {
-        self.engine.set_env_velocity_amount(velocity);
+        self.env_velocity_amount
+            .set_target(velocity.clamp(0.0, 1.0));
+    }
+
+    fn snap_env_velocity_amount(&mut self, velocity: f32) {
+        self.env_velocity_amount.snap(velocity.clamp(0.0, 1.0));
     }
 
     pub fn set_audio_mod(&mut self, audio_mod: f32) {
@@ -164,6 +187,10 @@ impl Filter {
         audio_mod: WideF32,
         sample_rate: f32,
     ) -> WideF32 {
+        let env_amount = self.env_amount.next();
+        let env_velocity_amount = self.env_velocity_amount.next();
+        self.engine.set_env_amount(env_amount);
+        self.engine.set_env_velocity_amount(env_velocity_amount);
         self.engine.process_prepared(
             input,
             note,

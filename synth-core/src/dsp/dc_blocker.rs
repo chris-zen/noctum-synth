@@ -22,8 +22,8 @@ impl DcBlocker {
     }
 
     pub fn process(&mut self, input: WideF32) -> WideF32 {
-        let output = input - self.previous_input
-            + self.previous_output * WideF32::splat(COEFFICIENT);
+        let output =
+            input - self.previous_input + self.previous_output * WideF32::splat(COEFFICIENT);
         self.previous_input = input;
         self.previous_output = output;
         output

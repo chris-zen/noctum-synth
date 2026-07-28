@@ -1,5 +1,6 @@
 //! Low-frequency oscillators for periodic modulation.
 
+use crate::dsp::WideParameterSmoother;
 use crate::math::WideF32;
 
 use super::rng::DspRng;
@@ -56,8 +57,7 @@ pub struct Lfo {
     sample_and_hold: WideF32,
     rng: [DspRng; WideF32::LANES],
     sample_rate: f32,
-    smoothed: WideF32,
-    smoothing_coeff: WideF32,
+    output: WideParameterSmoother,
 }
 
 impl Default for Lfo {
@@ -90,12 +90,13 @@ impl Lfo {
                 DspRng::new(seeds[i].0, seeds[i].1)
             }),
             sample_rate,
-            smoothed: WideF32::ZERO,
-            smoothing_coeff: WideF32::ZERO,
+            output: WideParameterSmoother::with_euler_coefficient(
+                0.0,
+                sample_rate,
+                LFO_SMOOTHING_SECONDS,
+            ),
         };
         lfo.set_rate_hz(MIN_LFO_RATE_HZ);
-        let coeff = (1.0 / (sample_rate.max(1.0) * LFO_SMOOTHING_SECONDS)).min(1.0);
-        lfo.smoothing_coeff = WideF32::splat(coeff);
         lfo.refresh_sample_and_hold();
         lfo
     }
@@ -104,8 +105,7 @@ impl Lfo {
         self.sample_rate = sample_rate.max(1.0);
         let rate = self.phase_inc.to_array()[0] * self.sample_rate;
         self.set_rate_hz(rate);
-        let coeff = (1.0 / (self.sample_rate * LFO_SMOOTHING_SECONDS)).min(1.0);
-        self.smoothing_coeff = WideF32::splat(coeff);
+        self.output.set_sample_rate(self.sample_rate);
     }
 
     pub fn set_rate_hz(&mut self, rate_hz: f32) {
@@ -137,7 +137,7 @@ impl Lfo {
     pub fn reset_all(&mut self) {
         self.phase = WideF32::ZERO;
         self.phase_uniform = true;
-        self.smoothed = WideF32::ZERO;
+        self.output.snap_all(0.0);
         if self.waveform == LfoWaveform::SampleAndHold {
             self.refresh_sample_and_hold();
         }
@@ -145,7 +145,7 @@ impl Lfo {
 
     pub fn reset_lane(&mut self, lane: usize) {
         self.phase = self.phase.replace_lane(lane, 0.0);
-        self.smoothed = self.smoothed.replace_lane(lane, 0.0);
+        self.output.snap_lane(lane, 0.0);
         let phases = self.phase.to_array();
         self.phase_uniform = phases
             .iter()
@@ -164,8 +164,7 @@ impl Lfo {
         } else {
             self.raw_output() * WideF32::splat(self.depth)
         };
-        let output = self.smoothed + (raw - self.smoothed) * self.smoothing_coeff;
-        self.smoothed = output;
+        let output = self.output.next_toward(raw);
         self.advance();
         output
     }

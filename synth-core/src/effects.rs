@@ -2,6 +2,7 @@
 
 use core::marker::PhantomData;
 
+use crate::dsp::{ParameterSmoother, smoothing_coefficient_euler_approx};
 use crate::math::{F32, TAU};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::{DEFAULT_TEMPO_BPM, EffectParams, EffectType, midi_to_hz};
@@ -51,24 +52,28 @@ impl EffectModulation {
 
 #[derive(Clone, Copy, Debug)]
 struct EffectModulationSmoother {
-    current: EffectModulation,
-    coefficient: f32,
+    mix: ParameterSmoother,
+    param1: ParameterSmoother,
+    param2: ParameterSmoother,
 }
 
 impl EffectModulationSmoother {
     fn new(sample_rate: f32) -> Self {
+        let coefficient =
+            smoothing_coefficient_euler_approx(sample_rate, EFFECT_MODULATION_SMOOTHING_SECONDS);
         Self {
-            current: EffectModulation::default(),
-            coefficient: (1.0 / (sample_rate.max(1.0) * EFFECT_MODULATION_SMOOTHING_SECONDS))
-                .clamp(0.0, 1.0),
+            mix: ParameterSmoother::with_coefficient(0.0, coefficient),
+            param1: ParameterSmoother::with_coefficient(0.0, coefficient),
+            param2: ParameterSmoother::with_coefficient(0.0, coefficient),
         }
     }
 
     fn next(&mut self, target: EffectModulation) -> EffectModulation {
-        self.current.mix += (target.mix - self.current.mix) * self.coefficient;
-        self.current.param1 += (target.param1 - self.current.param1) * self.coefficient;
-        self.current.param2 += (target.param2 - self.current.param2) * self.coefficient;
-        self.current
+        EffectModulation {
+            mix: self.mix.next_toward(target.mix),
+            param1: self.param1.next_toward(target.param1),
+            param2: self.param2.next_toward(target.param2),
+        }
     }
 }
 

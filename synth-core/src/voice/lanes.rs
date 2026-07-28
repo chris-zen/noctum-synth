@@ -1,3 +1,4 @@
+use crate::dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, WideParameterSmoother};
 use crate::math::WideF32;
 
 use super::NoteGlide;
@@ -23,7 +24,6 @@ pub(crate) struct PendingNote {
 struct Lane {
     note: u8,
     velocity: f32,
-    velocity_smoothed: f32,
     gate: bool,
     age: u64,
     pending: Option<PendingNote>,
@@ -38,7 +38,6 @@ impl Default for Lane {
         Self {
             note: 60,
             velocity: 1.0,
-            velocity_smoothed: 1.0,
             gate: false,
             age: 0,
             pending: None,
@@ -52,29 +51,35 @@ impl Default for Lane {
 
 pub(crate) struct Lanes {
     lanes: [Lane; WideF32::LANES],
+    velocity: WideParameterSmoother,
     pending_mask: u8,
 }
 
 impl Lanes {
-    pub fn new() -> Self {
+    pub fn new(sample_rate: f32) -> Self {
         Self {
             lanes: core::array::from_fn(|lane| Lane {
                 pan_position: voice_pan_position(lane, WideF32::LANES),
                 ..Lane::default()
             }),
+            velocity: WideParameterSmoother::new(
+                1.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
             pending_mask: 0,
         }
     }
 
     pub fn velocities(&self) -> WideF32 {
-        WideF32::new(self.lanes.map(|lane| lane.velocity_smoothed))
+        self.velocity.value()
     }
 
-    pub fn smooth_velocities(&mut self, coeff: f32) {
-        let coeff = coeff.clamp(0.0, 1.0);
-        for lane in &mut self.lanes {
-            lane.velocity_smoothed += (lane.velocity - lane.velocity_smoothed) * coeff;
+    pub fn smooth_velocities(&mut self) {
+        for (lane, lane_state) in self.lanes.iter().enumerate() {
+            self.velocity.set_target_lane(lane, lane_state.velocity);
         }
+        self.velocity.next();
     }
 
     pub fn notes_as_f32(&self) -> WideF32 {
@@ -160,7 +165,9 @@ impl Lanes {
         self.lanes[lane].note = note;
         self.lanes[lane].velocity = velocity;
         if snap_velocity {
-            self.lanes[lane].velocity_smoothed = velocity;
+            self.velocity.snap_lane(lane, velocity);
+        } else {
+            self.velocity.set_target_lane(lane, velocity);
         }
         self.lanes[lane].gate = true;
         self.lanes[lane].age = 0;
@@ -177,6 +184,7 @@ impl Lanes {
         self.lanes[lane].note = note;
         self.lanes[lane].velocity = velocity;
         self.lanes[lane].tuning_cents = tuning_cents;
+        self.velocity.set_target_lane(lane, velocity);
     }
 
     pub fn update_pending_lane(

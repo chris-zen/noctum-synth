@@ -1,28 +1,41 @@
 use crate::ParamId;
+use crate::dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, ParameterSmoother};
 use crate::math::WideF32;
 use crate::patch::AmplifierParams;
 
 pub struct Amplifier {
     envelope: crate::dsp::DadsrEnvelope,
-    initial_level: f32,
-    env_amount: f32,
-    velocity_amount: f32,
+    initial_level: ParameterSmoother,
+    env_amount: ParameterSmoother,
+    velocity_amount: ParameterSmoother,
 }
 
 impl Amplifier {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             envelope: crate::dsp::DadsrEnvelope::analog(sample_rate),
-            initial_level: 0.0,
-            env_amount: 0.0,
-            velocity_amount: 0.0,
+            initial_level: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
+            env_amount: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
+            velocity_amount: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
         }
     }
 
     pub fn apply_params(&mut self, params: &AmplifierParams) {
-        self.set_initial_level(params.initial_level);
-        self.set_env_amount(params.env_amount);
-        self.set_velocity_amount(params.velocity);
+        self.snap_initial_level(params.initial_level);
+        self.snap_env_amount(params.env_amount);
+        self.snap_velocity_amount(params.velocity);
         self.set_delay_seconds(params.eg_delay);
         self.set_attack_seconds(params.eg_attack);
         self.set_decay_seconds(params.eg_decay);
@@ -43,6 +56,12 @@ impl Amplifier {
             _ => return false,
         }
         true
+    }
+
+    pub fn advance_smoothers(&mut self) {
+        self.initial_level.next();
+        self.env_amount.next();
+        self.velocity_amount.next();
     }
 
     pub fn next_envelope(&mut self) -> WideF32 {
@@ -70,15 +89,23 @@ impl Amplifier {
     }
 
     pub fn initial_level(&self) -> f32 {
-        self.initial_level
+        self.initial_level.target()
     }
 
     pub fn set_initial_level(&mut self, level: f32) {
-        self.initial_level = level.clamp(0.0, 1.0);
+        self.initial_level.set_target(level.clamp(0.0, 1.0));
+    }
+
+    fn snap_initial_level(&mut self, level: f32) {
+        self.initial_level.snap(level.clamp(0.0, 1.0));
     }
 
     pub fn set_env_amount(&mut self, amount: f32) {
-        self.env_amount = amount.clamp(0.0, 1.0);
+        self.env_amount.set_target(amount.clamp(0.0, 1.0));
+    }
+
+    fn snap_env_amount(&mut self, amount: f32) {
+        self.env_amount.snap(amount.clamp(0.0, 1.0));
     }
 
     pub fn shutdown_lane(&mut self, lane: usize, seconds: f32) {
@@ -86,7 +113,11 @@ impl Amplifier {
     }
 
     pub fn set_velocity_amount(&mut self, amount: f32) {
-        self.velocity_amount = amount.clamp(0.0, 1.0);
+        self.velocity_amount.set_target(amount.clamp(0.0, 1.0));
+    }
+
+    fn snap_velocity_amount(&mut self, amount: f32) {
+        self.velocity_amount.snap(amount.clamp(0.0, 1.0));
     }
 
     pub fn set_delay_seconds(&mut self, seconds: f32) {
@@ -110,10 +141,13 @@ impl Amplifier {
     }
 
     pub fn gain(&self, amp_env: WideF32, velocities: WideF32, amp_lfo_gain: WideF32) -> WideF32 {
-        let velocity_gain = WideF32::splat(1.0 - self.velocity_amount)
-            + velocities * WideF32::splat(self.velocity_amount);
-        let env_gain = WideF32::splat(self.initial_level)
-            + (WideF32::splat(1.0 - self.initial_level) * amp_env * self.env_amount);
+        let velocity_amount = self.velocity_amount.value();
+        let velocity_gain =
+            WideF32::splat(1.0 - velocity_amount) + velocities * WideF32::splat(velocity_amount);
+        let initial_level = self.initial_level.value();
+        let env_amount = self.env_amount.value();
+        let env_gain = WideF32::splat(initial_level)
+            + (WideF32::splat(1.0 - initial_level) * amp_env * env_amount);
         velocity_gain * env_gain * amp_lfo_gain
     }
 }

@@ -12,7 +12,10 @@ mod pan;
 
 pub use manager::{ActiveNotes, VoiceManager, unison_detune_cents};
 
-use crate::dsp::{DcBlocker, FilterOversampling, FilterType, LfoWaveform, Waveform};
+use crate::dsp::{
+    DEFAULT_PARAMETER_SMOOTHING_SECONDS, DcBlocker, FilterOversampling, FilterType, LfoWaveform,
+    ParameterSmoother, Waveform,
+};
 use crate::effects::EffectModulation;
 use crate::math::{F32, WideF32};
 #[cfg(test)]
@@ -38,7 +41,6 @@ const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
 const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 48.0;
 /// Short smooth release used before replacing an audible voice (SynthLab precedent).
 const VOICE_STEAL_SHUTDOWN_SECONDS: f32 = 0.005;
-const VELOCITY_SMOOTH_SECONDS: f32 = 0.005;
 
 /// Provisional Rev2-16 physical-voice pan pattern.
 ///
@@ -111,6 +113,7 @@ pub struct VoiceBlock {
     amplifier: Amplifier,
     dc_blocker: DcBlocker,
     aux: AuxEnv,
+    aux_amount: ParameterSmoother,
     pan: Pan,
     lfos: [Lfo; LFO_COUNT],
     last_effect_modulation: EffectModulation,
@@ -124,12 +127,17 @@ pub struct VoiceBlock {
 impl VoiceBlock {
     pub fn new(sample_rate: f32) -> Self {
         let block = Self {
-            lanes: Lanes::new(),
+            lanes: Lanes::new(sample_rate),
             oscillators: Oscillators::new(sample_rate),
             filter: Filter::new(sample_rate),
             amplifier: Amplifier::new(sample_rate),
             dc_blocker: DcBlocker::new(),
             aux: AuxEnv::new(sample_rate),
+            aux_amount: ParameterSmoother::new(
+                0.0,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
             pan: Pan::new(),
             lfos: core::array::from_fn(|_| Lfo::new(sample_rate)),
             last_effect_modulation: EffectModulation::default(),
@@ -351,15 +359,14 @@ impl VoiceBlock {
         ctx: &mut RenderContext<'_>,
     ) -> (f32, f32) {
         self.start_pending_notes();
-        let velocity_coeff = 1.0
-            - F32(-1.0 / (VELOCITY_SMOOTH_SECONDS * self.sample_rate).max(1.0))
-                .exp()
-                .as_f32();
-        self.lanes.smooth_velocities(velocity_coeff);
+        self.lanes.smooth_velocities();
         crate::profiler_begin!(ctx, RenderStage::EnvelopesAndModulation);
         crate::profiler_begin!(ctx, RenderStage::EnvelopeAdvance);
         let velocities = self.lanes.velocities();
-        let (aux_env, aux_signal) = self.aux.next_signal(velocities, modulation.aux_amount());
+        self.aux_amount.set_target(modulation.aux_amount());
+        self.aux_amount.next();
+        self.aux.advance_smoothers();
+        let (aux_env, aux_signal) = self.aux.next_signal(velocities, self.aux_amount.value());
         let filter_env = self.filter.next_envelope();
         let amp = self.amplifier.next_envelope();
         let lifecycle_gain = self.lanes.next_lifecycle_gain();
@@ -443,6 +450,7 @@ impl VoiceBlock {
         crate::profiler_end!(ctx, RenderStage::Filter);
 
         crate::profiler_begin!(ctx, RenderStage::AmplifierAndPan);
+        self.amplifier.advance_smoothers();
         let amp_lfo_gain = (WideF32::splat(1.0) + lfo_modulation.amp_gain)
             .clamp(WideF32::ZERO, WideF32::splat(2.0));
         let output = self.dc_blocker.process(filtered)
@@ -949,6 +957,7 @@ impl VoiceBlock {
         self.pan
             .apply_params(patch.amplifier.pan_spread, patch.amplifier.pan_mod_mode);
         self.aux.apply_params(&patch.aux_envelope);
+        self.aux_amount.snap(patch.aux_envelope.amount);
         for (index, params) in patch.lfos.iter().enumerate() {
             self.lfos[index].apply_params(params, self.tempo_bpm, self.clock_division);
         }
@@ -2201,13 +2210,13 @@ mod tests {
             velocity: 1.0,
         });
 
-        process_frames(&mut voices, 32);
+        process_frames(&mut voices, 1_000);
 
         let block = &voices[0];
         let freq = block.oscillators().osc1_frequency_hz().to_array()[0];
         let expected = crate::midi_to_hz(72);
         assert!(
-            (freq - expected).abs() < 1.0,
+            (freq - expected).abs() < 5.0,
             "full positive aux pitch modulation should raise osc1 by about one octave, got {freq}, expected {expected}"
         );
     }
@@ -2424,6 +2433,68 @@ mod tests {
         assert!(
             mean.abs() < 0.05,
             "amp sustain steps after DC blocking should not invent a DC click, mean={mean}"
+        );
+    }
+
+    #[test]
+    fn live_amp_env_amount_step_ramps_gain_instead_of_jumping() {
+        let sample_rate = 44_100.0;
+        let mut patch = Patch::default();
+        patch.osc1.enabled = true;
+        patch.osc2.enabled = false;
+        patch.amplifier.env_amount = 0.0;
+        patch.amplifier.eg_attack = 0.0005;
+        patch.amplifier.eg_decay = 0.0005;
+        patch.amplifier.eg_sustain = 1.0;
+        let (mut block, modulation) = test_block(sample_rate, &patch);
+        block.note_on(0, 60, 1.0, false);
+
+        let settle = (sample_rate * 0.05) as usize;
+        for _ in 0..settle {
+            voice_block_next(&mut block, &modulation);
+        }
+
+        block.set_param(ParamId::AmpEnvAmount, 1.0);
+        let (left_before, _) = voice_block_next(&mut block, &modulation);
+        let (left_after, _) = voice_block_next(&mut block, &modulation);
+        let step = (left_after - left_before).abs();
+        assert!(
+            step < 0.2,
+            "live amp env amount step should ramp gradually, per-sample step={step}"
+        );
+    }
+
+    #[test]
+    fn patch_load_snaps_amp_env_amount_without_ramp() {
+        let sample_rate = 44_100.0;
+        let mut patch = Patch::default();
+        patch.osc1.enabled = true;
+        patch.osc2.enabled = false;
+        patch.amplifier.env_amount = 0.0;
+        patch.amplifier.eg_attack = 0.0005;
+        patch.amplifier.eg_decay = 0.0005;
+        patch.amplifier.eg_sustain = 1.0;
+        let (mut block, modulation) = test_block(sample_rate, &patch);
+        block.note_on(0, 60, 1.0, false);
+
+        let settle = (sample_rate * 0.05) as usize;
+        for _ in 0..settle {
+            voice_block_next(&mut block, &modulation);
+        }
+
+        block.set_param(ParamId::AmpEnvAmount, 1.0);
+        for _ in 0..64 {
+            voice_block_next(&mut block, &modulation);
+        }
+
+        patch.amplifier.env_amount = 0.25;
+        block.apply_voice_patch(&patch);
+        let (snapped, _) = voice_block_next(&mut block, &modulation);
+        let (next, _) = voice_block_next(&mut block, &modulation);
+        let step = (next - snapped).abs();
+        assert!(
+            step < snapped.abs() * 0.2 + 1e-4,
+            "patch load should snap amp env amount instead of continuing the prior ramp, snapped={snapped}, next={next}"
         );
     }
 
