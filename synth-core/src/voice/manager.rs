@@ -324,16 +324,12 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
                     // in place instead of treating the transition as a voice
                     // steal: the latter inserts a 5 ms shutdown and allows rapid
                     // key transitions to overwrite the pending performance note.
-                    block.note_on_tuned_with_glide(
+                    block.retrigger_sounding_with_glide(
                         lane,
                         note,
                         velocity,
-                        false,
                         tuning_cents,
-                        NoteGlide {
-                            start_note: None,
-                            enabled: should_glide,
-                        },
+                        should_glide,
                     );
                 } else {
                     block.retune_lane(lane, note, velocity, tuning_cents, should_glide);
@@ -349,6 +345,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
                         start_note: lane_glide_start,
                         enabled: should_glide,
                     },
+                    true,
                 );
             } else {
                 block.schedule_note_on_tuned_with_glide(
@@ -948,20 +945,30 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
         let (block_idx, lane) = Self::voice_location(voice_idx);
         self.sustained.remove(voice_idx);
         let block = &mut blocks[block_idx];
-        if block.is_lane_silent(lane)
-            || (active_voice_idx.is_some() && !block.has_pending_note(lane))
-        {
-            block.note_on_tuned_with_glide(
-                lane,
-                note,
-                velocity,
-                false,
-                [0.0; WideF32::LANES],
-                NoteGlide {
-                    start_note: glide_start,
-                    enabled: should_glide,
-                },
-            );
+        let silent = block.is_lane_silent(lane);
+        if silent || (active_voice_idx.is_some() && !block.has_pending_note(lane)) {
+            if silent {
+                block.note_on_tuned_with_glide(
+                    lane,
+                    note,
+                    velocity,
+                    false,
+                    [0.0; WideF32::LANES],
+                    NoteGlide {
+                        start_note: glide_start,
+                        enabled: should_glide,
+                    },
+                    true,
+                );
+            } else {
+                block.retrigger_sounding_with_glide(
+                    lane,
+                    note,
+                    velocity,
+                    [0.0; WideF32::LANES],
+                    should_glide,
+                );
+            }
         } else {
             block.schedule_note_on_tuned_with_glide(
                 lane,
@@ -1281,6 +1288,151 @@ mod tests {
         let progressed = gated_note_frequency(&voices, 72);
         assert!(progressed > start);
         assert!(progressed < crate::midi_to_hz(72));
+    }
+
+    #[test]
+    fn unison_last_retrigger_legato_does_not_click_from_dsp_reset() {
+        let sample_rate = 44_100.0;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+        let mut patch = Patch::default();
+        patch.osc1.waveform = 3;
+        patch.osc1.enabled = true;
+        patch.osc1.note_reset = false;
+        patch.osc1.shape_mod = 0.67;
+        patch.osc1.frequency = 24.0;
+        patch.osc2.enabled = false;
+        patch.osc_mix = 0.0;
+        patch.sub_osc_level = 0.9;
+        patch.noise_level = 0.0;
+        patch.filter.cutoff = 211.0;
+        patch.filter.resonance = 0.26;
+        patch.filter.key_track = 0.386;
+        patch.filter.env_amount = 0.118;
+        patch.filter.eg_attack = 0.0005;
+        patch.filter.eg_decay = 2.0;
+        patch.filter.eg_sustain = 0.575;
+        patch.amplifier.eg_attack = 0.0005;
+        patch.amplifier.eg_decay = 0.0005;
+        patch.amplifier.eg_sustain = 1.0;
+        patch.amplifier.env_amount = 1.0;
+        patch.key_mode = KeyMode::LastRetrigger;
+        patch.unison_enabled = true;
+        patch.unison_mode = UnisonMode::V7;
+        patch.unison_detune = 4.0;
+        patch.glide_enabled = true;
+        patch.glide_mode = GlideMode::FixedRateAuto;
+        patch.osc1.glide = 0.9;
+        patch.osc2.glide = 0.9;
+        voices.apply_patch(&patch);
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 36,
+            velocity: 1.0,
+        });
+
+        let mut ctx = crate::create_render_context!();
+        let settle = (sample_rate * 0.05) as usize;
+        let mut prev = 0.0f32;
+        for _ in 0..settle {
+            let (left, right) = voices.next(&mut ctx);
+            prev = left + right;
+        }
+
+        let mut baseline_max_delta = 0.0f32;
+        for _ in 0..128 {
+            let (left, right) = voices.next(&mut ctx);
+            let sample = left + right;
+            baseline_max_delta = baseline_max_delta.max((sample - prev).abs());
+            prev = sample;
+        }
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 43,
+            velocity: 1.0,
+        });
+
+        let mut retrigger_max_delta = 0.0f32;
+        for _ in 0..16 {
+            let (left, right) = voices.next(&mut ctx);
+            let sample = left + right;
+            retrigger_max_delta = retrigger_max_delta.max((sample - prev).abs());
+            prev = sample;
+        }
+
+        assert!(
+            retrigger_max_delta < baseline_max_delta.max(0.02) * 3.0 + 0.05,
+            "in-place unison retrigger must not invent a click from DSP reset, key-track snap, or velocity jump, \
+             baseline_max_delta={baseline_max_delta} retrigger_max_delta={retrigger_max_delta}"
+        );
+    }
+
+    #[test]
+    fn legato_velocity_change_does_not_click_amp_gain() {
+        let sample_rate = 44_100.0;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
+        let mut patch = Patch::default();
+        patch.osc1.waveform = 3;
+        patch.osc1.enabled = true;
+        patch.osc1.note_reset = false;
+        patch.osc1.shape_mod = 0.67;
+        patch.osc1.frequency = 24.0;
+        patch.osc2.enabled = false;
+        patch.osc_mix = 0.0;
+        patch.sub_osc_level = 0.9;
+        patch.filter.cutoff = 211.0;
+        patch.filter.resonance = 0.26;
+        patch.filter.key_track = 0.386;
+        patch.filter.env_amount = 0.0;
+        patch.amplifier.velocity = 0.441;
+        patch.amplifier.eg_attack = 0.0005;
+        patch.amplifier.eg_decay = 0.0005;
+        patch.amplifier.eg_sustain = 1.0;
+        patch.amplifier.env_amount = 1.0;
+        patch.key_mode = KeyMode::LastRetrigger;
+        patch.unison_enabled = true;
+        patch.unison_mode = UnisonMode::V7;
+        patch.unison_detune = 4.0;
+        patch.glide_enabled = true;
+        patch.glide_mode = GlideMode::FixedRateAuto;
+        patch.osc1.glide = 0.9;
+        voices.apply_patch(&patch);
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 36,
+            velocity: 1.0,
+        });
+        let mut ctx = crate::create_render_context!();
+        let settle = (sample_rate * 0.05) as usize;
+        let mut prev = 0.0f32;
+        for _ in 0..settle {
+            let (left, right) = voices.next(&mut ctx);
+            prev = left + right;
+        }
+        let mut baseline_max_delta = 0.0f32;
+        for _ in 0..128 {
+            let (left, right) = voices.next(&mut ctx);
+            let sample = left + right;
+            baseline_max_delta = baseline_max_delta.max((sample - prev).abs());
+            prev = sample;
+        }
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 43,
+            velocity: 0.7,
+        });
+        let mut retrigger_max_delta = 0.0f32;
+        for _ in 0..256 {
+            let (left, right) = voices.next(&mut ctx);
+            let sample = left + right;
+            retrigger_max_delta = retrigger_max_delta.max((sample - prev).abs());
+            prev = sample;
+        }
+
+        assert!(
+            retrigger_max_delta < baseline_max_delta.max(0.02) * 3.0 + 0.05,
+            "legato velocity changes must ramp amp gain instead of clicking, \
+             baseline_max_delta={baseline_max_delta} retrigger_max_delta={retrigger_max_delta}"
+        );
     }
 
     #[cfg(not(feature = "wide-1"))]

@@ -112,6 +112,10 @@ impl Oscillators {
         self.osc1.frequency_hz()
     }
 
+    pub(crate) fn current_keyboard_semitones(&self) -> WideF32 {
+        WideF32::new(self.glide[0].current)
+    }
+
     pub fn apply_params(&mut self, patch: &Patch) {
         self.apply_oscillator_patch(0, &patch.osc1);
         self.apply_oscillator_patch(1, &patch.osc2);

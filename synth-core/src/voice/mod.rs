@@ -38,6 +38,7 @@ const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
 const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 48.0;
 /// Short smooth release used before replacing an audible voice (SynthLab precedent).
 const VOICE_STEAL_SHUTDOWN_SECONDS: f32 = 0.005;
+const VELOCITY_SMOOTH_SECONDS: f32 = 0.005;
 
 /// Provisional Rev2-16 physical-voice pan pattern.
 ///
@@ -180,6 +181,7 @@ impl VoiceBlock {
             reset_key_synced_lfos,
             tuning_cents,
             NoteGlide::default(),
+            true,
         );
     }
 
@@ -191,6 +193,7 @@ impl VoiceBlock {
         reset_key_synced_lfos: bool,
         tuning_cents: [f32; WideF32::LANES],
         glide: NoteGlide,
+        reset_persistent_dsp: bool,
     ) {
         self.lanes.activate_lifecycle_lane(
             lane,
@@ -212,8 +215,32 @@ impl VoiceBlock {
             .map(|start| f32::from(start) + tuning_cents[lane] / 100.0);
         self.oscillators
             .note_on_with_glide(lane, semitones, start, glide.enabled);
-        self.filter.reset_dsp_lane(lane);
-        self.dc_blocker.reset_lane(lane);
+        if reset_persistent_dsp {
+            self.filter.reset_dsp_lane(lane);
+            self.dc_blocker.reset_lane(lane);
+        }
+    }
+
+    pub(crate) fn retrigger_sounding_with_glide(
+        &mut self,
+        lane: usize,
+        note: u8,
+        velocity: f32,
+        tuning_cents: [f32; WideF32::LANES],
+        should_glide: bool,
+    ) {
+        self.lanes.activate_lifecycle_lane(
+            lane,
+            self.amplifier.initial_level(),
+            self.lifecycle_shutdown_samples(),
+        );
+        self.lanes
+            .begin_note_on(lane, note, velocity, tuning_cents[lane]);
+        self.amplifier.trigger_lane(lane);
+        self.filter.trigger_lane(lane);
+        self.aux.trigger_lane(lane);
+        self.oscillators
+            .retune_with_glide(lane, self.lanes.note_semitones(), should_glide);
     }
 
     /// Changes a sounding lane's pitch and velocity without retriggering its DSP state.
@@ -324,6 +351,11 @@ impl VoiceBlock {
         ctx: &mut RenderContext<'_>,
     ) -> (f32, f32) {
         self.start_pending_notes();
+        let velocity_coeff = 1.0
+            - F32(-1.0 / (VELOCITY_SMOOTH_SECONDS * self.sample_rate).max(1.0))
+                .exp()
+                .as_f32();
+        self.lanes.smooth_velocities(velocity_coeff);
         crate::profiler_begin!(ctx, RenderStage::EnvelopesAndModulation);
         crate::profiler_begin!(ctx, RenderStage::EnvelopeAdvance);
         let velocities = self.lanes.velocities();
@@ -395,7 +427,7 @@ impl VoiceBlock {
         crate::profiler_end!(ctx, RenderStage::Oscillators);
 
         crate::profiler_begin!(ctx, RenderStage::Filter);
-        let notes = self.lanes.notes_as_f32();
+        let notes = self.oscillators.current_keyboard_semitones();
         let filtered = self.filter.process_prepared(
             mix,
             notes,
@@ -581,6 +613,7 @@ impl VoiceBlock {
                 pending.reset_key_synced_lfos,
                 self.lanes.tuning_cents_array(),
                 pending.glide,
+                true,
             );
         }
     }

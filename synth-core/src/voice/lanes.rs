@@ -23,6 +23,7 @@ pub(crate) struct PendingNote {
 struct Lane {
     note: u8,
     velocity: f32,
+    velocity_smoothed: f32,
     gate: bool,
     age: u64,
     pending: Option<PendingNote>,
@@ -37,6 +38,7 @@ impl Default for Lane {
         Self {
             note: 60,
             velocity: 1.0,
+            velocity_smoothed: 1.0,
             gate: false,
             age: 0,
             pending: None,
@@ -65,7 +67,14 @@ impl Lanes {
     }
 
     pub fn velocities(&self) -> WideF32 {
-        WideF32::new(self.lanes.map(|lane| lane.velocity))
+        WideF32::new(self.lanes.map(|lane| lane.velocity_smoothed))
+    }
+
+    pub fn smooth_velocities(&mut self, coeff: f32) {
+        let coeff = coeff.clamp(0.0, 1.0);
+        for lane in &mut self.lanes {
+            lane.velocity_smoothed += (lane.velocity - lane.velocity_smoothed) * coeff;
+        }
     }
 
     pub fn notes_as_f32(&self) -> WideF32 {
@@ -145,10 +154,14 @@ impl Lanes {
     }
 
     pub fn begin_note_on(&mut self, lane: usize, note: u8, velocity: f32, tuning_cents: f32) {
+        let snap_velocity = !self.lanes[lane].gate;
         self.lanes[lane].pending = None;
         self.pending_mask &= !(1 << lane);
         self.lanes[lane].note = note;
         self.lanes[lane].velocity = velocity;
+        if snap_velocity {
+            self.lanes[lane].velocity_smoothed = velocity;
+        }
         self.lanes[lane].gate = true;
         self.lanes[lane].age = 0;
         self.lanes[lane].tuning_cents = tuning_cents;
