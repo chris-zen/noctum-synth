@@ -2,7 +2,7 @@ use crate::math::F32;
 use crate::math::WideF32;
 
 pub const MIN_TIME_SECONDS: f32 = 0.0005;
-pub const MAX_TIME_SECONDS: f32 = 30.0;
+pub const MAX_TIME_SECONDS: f32 = 40.0;
 pub const DEFAULT_ATTACK_SECONDS: f32 = 0.25;
 pub const DEFAULT_DECAY_SECONDS: f32 = 1.0;
 pub const DEFAULT_SUSTAIN_LEVEL: f32 = 0.707;

@@ -1,4 +1,4 @@
-//! Prophet Rev2 / '08 filter cutoff and key-track scaling.
+//! Shared Prophet Rev2 / '08 parameter conversions.
 //!
 //! Program/NRPN cutoff is converted to Hz at the MIDI frontier; [`Patch`] stores
 //! Hz only. Official docs: 0–164 in semitone steps over more than 13 octaves
@@ -15,6 +15,37 @@ pub const FILTER_KEY_TRACK_UNITY_RAW: u16 = 64;
 pub const FILTER_KEY_TRACK_RAW_MAX: u16 = 127;
 pub const FILTER_KEY_TRACK_MAX: f32 =
     FILTER_KEY_TRACK_RAW_MAX as f32 / FILTER_KEY_TRACK_UNITY_RAW as f32;
+
+/// Raw values corresponding positionally to [`ENVELOPE_SECONDS_ANCHORS`].
+///
+/// # Sources and compatibility rationale
+///
+/// - The [Prophet '08 manual](https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf)
+///   defines the filter, amplifier, and auxiliary envelope time fields as raw
+///   values from 0 through 127.
+/// - The [Prophet Rev2 User's Guide](https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf)
+///   states that Prophet '08 programs are compatible with the Rev2. The P08
+///   decoder therefore uses the same raw-to-time interpretation as the Rev2.
+/// - The [measured Rev2 envelope table](https://forum.sequential.com/index.php?topic=3203.0)
+///   supplies these attack anchors and reports that the amplifier ADR profiles
+///   share the same lookup-table-like shape. Intermediate raw values are
+///   linearly interpolated between anchors.
+/// - The approximately 25-second attack/decay and 40-second release maxima are
+///   independently reported by the
+///   [Sound On Sound Rev2 review](https://www.soundonsound.com/reviews/dsi-prophet-rev-2).
+///
+/// The measured hardware curve is visibly table-driven rather than linear, so
+/// fitting a smoother formula would incorrectly change intermediate values.
+const ENVELOPE_RAW_ANCHORS: [u16; 17] = [
+    0, 7, 15, 23, 31, 39, 47, 55, 63, 71, 79, 87, 95, 103, 111, 119, 127,
+];
+/// Measured attack times in seconds for [`ENVELOPE_RAW_ANCHORS`].
+const ENVELOPE_SECONDS_ANCHORS: [f32; 17] = [
+    0.003, 0.010, 0.031, 0.075, 0.135, 0.195, 0.260, 0.390, 0.605, 0.735, 0.950, 1.260, 1.830,
+    3.060, 6.080, 14.220, 24.660,
+];
+const ATTACK_DECAY_MAX_SECONDS: f32 = 24.660;
+const RELEASE_MAX_SECONDS: f32 = 40.0;
 
 pub fn cutoff_raw_to_hz(raw: u16) -> f32 {
     440.0
@@ -42,6 +73,65 @@ pub fn key_track_to_raw(value: f32) -> u16 {
         .round()
         .as_f32()
         .clamp(0.0, f32::from(FILTER_KEY_TRACK_RAW_MAX)) as u16
+}
+
+/// Converts a Prophet '08/Rev2 attack or decay value using the documented
+/// [`ENVELOPE_RAW_ANCHORS`] timing table.
+pub(crate) fn attack_decay_seconds(raw: u16) -> f32 {
+    envelope_seconds(raw, ATTACK_DECAY_MAX_SECONDS)
+}
+
+/// Converts a Prophet '08/Rev2 release value to seconds.
+///
+/// This uses the normalized curve documented by
+/// [`ENVELOPE_RAW_ANCHORS`] and scales it to its sourced 40-second
+/// maximum.
+pub(crate) fn release_seconds(raw: u16) -> f32 {
+    envelope_seconds(raw, RELEASE_MAX_SECONDS)
+}
+
+/// Inverse of [`attack_decay_seconds`] for Rev2 NRPN and SysEx encoding.
+pub(crate) fn attack_decay_raw(seconds: f32) -> u16 {
+    envelope_raw(seconds, ATTACK_DECAY_MAX_SECONDS)
+}
+
+/// Inverse of [`release_seconds`] for Rev2 NRPN and SysEx encoding.
+pub(crate) fn release_raw(seconds: f32) -> u16 {
+    envelope_raw(seconds, RELEASE_MAX_SECONDS)
+}
+
+fn envelope_seconds(raw: u16, max_seconds: f32) -> f32 {
+    let raw = raw.min(127);
+    let scale = max_seconds / ATTACK_DECAY_MAX_SECONDS;
+    for index in 0..ENVELOPE_RAW_ANCHORS.len() - 1 {
+        let raw_start = ENVELOPE_RAW_ANCHORS[index];
+        let raw_end = ENVELOPE_RAW_ANCHORS[index + 1];
+        if raw <= raw_end {
+            let position = f32::from(raw - raw_start) / f32::from(raw_end - raw_start);
+            let seconds_start = ENVELOPE_SECONDS_ANCHORS[index];
+            let seconds_end = ENVELOPE_SECONDS_ANCHORS[index + 1];
+            return (seconds_start + position * (seconds_end - seconds_start)) * scale;
+        }
+    }
+    max_seconds
+}
+
+fn envelope_raw(seconds: f32, max_seconds: f32) -> u16 {
+    let scale = max_seconds / ATTACK_DECAY_MAX_SECONDS;
+    let seconds = seconds.clamp(ENVELOPE_SECONDS_ANCHORS[0] * scale, max_seconds) / scale;
+    for index in 0..ENVELOPE_SECONDS_ANCHORS.len() - 1 {
+        let seconds_start = ENVELOPE_SECONDS_ANCHORS[index];
+        let seconds_end = ENVELOPE_SECONDS_ANCHORS[index + 1];
+        if seconds <= seconds_end {
+            let position = (seconds - seconds_start) / (seconds_end - seconds_start);
+            let raw_start = ENVELOPE_RAW_ANCHORS[index];
+            let raw_end = ENVELOPE_RAW_ANCHORS[index + 1];
+            return F32(f32::from(raw_start) + position * f32::from(raw_end - raw_start))
+                .round()
+                .as_f32() as u16;
+        }
+    }
+    127
 }
 
 #[cfg(test)]

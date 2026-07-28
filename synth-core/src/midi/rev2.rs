@@ -1,7 +1,15 @@
 //! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
+//!
+//! Envelope attack, decay, and release use the lookup-table-shaped timing curve
+//! from the
+//! [measured Rev2 envelope table](https://forum.sequential.com/index.php?topic=3203.0),
+//! not a linear interpolation over seconds. The approximately 25-second
+//! attack/decay and 40-second release maxima are independently reported in the
+//! [Sound On Sound Rev2 review](https://www.soundonsound.com/reviews/dsi-prophet-rev-2).
 
 use super::prophet::{
-    FILTER_CUTOFF_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz, key_track_from_raw, key_track_to_raw,
+    FILTER_CUTOFF_RAW_MAX, attack_decay_raw, attack_decay_seconds, cutoff_hz_to_raw,
+    cutoff_raw_to_hz, key_track_from_raw, key_track_to_raw, release_raw, release_seconds,
 };
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
@@ -358,26 +366,26 @@ impl MidiEncoder {
             ParamId::FilterVelocity => (21, quantize(value, 0.0, 1.0, 127)),
             ParamId::FilterAudioMod => (18, quantize(value, 0.0, 1.0, 127)),
             ParamId::FilterEgDelay => (22, quantize(value, 0.0, 5.0, 127)),
-            ParamId::FilterEgAttack => (23, quantize(value, 0.0005, 5.0, 127)),
-            ParamId::FilterEgDecay => (24, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::FilterEgAttack => (23, attack_decay_raw(value)),
+            ParamId::FilterEgDecay => (24, attack_decay_raw(value)),
             ParamId::FilterEgSustain => (25, quantize(value, 0.0, 1.0, 127)),
-            ParamId::FilterEgRelease => (26, quantize(value, 0.0005, 10.0, 127)),
+            ParamId::FilterEgRelease => (26, release_raw(value)),
             ParamId::PanSpread => (28, quantize(value, 0.0, 1.0, 127)),
             ParamId::AmpEnvAmount => (30, quantize(value, 0.0, 1.0, 127)),
             ParamId::AmpVelocity => (31, quantize(value, 0.0, 1.0, 127)),
             ParamId::AmpEgDelay => (32, quantize(value, 0.0, 5.0, 127)),
-            ParamId::AmpEgAttack => (33, quantize(value, 0.0005, 5.0, 127)),
-            ParamId::AmpEgDecay => (34, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::AmpEgAttack => (33, attack_decay_raw(value)),
+            ParamId::AmpEgDecay => (34, attack_decay_raw(value)),
             ParamId::AmpEgSustain => (35, quantize(value, 0.0, 1.0, 127)),
-            ParamId::AmpEgRelease => (36, quantize(value, 0.0005, 10.0, 127)),
+            ParamId::AmpEgRelease => (36, release_raw(value)),
             ParamId::AuxEgDestination => (57, quantize(value, 0.0, 52.0, 52)),
             ParamId::AuxEgAmount => (58, quantize(value, -1.0, 1.0, 254)),
             ParamId::AuxEgVelocity => (59, quantize(value, 0.0, 1.0, 127)),
             ParamId::AuxEgDelay => (60, quantize(value, 0.0, 5.0, 127)),
-            ParamId::AuxEgAttack => (61, quantize(value, 0.0005, 5.0, 127)),
-            ParamId::AuxEgDecay => (62, quantize(value, 0.0005, 5.0, 127)),
+            ParamId::AuxEgAttack => (61, attack_decay_raw(value)),
+            ParamId::AuxEgDecay => (62, attack_decay_raw(value)),
             ParamId::AuxEgSustain => (63, quantize(value, 0.0, 1.0, 127)),
-            ParamId::AuxEgRelease => (64, quantize(value, 0.0005, 10.0, 127)),
+            ParamId::AuxEgRelease => (64, release_raw(value)),
             ParamId::AuxEgLoop => (97, bool_raw(value)),
             ParamId::Lfo1Rate => (
                 37,
@@ -853,9 +861,9 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(MidiUpdate)) -> bool {
         71 | 103 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
         74 | 102 => emit_param(emit, ParamId::FilterCutoff, cutoff_raw_to_hz(raw.min(127))),
         75 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
-        76 => emit_param(emit, ParamId::AmpEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        76 => emit_param(emit, ParamId::AmpEgRelease, release_seconds(raw)),
         77 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
-        78 => emit_param(emit, ParamId::AuxEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        78 => emit_param(emit, ParamId::AuxEgRelease, release_seconds(raw)),
         85 => emit_param(
             emit,
             ParamId::AuxEgDestination,
@@ -864,24 +872,24 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(MidiUpdate)) -> bool {
         86 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 127)),
         87 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
         88 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        89 => emit_param(emit, ParamId::AuxEgAttack, ranged(raw, 127, 0.0005, 5.0)),
-        90 => emit_param(emit, ParamId::AuxEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        89 => emit_param(emit, ParamId::AuxEgAttack, attack_decay_seconds(raw)),
+        90 => emit_param(emit, ParamId::AuxEgDecay, attack_decay_seconds(raw)),
         104 => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
         105 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
         106 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 127)),
         107 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
         108 => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        109 => emit_param(emit, ParamId::FilterEgAttack, ranged(raw, 127, 0.0005, 5.0)),
-        110 => emit_param(emit, ParamId::FilterEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        109 => emit_param(emit, ParamId::FilterEgAttack, attack_decay_seconds(raw)),
+        110 => emit_param(emit, ParamId::FilterEgDecay, attack_decay_seconds(raw)),
         111 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
-        112 => emit_param(emit, ParamId::FilterEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        112 => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
         114 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
         113 => emit_param(emit, ParamId::VcaInitialLevel, unit(raw, 127)),
         115 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
         116 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
         117 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        118 => emit_param(emit, ParamId::AmpEgAttack, ranged(raw, 127, 0.0005, 5.0)),
-        119 => emit_param(emit, ParamId::AmpEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        118 => emit_param(emit, ParamId::AmpEgAttack, attack_decay_seconds(raw)),
+        119 => emit_param(emit, ParamId::AmpEgDecay, attack_decay_seconds(raw)),
         33 => emit_param(emit, ParamId::ArpEnabled, f32::from(raw >= 64)),
         34 => emit_param(emit, ParamId::ArpMode, f32::from(raw.min(4))),
         35 => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
@@ -992,19 +1000,19 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
         20 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 254)),
         21 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
         22 => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        23 => emit_param(emit, ParamId::FilterEgAttack, ranged(raw, 127, 0.0005, 5.0)),
-        24 => emit_param(emit, ParamId::FilterEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        23 => emit_param(emit, ParamId::FilterEgAttack, attack_decay_seconds(raw)),
+        24 => emit_param(emit, ParamId::FilterEgDecay, attack_decay_seconds(raw)),
         25 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
-        26 => emit_param(emit, ParamId::FilterEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        26 => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
         28 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
         29 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
         30 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
         31 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
         32 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        33 => emit_param(emit, ParamId::AmpEgAttack, ranged(raw, 127, 0.0005, 5.0)),
-        34 => emit_param(emit, ParamId::AmpEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        33 => emit_param(emit, ParamId::AmpEgAttack, attack_decay_seconds(raw)),
+        34 => emit_param(emit, ParamId::AmpEgDecay, attack_decay_seconds(raw)),
         35 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
-        36 => emit_param(emit, ParamId::AmpEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        36 => emit_param(emit, ParamId::AmpEgRelease, release_seconds(raw)),
         37..=56 => map_lfo_nrpn(number, raw, emit),
         57 => emit_param(
             emit,
@@ -1014,10 +1022,10 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
         58 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 254)),
         59 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
         60 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        61 => emit_param(emit, ParamId::AuxEgAttack, ranged(raw, 127, 0.0005, 5.0)),
-        62 => emit_param(emit, ParamId::AuxEgDecay, ranged(raw, 127, 0.0005, 5.0)),
+        61 => emit_param(emit, ParamId::AuxEgAttack, attack_decay_seconds(raw)),
+        62 => emit_param(emit, ParamId::AuxEgDecay, attack_decay_seconds(raw)),
         63 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
-        64 => emit_param(emit, ParamId::AuxEgRelease, ranged(raw, 127, 0.0005, 10.0)),
+        64 => emit_param(emit, ParamId::AuxEgRelease, release_seconds(raw)),
         65..=88 => map_free_mod_nrpn(number, raw, emit),
         97 => emit_param(emit, ParamId::AuxEgLoop, f32::from(raw != 0)),
         99 => emit_param(emit, ParamId::Osc1NoteReset, f32::from(raw != 0)),
@@ -1177,6 +1185,51 @@ mod tests {
         message[6..6 + PROGRAM_PACKED_LEN].copy_from_slice(&edit[4..4 + PROGRAM_PACKED_LEN]);
         message[PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
         message
+    }
+
+    #[test]
+    fn rev2_envelope_mapping_matches_measured_anchors() {
+        let attack_decay_cases = [
+            (0, 0.003),
+            (31, 0.135),
+            (63, 0.605),
+            (95, 1.830),
+            (127, 24.660),
+        ];
+        for (raw, expected_seconds) in attack_decay_cases {
+            let seconds = attack_decay_seconds(raw);
+            assert!(
+                (seconds - expected_seconds).abs() < 1.0e-6,
+                "raw {raw}: got {seconds}, expected {expected_seconds}"
+            );
+        }
+        assert!((release_seconds(127) - 40.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn rev2_envelope_mapping_round_trips_every_raw_value() {
+        for raw in 0..=127 {
+            assert_eq!(
+                attack_decay_raw(attack_decay_seconds(raw)),
+                raw,
+                "attack/decay raw {raw}"
+            );
+            assert_eq!(release_raw(release_seconds(raw)), raw, "release raw {raw}");
+        }
+    }
+
+    #[test]
+    fn los_vangelis_attack_value_decodes_to_measured_time() {
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
+        raw[super::LAYER_A_NAME_RANGE].copy_from_slice(b"LosVangelis2041     ");
+        store_program_nrpn(&mut raw, 33, 31, 0);
+        let mut packed = [0_u8; PROGRAM_PACKED_LEN];
+        pack_program_data(&raw, &mut packed);
+
+        let patch = decode_patch_payload(&packed).unwrap();
+
+        assert_eq!(patch.name.as_str(), "LosVangelis2041");
+        assert!((patch.amplifier.eg_attack - 0.135).abs() < 1.0e-6);
     }
 
     #[test]

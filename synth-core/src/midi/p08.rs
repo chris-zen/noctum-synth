@@ -1,8 +1,24 @@
 //! Sequential Prophet '08-compatible program SysEx decoder.
+//!
+//! Envelope attack, decay, and release fields are stored as raw `0..=127`
+//! values, as documented by the
+//! [Prophet '08 manual](https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf).
+//! They are translated through the shared nonlinear Prophet timing curve rather
+//! than treated as linear seconds. Sequential's
+//! [Prophet Rev2 User's Guide](https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf)
+//! states that Prophet '08 programs are compatible with the Rev2; consequently,
+//! this decoder uses the same raw-value interpretation as the Rev2 codec. The
+//! timing anchors come from the
+//! [measured Rev2 envelope table](https://forum.sequential.com/index.php?topic=3203.0),
+//! with the release curve scaled to the approximately 40-second maximum reported
+//! by the [Sound On Sound Rev2 review](https://www.soundonsound.com/reviews/dsi-prophet-rev-2).
 
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
-use crate::midi::prophet::{FILTER_CUTOFF_RAW_MAX, cutoff_raw_to_hz, key_track_from_raw};
+use crate::midi::prophet::{
+    FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
+    release_seconds,
+};
 use crate::midi::rev2::SysexError;
 use crate::patch::decode_patch_name;
 use crate::{
@@ -357,16 +373,16 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
         )),
         23 => emit(MidiUpdate::Param(
             ParamId::FilterEgAttack,
-            ranged(raw, 127, 0.0005, 5.0),
+            attack_decay_seconds(raw),
         )),
         24 => emit(MidiUpdate::Param(
             ParamId::FilterEgDecay,
-            ranged(raw, 127, 0.0005, 5.0),
+            attack_decay_seconds(raw),
         )),
         25 => emit(MidiUpdate::Param(ParamId::FilterEgSustain, unit(raw, 127))),
         26 => emit(MidiUpdate::Param(
             ParamId::FilterEgRelease,
-            ranged(raw, 127, 0.0005, 10.0),
+            release_seconds(raw),
         )),
         27 => emit(MidiUpdate::Param(ParamId::VcaInitialLevel, unit(raw, 127))),
         28 => emit(MidiUpdate::Param(ParamId::PanSpread, unit(raw, 127))),
@@ -379,16 +395,16 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
         )),
         33 => emit(MidiUpdate::Param(
             ParamId::AmpEgAttack,
-            ranged(raw, 127, 0.0005, 5.0),
+            attack_decay_seconds(raw),
         )),
         34 => emit(MidiUpdate::Param(
             ParamId::AmpEgDecay,
-            ranged(raw, 127, 0.0005, 5.0),
+            attack_decay_seconds(raw),
         )),
         35 => emit(MidiUpdate::Param(ParamId::AmpEgSustain, unit(raw, 127))),
         36 => emit(MidiUpdate::Param(
             ParamId::AmpEgRelease,
-            ranged(raw, 127, 0.0005, 10.0),
+            release_seconds(raw),
         )),
         37..=56 => map_lfo_nrpn(number, raw, emit),
         57 => emit(MidiUpdate::Param(
@@ -403,16 +419,16 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
         )),
         61 => emit(MidiUpdate::Param(
             ParamId::AuxEgAttack,
-            ranged(raw, 127, 0.0005, 5.0),
+            attack_decay_seconds(raw),
         )),
         62 => emit(MidiUpdate::Param(
             ParamId::AuxEgDecay,
-            ranged(raw, 127, 0.0005, 5.0),
+            attack_decay_seconds(raw),
         )),
         63 => emit(MidiUpdate::Param(ParamId::AuxEgSustain, unit(raw, 127))),
         64 => emit(MidiUpdate::Param(
             ParamId::AuxEgRelease,
-            ranged(raw, 127, 0.0005, 10.0),
+            release_seconds(raw),
         )),
         95 => emit(MidiUpdate::Param(ParamId::KeyMode, f32::from(raw.min(5)))),
         96 => {
@@ -594,6 +610,40 @@ mod tests {
 
         let decoded = MidiDecoder::program_data(factory_message(1, 0)).unwrap();
         assert_eq!(decoded.patch.name.as_str(), "AnalogWurlyRoids");
+    }
+
+    #[test]
+    fn all_p08_envelope_stages_use_prophet_timing_conversion() {
+        for (number, param) in [
+            (23, ParamId::FilterEgAttack),
+            (24, ParamId::FilterEgDecay),
+            (33, ParamId::AmpEgAttack),
+            (34, ParamId::AmpEgDecay),
+            (61, ParamId::AuxEgAttack),
+            (62, ParamId::AuxEgDecay),
+        ] {
+            let mut decoded = None;
+            map_nrpn(number, 31, &mut |update| decoded = Some(update));
+            let Some(MidiUpdate::Param(decoded_param, seconds)) = decoded else {
+                panic!("parameter {number} did not decode");
+            };
+            assert_eq!(decoded_param, param);
+            assert!((seconds - 0.135).abs() < 1.0e-6);
+        }
+
+        for (number, param) in [
+            (26, ParamId::FilterEgRelease),
+            (36, ParamId::AmpEgRelease),
+            (64, ParamId::AuxEgRelease),
+        ] {
+            let mut decoded = None;
+            map_nrpn(number, 127, &mut |update| decoded = Some(update));
+            let Some(MidiUpdate::Param(decoded_param, seconds)) = decoded else {
+                panic!("parameter {number} did not decode");
+            };
+            assert_eq!(decoded_param, param);
+            assert!((seconds - 40.0).abs() < 1.0e-6);
+        }
     }
 
     #[test]
