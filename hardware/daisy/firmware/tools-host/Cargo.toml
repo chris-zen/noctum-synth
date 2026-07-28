@@ -1,0 +1,16 @@
+[package]
+name = "tools-host"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Host-side helpers for Daisy firmware workflows"
+
+[[bin]]
+name = "factory-banks-compress"
+path = "src/bin/factory-banks-compress.rs"
+
+[dependencies]
+tools-micro = { path = "../tools-micro" }
+flate2 = "1"

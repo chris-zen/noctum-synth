@@ -22,12 +22,14 @@ filter-cascaded-svf = ["synth-core/filter-cascaded-svf"]
 oscillator-polyblep = ["synth-core/oscillator-polyblep"]
 usb-audio-test-tone = []
 usb-audio-raw-test = []
+bench-factory-banks = ["dep:tools-micro"]
 
 [dependencies]
 embassy-sync.workspace = true
 heapless = "0.9"
 synth-core.workspace = true
 wmidi.workspace = true
+tools-micro = { path = "tools-micro", optional = true }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }
@@ -59,8 +61,8 @@ test = false
 bench = false
 
 [[bin]]
-name = "bench-factory-presets"
-path = "src/bin/bench-factory-presets.rs"
-required-features = ["audio-profiling"]
+name = "bench-factory-banks"
+path = "src/bin/bench-factory-banks.rs"
+required-features = ["audio-profiling", "bench-factory-banks"]
 test = false
 bench = false

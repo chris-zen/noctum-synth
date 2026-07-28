@@ -127,22 +127,27 @@ cargo run --release -p noctum-micro \
   --features audio-profiling --bin bench-dsp
 ```
 
-### Factory-presset benchmark
+### Factory-preset benchmark
 
 Evaluates all 512 Layer A programs from the Prophet Rev2 v1.0 factory bank.
 Each program receives a four-note chord (C4, E4, G4, C5) at full velocity and
 measures block time across attack, steady-state, and parameter-change scenarios.
 
-Requires building a combined image with the factory bank payload:
+The bank must already live in QSPI at offset `0x006DA000` (end of the 8 MiB
+flash, clear of MIDI program storage). Flash it once via probe-rs (ST-Link),
+then run the benchmark:
 
 ```sh
-firmware/build-factory-preset-image.sh
-dfu-util -a 0 -s 0x90040000:leave \
-  -D target/bench-factory-presets-with-bank.bin \
-  -d ,0483:df11
-cargo run --release -p noctum-micro \
-  --features audio-profiling --bin bench-factory-presets
+cd hardware/daisy
+make factory-banks-flash
+make bench-factory-banks-micro-4
 ```
+
+`make factory-banks-flash` compresses the Rev2 factory `.syx` via
+`tools-host` (`factory-banks-compress`) into `target/factory-bank.zlib`, then
+runs the on-target `factory-banks-flash` binary from `tools-micro`. That image
+decompresses into SDRAM, programs the end-of-flash QSPI region, and verifies
+the expected CRC32. It does not erase MIDI program catalogs or slots.
 
 The benchmark reports average, p95, p99, maximum cycles, headroom, and
 over-budget block counts per program.

@@ -45,7 +45,7 @@ const _: () = {
     assert!(STORAGE_END <= embassy_daisy::qspi::SIZE_BYTES);
 };
 
-const CATALOG_MAGIC: [u8; 4] = *b"ASPG";
+const CATALOG_MAGIC: [u8; 4] = *b"NMPG";
 const CATALOG_VERSION: u8 = 2;
 const CATALOG_HEADER_LEN: usize = 20;
 const SELECTION_ENTRY_LEN: usize = 12;

@@ -1,5 +1,6 @@
 [workspace]
-members = ["embassy-daisy", "firmware"]
+members = ["embassy-daisy", "firmware", "firmware/tools-host", "firmware/tools-micro"]
+default-members = ["embassy-daisy", "firmware"]
 resolver = "2"
 
 [workspace.package]

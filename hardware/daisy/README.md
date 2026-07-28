@@ -3,7 +3,9 @@
 This directory contains the Daisy-based implementation of Noctum.
 
 - `embassy-daisy/` is a reusable Embassy board support package.
-- `firmware/` is the Daisy Seed application (`noctum-micro`).
+- `firmware/` is the Daisy Seed application (`noctum-micro`), with
+  `firmware/tools-micro/` (on-target factory-bank layout + flasher) and
+  `firmware/tools-host/` (host compress).
 - `kicad/` will hold Daisy-specific KiCad source files, such as the carrier or
   control board.
 

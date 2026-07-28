@@ -11,23 +11,21 @@ use embassy_daisy::Board;
 use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET};
 use noctum_micro::patch_transition::PatchTransition;
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use synth_core::midi::rev2::{MidiDecoder, PROGRAM_DATA_SYSEX_LEN};
 use synth_core::{
     profiling::RenderStage, ControlMessage, ModDestination, ParamId, SynthEngineWithMemory,
 };
 
+use tools_micro::{self as factory_banks, Crc32};
+use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
+
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
 const EFFECTS_SAMPLES: usize = 48_000 * 2;
-const FACTORY_PRESET_COUNT: usize = 512;
 const PRESETS_PER_BANK: usize = 128;
-
-/// The combined bootloader image stores the bank immediately after the maximum
-/// 512 KiB application storage reservation. QSPI commands use offsets relative
-/// to the 0x9000_0000 memory-mapped base.
-const FACTORY_BANK_QSPI_OFFSET: u32 = embassy_daisy::qspi::APPLICATION_RESERVED_END;
-const FACTORY_BANK_SIZE: usize = FACTORY_PRESET_COUNT * PROGRAM_DATA_SYSEX_LEN;
-const FACTORY_BANK_CRC32: u32 = 0x3df3_3c23;
+const FACTORY_PRESET_COUNT: usize = factory_banks::PRESET_COUNT;
+const FACTORY_BANK_QSPI_OFFSET: u32 = factory_banks::BANK_ADDRESS;
+const FACTORY_BANK_SIZE: usize = factory_banks::BANK_SIZE;
+const FACTORY_BANK_CRC32: u32 = factory_banks::BANK_CRC32;
 
 const WARMUP_BLOCKS: usize = 128;
 const ATTACK_BLOCKS: usize = 128;
@@ -861,26 +859,5 @@ fn report_feature_groups(kind: &str, groups: &[FeatureGroup]) {
             group.over_deadline,
             group.maximum
         );
-    }
-}
-
-struct Crc32(u32);
-
-impl Crc32 {
-    const fn new() -> Self {
-        Self(u32::MAX)
-    }
-
-    fn update(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 ^= u32::from(*byte);
-            for _ in 0..8 {
-                self.0 = (self.0 >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(self.0 & 1));
-            }
-        }
-    }
-
-    const fn finish(self) -> u32 {
-        !self.0
     }
 }

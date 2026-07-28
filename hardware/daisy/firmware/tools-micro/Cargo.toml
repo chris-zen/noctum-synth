@@ -1,0 +1,34 @@
+[package]
+name = "tools-micro"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "On-target Daisy helpers (factory-bank layout and flasher)"
+
+[lib]
+path = "src/lib.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "factory-banks-flash"
+path = "src/bin/factory-banks-flash.rs"
+required-features = ["flash"]
+test = false
+bench = false
+
+[features]
+flash = ["dep:miniz_oxide"]
+
+[dependencies]
+miniz_oxide = { version = "0.8", default-features = false, optional = true }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+defmt.workspace = true
+defmt-rtt.workspace = true
+embassy-daisy.workspace = true
+panic-probe.workspace = true

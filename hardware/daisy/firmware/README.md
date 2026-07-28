@@ -8,3 +8,9 @@ Hardware firmware for Daisy Seed 1.1. Package name: `noctum-micro`.
   [Daisy Seed](../../../docs/src/hardware/daisy.md) hardware guide
 
 Model feature sets: [Makefile](../Makefile). Filter defaults: [`src/model.rs`](src/model.rs).
+
+| Piece | Location |
+| --- | --- |
+| On-target factory-bank layout + flash | [`tools-micro/`](tools-micro/) |
+| Host compress | [`tools-host/`](tools-host/) |
+| Factory bench | `bench-factory-banks` → `make bench-factory-banks-micro-*` |
