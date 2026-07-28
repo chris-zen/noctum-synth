@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use crate::engine::AudioBlock;
 use crate::ui::analysis::oscilloscope::{self, OscilloscopeState, OscilloscopeViewConfig};
 use crate::ui::analysis::spectrum_analyzer::{self, FftState, FftViewConfig};
+use crate::ui::analysis::vu_meter::{self, VU_WIDTH, VuMeterState};
 
 // ---------------------------------------------------------------------------
 // Shared enums
@@ -71,6 +72,9 @@ fn draw_hover_status(ui: &mut egui::Ui, hover: Option<&HoverStatus>) {
                     ui.add_space(8.0);
                     ui.strong("Spectrum");
                     ui.label("Hover: frequency, level, note in status bar");
+                    ui.add_space(8.0);
+                    ui.strong("VU");
+                    ui.label("Click meter: reset peak holds");
                 });
 
             match hover {
@@ -110,6 +114,7 @@ pub struct RealTimeState {
     pub sample_rate: f32,
     pub osc: OscilloscopeState,
     pub fft: FftState,
+    pub vu: VuMeterState,
 }
 
 impl Default for RealTimeState {
@@ -118,6 +123,7 @@ impl Default for RealTimeState {
             sample_rate: 44100.0,
             osc: OscilloscopeState::default(),
             fft: FftState::default(),
+            vu: VuMeterState::default(),
         }
     }
 }
@@ -159,6 +165,10 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
         options.input_options.vertical_scroll_modifier = egui::Modifiers::NONE;
     });
 
+    for block in &audio_blocks {
+        state.vu.feed(block, state.sample_rate);
+    }
+
     oscilloscope::feed_audio(
         &mut state.osc,
         &mut state.fft,
@@ -168,34 +178,70 @@ pub fn show(ui: &mut egui::Ui, audio_blocks: VecDeque<AudioBlock>, state: &mut R
 
     let available = ui.available_size();
     let gap = 12.0;
+    let vu_gap = 8.0;
     let content_h = (available.y - STATUS_H).max(0.0);
-    let osc_h = (content_h * 0.4).clamp(0.0, (content_h - gap).max(0.0));
-    let fft_h = (content_h - osc_h - gap).max(0.0);
+    let plots_w = (available.x - VU_WIDTH - vu_gap).max(0.0);
+    let section_h = ((content_h - gap) * 0.5).max(0.0);
+    let osc_h = section_h;
+    let fft_h = section_h;
 
     let mut hover = None;
-    ui.allocate_ui(egui::vec2(available.x, osc_h), |ui| {
-        ui.strong("Oscilloscope");
-        ui.add_space(6.0);
-        oscilloscope::draw_oscilloscope(
-            ui,
-            &mut state.osc,
-            &mut state.fft,
-            state.sample_rate,
-            &mut hover,
-        );
-    });
-    ui.add_space(gap);
-    ui.allocate_ui(egui::vec2(available.x, fft_h), |ui| {
-        ui.strong("Spectrum Analyzer");
-        ui.add_space(6.0);
-        spectrum_analyzer::draw_spectrum(
-            ui,
-            &mut state.fft,
-            &state.osc,
-            state.sample_rate,
-            &mut hover,
-        );
-    });
+    let (content_rect, _) =
+        ui.allocate_exact_size(egui::vec2(available.x, content_h), egui::Sense::hover());
+    let plots_rect = egui::Rect::from_min_size(content_rect.min, egui::vec2(plots_w, content_h));
+    let vu_rect = egui::Rect::from_min_size(
+        egui::pos2(content_rect.min.x + plots_w + vu_gap, content_rect.min.y),
+        egui::vec2(VU_WIDTH, content_h),
+    );
+
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt("rt_plots")
+            .max_rect(plots_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(plots_rect));
+            ui.set_max_size(plots_rect.size());
+            ui.allocate_ui(egui::vec2(plots_w, osc_h), |ui| {
+                ui.set_max_width(plots_w);
+                ui.strong("Oscilloscope");
+                ui.add_space(6.0);
+                oscilloscope::draw_oscilloscope(
+                    ui,
+                    &mut state.osc,
+                    &mut state.fft,
+                    state.sample_rate,
+                    &mut hover,
+                );
+            });
+            ui.add_space(gap);
+            ui.allocate_ui(egui::vec2(plots_w, fft_h), |ui| {
+                ui.set_max_width(plots_w);
+                ui.strong("Spectrum Analyzer");
+                ui.add_space(6.0);
+                spectrum_analyzer::draw_spectrum(
+                    ui,
+                    &mut state.fft,
+                    &state.osc,
+                    state.sample_rate,
+                    &mut hover,
+                );
+            });
+        },
+    );
+
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt("rt_vu")
+            .max_rect(vu_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(vu_rect));
+            ui.set_max_size(vu_rect.size());
+            vu_meter::draw_vu_meter(ui, &mut state.vu);
+        },
+    );
+
     draw_hover_status(ui, hover.as_ref());
 }
 

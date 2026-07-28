@@ -865,7 +865,11 @@ fn find_click_indices(buffer: &[f32], start: usize, end: usize, sensitivity: f32
     let k = click_sensitivity_to_k(sensitivity);
     let mut residuals = Vec::with_capacity(end.saturating_sub(start + 2));
     for n in (start + 2)..end {
-        residuals.push(second_diff_residual(buffer[n - 2], buffer[n - 1], buffer[n]));
+        residuals.push(second_diff_residual(
+            buffer[n - 2],
+            buffer[n - 1],
+            buffer[n],
+        ));
     }
     let mut flags = Vec::new();
     for (i, &r) in residuals.iter().enumerate() {
@@ -897,8 +901,8 @@ fn draw_discontinuities(
 ) {
     let stroke = egui::Stroke::new(1.0_f32, color);
     for idx in find_click_indices(buffer, start, end, sensitivity) {
-        let x = plot_rect.left()
-            + plot_rect.width() * (idx as f32 - trig_f32) / samples_to_show as f32;
+        let x =
+            plot_rect.left() + plot_rect.width() * (idx as f32 - trig_f32) / samples_to_show as f32;
         if x >= plot_rect.left() && x <= plot_rect.right() {
             painter.add(PathShape::line(
                 vec![
@@ -1041,7 +1045,11 @@ pub(crate) fn draw_oscilloscope(
         ui.label("Mode:");
         let prev_mode = state.trigger_mode;
         for (mode, label, tip) in [
-            (TriggerMode::Free, "Free", "Free-run: waveform always scrolls"),
+            (
+                TriggerMode::Free,
+                "Free",
+                "Free-run: waveform always scrolls",
+            ),
             (
                 TriggerMode::Auto,
                 "Auto",
@@ -1149,7 +1157,7 @@ pub(crate) fn draw_oscilloscope(
         ui.separator();
         ui.label("Y:");
         ui.add(
-            egui::Slider::new(&mut state.y_range, 0.001..=1.0)
+            egui::Slider::new(&mut state.y_range, 0.01..=1.0)
                 .logarithmic(true)
                 .text(""),
         );
@@ -1188,7 +1196,7 @@ pub(crate) fn draw_oscilloscope(
 
     painter.rect_filled(plot_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
 
-    let y_scale = plot_rect.height() * 0.4;
+    let y_scale = plot_rect.height() * 0.48;
     let center_y = plot_rect.center().y;
     let display_yscale = y_scale / state.y_range;
     let font_id = egui::FontId::monospace(8.0);
@@ -1352,37 +1360,36 @@ pub(crate) fn draw_oscilloscope(
 
     // -- Acquire data --
     let use_hold = uses_display_hold(state);
-    let (input_l, input_r, output_l, output_r, len, trig_idx_opt) =
-        if state.captured || use_hold {
-            let il = &state.captured_input_l;
-            let ir = &state.captured_input_r;
-            let ol = &state.captured_output_l;
-            let or = &state.captured_output_r;
-            let clen = state.captured_len;
-            let view_offset = state.captured_view_offset as usize;
-            (
-                il.as_slice(),
-                ir.as_slice(),
-                ol.as_slice(),
-                or.as_slice(),
-                clen,
-                Some(view_offset as f32),
-            )
-        } else if state.trigger_mode == TriggerMode::Free {
-            let il = state.input_buffer_l.as_slice();
-            let ir = state.input_buffer_r.as_slice();
-            let ol = state.output_buffer_l.as_slice();
-            let or = state.output_buffer_r.as_slice();
-            let elen = state.buf_len;
-            if elen <= 1 {
-                return;
-            }
-            let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
-            let start = elen.saturating_sub(samples_to_show) as f32;
-            (il, ir, ol, or, elen, Some(start))
-        } else {
+    let (input_l, input_r, output_l, output_r, len, trig_idx_opt) = if state.captured || use_hold {
+        let il = &state.captured_input_l;
+        let ir = &state.captured_input_r;
+        let ol = &state.captured_output_l;
+        let or = &state.captured_output_r;
+        let clen = state.captured_len;
+        let view_offset = state.captured_view_offset as usize;
+        (
+            il.as_slice(),
+            ir.as_slice(),
+            ol.as_slice(),
+            or.as_slice(),
+            clen,
+            Some(view_offset as f32),
+        )
+    } else if state.trigger_mode == TriggerMode::Free {
+        let il = state.input_buffer_l.as_slice();
+        let ir = state.input_buffer_r.as_slice();
+        let ol = state.output_buffer_l.as_slice();
+        let or = state.output_buffer_r.as_slice();
+        let elen = state.buf_len;
+        if elen <= 1 {
             return;
-        };
+        }
+        let samples_to_show = ((state.timebase_ms / 1000.0 * sample_rate) as usize).max(2);
+        let start = elen.saturating_sub(samples_to_show) as f32;
+        (il, ir, ol, or, elen, Some(start))
+    } else {
+        return;
+    };
 
     if len <= 1 {
         return;
@@ -1746,9 +1753,7 @@ mod tests {
     #[test]
     fn smooth_sine_has_no_click_flags_at_default_sensitivity() {
         let n = 512;
-        let buf: Vec<f32> = (0..n)
-            .map(|i| (i as f32 * 0.08).sin())
-            .collect();
+        let buf: Vec<f32> = (0..n).map(|i| (i as f32 * 0.08).sin()).collect();
         let flags = find_click_indices(&buf, 0, n, 0.5);
         assert!(
             flags.is_empty(),
