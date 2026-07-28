@@ -10,12 +10,16 @@ const TWO_POLE_MAX_RESONANCE: f32 = 1.9;
 const FOUR_POLE_MAX_LINEAR_RESONANCE: f32 = 3.75;
 const FOUR_POLE_SELF_OSC_START_RESONANCE: f32 = 4.05;
 const FOUR_POLE_SELF_OSC_MAX_RESONANCE: f32 = 5.25;
-const RESONANCE_BASS_COMP: f32 = 0.80;
+const AUDIO_INPUT_GAIN: f32 = 1.0;
+const FOUR_POLE_MAX_INPUT_GAIN: f32 = 1.6;
+// Preserve unity at zero resonance while retaining the established 1.6x drive
+// at maximum resonance. The previous 0.40 base gain imposed an unrelated
+// -7.96 dB attenuation whenever resonance was zero.
+const RESONANCE_BASS_COMP: f32 =
+    (FOUR_POLE_MAX_INPUT_GAIN / AUDIO_INPUT_GAIN - 1.0) / FOUR_POLE_MAX_LINEAR_RESONANCE;
 const LIMITER_DRIVE: f32 = 1.0;
 const LIMITER_SMOOTHING_SCALE: f32 = 0.73;
 const SELF_OSC_OUTPUT_MAKEUP: f32 = 0.84;
-// Fixed four-pole input headroom; never varies with resonance or voice count.
-const AUDIO_INPUT_GAIN: f32 = 0.40;
 const SELF_OSC_PITCH_TUNING_CENTS: f32 = -18.0;
 const SELF_OSC_EXCITATION: f32 = 1.0e-7;
 const SELF_OSC_COLOR_REFERENCE_LEVEL: f32 = 0.69;
@@ -765,6 +769,13 @@ mod tests {
         engine.set_param(ParamId::AmpEgAttack, 0.0005);
         engine.set_param(ParamId::AmpEgDecay, 0.0005);
         engine.set_param(ParamId::AmpEgSustain, 1.0);
+        // Rev2 velocity adds to VCA envelope amount. Use zero base amount for
+        // the velocity-sensitive case and full base amount for the independent
+        // reference so both reach the same level at maximum velocity.
+        engine.set_param(
+            ParamId::AmpEnvAmount,
+            if amp_velocity > 0.0 { 0.0 } else { 1.0 },
+        );
         engine.set_param(ParamId::AmpVelocity, amp_velocity);
         engine.set_param(ParamId::MasterVolume, 1.0);
         engine.note_on(note, velocity);
@@ -826,8 +837,11 @@ mod tests {
         }
     }
 
-    fn live_driven_chord_stats(notes: &[u8], resonance: f32) -> (f32, f32, usize) {
-        let mut engine = SynthEngine::<1, 48_000>::new(SAMPLE_RATE);
+    fn live_driven_chord_stats<const PACKS: usize>(
+        notes: &[u8],
+        resonance: f32,
+    ) -> (f32, f32, usize) {
+        let mut engine = SynthEngine::<PACKS, 48_000>::new(SAMPLE_RATE);
         engine.set_filter_type(FilterType::GainLimitedTpt);
         engine.set_filter_oversampling(FilterOversampling::Off);
         engine.set_param(ParamId::Osc1Enabled, 1.0);
@@ -863,44 +877,65 @@ mod tests {
     #[test]
     #[cfg(not(feature = "wide-1"))]
     fn gain_limited_driven_chords_retain_output_headroom() {
-        let mut previous_peak = 0.0;
-        let mut previous_rms = 0.0;
-        for notes in [&[60][..], &[60, 64][..], &[60, 64, 67, 72][..]] {
-            let (peak, rms, clipped) = live_driven_chord_stats(notes, 1.0);
-            assert_eq!(
-                clipped,
-                0,
-                "{}-note chord reached the final clamp",
-                notes.len()
-            );
-            assert!(
-                peak > previous_peak,
-                "chord peak should grow with voice count"
-            );
-            assert!(
-                rms > previous_rms,
-                "chord intensity should grow with voice count"
-            );
-            assert!(
-                peak < 0.98,
-                "{}-note peak left too little headroom: {peak}",
-                notes.len()
-            );
-            assert!(
-                rms < 0.45,
-                "{}-note RMS is unexpectedly high: {rms}",
-                notes.len()
-            );
-            previous_peak = peak;
-            previous_rms = rms;
+        for resonance in [0.0, 1.0] {
+            let mut previous_peak = 0.0;
+            let mut previous_rms = 0.0;
+            for notes in [&[60][..], &[60, 64][..], &[60, 64, 67, 72][..]] {
+                let (peak, rms, clipped) = live_driven_chord_stats::<1>(notes, resonance);
+                assert_eq!(
+                    clipped,
+                    0,
+                    "{}-note chord at resonance {resonance} reached the final clamp",
+                    notes.len()
+                );
+                assert!(
+                    peak > previous_peak,
+                    "chord peak should grow with voice count at resonance {resonance}"
+                );
+                assert!(
+                    rms > previous_rms,
+                    "chord intensity should grow with voice count at resonance {resonance}"
+                );
+                assert!(
+                    peak < 0.98,
+                    "{}-note peak at resonance {resonance} left too little headroom: {peak}",
+                    notes.len()
+                );
+                assert!(
+                    rms < 0.45,
+                    "{}-note RMS at resonance {resonance} is unexpectedly high: {rms}",
+                    notes.len()
+                );
+                previous_peak = peak;
+                previous_rms = rms;
+            }
         }
+    }
+
+    #[test]
+    fn sixteen_voice_chord_reaches_limiter_without_hard_clipping() {
+        let (peak, rms, clipped) = live_driven_chord_stats::<{ crate::VOICE_PACKS }>(
+            &[
+                48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+            ],
+            0.0,
+        );
+        assert_eq!(clipped, 0, "final output hard-clipped");
+        assert!(
+            (0.90..=0.951).contains(&peak),
+            "sixteen voices should reach the limiter ceiling, peak={peak}"
+        );
+        assert!(
+            (0.30..=0.60).contains(&rms),
+            "sixteen-voice RMS should use healthy output range, rms={rms}"
+        );
     }
 
     #[test]
     fn gain_limited_driven_level_rises_through_max_resonance() {
         let mut previous_rms = 0.0;
         for resonance in [0.90, 0.92, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1.0] {
-            let (_, rms, clipped) = live_driven_chord_stats(&[60], resonance);
+            let (_, rms, clipped) = live_driven_chord_stats::<1>(&[60], resonance);
             assert_eq!(clipped, 0);
             assert!(
                 rms >= previous_rms * 0.98,
@@ -919,6 +954,29 @@ mod tests {
         assert!(
             (one_key - two_keys).abs() <= 0.2,
             "first fundamental changed with voice count: one={one_key:.3}dB two={two_keys:.3}dB"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "wide-1"))]
+    fn self_oscillation_tracks_each_note_at_unity_key_amount() {
+        // Rev2 cutoff raw 79 is ~98 Hz. With Key Amount raw 64 (1:1),
+        // the hardware's two-octave tracking offset places C4 near cutoff raw
+        // 151 (~6.27 kHz), matching the equivalent centered Prophet-5 setup.
+        const BASE_CUTOFF_HZ: f32 = 97.998_86;
+        let (c3_bin, _) = live_key_tracked_fundamental_db(&[48], BASE_CUTOFF_HZ, None);
+        let (c4_bin, _) = live_key_tracked_fundamental_db(&[60], BASE_CUTOFF_HZ, None);
+        let (g4_bin, _) = live_key_tracked_fundamental_db(&[67], BASE_CUTOFF_HZ, None);
+
+        let c4_to_c3 = c4_bin as f32 / c3_bin as f32;
+        let g4_to_c4 = g4_bin as f32 / c4_bin as f32;
+        assert!(
+            (1.96..=2.04).contains(&c4_to_c3),
+            "C3->C4 self-oscillation must track one octave, bins={c3_bin}->{c4_bin} ratio={c4_to_c3:.3}"
+        );
+        assert!(
+            (1.47..=1.53).contains(&g4_to_c4),
+            "C4->G4 self-oscillation must track a fifth, bins={c4_bin}->{g4_bin} ratio={g4_to_c4:.3}"
         );
     }
 
@@ -1041,10 +1099,10 @@ mod tests {
     #[test]
     #[cfg(all(not(feature = "fast-math"), feature = "filter-all"))]
     fn gain_limited_tpt_linear_response_matches_baseline() {
-        const FOUR_POLE_INPUT_GAIN: f32 = 0.40;
+        const FOUR_POLE_INPUT_GAIN: f32 = 1.0;
         const FOUR_POLE_FEEDBACK: f32 = 3.75;
         const BASELINE_BASS_COMP: f32 = 1.22;
-        const CALIBRATED_BASS_COMP: f32 = 0.80;
+        const CALIBRATED_BASS_COMP: f32 = 0.16;
 
         for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
             for poles in [2, 4] {
