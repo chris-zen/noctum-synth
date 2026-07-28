@@ -644,10 +644,12 @@ mod tests {
     #[test]
     fn amp_env_amount_controls_output_level() {
         let mut full = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        full.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         full.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
         let full_rms = rendered_note_rms(full, 60, 1.0, 4096);
 
         let mut reduced = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        reduced.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         reduced.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.25));
         let reduced_rms = rendered_note_rms(reduced, 60, 1.0, 4096);
 
@@ -785,7 +787,7 @@ mod tests {
             engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
             engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 80.0));
             engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0));
+            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
             engine.handle_control(ControlMessage::SetParam(
                 ParamId::FilterVelocity,
                 filter_velocity,
@@ -803,7 +805,7 @@ mod tests {
 
         assert!(
             sensitive_high > sensitive_low * 1.1,
-            "filter velocity should increase filter envelope depth, low {sensitive_low}, high {sensitive_high}"
+            "filter velocity should add envelope depth independently, low {sensitive_low}, high {sensitive_high}"
         );
         assert!(
             (insensitive_high - insensitive_low).abs() < insensitive_high * 0.05,
@@ -812,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_velocity_scales_inverted_filter_envelope_depth() {
+    fn filter_velocity_offsets_inverted_filter_envelope_depth() {
         fn filtered_velocity_rms(note_velocity: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
             engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
@@ -833,8 +835,8 @@ mod tests {
         let high_velocity = filtered_velocity_rms(1.0);
 
         assert!(
-            low_velocity > high_velocity * 1.2,
-            "filter velocity should deepen inverted filter EG modulation, low {low_velocity}, high {high_velocity}"
+            high_velocity > low_velocity * 1.2,
+            "positive filter velocity should offset inverted filter EG modulation, low {low_velocity}, high {high_velocity}"
         );
     }
 

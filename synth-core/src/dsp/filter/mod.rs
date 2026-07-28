@@ -415,6 +415,14 @@ impl Filter {
         self.env_amount = env_amount.clamp(-1.0, 1.0);
     }
 
+    /// Sets the Prophet filter-envelope velocity contribution.
+    ///
+    /// Velocity Amount adds an independent, positive envelope-shaped cutoff
+    /// contribution; it does not multiply Env Amount. This follows the cutoff
+    /// control sum described in the
+    /// [Prophet Rev2 User's Guide](https://www.sequential.com/wp-content/uploads/2021/02/Prophet-Rev2-Users-Guide-1.2.4.pdf#page=31)
+    /// and the measured
+    /// [Rev2 cutoff formula](https://forum.sequential.com/index.php?topic=4444.0).
     pub fn set_env_velocity_amount(&mut self, env_velocity_amount: f32) {
         self.env_velocity_amount = env_velocity_amount.clamp(0.0, 1.0);
     }
@@ -542,12 +550,12 @@ impl Filter {
         };
         let key_semitones =
             (note - WideF32::splat(KEY_TRACK_REFERENCE_NOTE)) * WideF32::splat(self.key_track);
-        let velocity_scale = WideF32::splat(1.0 - env_velocity_amount)
+        let effective_env_amount = WideF32::splat(env_amount)
             + velocity.clamp(WideF32::ZERO, WideF32::splat(1.0))
                 * WideF32::splat(env_velocity_amount);
         let env_semitones = filter_env.clamp(WideF32::ZERO, WideF32::splat(1.0))
-            * velocity_scale
-            * WideF32::splat(env_amount * ENV_DEPTH_SEMITONES);
+            * effective_env_amount
+            * WideF32::splat(ENV_DEPTH_SEMITONES);
         let audio_mod_amount =
             (WideF32::splat(self.audio_mod) + audio_mod).clamp(WideF32::ZERO, WideF32::splat(1.0));
         let audio_semitones = osc1_audio.clamp(WideF32::splat(-1.0), WideF32::splat(1.0))
@@ -558,11 +566,13 @@ impl Filter {
         let cutoff_mod_uniform_semitones = cutoff_mod_uniform_semitones.filter(|_| {
             self.key_track == 0.0
                 && env_amount == 0.0
+                && env_velocity_amount == 0.0
                 && self.audio_mod == 0.0
                 && all_lanes_near_zero(audio_mod)
         });
         let static_cutoff = self.key_track == 0.0
             && env_amount == 0.0
+            && env_velocity_amount == 0.0
             && self.audio_mod == 0.0
             && all_lanes_near_zero(cutoff_mod_semitones)
             && all_lanes_near_zero(resonance_mod)
@@ -850,11 +860,11 @@ mod tests {
                 0xbf59cc04, 0xbe74018c, 0xbe4b44ab, 0xbe99fe3a,
             ],
             [
-                0xbf37490c, 0x3f284687, 0x3f275a16, 0xbeeda0ce, 0xbf29cf14, 0x3f035b89, 0x3f27f016,
-                0xbf1c2fbe, 0xbf15dd01, 0x3e9ef8b1, 0x3f2187da, 0xbf25d1bc, 0xbef9c525, 0x3da0c9aa,
-                0x3f13e7b7, 0xbf102c5f, 0xbec0f28a, 0xbe1c3f80, 0x3efe70ea, 0xbebe87c1, 0xbe847920,
-                0xbeb526d1, 0x3ec81f68, 0xbdec26ed, 0xbe0eb78f, 0xbeff0814, 0x3e86e5ca, 0x3e206159,
-                0xbcc4b4d0, 0xbf102191, 0x3df7026c, 0x3ecb1248,
+                0xbf3ec35e, 0x3dda5c79, 0x3da5b4d8, 0x3e6e4471, 0xbf3ceae5, 0xbe3f1692, 0xbf0f8d76,
+                0xbed3544d, 0xbf34b62b, 0xbedaec07, 0x3e9fbb71, 0x3eb67069, 0xbf26c3cf, 0xbf1076f0,
+                0xbdef15a8, 0x3dac465d, 0xbf13f640, 0xbf0fdc45, 0xbed4d2f2, 0xbecc6c9b, 0xbefab7f6,
+                0xbed68809, 0x3ec55dda, 0x3eb4b7b2, 0xbec82c67, 0xbe2f2219, 0xbe0b03a3, 0xbe4ef363,
+                0xbe9285e8, 0x3e016d14, 0x3dde6e0a, 0xbe0787ad,
             ],
         ];
         assert_eq!(actual, expected);
@@ -1973,11 +1983,11 @@ mod tests {
 
     #[test]
     #[cfg(feature = "wide-4")]
-    fn test_filter_velocity_scales_envelope_per_lane() {
+    fn test_filter_velocity_adds_envelope_depth_per_lane() {
         let sr = 44100.0;
         let mut filter = LadderFilter::default();
         filter.set_cutoff(400.0);
-        filter.set_env_amount(0.5);
+        filter.set_env_amount(0.0);
         filter.set_env_velocity_amount(1.0);
 
         let amps =
@@ -1989,7 +1999,7 @@ mod tests {
         );
         assert!(
             amps[3] > amps[0] * 4.0,
-            "full velocity should create substantially deeper filter EG modulation, amps={amps:?}"
+            "filter velocity should open the envelope with Env Amount zero, amps={amps:?}"
         );
     }
 
