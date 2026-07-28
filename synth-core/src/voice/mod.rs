@@ -470,10 +470,10 @@ impl VoiceBlock {
 
         crate::profiler_begin!(ctx, RenderStage::AmplifierAndPan);
         self.amplifier.advance_smoothers();
-        let amp_lfo_gain = (WideF32::splat(1.0) + lfo_modulation.amp_gain)
-            .clamp(WideF32::ZERO, WideF32::splat(2.0));
         let output = self.dc_blocker.process(filtered)
-            * self.amplifier.gain(amp, velocities, amp_lfo_gain)
+            * self
+                .amplifier
+                .gain(amp, velocities, lfo_modulation.amp_gain)
             * lifecycle_gain;
 
         let stereo = self
@@ -2279,6 +2279,7 @@ mod tests {
         let mut drone = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+        drone.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
         drone.handle_control(ControlMessage::NoteOn {
@@ -2295,6 +2296,7 @@ mod tests {
         let mut gated = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         gated.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
         gated.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+        gated.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         gated.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
         gated.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
         gated.handle_control(ControlMessage::NoteOn {
@@ -2311,6 +2313,7 @@ mod tests {
         let mut enveloped = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         enveloped.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
         enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
+        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
         enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
         enveloped.handle_control(ControlMessage::NoteOn {

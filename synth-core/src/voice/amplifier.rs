@@ -140,14 +140,22 @@ impl Amplifier {
         self.envelope.set_release_seconds(seconds);
     }
 
-    pub fn gain(&self, amp_env: WideF32, velocities: WideF32, amp_lfo_gain: WideF32) -> WideF32 {
+    /// Computes the Rev2 VCA control signal.
+    ///
+    /// `Velocity Amount` modulates (adds to) `VCA Envelope Amount`; it is not a
+    /// second gain applied after the envelope. Modulation routed to `VCA` joins
+    /// the same control sum. See the Amplifier Envelope section of the
+    /// [Prophet Rev2 User's Guide](https://www.sequential.com/wp-content/uploads/2021/02/Prophet-Rev2-Users-Guide-1.2.4.pdf#page=35).
+    pub fn gain(&self, amp_env: WideF32, velocities: WideF32, amp_modulation: WideF32) -> WideF32 {
         let velocity_amount = self.velocity_amount.value();
-        let velocity_gain =
-            WideF32::splat(1.0 - velocity_amount) + velocities * WideF32::splat(velocity_amount);
+        let effective_env_amount = (WideF32::splat(self.env_amount.value())
+            + velocities.clamp(WideF32::ZERO, WideF32::splat(1.0))
+                * WideF32::splat(velocity_amount))
+        .clamp(WideF32::ZERO, WideF32::splat(1.0));
         let initial_level = self.initial_level.value();
-        let env_amount = self.env_amount.value();
-        let env_gain = WideF32::splat(initial_level)
-            + (WideF32::splat(1.0 - initial_level) * amp_env * env_amount);
-        velocity_gain * env_gain * amp_lfo_gain
+        (WideF32::splat(initial_level)
+            + amp_env.clamp(WideF32::ZERO, WideF32::splat(1.0)) * effective_env_amount
+            + amp_modulation)
+            .clamp(WideF32::ZERO, WideF32::splat(1.0))
     }
 }

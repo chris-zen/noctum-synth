@@ -659,21 +659,20 @@ mod tests {
 
     #[test]
     fn amp_velocity_param_controls_velocity_sensitivity() {
-        let mut sensitive_low = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        sensitive_low.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 1.0));
-        let sensitive_low_rms = rendered_note_rms(sensitive_low, 60, 0.25, 4096);
+        fn render(env_amount: f32, velocity_amount: f32, note_velocity: f32) -> f32 {
+            let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, env_amount));
+            engine.handle_control(ControlMessage::SetParam(
+                ParamId::AmpVelocity,
+                velocity_amount,
+            ));
+            rendered_note_rms(engine, 60, note_velocity, 4096)
+        }
 
-        let mut sensitive_high = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        sensitive_high.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 1.0));
-        let sensitive_high_rms = rendered_note_rms(sensitive_high, 60, 1.0, 4096);
-
-        let mut insensitive_low = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        insensitive_low.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        let insensitive_low_rms = rendered_note_rms(insensitive_low, 60, 0.25, 4096);
-
-        let mut insensitive_high = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        insensitive_high.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        let insensitive_high_rms = rendered_note_rms(insensitive_high, 60, 1.0, 4096);
+        let sensitive_low_rms = render(0.0, 1.0, 0.25);
+        let sensitive_high_rms = render(0.0, 1.0, 1.0);
+        let insensitive_low_rms = render(1.0, 0.0, 0.25);
+        let insensitive_high_rms = render(1.0, 0.0, 1.0);
 
         assert!(
             sensitive_high_rms > sensitive_low_rms * 3.0,
@@ -682,6 +681,27 @@ mod tests {
         assert!(
             (insensitive_high_rms - insensitive_low_rms).abs() < insensitive_high_rms * 0.01,
             "amp velocity 0 should ignore note velocity, low {insensitive_low_rms}, high {insensitive_high_rms}"
+        );
+    }
+
+    #[test]
+    fn amp_velocity_adds_to_envelope_amount_and_clamps_at_full_level() {
+        fn render(env_amount: f32, velocity_amount: f32) -> f32 {
+            let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, env_amount));
+            engine.handle_control(ControlMessage::SetParam(
+                ParamId::AmpVelocity,
+                velocity_amount,
+            ));
+            rendered_note_rms(engine, 60, 1.0, 4096)
+        }
+
+        let velocity_boosted_rms = render(0.45, 1.0);
+        let full_envelope_rms = render(1.0, 0.0);
+
+        assert!(
+            (velocity_boosted_rms - full_envelope_rms).abs() < full_envelope_rms * 0.01,
+            "envelope amount plus velocity should clamp at full VCA level, velocity {velocity_boosted_rms}, full {full_envelope_rms}"
         );
     }
 
@@ -1266,6 +1286,7 @@ mod tests {
     fn disabled_mod_matrix_route_has_no_effect() {
         fn render_with_route(enabled: bool) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.25));
             engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
             engine.handle_control(ControlMessage::SetModulation {
                 route: ModRoute::Free(0),
@@ -1288,6 +1309,8 @@ mod tests {
     #[test]
     fn lfo_to_vca_changes_output_level_over_time() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 67.0));
         engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
         engine.handle_control(ControlMessage::SetParam(
