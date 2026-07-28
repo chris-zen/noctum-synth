@@ -33,12 +33,16 @@ arm-none-eabi-objcopy -O binary \
 
 ## Feature flags
 
-All feature flags are optional and additive. Pass them with `--features`:
+Features are additive. The default set is `fast-math`, `wide-4`, and
+`downsampling`; use `--no-default-features` when selecting a different lane
+width or full-rate DSP.
 
 | Feature | Effect |
 | --- | --- |
-| `embedded-math` | Switches `f32x4` SIMD to scalar `micromath` for the Cortex-M7 (default) |
-| `daisy-full-rate` | Runs the engine at 48 kHz instead of 24 kHz (exceeds CPU budget with 4 voices) |
+| `fast-math` | Uses scalar `micromath` operations for the Cortex-M7 (default) |
+| `wide-4` | Processes four voices per SIMD-style block (default) |
+| `wide-1` | Processes one voice per scalar block; use instead of `wide-4` |
+| `downsampling` | Runs DSP at 24 kHz and reconstructs 48 kHz output (default for four voices) |
 | `oscillator-polyblep` | Uses PolyBLEP anti-aliasing instead of the default BLEP |
 | `diagnostics` | Enables RTT logging, MIDI debug output, and overrun warnings |
 | `audio-profiling` | Enables DWT cycle-count profiling per DSP stage |
@@ -49,7 +53,8 @@ Examples:
 
 ```sh
 cargo build --release -p noctum-micro --features diagnostics
-cargo build --release -p noctum-micro --features diagnostics,daisy-full-rate
+cargo build --release -p noctum-micro --no-default-features \
+  --features fast-math,wide-4,diagnostics
 ```
 
 ## Flashing

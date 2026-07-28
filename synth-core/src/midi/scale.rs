@@ -38,7 +38,8 @@ pub fn key_track_from_raw(raw: u16) -> f32 {
 }
 
 pub fn key_track_to_raw(value: f32) -> u16 {
-    F32((value.clamp(0.0, FILTER_KEY_TRACK_MAX) * f32::from(FILTER_KEY_TRACK_UNITY_RAW)).round())
+    F32(value.clamp(0.0, FILTER_KEY_TRACK_MAX) * f32::from(FILTER_KEY_TRACK_UNITY_RAW))
+        .round()
         .as_f32()
         .clamp(0.0, f32::from(FILTER_KEY_TRACK_RAW_MAX)) as u16
 }

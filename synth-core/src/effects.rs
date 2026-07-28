@@ -1221,6 +1221,8 @@ mod effect_coefficient_math {
 
     #[cfg(target_arch = "arm")]
     mod backend {
+        use crate::math::F32;
+
         #[inline(always)]
         pub(super) fn high_pass_cutoff(param: f32) -> f32 {
             20.0 * F32(super::LOG2_600 * param).exp2().as_f32()

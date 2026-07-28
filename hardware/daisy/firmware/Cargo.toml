@@ -7,11 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["embedded-math"]
+default = ["fast-math", "wide-4", "downsampling"]
 audio-profiling = ["diagnostics", "synth-core/profiling"]
 diagnostics = []
-embedded-math = ["synth-core/embedded-math"]
-daisy-full-rate = ["synth-core/daisy-full-rate"]
+fast-math = ["synth-core/fast-math"]
+wide-4 = ["synth-core/wide-4"]
+wide-1 = ["synth-core/wide-1"]
+downsampling = ["synth-core/downsampling"]
 oscillator-polyblep = ["synth-core/oscillator-polyblep"]
 usb-audio-test-tone = []
 usb-audio-raw-test = []
