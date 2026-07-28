@@ -1360,6 +1360,10 @@ fn format_glide_display(amount: f32) -> String {
     }
 }
 
+fn format_percent_display(amount: f32) -> String {
+    format!("{:.0}%", amount * 100.0)
+}
+
 fn module_panel(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     module_panel_with_header(ui, title, 0.0, |_| {}, add_contents);
 }
@@ -1657,9 +1661,10 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    param_knob_f32_custom(
                         ui,
-                        "Shape Mod",
+                        || "Shape Mod".into(),
+                        |val| format_percent_display(val),
                         &mut state.osc1_shape_mod,
                         0.0..=1.0,
                         0.0,
@@ -1911,9 +1916,10 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                     );
                 });
                 control_cell(ui, |ui| {
-                    param_knob_f32(
+                    param_knob_f32_custom(
                         ui,
-                        "Shape Mod",
+                        || "Shape Mod".into(),
+                        |val| format_percent_display(val),
                         &mut state.osc2_shape_mod,
                         0.0..=1.0,
                         0.0,
