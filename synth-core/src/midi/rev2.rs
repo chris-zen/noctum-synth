@@ -1,27 +1,28 @@
 //! Sequential Prophet Rev2-compatible CC and NRPN parameter codec.
 
-use super::scale::{
+use super::prophet::{
     FILTER_CUTOFF_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz, key_track_from_raw, key_track_to_raw,
 };
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
 use crate::patch::decode_patch_name;
+use crate::midi::clock::MidiClockMode;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, MidiClockMode, ModDestination, ModRoute, ModSource,
-    ModulationParam, ParamId, Patch,
+    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, Patch,
 };
 
 const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
 
-pub const REV2_PROGRAM_DATA_LEN: usize = 2046;
-pub const REV2_PROGRAM_PACKED_LEN: usize = 2339;
-pub const REV2_PROGRAM_DATA_SYSEX_LEN: usize = 2346;
-pub const REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
-const REV2_LAYER_DATA_LEN: usize = 1024;
-const REV2_SYSEX_HEADER: [u8; 4] = [0xf0, 0x01, 0x2f, 0x03];
+pub const PROGRAM_DATA_LEN: usize = 2046;
+pub const PROGRAM_PACKED_LEN: usize = 2339;
+pub const PROGRAM_DATA_SYSEX_LEN: usize = 2346;
+pub const PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
+const LAYER_DATA_LEN: usize = 1024;
+const SYSEX_HEADER: [u8; 4] = [0xf0, 0x01, 0x2f, 0x03];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Rev2SysexError {
+pub enum SysexError {
     InvalidLength,
     InvalidFraming,
     InvalidManufacturer,
@@ -33,14 +34,14 @@ pub enum Rev2SysexError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Rev2ProgramData {
+pub struct ProgramData {
     pub bank: u8,
     pub program: u8,
     pub patch: Patch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Rev2MidiUpdate {
+pub enum MidiUpdate {
     Param(ParamId, f32),
     MidiClockMode(MidiClockMode),
     Modulation {
@@ -75,11 +76,11 @@ impl NrpnChannelState {
 }
 
 /// Stateful Rev2 controller decoder. NRPN selection is independent per channel.
-pub struct Rev2MidiDecoder {
+pub struct MidiDecoder {
     channels: [NrpnChannelState; 16],
 }
 
-impl Default for Rev2MidiDecoder {
+impl Default for MidiDecoder {
     fn default() -> Self {
         Self {
             channels: [NrpnChannelState::default(); 16],
@@ -87,20 +88,20 @@ impl Default for Rev2MidiDecoder {
     }
 }
 
-impl Rev2MidiDecoder {
+impl MidiDecoder {
     /// Decode a stored Prophet Rev2 Program Data dump.
-    pub fn program_data(message: &[u8]) -> Result<Rev2ProgramData, Rev2SysexError> {
-        validate_header(message, REV2_PROGRAM_DATA_SYSEX_LEN, 0x02)?;
+    pub fn program_data(message: &[u8]) -> Result<ProgramData, SysexError> {
+        validate_header(message, PROGRAM_DATA_SYSEX_LEN, 0x02)?;
         let bank = message[4];
         let program = message[5];
         if bank > 7 {
-            return Err(Rev2SysexError::InvalidBank);
+            return Err(SysexError::InvalidBank);
         }
         if program & 0x80 != 0 {
-            return Err(Rev2SysexError::NonSevenBitData);
+            return Err(SysexError::NonSevenBitData);
         }
-        let patch = decode_patch_payload(&message[6..6 + REV2_PROGRAM_PACKED_LEN])?;
-        Ok(Rev2ProgramData {
+        let patch = decode_patch_payload(&message[6..6 + PROGRAM_PACKED_LEN])?;
+        Ok(ProgramData {
             bank,
             program,
             patch,
@@ -108,9 +109,9 @@ impl Rev2MidiDecoder {
     }
 
     /// Decode a Prophet Rev2 Program Edit Buffer data dump into Layer A of a patch.
-    pub fn program_edit_buffer(message: &[u8]) -> Result<Patch, Rev2SysexError> {
-        validate_header(message, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN, 0x03)?;
-        decode_patch_payload(&message[4..4 + REV2_PROGRAM_PACKED_LEN])
+    pub fn program_edit_buffer(message: &[u8]) -> Result<Patch, SysexError> {
+        validate_header(message, PROGRAM_EDIT_BUFFER_SYSEX_LEN, 0x03)?;
+        decode_patch_payload(&message[4..4 + PROGRAM_PACKED_LEN])
     }
 }
 
@@ -118,40 +119,40 @@ fn validate_header(
     message: &[u8],
     expected_len: usize,
     expected_command: u8,
-) -> Result<(), Rev2SysexError> {
+) -> Result<(), SysexError> {
     if message.len() != expected_len {
-        return Err(Rev2SysexError::InvalidLength);
+        return Err(SysexError::InvalidLength);
     }
     if message[0] != 0xf0 || message[expected_len - 1] != 0xf7 {
-        return Err(Rev2SysexError::InvalidFraming);
+        return Err(SysexError::InvalidFraming);
     }
     if message[1] != 0x01 {
-        return Err(Rev2SysexError::InvalidManufacturer);
+        return Err(SysexError::InvalidManufacturer);
     }
     if message[2] != 0x2f {
-        return Err(Rev2SysexError::InvalidModel);
+        return Err(SysexError::InvalidModel);
     }
     if message[3] != expected_command {
-        return Err(Rev2SysexError::UnsupportedCommand);
+        return Err(SysexError::UnsupportedCommand);
     }
     Ok(())
 }
 
-fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
+fn decode_patch_payload(packed: &[u8]) -> Result<Patch, SysexError> {
     if packed.iter().any(|byte| byte & 0x80 != 0) {
-        return Err(Rev2SysexError::NonSevenBitData);
+        return Err(SysexError::NonSevenBitData);
     }
 
-    let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+    let mut raw = [0_u8; PROGRAM_DATA_LEN];
     unpack_program_data(packed, &mut raw);
     let mut patch = Patch::default();
     let mut state = NrpnChannelState::default();
     for number in 0..=179 {
         if let Some(value) = program_nrpn_value(&raw, number, 0) {
             map_nrpn_stateful(number, value, &mut state, &mut |update| match update {
-                Rev2MidiUpdate::Param(param, value) => patch.set_param(param, value),
-                Rev2MidiUpdate::MidiClockMode(_) => {}
-                Rev2MidiUpdate::Modulation { route, parameter } => {
+                MidiUpdate::Param(param, value) => patch.set_param(param, value),
+                MidiUpdate::MidiClockMode(_) => {}
+                MidiUpdate::Modulation { route, parameter } => {
                     patch.set_modulation_param(route, parameter);
                 }
             });
@@ -162,7 +163,7 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, Rev2SysexError> {
     Ok(patch)
 }
 
-impl Rev2MidiDecoder {
+impl MidiDecoder {
     /// Decode one CC. Returns `true` when the controller belongs to the Rev2
     /// parameter protocol, even when the sequence is not complete yet.
     pub fn control_change(
@@ -170,7 +171,7 @@ impl Rev2MidiDecoder {
         channel: u8,
         controller: u8,
         value: u8,
-        mut emit: impl FnMut(Rev2MidiUpdate),
+        mut emit: impl FnMut(MidiUpdate),
     ) -> bool {
         let Some(state) = self.channels.get_mut(usize::from(channel)) else {
             return false;
@@ -237,12 +238,12 @@ impl Rev2MidiDecoder {
 }
 
 /// Stateful Rev2 NRPN encoder. Oscillator shape combines enabled/waveform state.
-pub struct Rev2MidiEncoder {
+pub struct MidiEncoder {
     oscillator_waveforms: [u8; 2],
     oscillator_enabled: [bool; 2],
 }
 
-impl Default for Rev2MidiEncoder {
+impl Default for MidiEncoder {
     fn default() -> Self {
         Self {
             oscillator_waveforms: [0; 2],
@@ -251,45 +252,45 @@ impl Default for Rev2MidiEncoder {
     }
 }
 
-impl Rev2MidiEncoder {
+impl MidiEncoder {
     /// Encode a patch as a stored Prophet Rev2 Program Data dump.
     pub fn program_data(
         bank: u8,
         program: u8,
         patch: &Patch,
         output: &mut [u8],
-    ) -> Result<usize, Rev2SysexError> {
+    ) -> Result<usize, SysexError> {
         if bank > 7 {
-            return Err(Rev2SysexError::InvalidBank);
+            return Err(SysexError::InvalidBank);
         }
         if program & 0x80 != 0 {
-            return Err(Rev2SysexError::NonSevenBitData);
+            return Err(SysexError::NonSevenBitData);
         }
-        if output.len() < REV2_PROGRAM_DATA_SYSEX_LEN {
-            return Err(Rev2SysexError::OutputTooSmall);
+        if output.len() < PROGRAM_DATA_SYSEX_LEN {
+            return Err(SysexError::OutputTooSmall);
         }
 
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
         encode_program_layers(patch, &mut raw);
         output[..6].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02, bank, program]);
-        pack_program_data(&raw, &mut output[6..6 + REV2_PROGRAM_PACKED_LEN]);
-        output[REV2_PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
-        Ok(REV2_PROGRAM_DATA_SYSEX_LEN)
+        pack_program_data(&raw, &mut output[6..6 + PROGRAM_PACKED_LEN]);
+        output[PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
+        Ok(PROGRAM_DATA_SYSEX_LEN)
     }
 
     /// Encode a patch as a Prophet Rev2 Program Edit Buffer data dump.
-    pub fn program_edit_buffer(patch: &Patch, output: &mut [u8]) -> Result<usize, Rev2SysexError> {
-        if output.len() < REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN {
-            return Err(Rev2SysexError::OutputTooSmall);
+    pub fn program_edit_buffer(patch: &Patch, output: &mut [u8]) -> Result<usize, SysexError> {
+        if output.len() < PROGRAM_EDIT_BUFFER_SYSEX_LEN {
+            return Err(SysexError::OutputTooSmall);
         }
 
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
         encode_program_layers(patch, &mut raw);
 
-        output[..4].copy_from_slice(&REV2_SYSEX_HEADER);
-        pack_program_data(&raw, &mut output[4..4 + REV2_PROGRAM_PACKED_LEN]);
-        output[REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN - 1] = 0xf7;
-        Ok(REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN)
+        output[..4].copy_from_slice(&SYSEX_HEADER);
+        pack_program_data(&raw, &mut output[4..4 + PROGRAM_PACKED_LEN]);
+        output[PROGRAM_EDIT_BUFFER_SYSEX_LEN - 1] = 0xf7;
+        Ok(PROGRAM_EDIT_BUFFER_SYSEX_LEN)
     }
 
     pub fn param(
@@ -515,13 +516,13 @@ impl Rev2MidiEncoder {
     }
 }
 
-fn encode_program_layers(patch: &Patch, raw: &mut [u8; REV2_PROGRAM_DATA_LEN]) {
-    encode_patch_layer(patch, &mut raw[..REV2_LAYER_DATA_LEN]);
-    encode_patch_layer(&Patch::default(), &mut raw[REV2_LAYER_DATA_LEN..]);
+fn encode_program_layers(patch: &Patch, raw: &mut [u8; PROGRAM_DATA_LEN]) {
+    encode_patch_layer(patch, &mut raw[..LAYER_DATA_LEN]);
+    encode_patch_layer(&Patch::default(), &mut raw[LAYER_DATA_LEN..]);
 }
 
 fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
-    let mut encoder = Rev2MidiEncoder::default();
+    let mut encoder = MidiEncoder::default();
     patch.for_each_param(|param, value| {
         let inactive_lfo_rate = match param {
             ParamId::Lfo1Rate => patch.lfos[0].clock_sync,
@@ -695,7 +696,7 @@ fn store_program_nrpn(raw: &mut [u8], number: u16, value: u16, layer_offset: usi
     }
 }
 
-fn pack_program_data(raw: &[u8; REV2_PROGRAM_DATA_LEN], packed: &mut [u8]) {
+fn pack_program_data(raw: &[u8; PROGRAM_DATA_LEN], packed: &mut [u8]) {
     let mut output = 0;
     for chunk in raw.chunks(7) {
         let mut high_bits = 0_u8;
@@ -709,10 +710,10 @@ fn pack_program_data(raw: &[u8; REV2_PROGRAM_DATA_LEN], packed: &mut [u8]) {
             output += 1;
         }
     }
-    debug_assert_eq!(output, REV2_PROGRAM_PACKED_LEN);
+    debug_assert_eq!(output, PROGRAM_PACKED_LEN);
 }
 
-fn unpack_program_data(packed: &[u8], raw: &mut [u8; REV2_PROGRAM_DATA_LEN]) {
+fn unpack_program_data(packed: &[u8], raw: &mut [u8; PROGRAM_DATA_LEN]) {
     let mut input = 0;
     let mut output = 0;
     while output < raw.len() {
@@ -725,7 +726,7 @@ fn unpack_program_data(packed: &[u8], raw: &mut [u8; REV2_PROGRAM_DATA_LEN]) {
             output += 1;
         }
     }
-    debug_assert_eq!(input, REV2_PROGRAM_PACKED_LEN);
+    debug_assert_eq!(input, PROGRAM_PACKED_LEN);
 }
 
 fn emit_nrpn(channel: u8, number: u16, value: u16, emit: &mut impl FnMut([u8; 3])) {
@@ -789,11 +790,11 @@ fn logarithmic(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
     min * F32(max / min).powf(F32(unit(raw, raw_max))).as_f32()
 }
 
-fn emit_param(emit: &mut impl FnMut(Rev2MidiUpdate), param: ParamId, value: f32) {
-    emit(Rev2MidiUpdate::Param(param, value));
+fn emit_param(emit: &mut impl FnMut(MidiUpdate), param: ParamId, value: f32) {
+    emit(MidiUpdate::Param(param, value));
 }
 
-fn emit_osc_shape(emit: &mut impl FnMut(Rev2MidiUpdate), osc1: bool, raw: u16) {
+fn emit_osc_shape(emit: &mut impl FnMut(MidiUpdate), osc1: bool, raw: u16) {
     let (enabled_param, waveform_param) = if osc1 {
         (ParamId::Osc1Enabled, ParamId::Osc1Waveform)
     } else {
@@ -809,7 +810,7 @@ fn emit_osc_shape(emit: &mut impl FnMut(Rev2MidiUpdate), osc1: bool, raw: u16) {
     }
 }
 
-fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> bool {
+fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(MidiUpdate)) -> bool {
     let raw = u16::from(raw);
     match controller {
         3 => emit_param(
@@ -873,11 +874,7 @@ fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(Rev2MidiUpdate)) -> boo
         109 => emit_param(emit, ParamId::FilterEgAttack, ranged(raw, 127, 0.0005, 5.0)),
         110 => emit_param(emit, ParamId::FilterEgDecay, ranged(raw, 127, 0.0005, 5.0)),
         111 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
-        112 => emit_param(
-            emit,
-            ParamId::FilterEgRelease,
-            ranged(raw, 127, 0.0005, 10.0),
-        ),
+        112 => emit_param(emit, ParamId::FilterEgRelease, ranged(raw, 127, 0.0005, 10.0)),
         114 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
         113 => emit_param(emit, ParamId::VcaInitialLevel, unit(raw, 127)),
         115 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
@@ -898,10 +895,10 @@ fn map_nrpn_stateful(
     number: u16,
     raw: u16,
     state: &mut NrpnChannelState,
-    emit: &mut impl FnMut(Rev2MidiUpdate),
+    emit: &mut impl FnMut(MidiUpdate),
 ) {
     if number == 4099 {
-        emit(Rev2MidiUpdate::MidiClockMode(MidiClockMode::from_index(
+        emit(MidiUpdate::MidiClockMode(MidiClockMode::from_index(
             raw as usize,
         )));
         return;
@@ -929,7 +926,7 @@ fn map_nrpn_stateful(
     map_nrpn(number, raw, emit);
 }
 
-fn emit_rev2_lfo_rate(lfo: usize, raw: u16, synced: bool, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+fn emit_rev2_lfo_rate(lfo: usize, raw: u16, synced: bool, emit: &mut impl FnMut(MidiUpdate)) {
     const RATE: [ParamId; 4] = [
         ParamId::Lfo1Rate,
         ParamId::Lfo2Rate,
@@ -966,7 +963,7 @@ const fn lfo_clock_sync_param(lfo: usize) -> ParamId {
     }
 }
 
-fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
     match number {
         0 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
         1 => emit_param(emit, ParamId::Osc1FineTune, f32::from(raw.min(100)) - 50.0),
@@ -998,11 +995,7 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         23 => emit_param(emit, ParamId::FilterEgAttack, ranged(raw, 127, 0.0005, 5.0)),
         24 => emit_param(emit, ParamId::FilterEgDecay, ranged(raw, 127, 0.0005, 5.0)),
         25 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
-        26 => emit_param(
-            emit,
-            ParamId::FilterEgRelease,
-            ranged(raw, 127, 0.0005, 10.0),
-        ),
+        26 => emit_param(emit, ParamId::FilterEgRelease, ranged(raw, 127, 0.0005, 10.0)),
         28 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
         29 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
         30 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
@@ -1056,14 +1049,14 @@ fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
         174 => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
         177 => emit_param(emit, ParamId::ArpRepeats, f32::from(raw.min(2))),
         178 => emit_param(emit, ParamId::ArpRelatch, f32::from(raw != 0)),
-        4099 => emit(Rev2MidiUpdate::MidiClockMode(MidiClockMode::from_index(
+        4099 => emit(MidiUpdate::MidiClockMode(MidiClockMode::from_index(
             raw as usize,
         ))),
         _ => {}
     }
 }
 
-fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
     let lfo = usize::from((number - 37) / 5);
     let field = (number - 37) % 5;
     let params = [
@@ -1106,27 +1099,27 @@ fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
     emit_param(emit, params[lfo][field as usize], value);
 }
 
-fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
     let index = usize::from((number - 65) / 3);
     let parameter = match (number - 65) % 3 {
         0 => ModulationParam::Source(ModSource::from_index(usize::from(raw.min(22)))),
         1 => ModulationParam::Amount(bipolar(raw, 254)),
         _ => ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(52)))),
     };
-    emit(Rev2MidiUpdate::Modulation {
+    emit(MidiUpdate::Modulation {
         route: ModRoute::Free(index),
         parameter,
     });
 }
 
-fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Rev2MidiUpdate)) {
+fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
     let index = usize::from((number - 116) / 2);
     let parameter = if (number - 116) % 2 == 0 {
         ModulationParam::Amount(bipolar(raw, 254))
     } else {
         ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(52))))
     };
-    emit(Rev2MidiUpdate::Modulation {
+    emit(MidiUpdate::Modulation {
         route: ModRoute::Dedicated(DedicatedModSource::ALL[index]),
         parameter,
     });
@@ -1174,53 +1167,48 @@ fn nrpn_max(number: u16) -> Option<u16> {
 mod tests {
     use super::*;
 
-    fn program_data_message(
-        bank: u8,
-        program: u8,
-        patch: &Patch,
-    ) -> [u8; REV2_PROGRAM_DATA_SYSEX_LEN] {
-        let mut edit = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        Rev2MidiEncoder::program_edit_buffer(patch, &mut edit).unwrap();
-        let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+    fn program_data_message(bank: u8, program: u8, patch: &Patch) -> [u8; PROGRAM_DATA_SYSEX_LEN] {
+        let mut edit = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(patch, &mut edit).unwrap();
+        let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
         message[..4].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02]);
         message[4] = bank;
         message[5] = program;
-        message[6..6 + REV2_PROGRAM_PACKED_LEN]
-            .copy_from_slice(&edit[4..4 + REV2_PROGRAM_PACKED_LEN]);
-        message[REV2_PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
+        message[6..6 + PROGRAM_PACKED_LEN].copy_from_slice(&edit[4..4 + PROGRAM_PACKED_LEN]);
+        message[PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
         message
     }
 
     #[test]
     fn nrpn_round_trips_bipolar_filter_envelope() {
-        let mut encoder = Rev2MidiEncoder::default();
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut encoder = MidiEncoder::default();
+        let mut decoder = MidiDecoder::default();
         let mut decoded = None;
         assert!(encoder.param(0, ParamId::FilterEnvAmount, 1.0, |message| {
             decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
         }));
         assert_eq!(
             decoded,
-            Some(Rev2MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
+            Some(MidiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
         );
     }
 
     #[test]
     fn bpm_nrpn_uses_direct_rev2_values() {
         for bpm in [30.0, 120.0, 250.0] {
-            let mut encoder = Rev2MidiEncoder::default();
-            let mut decoder = Rev2MidiDecoder::default();
+            let mut encoder = MidiEncoder::default();
+            let mut decoder = MidiDecoder::default();
             let mut decoded = None;
             assert!(encoder.param(0, ParamId::Bpm, bpm, |message| {
                 decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
             }));
-            assert_eq!(decoded, Some(Rev2MidiUpdate::Param(ParamId::Bpm, bpm)));
+            assert_eq!(decoded, Some(MidiUpdate::Param(ParamId::Bpm, bpm)));
         }
     }
 
     #[test]
     fn filter_cutoff_nrpn_uses_semitone_ticks() {
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoder = MidiDecoder::default();
         let cases = [
             (0_u16, cutoff_raw_to_hz(0)),
             (96, cutoff_raw_to_hz(96)),
@@ -1232,7 +1220,7 @@ mod tests {
             emit_nrpn(0, 15, raw, &mut |message| {
                 decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
             });
-            let Some(Rev2MidiUpdate::Param(ParamId::FilterCutoff, hz)) = decoded else {
+            let Some(MidiUpdate::Param(ParamId::FilterCutoff, hz)) = decoded else {
                 panic!("expected filter cutoff update for raw {raw}");
             };
             assert!(
@@ -1244,17 +1232,17 @@ mod tests {
 
     #[test]
     fn filter_cutoff_cc_matches_nrpn_index_not_full_open() {
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoder = MidiDecoder::default();
         let mut cc_hz = None;
         decoder.control_change(0, 102, 127, |update| {
-            if let Rev2MidiUpdate::Param(ParamId::FilterCutoff, hz) = update {
+            if let MidiUpdate::Param(ParamId::FilterCutoff, hz) = update {
                 cc_hz = Some(hz);
             }
         });
         let mut nrpn_hz = None;
         emit_nrpn(0, 15, 127, &mut |message| {
             decoder.control_change(0, message[1], message[2], |update| {
-                if let Rev2MidiUpdate::Param(ParamId::FilterCutoff, hz) = update {
+                if let MidiUpdate::Param(ParamId::FilterCutoff, hz) = update {
                     nrpn_hz = Some(hz);
                 }
             });
@@ -1268,39 +1256,39 @@ mod tests {
 
     #[test]
     fn filter_key_track_64_decodes_to_unity() {
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoder = MidiDecoder::default();
         let mut decoded = None;
         emit_nrpn(0, 17, 64, &mut |message| {
             decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
         });
         assert_eq!(
             decoded,
-            Some(Rev2MidiUpdate::Param(ParamId::FilterKeyTrack, 1.0))
+            Some(MidiUpdate::Param(ParamId::FilterKeyTrack, 1.0))
         );
     }
 
     #[test]
     fn global_midi_clock_mode_round_trips_as_nrpn_4099() {
         for mode in MidiClockMode::ALL {
-            let mut encoder = Rev2MidiEncoder::default();
-            let mut decoder = Rev2MidiDecoder::default();
+            let mut encoder = MidiEncoder::default();
+            let mut decoder = MidiDecoder::default();
             let mut decoded = None;
             encoder.midi_clock_mode(0, mode, |message| {
                 decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
             });
-            assert_eq!(decoded, Some(Rev2MidiUpdate::MidiClockMode(mode)));
+            assert_eq!(decoded, Some(MidiUpdate::MidiClockMode(mode)));
         }
     }
 
     #[test]
     fn synced_lfo_nrpn_decodes_for_either_rate_and_sync_order() {
         for sync_first in [false, true] {
-            let mut decoder = Rev2MidiDecoder::default();
+            let mut decoder = MidiDecoder::default();
             let mut decoded_division = None;
             let mut send = |number, value| {
                 emit_nrpn(0, number, value, &mut |message| {
                     decoder.control_change(0, message[1], message[2], |update| {
-                        if let Rev2MidiUpdate::Param(ParamId::Lfo1SyncDivision, value) = update {
+                        if let MidiUpdate::Param(ParamId::Lfo1SyncDivision, value) = update {
                             decoded_division = Some(value as usize);
                         }
                     });
@@ -1327,9 +1315,9 @@ mod tests {
             source.lfos[1].rate_hz = 7.25;
             source.lfos[1].clock_sync = true;
             source.lfos[1].sync_division = division;
-            let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-            Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
-            let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+            let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+            MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+            let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
             assert!(decoded.lfos[1].clock_sync);
             assert_eq!(decoded.lfos[1].sync_division, division);
         }
@@ -1337,15 +1325,15 @@ mod tests {
 
     #[test]
     fn unison_nrpn_uses_rev2_ranges_and_key_mode_order() {
-        let mut encoder = Rev2MidiEncoder::default();
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut encoder = MidiEncoder::default();
+        let mut decoder = MidiDecoder::default();
         let mut decoded = None;
         assert!(encoder.param(0, ParamId::UnisonDetune, 16.0, |message| {
             decoder.control_change(0, message[1], message[2], |update| decoded = Some(update));
         }));
         assert_eq!(
             decoded,
-            Some(Rev2MidiUpdate::Param(ParamId::UnisonDetune, 16.0))
+            Some(MidiUpdate::Param(ParamId::UnisonDetune, 16.0))
         );
 
         let mut decoded = None;
@@ -1359,7 +1347,7 @@ mod tests {
         ));
         assert_eq!(
             decoded,
-            Some(Rev2MidiUpdate::Param(
+            Some(MidiUpdate::Param(
                 ParamId::KeyMode,
                 crate::KeyMode::High.index() as f32,
             ))
@@ -1374,7 +1362,7 @@ mod tests {
         patch.unison_detune = 12.0;
         patch.key_mode = crate::KeyMode::LastRetrigger;
         let message = program_data_message(0, 0, &patch);
-        let decoded = Rev2MidiDecoder::program_data(&message).unwrap().patch;
+        let decoded = MidiDecoder::program_data(&message).unwrap().patch;
         assert!(decoded.unison_enabled);
         assert_eq!(decoded.unison_mode, crate::UnisonMode::Chord);
         assert_eq!(decoded.unison_detune, 12.0);
@@ -1387,12 +1375,12 @@ mod tests {
         let mut source = Patch::default();
         source.name.push_str("Stored Program").unwrap();
         source.filter.resonance = 0.75;
-        let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+        let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
 
-        let len = Rev2MidiEncoder::program_data(7, 127, &source, &mut message).unwrap();
-        let decoded = Rev2MidiDecoder::program_data(&message).unwrap();
+        let len = MidiEncoder::program_data(7, 127, &source, &mut message).unwrap();
+        let decoded = MidiDecoder::program_data(&message).unwrap();
 
-        assert_eq!(len, REV2_PROGRAM_DATA_SYSEX_LEN);
+        assert_eq!(len, PROGRAM_DATA_SYSEX_LEN);
         assert_eq!((decoded.bank, decoded.program), (7, 127));
         assert_eq!(decoded.patch.name, source.name);
         assert!((decoded.patch.filter.resonance - source.filter.resonance).abs() < 0.01);
@@ -1401,25 +1389,25 @@ mod tests {
     #[test]
     fn program_data_encoder_validates_address_and_capacity() {
         let patch = Patch::default();
-        let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+        let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
         assert_eq!(
-            Rev2MidiEncoder::program_data(8, 0, &patch, &mut message),
-            Err(Rev2SysexError::InvalidBank)
+            MidiEncoder::program_data(8, 0, &patch, &mut message),
+            Err(SysexError::InvalidBank)
         );
         assert_eq!(
-            Rev2MidiEncoder::program_data(0, 128, &patch, &mut message),
-            Err(Rev2SysexError::NonSevenBitData)
+            MidiEncoder::program_data(0, 128, &patch, &mut message),
+            Err(SysexError::NonSevenBitData)
         );
         assert_eq!(
-            Rev2MidiEncoder::program_data(0, 0, &patch, &mut message[..10]),
-            Err(Rev2SysexError::OutputTooSmall)
+            MidiEncoder::program_data(0, 0, &patch, &mut message[..10]),
+            Err(SysexError::OutputTooSmall)
         );
     }
 
     #[test]
     fn pan_mod_mode_round_trips_as_cc10() {
-        let mut encoder = Rev2MidiEncoder::default();
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut encoder = MidiEncoder::default();
+        let mut decoder = MidiDecoder::default();
         let mut message = [0_u8; 3];
         assert!(encoder.param(3, ParamId::PanModMode, 1.0, |encoded| { message = encoded }));
         assert_eq!(message, [0xb3, 10, 127]);
@@ -1428,15 +1416,12 @@ mod tests {
         assert!(decoder.control_change(3, message[1], message[2], |update| {
             decoded = Some(update)
         }));
-        assert_eq!(
-            decoded,
-            Some(Rev2MidiUpdate::Param(ParamId::PanModMode, 1.0))
-        );
+        assert_eq!(decoded, Some(MidiUpdate::Param(ParamId::PanModMode, 1.0)));
     }
 
     #[test]
     fn oscillator_shape_combines_enabled_and_waveform() {
-        let mut encoder = Rev2MidiEncoder::default();
+        let mut encoder = MidiEncoder::default();
         let mut messages = [[0; 3]; 8];
         let mut len = 0;
         encoder.param(0, ParamId::Osc1Waveform, 3.0, |message| {
@@ -1453,24 +1438,24 @@ mod tests {
 
     #[test]
     fn program_data_pack_round_trips_high_bits_and_partial_packet() {
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
         raw[..9].copy_from_slice(&[0x80, 0x01, 0xfe, 0x7f, 0xaa, 0x55, 0xff, 0x81, 0x42]);
-        raw[REV2_PROGRAM_DATA_LEN - 2..].copy_from_slice(&[0x80, 0xff]);
-        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        raw[PROGRAM_DATA_LEN - 2..].copy_from_slice(&[0x80, 0xff]);
+        let mut packed = [0_u8; PROGRAM_PACKED_LEN];
         pack_program_data(&raw, &mut packed);
         assert_eq!(packed[0], 0b0101_0101);
         assert!(packed.iter().all(|byte| *byte < 0x80));
 
-        let mut decoded = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut decoded = [0_u8; PROGRAM_DATA_LEN];
         unpack_program_data(&packed, &mut decoded);
         assert_eq!(decoded, raw);
     }
 
     #[test]
     fn program_data_pack_uses_rev2_msb_bit_order() {
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
         raw[0] = 0x80;
-        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        let mut packed = [0_u8; PROGRAM_PACKED_LEN];
         pack_program_data(&raw, &mut packed);
         assert_eq!(packed[0], 0b0100_0000);
 
@@ -1483,12 +1468,12 @@ mod tests {
     #[test]
     fn factory_program_prefix_uses_program_offsets_not_nrpn_offsets() {
         // First two packed packets from Sequential's Rev2 factory bank v1.0.
-        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        let mut packed = [0_u8; PROGRAM_PACKED_LEN];
         packed[..16].copy_from_slice(&[
             0x00, 0x18, 0x18, 0x30, 0x34, 0x01, 0x04, 0x32, 0x00, 0x2b, 0x29, 0x29, 0x01, 0x01,
             0x00, 0x00,
         ]);
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
         unpack_program_data(&packed, &mut raw);
 
         assert_eq!(program_nrpn_value(&raw, 0, 0), Some(24));
@@ -1505,7 +1490,7 @@ mod tests {
             20, 58, 66, 69, 72, 75, 78, 81, 84, 87, 116, 118, 120, 122, 124,
         ] {
             for value in [0, 127, 254] {
-                let mut raw = [0x55_u8; REV2_PROGRAM_DATA_LEN];
+                let mut raw = [0x55_u8; PROGRAM_DATA_LEN];
                 store_program_nrpn(&mut raw, number, value, 0);
                 assert_eq!(program_nrpn_value(&raw, number, 0), Some(value));
             }
@@ -1514,9 +1499,9 @@ mod tests {
 
     #[test]
     fn decode_patch_payload_reads_layer_a_name() {
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
         raw[super::LAYER_A_NAME_RANGE].copy_from_slice(b"LosVangelis2041     ");
-        let mut packed = [0_u8; REV2_PROGRAM_PACKED_LEN];
+        let mut packed = [0_u8; PROGRAM_PACKED_LEN];
         pack_program_data(&raw, &mut packed);
         let patch = decode_patch_payload(&packed).unwrap();
         assert_eq!(patch.name.as_str(), "LosVangelis2041");
@@ -1527,10 +1512,10 @@ mod tests {
         let mut source = Patch::default();
         source.amplifier.initial_level = 103.0 / 127.0;
 
-        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
 
-        let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
         assert!(
             (decoded.amplifier.initial_level - source.amplifier.initial_level).abs() < 0.01,
             "decoded {} expected {}",
@@ -1564,13 +1549,13 @@ mod tests {
             amount: -0.25,
         };
 
-        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        let len = Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
-        assert_eq!(len, REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN);
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        let len = MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        assert_eq!(len, PROGRAM_EDIT_BUFFER_SYSEX_LEN);
         assert_eq!(&message[..4], &[0xf0, 0x01, 0x2f, 0x03]);
         assert_eq!(message[len - 1], 0xf7);
 
-        let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
         assert_eq!(decoded.osc1.waveform, 3);
         assert!(decoded.osc1.enabled);
         assert_eq!(decoded.osc2.waveform, 2);
@@ -1595,22 +1580,22 @@ mod tests {
 
     #[test]
     fn program_edit_buffer_rejects_malformed_messages() {
-        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        Rev2MidiEncoder::program_edit_buffer(&Patch::default(), &mut message).unwrap();
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(&Patch::default(), &mut message).unwrap();
         assert!(matches!(
-            Rev2MidiDecoder::program_edit_buffer(&message[..message.len() - 1]),
-            Err(Rev2SysexError::InvalidLength)
+            MidiDecoder::program_edit_buffer(&message[..message.len() - 1]),
+            Err(SysexError::InvalidLength)
         ));
         message[1] = 2;
         assert!(matches!(
-            Rev2MidiDecoder::program_edit_buffer(&message),
-            Err(Rev2SysexError::InvalidManufacturer)
+            MidiDecoder::program_edit_buffer(&message),
+            Err(SysexError::InvalidManufacturer)
         ));
         message[1] = 1;
         message[4] = 0x80;
         assert!(matches!(
-            Rev2MidiDecoder::program_edit_buffer(&message),
-            Err(Rev2SysexError::NonSevenBitData)
+            MidiDecoder::program_edit_buffer(&message),
+            Err(SysexError::NonSevenBitData)
         ));
     }
 
@@ -1619,26 +1604,26 @@ mod tests {
         let mut source = Patch::default();
         source.filter.resonance = 0.25;
         source.osc1.waveform = 3;
-        let mut message = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        Rev2MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
 
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
-        unpack_program_data(&message[4..4 + REV2_PROGRAM_PACKED_LEN], &mut raw);
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
+        unpack_program_data(&message[4..4 + PROGRAM_PACKED_LEN], &mut raw);
         assert_eq!(raw[4] & 0x7f, 4);
-        assert_eq!(raw[REV2_LAYER_DATA_LEN + 4] & 0x7f, 1);
-        raw[REV2_LAYER_DATA_LEN + 23] = 127;
-        pack_program_data(&raw, &mut message[4..4 + REV2_PROGRAM_PACKED_LEN]);
+        assert_eq!(raw[LAYER_DATA_LEN + 4] & 0x7f, 1);
+        raw[LAYER_DATA_LEN + 23] = 127;
+        pack_program_data(&raw, &mut message[4..4 + PROGRAM_PACKED_LEN]);
 
-        let decoded = Rev2MidiDecoder::program_edit_buffer(&message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
         assert!((decoded.filter.resonance - source.filter.resonance).abs() < 0.01);
     }
 
     #[test]
     fn program_edit_buffer_requires_complete_output_capacity() {
-        let mut output = [0_u8; REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN - 1];
+        let mut output = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN - 1];
         assert_eq!(
-            Rev2MidiEncoder::program_edit_buffer(&Patch::default(), &mut output),
-            Err(Rev2SysexError::OutputTooSmall)
+            MidiEncoder::program_edit_buffer(&Patch::default(), &mut output),
+            Err(SysexError::OutputTooSmall)
         );
     }
 
@@ -1647,7 +1632,7 @@ mod tests {
         let mut source = Patch::default();
         source.filter.resonance = 1.0;
         let message = program_data_message(7, 127, &source);
-        let decoded = Rev2MidiDecoder::program_data(&message).unwrap();
+        let decoded = MidiDecoder::program_data(&message).unwrap();
         assert_eq!(decoded.bank, 7);
         assert_eq!(decoded.program, 127);
         assert_eq!(decoded.patch.filter.resonance, 1.0);
@@ -1658,24 +1643,24 @@ mod tests {
         let mut message = program_data_message(0, 0, &Patch::default());
         message[4] = 8;
         assert!(matches!(
-            Rev2MidiDecoder::program_data(&message),
-            Err(Rev2SysexError::InvalidBank)
+            MidiDecoder::program_data(&message),
+            Err(SysexError::InvalidBank)
         ));
         message[4] = 0;
         message[3] = 3;
         assert!(matches!(
-            Rev2MidiDecoder::program_data(&message),
-            Err(Rev2SysexError::UnsupportedCommand)
+            MidiDecoder::program_data(&message),
+            Err(SysexError::UnsupportedCommand)
         ));
         message[3] = 2;
         message[6] = 0x80;
         assert!(matches!(
-            Rev2MidiDecoder::program_data(&message),
-            Err(Rev2SysexError::NonSevenBitData)
+            MidiDecoder::program_data(&message),
+            Err(SysexError::NonSevenBitData)
         ));
         assert!(matches!(
-            Rev2MidiDecoder::program_data(&message[..message.len() - 1]),
-            Err(Rev2SysexError::InvalidLength)
+            MidiDecoder::program_data(&message[..message.len() - 1]),
+            Err(SysexError::InvalidLength)
         ));
     }
 
@@ -1684,15 +1669,15 @@ mod tests {
 
     #[test]
     fn factory_program_decodes_mod_destination_indices() {
-        let message = &FACTORY_SYSEX[..REV2_PROGRAM_DATA_SYSEX_LEN];
-        let decoded = Rev2MidiDecoder::program_data(message).unwrap();
+        let message = &FACTORY_SYSEX[..PROGRAM_DATA_SYSEX_LEN];
+        let decoded = MidiDecoder::program_data(message).unwrap();
         assert_eq!(
             decoded.patch.lfos[2].destination,
             ModDestination::Osc1ShapeMod
         );
 
-        let mut raw = [0_u8; REV2_PROGRAM_DATA_LEN];
-        unpack_program_data(&message[6..6 + REV2_PROGRAM_PACKED_LEN], &mut raw);
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
+        unpack_program_data(&message[6..6 + PROGRAM_PACKED_LEN], &mut raw);
         assert_eq!(raw[67] & 0x7f, 7);
         assert_eq!(raw[93] & 0x7f, 3);
     }
@@ -1703,7 +1688,7 @@ mod tests {
             let mut waveform = None;
             emit_osc_shape(
                 &mut |update| {
-                    if let Rev2MidiUpdate::Param(ParamId::Osc1Waveform, value) = update {
+                    if let MidiUpdate::Param(ParamId::Osc1Waveform, value) = update {
                         waveform = Some(value);
                     }
                 },
@@ -1716,7 +1701,7 @@ mod tests {
 
     #[test]
     fn shape_mod_nrpn_round_trips() {
-        let mut encoder = Rev2MidiEncoder::default();
+        let mut encoder = MidiEncoder::default();
         let mut messages = [[0_u8; 3]; 4];
         let mut len = 0;
         encoder.param(0, ParamId::Osc1ShapeMod, 0.5, |message| {
@@ -1733,7 +1718,7 @@ mod tests {
         map_nrpn(number, value, &mut |update| decoded = Some(update));
         assert_eq!(
             decoded,
-            Some(Rev2MidiUpdate::Param(ParamId::Osc1ShapeMod, 50.0 / 99.0))
+            Some(MidiUpdate::Param(ParamId::Osc1ShapeMod, 50.0 / 99.0))
         );
     }
 
@@ -1743,7 +1728,7 @@ mod tests {
         map_cc(30, 64, &mut |update| decoded = Some(update));
         assert_eq!(
             decoded,
-            Some(Rev2MidiUpdate::Param(ParamId::Osc1ShapeMod, 64.0 / 127.0))
+            Some(MidiUpdate::Param(ParamId::Osc1ShapeMod, 64.0 / 127.0))
         );
     }
 

@@ -11,9 +11,9 @@ use crate::profiling::{RenderContext, RenderStage};
 use crate::rate_adapter::RateAdapter;
 use crate::voice::VoiceManager;
 use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, MidiClockMode, MidiClockStatus,
-    MidiRealtimeEvent, ParamId, Patch, VOICE_PACKS,
+    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, ParamId, Patch, VOICE_PACKS,
 };
+use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
 ///
@@ -325,10 +325,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::dsp::FilterOversampling;
+    use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent, MidiTransportState};
     use crate::{
         ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
-        EffectType, MidiClockMode, MidiRealtimeEvent, MidiTransportState, ModDestination, ModRoute,
-        ModSource, ParamId, Patch, SynthEngine, VOICE_PACKS,
+        EffectType, ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine, VOICE_PACKS,
     };
 
     extern crate std;

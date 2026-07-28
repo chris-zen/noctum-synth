@@ -2,9 +2,9 @@
 
 use wmidi::MidiMessage;
 
-use synth_core::{
-    ControlMessage, MidiRealtimeEvent, P08MidiDecoder, Patch, Rev2MidiDecoder, Rev2MidiUpdate,
-};
+use synth_core::midi::{p08, rev2};
+use synth_core::midi::clock::MidiRealtimeEvent;
+use synth_core::{ControlMessage, Patch};
 
 use crate::program::{ProgramSelection, ProgramStorageQueue, ProgramStorageRequest};
 
@@ -65,7 +65,7 @@ pub fn message_to_control(message: MidiMessage<'_>) -> Option<ControlMessage> {
 /// Translate one MIDI message, including stateful Rev2 NRPN sequences.
 pub fn message_to_controls(
     message: MidiMessage<'_>,
-    decoder: &mut Rev2MidiDecoder,
+    decoder: &mut rev2::MidiDecoder,
     mut emit: impl FnMut(ControlMessage),
 ) {
     if let MidiMessage::ControlChange(channel, controller, value) = message {
@@ -74,9 +74,9 @@ pub fn message_to_controls(
         if !matches!(controller, 1 | 64 | 120 | 123) {
             if decoder.control_change(channel.index(), controller, value, |update| {
                 emit(match update {
-                    Rev2MidiUpdate::Param(param, value) => ControlMessage::SetParam(param, value),
-                    Rev2MidiUpdate::MidiClockMode(mode) => ControlMessage::SetMidiClockMode(mode),
-                    Rev2MidiUpdate::Modulation { route, parameter } => {
+                    rev2::MidiUpdate::Param(param, value) => ControlMessage::SetParam(param, value),
+                    rev2::MidiUpdate::MidiClockMode(mode) => ControlMessage::SetMidiClockMode(mode),
+                    rev2::MidiUpdate::Modulation { route, parameter } => {
                         ControlMessage::SetModulationParam { route, parameter }
                     }
                 });
@@ -103,7 +103,7 @@ pub struct SynthMidiHandler<'a, const PATCH_CAPACITY: usize> {
     indicator: crate::indicator::Sender<'a>,
     storage: &'a ProgramStorageQueue,
     program_selection: ProgramSelection,
-    decoder: Rev2MidiDecoder,
+    decoder: rev2::MidiDecoder,
     #[cfg(feature = "diagnostics")]
     nrpn_monitor: NrpnMonitor,
 }
@@ -131,7 +131,7 @@ impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
             indicator,
             storage,
             program_selection: ProgramSelection::new(initial_bank),
-            decoder: Rev2MidiDecoder::default(),
+            decoder: rev2::MidiDecoder::default(),
             #[cfg(feature = "diagnostics")]
             nrpn_monitor: NrpnMonitor::default(),
         }
@@ -179,7 +179,8 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
             MidiMessage::ControlChange(_, controller, value)
                 if matches!(u8::from(controller), 0 | 32) =>
             {
-                self.program_selection.bank_select(u8::from(controller), u8::from(value));
+                self.program_selection
+                    .bank_select(u8::from(controller), u8::from(value));
                 return;
             }
             MidiMessage::ProgramChange(_, program) => {
@@ -254,7 +255,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
             return;
         }
         match (message[2], message[3]) {
-            (0x2f, 0x02) => match Rev2MidiDecoder::program_data(message) {
+            (0x2f, 0x02) => match rev2::MidiDecoder::program_data(message) {
                 Ok(program) => {
                     let (bank, program_number) = (program.bank, program.program);
                     if !self.enqueue_storage(ProgramStorageRequest::Save {
@@ -269,7 +270,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                 }
                 Err(error) => emit_sysex_error(cable, message.len(), error),
             },
-            (0x2f, 0x03) => match Rev2MidiDecoder::program_edit_buffer(message) {
+            (0x2f, 0x03) => match rev2::MidiDecoder::program_edit_buffer(message) {
                 Ok(patch) => {
                     crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
                     if self.patches.try_send(patch).is_err() {
@@ -278,7 +279,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                 }
                 Err(error) => emit_sysex_error(cable, message.len(), error),
             },
-            (0x23, 0x02) => match P08MidiDecoder::program_data(message) {
+            (0x23, 0x02) => match p08::MidiDecoder::program_data(message) {
                 Ok(program) => {
                     let bank = program.bank + 4;
                     let program_number = program.program;
@@ -294,7 +295,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                 }
                 Err(error) => emit_sysex_error(cable, message.len(), error),
             },
-            (0x23, 0x03) => match P08MidiDecoder::program_edit_buffer(message) {
+            (0x23, 0x03) => match p08::MidiDecoder::program_edit_buffer(message) {
                 Ok(patch) => {
                     crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
                     if self.patches.try_send(patch).is_err() {
@@ -304,29 +305,24 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                 Err(error) => emit_sysex_error(cable, message.len(), error),
             },
             _ => {
-                emit_sysex_error(
-                    cable,
-                    message.len(),
-                    synth_core::Rev2SysexError::UnsupportedCommand,
-                );
+                emit_sysex_error(cable, message.len(), rev2::SysexError::UnsupportedCommand);
             }
         }
     }
 }
 
-fn emit_sysex_error(cable: u8, length: usize, error: synth_core::Rev2SysexError) {
+fn emit_sysex_error(cable: u8, length: usize, error: rev2::SysexError) {
     use crate::diagnostics::InvalidMidiReason;
-    use synth_core::Rev2SysexError;
 
     let reason = match error {
-        Rev2SysexError::InvalidLength => InvalidMidiReason::InvalidSysExLength,
-        Rev2SysexError::InvalidFraming => InvalidMidiReason::InvalidSysExFraming,
-        Rev2SysexError::InvalidManufacturer => InvalidMidiReason::InvalidSysExManufacturer,
-        Rev2SysexError::InvalidModel => InvalidMidiReason::InvalidSysExModel,
-        Rev2SysexError::UnsupportedCommand => InvalidMidiReason::UnsupportedSysExCommand,
-        Rev2SysexError::InvalidBank => InvalidMidiReason::InvalidSysExBank,
-        Rev2SysexError::NonSevenBitData => InvalidMidiReason::NonSevenBitSysExData,
-        Rev2SysexError::OutputTooSmall => InvalidMidiReason::SysExOutputTooSmall,
+        rev2::SysexError::InvalidLength => InvalidMidiReason::InvalidSysExLength,
+        rev2::SysexError::InvalidFraming => InvalidMidiReason::InvalidSysExFraming,
+        rev2::SysexError::InvalidManufacturer => InvalidMidiReason::InvalidSysExManufacturer,
+        rev2::SysexError::InvalidModel => InvalidMidiReason::InvalidSysExModel,
+        rev2::SysexError::UnsupportedCommand => InvalidMidiReason::UnsupportedSysExCommand,
+        rev2::SysexError::InvalidBank => InvalidMidiReason::InvalidSysExBank,
+        rev2::SysexError::NonSevenBitData => InvalidMidiReason::NonSevenBitSysExData,
+        rev2::SysexError::OutputTooSmall => InvalidMidiReason::SysExOutputTooSmall,
     };
     crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
         cable,
@@ -428,11 +424,14 @@ impl NrpnMonitor {
 
 #[cfg(test)]
 mod tests {
-    use super::{message_to_control, message_to_controls, realtime_to_control};
-    #[cfg(feature = "diagnostics")]
-    use super::{CompletedNrpn, NrpnMonitor};
-    use synth_core::{ControlMessage, MidiClockMode, MidiRealtimeEvent, ParamId, Rev2MidiDecoder};
     use wmidi::MidiMessage;
+    
+    use crate::synth::{message_to_control, message_to_controls, realtime_to_control};
+    #[cfg(feature = "diagnostics")]
+    use crate::synth::{CompletedNrpn, NrpnMonitor};
+    use synth_core::midi::rev2;
+    use synth_core::midi::clock::{MidiClockMode, MidiRealtimeEvent};
+    use synth_core::{ControlMessage, ParamId};
 
     fn command(bytes: &[u8]) -> Option<ControlMessage> {
         message_to_control(MidiMessage::try_from(bytes).unwrap())
@@ -538,7 +537,7 @@ mod tests {
 
     #[test]
     fn decodes_rev2_nrpn_parameter_sequences() {
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoder = rev2::MidiDecoder::default();
         let mut command = None;
         for bytes in [[0xb0, 99, 0], [0xb0, 98, 16], [0xb0, 6, 0], [0xb0, 38, 127]] {
             message_to_controls(
@@ -555,7 +554,7 @@ mod tests {
 
     #[test]
     fn decodes_rev2_global_clock_mode_nrpn() {
-        let mut decoder = Rev2MidiDecoder::default();
+        let mut decoder = rev2::MidiDecoder::default();
         let mut command = None;
         for bytes in [[0xb0, 99, 32], [0xb0, 98, 3], [0xb0, 6, 0], [0xb0, 38, 2]] {
             message_to_controls(

@@ -1,6 +1,18 @@
+use eframe::egui;
 use std::path::PathBuf;
 
-use eframe::egui;
+use synth_core::dsp::{
+    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
+    FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+};
+use synth_core::midi::clock::MidiClockMode;
+use synth_core::midi::prophet::{FILTER_KEY_TRACK_MAX, filter_cutoff_max_hz};
+use synth_core::{
+    ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
+    EffectParams, EffectType, GlideMode, KeyMode, LfoSyncDivision, ModDestination, ModMatrix,
+    ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
+    Patch, UnisonMode, glide_seconds,
+};
 
 use crate::config::APP_NAME_FOLDER;
 use crate::engine::{MidiUiUpdate, SynthEngineControl};
@@ -9,16 +21,6 @@ use crate::ui::widgets::{
     master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
     param_knob_f32_offset, param_knob_filter_cutoff, param_knob_log_hz, param_knob_note,
     param_toggle, param_toggle_sized,
-};
-use synth_core::dsp::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
-};
-use synth_core::{
-    ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, FILTER_KEY_TRACK_MAX, GlideMode, KeyMode, LfoSyncDivision,
-    MidiClockMode, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam,
-    OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode, filter_cutoff_max_hz, glide_seconds,
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
@@ -3358,13 +3360,13 @@ impl PatchManager {
 
     pub fn save_midi_program(
         &self,
-        program: &synth_core::MidiProgramImport,
+        program: &synth_core::midi::program::MidiProgramImport,
     ) -> std::io::Result<PathBuf> {
         let name = match program {
-            synth_core::MidiProgramImport::Rev2(program) => {
+            synth_core::midi::program::MidiProgramImport::Rev2(program) => {
                 rev2_program_filename(program.bank, program.program, program.patch.name.as_str())
             }
-            synth_core::MidiProgramImport::P08(program) => {
+            synth_core::midi::program::MidiProgramImport::P08(program) => {
                 p08_program_filename(program.bank, program.program, program.patch.name.as_str())
             }
         }
@@ -3866,21 +3868,22 @@ mod tests {
             config_dir: root.clone(),
             patches_dir,
         };
-        let mut program = synth_core::MidiProgramImport::Rev2(synth_core::Rev2ProgramData {
-            bank: 4,
-            program: 0,
-            patch: {
-                let mut patch = Patch::default();
-                patch.name.push_str("LosVangelis2041").unwrap();
-                patch
-            },
-        });
+        let mut program =
+            synth_core::midi::program::MidiProgramImport::Rev2(synth_core::midi::rev2::ProgramData {
+                bank: 4,
+                program: 0,
+                patch: {
+                    let mut patch = Patch::default();
+                    patch.name.push_str("LosVangelis2041").unwrap();
+                    patch
+                },
+            });
         let path = manager.save_midi_program(&program).unwrap();
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
             Some("U1-001-LosVangelis2041.json")
         );
-        if let synth_core::MidiProgramImport::Rev2(program) = &mut program {
+        if let synth_core::midi::program::MidiProgramImport::Rev2(program) = &mut program {
             program.patch.master_volume = 0.25;
         }
         manager.save_midi_program(&program).unwrap();
@@ -3903,7 +3906,7 @@ mod tests {
             config_dir: root.clone(),
             patches_dir,
         };
-        let program = synth_core::MidiProgramImport::P08(synth_core::P08ProgramData {
+        let program = synth_core::midi::program::MidiProgramImport::P08(synth_core::midi::p08::ProgramData {
             bank: 0,
             program: 0,
             patch: {

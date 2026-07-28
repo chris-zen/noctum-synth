@@ -1,11 +1,11 @@
 //! USB-MIDI transport and its application-facing event boundary.
 
-use embassy_daisy::usb::midi::{dispatch_events, Decoder, MidiClass};
+use embassy_daisy::usb::midi::{Decoder, MidiClass, dispatch_events};
 use embassy_daisy::usb::{Builder, Config, EndpointError};
 use embassy_executor::InterruptExecutor;
 use embassy_stm32::interrupt;
 
-use synth_core::REV2_PROGRAM_DATA_SYSEX_LEN;
+use synth_core::midi::rev2::{MidiEncoder, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN};
 
 use crate::audio::{ControlQueue, PatchQueue, PerformanceQueue};
 use crate::pending_releases::PendingReleases;
@@ -17,7 +17,7 @@ pub use embassy_daisy::usb::midi::{DecodeError, MessageHandler};
 // Use the larger stored-program envelope even though the firmware currently
 // applies only Program Edit Buffer dumps. This keeps transport assembly
 // independent of the Rev2 command decoded at the application boundary.
-const SYSEX_CAPACITY: usize = REV2_PROGRAM_DATA_SYSEX_LEN;
+const SYSEX_CAPACITY: usize = PROGRAM_DATA_SYSEX_LEN;
 
 /// Temporary USB vendor ID used only for local development.
 ///
@@ -224,7 +224,7 @@ unsafe extern "C" fn I2C4_ER() {
 mod tests {
     use super::{CONTROL_BUFFER_SIZE, PRODUCT, SYSEX_CAPACITY};
     use embassy_daisy::usb::midi::{
-        dispatch_events, DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket,
+        DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket, dispatch_events,
     };
 
     #[derive(Default)]
@@ -331,12 +331,8 @@ mod tests {
 
     #[test]
     fn decoder_reassembles_full_rev2_edit_buffer() {
-        let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        synth_core::Rev2MidiEncoder::program_edit_buffer(
-            &synth_core::Patch::default(),
-            &mut message,
-        )
-        .unwrap();
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(&synth_core::Patch::default(), &mut message).unwrap();
         let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         let complete = message.len() - 1;
         for chunk in message[..complete].chunks_exact(3) {
@@ -350,12 +346,8 @@ mod tests {
 
     #[test]
     fn decoder_waits_for_detached_f7_after_usb_end_marker() {
-        let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        synth_core::Rev2MidiEncoder::program_edit_buffer(
-            &synth_core::Patch::default(),
-            &mut message,
-        )
-        .unwrap();
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(&synth_core::Patch::default(), &mut message).unwrap();
         let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         let chunks = message[..message.len() - 1].chunks_exact(3);
         let chunk_count = chunks.len();
@@ -376,12 +368,8 @@ mod tests {
 
     #[test]
     fn decoder_keeps_single_cin_f_data_byte_in_active_sysex() {
-        let mut message = [0_u8; synth_core::REV2_PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        synth_core::Rev2MidiEncoder::program_edit_buffer(
-            &synth_core::Patch::default(),
-            &mut message,
-        )
-        .unwrap();
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+        MidiEncoder::program_edit_buffer(&synth_core::Patch::default(), &mut message).unwrap();
         let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
 
         decoder.handle(MidiEventPacket::new([

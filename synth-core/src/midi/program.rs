@@ -1,6 +1,8 @@
 //! Imported program dumps from external MIDI sources.
 
-use crate::{P08ProgramData, Patch, Rev2ProgramData};
+use crate::Patch;
+use crate::midi::p08::ProgramData as P08ProgramData;
+use crate::midi::rev2::ProgramData as Rev2ProgramData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiProgramSource {

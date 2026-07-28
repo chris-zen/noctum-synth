@@ -10,7 +10,7 @@ use crate::effects::EffectModulation;
 use crate::fixed_index_list::FixedIndexList;
 use crate::math::F32;
 use crate::math::WideF32;
-use crate::midi::cutoff_raw_to_hz;
+use crate::midi::prophet::cutoff_raw_to_hz;
 use crate::pressed_keys::PressedKeys;
 use crate::profiling::RenderContext;
 use crate::voice::{

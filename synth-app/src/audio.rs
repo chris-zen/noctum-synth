@@ -20,6 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use synth_core::dsp::{FilterOversampling, FilterType};
+use synth_core::midi::clock::MidiClockStatus;
 use synth_core::{ControlMessage, SynthEngineWithMemory, VOICE_PACKS};
 
 /// How long to wait for `cpal` to switch the device sample rate and build a
@@ -965,7 +966,7 @@ struct Renderer {
     input_enabled: Arc<AtomicBool>,
     sample_rate: f32,
     channels: usize,
-    last_midi_clock_status: synth_core::MidiClockStatus,
+    last_midi_clock_status: MidiClockStatus,
 }
 
 impl Renderer {

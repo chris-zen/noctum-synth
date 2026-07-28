@@ -2,22 +2,19 @@
 #![no_main]
 
 use core::hint::black_box;
-
-use noctum_micro::audio::{
-    AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET,
-};
-use noctum_micro::patch_transition::PatchTransition;
-use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use cortex_m::peripheral::DWT;
+use {defmt_rtt as _, panic_probe as _};
+
 use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::qspi::QspiFlash;
 use embassy_daisy::Board;
-use {defmt_rtt as _, panic_probe as _};
-
+use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET};
+use noctum_micro::patch_transition::PatchTransition;
+use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use synth_core::dsp::{FilterOversampling, FilterType};
+use synth_core::midi::rev2::{MidiDecoder, PROGRAM_DATA_SYSEX_LEN};
 use synth_core::{
-    profiling::RenderStage, ControlMessage, ModDestination, ParamId, Rev2MidiDecoder,
-    SynthEngineWithMemory, REV2_PROGRAM_DATA_SYSEX_LEN,
+    profiling::RenderStage, ControlMessage, ModDestination, ParamId, SynthEngineWithMemory,
 };
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
@@ -29,7 +26,7 @@ const PRESETS_PER_BANK: usize = 128;
 /// 512 KiB application storage reservation. QSPI commands use offsets relative
 /// to the 0x9000_0000 memory-mapped base.
 const FACTORY_BANK_QSPI_OFFSET: u32 = embassy_daisy::qspi::APPLICATION_RESERVED_END;
-const FACTORY_BANK_SIZE: usize = FACTORY_PRESET_COUNT * REV2_PROGRAM_DATA_SYSEX_LEN;
+const FACTORY_BANK_SIZE: usize = FACTORY_PRESET_COUNT * PROGRAM_DATA_SYSEX_LEN;
 const FACTORY_BANK_CRC32: u32 = 0x3df3_3c23;
 
 const WARMUP_BLOCKS: usize = 128;
@@ -67,14 +64,14 @@ fn main() -> ! {
         .allocate_f32(EFFECTS_SAMPLES)
         .expect("SDRAM effects allocation failed");
 
-    let mut message = [0_u8; REV2_PROGRAM_DATA_SYSEX_LEN];
+    let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
     validate_factory_bank(&mut qspi, &mut message);
 
     let mut summary = Summary::new();
     let mut adaptive_summary = AdaptiveBudgetSummary::new();
     for index in 0..FACTORY_PRESET_COUNT {
         read_message(&mut qspi, index, &mut message);
-        let program = match Rev2MidiDecoder::program_data(&message) {
+        let program = match MidiDecoder::program_data(&message) {
             Ok(program) => program,
             Err(_) => bank_failure(index, "decode failed after validation"),
         };
@@ -200,12 +197,12 @@ fn main() -> ! {
     }
 }
 
-fn validate_factory_bank(qspi: &mut QspiFlash, message: &mut [u8; REV2_PROGRAM_DATA_SYSEX_LEN]) {
+fn validate_factory_bank(qspi: &mut QspiFlash, message: &mut [u8; PROGRAM_DATA_SYSEX_LEN]) {
     let mut crc = Crc32::new();
     for index in 0..FACTORY_PRESET_COUNT {
         read_message(qspi, index, message);
         crc.update(message);
-        let program = match Rev2MidiDecoder::program_data(message) {
+        let program = match MidiDecoder::program_data(message) {
             Ok(program) => program,
             Err(_) => bank_failure(index, "invalid SysEx message"),
         };
@@ -229,12 +226,8 @@ fn validate_factory_bank(qspi: &mut QspiFlash, message: &mut [u8; REV2_PROGRAM_D
     defmt::info!("validated factory bank CRC32={:#x}", actual_crc);
 }
 
-fn read_message(
-    qspi: &mut QspiFlash,
-    index: usize,
-    message: &mut [u8; REV2_PROGRAM_DATA_SYSEX_LEN],
-) {
-    let message_offset: u32 = (index * REV2_PROGRAM_DATA_SYSEX_LEN)
+fn read_message(qspi: &mut QspiFlash, index: usize, message: &mut [u8; PROGRAM_DATA_SYSEX_LEN]) {
+    let message_offset: u32 = (index * PROGRAM_DATA_SYSEX_LEN)
         .try_into()
         .expect("factory-bank address fits u32");
     let address = FACTORY_BANK_QSPI_OFFSET + message_offset;

@@ -578,9 +578,12 @@ mod tests {
     fn all_factory_rev2_programs_round_trip_through_record() {
         const FACTORY_BANK: &[u8] =
             include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
-        assert_eq!(FACTORY_BANK.len() % crate::REV2_PROGRAM_DATA_SYSEX_LEN, 0);
-        for message in FACTORY_BANK.chunks_exact(crate::REV2_PROGRAM_DATA_SYSEX_LEN) {
-            let imported = crate::Rev2MidiDecoder::program_data(message).unwrap();
+        assert_eq!(
+            FACTORY_BANK.len() % crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN,
+            0
+        );
+        for message in FACTORY_BANK.chunks_exact(crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN) {
+            let imported = crate::midi::rev2::MidiDecoder::program_data(message).unwrap();
             let mut record = [0; PATCH_RECORD_SIZE];
             PatchRecord::encode(&imported.patch, &mut record).unwrap_or_else(|error| {
                 panic!(
@@ -602,8 +605,8 @@ mod tests {
     fn factory_rev2_program_round_trips_through_record() {
         const FACTORY_BANK: &[u8] =
             include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
-        let imported = crate::Rev2MidiDecoder::program_data(
-            &FACTORY_BANK[..crate::REV2_PROGRAM_DATA_SYSEX_LEN],
+        let imported = crate::midi::rev2::MidiDecoder::program_data(
+            &FACTORY_BANK[..crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN],
         )
         .unwrap()
         .patch;

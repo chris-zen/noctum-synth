@@ -5,6 +5,7 @@ use crate::dsp::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     LfoWaveform, MIN_LFO_RATE_HZ,
 };
+use crate::midi::prophet;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -1320,7 +1321,7 @@ impl Default for Patch {
             bpm: crate::DEFAULT_TEMPO_BPM,
             clock_divide: ClockDivision::default(),
             filter: FilterParams {
-                cutoff: crate::midi::filter_cutoff_max_hz(),
+                cutoff: prophet::filter_cutoff_max_hz(),
                 ..FilterParams::default()
             },
             amplifier: AmplifierParams::default(),

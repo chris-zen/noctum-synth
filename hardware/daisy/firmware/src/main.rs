@@ -8,7 +8,7 @@ use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use synth_core::dsp::{FilterOversampling, FilterType};
-use synth_core::MidiClockMode;
+use synth_core::midi::clock::MidiClockMode;
 
 use noctum_micro::audio::{
     ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,
