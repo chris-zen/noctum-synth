@@ -6,6 +6,7 @@
 pub mod analog_oscillator;
 pub mod analog_sub_oscillator;
 pub mod blep;
+pub mod dc_blocker;
 pub mod envelope;
 pub mod filter;
 pub mod lfo;
@@ -19,6 +20,7 @@ pub mod wavetable;
 pub use analog_oscillator::WavetableOscillator;
 pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
 pub use analog_sub_oscillator::AnalogSubOscillator;
+pub use dc_blocker::DcBlocker;
 pub use envelope::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     DadsrEnvelope,

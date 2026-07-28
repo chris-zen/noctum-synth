@@ -1510,4 +1510,46 @@ mod tests {
         engine.apply_patch(&patch);
         assert_eq!(engine.master_volume, 0.25);
     }
+
+    #[test]
+    fn wide_pulse_sustain_settles_to_near_zero_dc() {
+        let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1Waveform, 3.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1ShapeMod, 0.67));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 8_000.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgDecay, 0.0005));
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::MasterVolume, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 0.0));
+        engine.handle_control(ControlMessage::NoteOn {
+            note: 36,
+            velocity: 1.0,
+        });
+
+        let settle_frames = (DEFAULT_SAMPLE_RATE * 0.25) as usize;
+        let mut settle = std::vec![0.0; settle_frames * 2];
+        engine.process(&mut settle);
+
+        let measure_frames = (DEFAULT_SAMPLE_RATE * 0.05) as usize;
+        let mut measured = std::vec![0.0; measure_frames * 2];
+        engine.process(&mut measured);
+        let left = channel_samples(&measured, 2, 0);
+        let dc = left.iter().sum::<f32>() / left.len() as f32;
+        let rms = left_rms(&measured);
+
+        assert!(
+            dc.abs() < 0.02,
+            "wide-pulse sustain should settle near zero DC, mean={dc}"
+        );
+        assert!(
+            rms > 0.05,
+            "blocked wide-pulse note should stay audible, RMS {rms}"
+        );
+    }
 }

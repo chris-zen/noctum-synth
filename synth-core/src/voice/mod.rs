@@ -12,7 +12,7 @@ mod pan;
 
 pub use manager::{ActiveNotes, VoiceManager, unison_detune_cents};
 
-use crate::dsp::{FilterOversampling, FilterType, LfoWaveform, Waveform};
+use crate::dsp::{DcBlocker, FilterOversampling, FilterType, LfoWaveform, Waveform};
 use crate::effects::EffectModulation;
 use crate::math::{F32, WideF32};
 #[cfg(test)]
@@ -108,6 +108,7 @@ pub struct VoiceBlock {
     oscillators: Oscillators,
     filter: Filter,
     amplifier: Amplifier,
+    dc_blocker: DcBlocker,
     aux: AuxEnv,
     pan: Pan,
     lfos: [Lfo; LFO_COUNT],
@@ -126,6 +127,7 @@ impl VoiceBlock {
             oscillators: Oscillators::new(sample_rate),
             filter: Filter::new(sample_rate),
             amplifier: Amplifier::new(sample_rate),
+            dc_blocker: DcBlocker::new(),
             aux: AuxEnv::new(sample_rate),
             pan: Pan::new(),
             lfos: core::array::from_fn(|_| Lfo::new(sample_rate)),
@@ -211,6 +213,7 @@ impl VoiceBlock {
         self.oscillators
             .note_on_with_glide(lane, semitones, start, glide.enabled);
         self.filter.reset_dsp_lane(lane);
+        self.dc_blocker.reset_lane(lane);
     }
 
     /// Changes a sounding lane's pitch and velocity without retriggering its DSP state.
@@ -410,7 +413,9 @@ impl VoiceBlock {
         crate::profiler_begin!(ctx, RenderStage::AmplifierAndPan);
         let amp_lfo_gain = (WideF32::splat(1.0) + lfo_modulation.amp_gain)
             .clamp(WideF32::ZERO, WideF32::splat(2.0));
-        let output = filtered * self.amplifier.gain(amp, velocities, amp_lfo_gain) * lifecycle_gain;
+        let output = self.dc_blocker.process(filtered)
+            * self.amplifier.gain(amp, velocities, amp_lfo_gain)
+            * lifecycle_gain;
 
         let stereo = self
             .pan
@@ -567,6 +572,7 @@ impl VoiceBlock {
 
             self.amplifier.reset_lane(lane);
             self.filter.reset_lane(lane);
+            self.dc_blocker.reset_lane(lane);
             self.aux.reset_lane(lane);
             self.note_on_tuned_with_glide(
                 lane,
@@ -2310,6 +2316,82 @@ mod tests {
             voice_block_next(&mut block, &modulation);
         }
         assert_eq!(block.lanes().lifecycle_gains_array()[0], 1.0);
+    }
+
+    #[test]
+    fn lifecycle_fade_on_wide_pulse_does_not_create_dc_click() {
+        let sample_rate = 44_100.0;
+        let mut patch = Patch::default();
+        patch.osc1.waveform = 3;
+        patch.osc1.enabled = true;
+        patch.osc1.shape_mod = 0.67;
+        patch.osc2.enabled = false;
+        patch.osc_mix = 0.0;
+        patch.sub_osc_level = 0.0;
+        patch.noise_level = 0.0;
+        patch.filter.cutoff = 8_000.0;
+        patch.filter.resonance = 0.0;
+        patch.amplifier.initial_level = 1.0;
+        patch.amplifier.env_amount = 0.0;
+        let (mut block, modulation) = test_block(sample_rate, &patch);
+        block.note_on(0, 96, 1.0, false);
+
+        let settle = (sample_rate * 0.25) as usize;
+        for _ in 0..settle {
+            voice_block_next(&mut block, &modulation);
+        }
+
+        block.schedule_note_on(0, 100, 1.0, false);
+        let fade_samples = block.lifecycle_shutdown_samples() as usize;
+        let mut fade_sum = 0.0;
+        for _ in 0..fade_samples {
+            let (left, right) = voice_block_next(&mut block, &modulation);
+            fade_sum += left + right;
+        }
+        let fade_mean = fade_sum / (2.0 * fade_samples as f32);
+        assert!(
+            fade_mean.abs() < 0.05,
+            "lifecycle fade of a DC-blocked signal should not invent a DC click, mean={fade_mean}"
+        );
+    }
+
+    #[test]
+    fn amp_gain_step_on_wide_pulse_does_not_create_dc_click() {
+        let sample_rate = 44_100.0;
+        let mut patch = Patch::default();
+        patch.osc1.waveform = 3;
+        patch.osc1.enabled = true;
+        patch.osc1.shape_mod = 0.67;
+        patch.osc2.enabled = false;
+        patch.osc_mix = 0.0;
+        patch.sub_osc_level = 0.0;
+        patch.noise_level = 0.0;
+        patch.filter.cutoff = 8_000.0;
+        patch.filter.resonance = 0.0;
+        patch.amplifier.env_amount = 1.0;
+        patch.amplifier.eg_attack = 0.0005;
+        patch.amplifier.eg_decay = 0.0005;
+        patch.amplifier.eg_sustain = 1.0;
+        let (mut block, modulation) = test_block(sample_rate, &patch);
+        block.note_on(0, 96, 1.0, false);
+
+        let settle = (sample_rate * 0.25) as usize;
+        for _ in 0..settle {
+            voice_block_next(&mut block, &modulation);
+        }
+
+        block.set_param(ParamId::AmpEgSustain, 0.25);
+        let measure = (sample_rate * 0.005) as usize;
+        let mut sum = 0.0;
+        for _ in 0..measure {
+            let (left, right) = voice_block_next(&mut block, &modulation);
+            sum += left + right;
+        }
+        let mean = sum / (2.0 * measure as f32);
+        assert!(
+            mean.abs() < 0.05,
+            "amp sustain steps after DC blocking should not invent a DC click, mean={mean}"
+        );
     }
 
     #[test]
