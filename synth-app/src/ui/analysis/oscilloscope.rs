@@ -12,9 +12,10 @@ pub(crate) const MAX_SCOPE_SAMPLES: usize = 65536;
 const DEFAULT_CLICK_SENSITIVITY: f32 = 0.5;
 const PRE_TRIGGER_FRAC: f32 = 0.2;
 const VIEW_PRE_TRIGGER_SAMPLES: f32 = 8.0;
-const CLICK_MAD_WINDOW: usize = 64;
 const CLICK_MAD_EPS: f32 = 1e-4;
 const CLICK_MAD_SCALE: f32 = 1.4826;
+const CLICK_MIN_PERIOD: usize = 8;
+const CLICK_MAX_PERIOD: usize = 512;
 
 const INPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 150, 45);
 const INPUT_RIGHT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
@@ -840,45 +841,156 @@ fn mad(values: &[f32]) -> f32 {
     median_sorted(&mut sorted)
 }
 
-fn click_sensitivity_to_k(sensitivity: f32) -> f32 {
+fn click_sensitivity_to_z(sensitivity: f32) -> f32 {
     let s = sensitivity.clamp(0.0, 1.0);
-    3.0 + (1.0 - s) * 12.0
+    5.0 + (1.0 - s) * 10.0
 }
 
-fn click_score(residual: f32, window_residuals: &[f32]) -> f32 {
-    let mad_s = CLICK_MAD_SCALE * mad(window_residuals);
-    let prior = if window_residuals.len() > 1 {
-        &window_residuals[..window_residuals.len() - 1]
+fn click_abs_floor_frac(sensitivity: f32) -> f32 {
+    let s = sensitivity.clamp(0.0, 1.0);
+    0.04 + (1.0 - s) * 0.08
+}
+
+fn percentile_range(values: &[f32], lo_pct: usize, hi_pct: usize) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    let lo = sorted[(n * lo_pct / 100).min(n - 1)];
+    let hi = sorted[(n * hi_pct / 100).min(n - 1)];
+    (hi - lo).max(1e-6)
+}
+
+fn mean_first_diff(buffer: &[f32], start: usize, end: usize) -> f32 {
+    let end = end.min(buffer.len().saturating_sub(1));
+    if end <= start {
+        return 0.0;
+    }
+    let mut sum = 0.0_f32;
+    let mut count = 0_u32;
+    for i in start..end {
+        sum += buffer[i + 1] - buffer[i];
+        count += 1;
+    }
+    if count == 0 {
+        0.0
     } else {
-        window_residuals
-    };
-    let peak = prior.iter().copied().fold(0.0_f32, f32::max);
-    let scale = CLICK_MAD_EPS + mad_s.max(peak);
-    residual / scale
+        sum / count as f32
+    }
+}
+
+fn is_waveform_wrap(buffer: &[f32], n: usize) -> bool {
+    const PRE: usize = 4;
+    const POST: usize = 4;
+    const SETTLE: usize = 2;
+    if n < PRE + 2 || n + POST + SETTLE + 1 >= buffer.len() {
+        return false;
+    }
+    let mut best_j = n;
+    let mut best_jump = 0.0_f32;
+    for j in (n.saturating_sub(2))..=n {
+        if j == 0 || j >= buffer.len() {
+            continue;
+        }
+        let jump = buffer[j] - buffer[j - 1];
+        if jump.abs() > best_jump.abs() {
+            best_j = j;
+            best_jump = jump;
+        }
+    }
+    if best_jump.abs() < 1e-4 {
+        return false;
+    }
+    let j = best_j;
+    if j < PRE + 1 || j + SETTLE + POST >= buffer.len() {
+        return false;
+    }
+    let slope_before = mean_first_diff(buffer, j - 1 - PRE, j - 1);
+    let slope_after = mean_first_diff(buffer, j + SETTLE, j + SETTLE + POST);
+    if slope_before.abs() < 1e-5 && slope_after.abs() < 1e-5 {
+        return false;
+    }
+    if !(slope_before * slope_after > 0.0 && slope_before * best_jump < 0.0) {
+        return false;
+    }
+    let step = slope_before.abs().max(slope_after.abs()).max(1e-6);
+    if best_jump.abs() <= 4.0 * step {
+        return false;
+    }
+    let slope_lo = slope_before.abs().min(slope_after.abs()).max(1e-6);
+    let slope_hi = slope_before.abs().max(slope_after.abs());
+    slope_hi <= 6.0 * slope_lo
+}
+
+fn similar_residual(a: f32, b: f32) -> bool {
+    if a < 1e-8 || b < 1e-8 {
+        return false;
+    }
+    let ratio = if a > b { a / b } else { b / a };
+    ratio <= 2.0
+}
+
+fn is_periodic_residual(residuals: &[f32], index: usize, residual: f32) -> bool {
+    let n = residuals.len();
+    let max_period = CLICK_MAX_PERIOD.min(n / 2).max(CLICK_MIN_PERIOD + 1);
+    for period in CLICK_MIN_PERIOD..max_period {
+        let mut matches = 0_u32;
+        let candidates = [
+            index.checked_sub(period),
+            Some(index + period),
+            index.checked_sub(period.saturating_mul(2)),
+            Some(index + period.saturating_mul(2)),
+        ];
+        for j in candidates.into_iter().flatten() {
+            if j >= 2 && j < n && similar_residual(residuals[j], residual) {
+                matches += 1;
+            }
+        }
+        if matches >= 2 {
+            return true;
+        }
+    }
+    false
 }
 
 fn find_click_indices(buffer: &[f32], start: usize, end: usize, sensitivity: f32) -> Vec<usize> {
-    let end = end.min(buffer.len());
-    if end <= start + 2 {
+    if sensitivity <= 0.0 {
         return Vec::new();
     }
-    let k = click_sensitivity_to_k(sensitivity);
-    let mut residuals = Vec::with_capacity(end.saturating_sub(start + 2));
-    for n in (start + 2)..end {
-        residuals.push(second_diff_residual(
-            buffer[n - 2],
-            buffer[n - 1],
-            buffer[n],
-        ));
+    let end = end.min(buffer.len());
+    if end <= start + 6 {
+        return Vec::new();
     }
+    let z_thresh = click_sensitivity_to_z(sensitivity);
+    let amp = percentile_range(&buffer[start..end], 5, 95);
+    let abs_floor = click_abs_floor_frac(sensitivity) * amp;
+
+    let mut residuals = vec![0.0_f32; end];
+    for n in (start + 2)..end {
+        residuals[n] = second_diff_residual(buffer[n - 2], buffer[n - 1], buffer[n]);
+    }
+    let scale = CLICK_MAD_EPS + CLICK_MAD_SCALE * mad(&residuals[start + 2..end]);
+
     let mut flags = Vec::new();
-    for (i, &r) in residuals.iter().enumerate() {
-        let n = start + 2 + i;
-        let win_start = i.saturating_sub(CLICK_MAD_WINDOW.saturating_sub(1));
-        let score = click_score(r, &residuals[win_start..=i]);
-        if score > k {
-            flags.push(n);
+    let lo = (start + 4).max(4);
+    let hi = end.saturating_sub(2);
+    for n in lo..hi {
+        let r = residuals[n];
+        if r < abs_floor || r / scale < z_thresh {
+            continue;
         }
+        if r < residuals[n - 1] || r <= residuals[n + 1] {
+            continue;
+        }
+        if is_waveform_wrap(buffer, n) {
+            continue;
+        }
+        if is_periodic_residual(&residuals, n, r) {
+            continue;
+        }
+        flags.push(n);
     }
     flags
 }
@@ -1130,7 +1242,7 @@ pub(crate) fn draw_oscilloscope(
             ui.separator();
             ui.label("Click:");
             ui.add(egui::Slider::new(&mut state.click_sensitivity, 0.0..=1.0).text(""))
-                .on_hover_text("Click sensitivity: higher marks more candidates");
+                .on_hover_text("Click sensitivity: 0 = off, higher marks more candidates");
         }
     });
 
@@ -1421,7 +1533,10 @@ pub(crate) fn draw_oscilloscope(
                 }
             }
         }
-        let disc_color = egui::Color32::from_rgba_premultiplied(220, 40, 40, 120);
+    }
+
+    if state.captured && state.click_sensitivity > 0.0 {
+        let disc_color = egui::Color32::from_rgba_unmultiplied(220, 40, 40, 90);
         draw_discontinuities(
             &painter,
             plot_rect,
@@ -1660,11 +1775,54 @@ fn format_scope_levels(
 mod tests {
     use super::{
         OscilloscopeDisplayMode, OscilloscopeState, TriggerMode, TriggerSlope,
-        click_sensitivity_to_k, find_click_indices, find_trigger_offset_with_prev,
+        click_sensitivity_to_z, find_click_indices, find_trigger_offset_with_prev,
         format_scope_levels, mark_trigger, pre_trigger_samples, second_diff_residual,
         unwrap_capture_to_display,
     };
     use crate::ui::analysis::real_time::SignalSource;
+    use synth_core::dsp::{AnalogOscillator, Waveform};
+    use synth_core::math::WideF32;
+
+    fn flags_near(flags: &[usize], target: usize, tol: usize) -> bool {
+        flags
+            .iter()
+            .any(|&i| i.abs_diff(target) <= tol)
+    }
+
+    fn render_oscillator(waveform: Waveform, freq_hz: f32, n: usize) -> Vec<f32> {
+        let sample_rate = 48_000.0;
+        let mut osc = AnalogOscillator::new(sample_rate);
+        osc.set_waveform(waveform);
+        osc.set_frequency(WideF32::splat(freq_hz));
+        let mut ctx = synth_core::create_render_context!();
+        let mut buf = Vec::with_capacity(n);
+        for _ in 0..n {
+            buf.push(osc.next(&mut ctx).output.to_array()[0]);
+        }
+        buf
+    }
+
+    fn inject_sample_drop(buf: &mut [f32], index: usize) {
+        buf[index] = 0.0;
+    }
+
+    fn inject_impulse(buf: &mut [f32], index: usize, value: f32) {
+        buf[index] = value;
+    }
+
+    fn inject_dc_step(buf: &mut [f32], index: usize, delta: f32) {
+        for sample in &mut buf[index..] {
+            *sample += delta;
+        }
+    }
+
+    fn inject_phase_splice(buf: &mut [f32], index: usize, shift: usize) {
+        let tail = buf[index..].to_vec();
+        let n = tail.len();
+        for (i, sample) in buf[index..].iter_mut().enumerate() {
+            *sample = tail[(i + shift) % n];
+        }
+    }
 
     #[test]
     fn scope_levels_format_by_source_and_mode() {
@@ -1752,8 +1910,10 @@ mod tests {
 
     #[test]
     fn smooth_sine_has_no_click_flags_at_default_sensitivity() {
-        let n = 512;
-        let buf: Vec<f32> = (0..n).map(|i| (i as f32 * 0.08).sin()).collect();
+        let n = 2048;
+        let buf: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * std::f32::consts::TAU / 64.0).sin())
+            .collect();
         let flags = find_click_indices(&buf, 0, n, 0.5);
         assert!(
             flags.is_empty(),
@@ -1763,19 +1923,19 @@ mod tests {
 
     #[test]
     fn hard_step_is_flagged_at_default_sensitivity() {
-        let mut buf = vec![0.0_f32; 256];
-        for sample in buf.iter_mut().take(256).skip(128) {
+        let mut buf = vec![0.0_f32; 512];
+        for sample in buf.iter_mut().take(512).skip(256) {
             *sample = 0.8;
         }
         let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
         assert!(
-            flags.iter().any(|&i| (i as isize - 128).abs() <= 2),
+            flags_near(&flags, 256, 3),
             "expected a flag near the step, got {flags:?}"
         );
     }
 
     #[test]
-    fn consistent_bright_saw_flags_fewer_than_period_count() {
+    fn consistent_bright_saw_has_no_click_flags() {
         let period = 32;
         let cycles = 16;
         let n = period * cycles;
@@ -1788,16 +1948,137 @@ mod tests {
         }
         let flags = find_click_indices(&buf, 0, n, 0.5);
         assert!(
-            flags.len() < cycles,
-            "adaptive detector should not mark every saw wrap; flags={} cycles={cycles}",
-            flags.len()
+            flags.is_empty(),
+            "saw wraps should not be marked as clicks; got {flags:?}"
         );
     }
 
     #[test]
-    fn click_sensitivity_maps_higher_to_lower_k() {
-        assert!(click_sensitivity_to_k(1.0) < click_sensitivity_to_k(0.0));
-        assert!((click_sensitivity_to_k(1.0) - 3.0).abs() < 1e-5);
-        assert!((click_sensitivity_to_k(0.0) - 15.0).abs() < 1e-5);
+    fn click_sensitivity_zero_disables_detection() {
+        let mut buf = vec![0.0_f32; 512];
+        for sample in buf.iter_mut().take(512).skip(256) {
+            *sample = 0.8;
+        }
+        assert!(find_click_indices(&buf, 0, buf.len(), 0.0).is_empty());
+    }
+
+    #[test]
+    fn click_sensitivity_maps_higher_to_lower_z() {
+        assert!(click_sensitivity_to_z(1.0) < click_sensitivity_to_z(0.0));
+        assert!((click_sensitivity_to_z(1.0) - 5.0).abs() < 1e-5);
+        assert!((click_sensitivity_to_z(0.0) - 15.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn clean_analog_saw_has_no_click_flags() {
+        let buf = render_oscillator(Waveform::Saw, 220.0, 4096);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags.is_empty(),
+            "clean AnalogOscillator saw should not flag; got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn clean_analog_pulse_has_no_click_flags() {
+        let buf = render_oscillator(Waveform::Pulse, 220.0, 4096);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags.is_empty(),
+            "clean AnalogOscillator pulse should not flag; got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn clean_analog_triangle_has_no_click_flags() {
+        let buf = render_oscillator(Waveform::Triangle, 220.0, 4096);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags.is_empty(),
+            "clean AnalogOscillator triangle should not flag; got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn sample_drop_click_on_analog_saw_is_detected() {
+        let mut buf = render_oscillator(Waveform::Saw, 220.0, 4096);
+        let click_at = 2000;
+        inject_sample_drop(&mut buf, click_at);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags_near(&flags, click_at, 3),
+            "expected drop click near {click_at}, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn impulse_click_on_analog_saw_is_detected() {
+        let mut buf = render_oscillator(Waveform::Saw, 220.0, 4096);
+        let click_at = 2000;
+        inject_impulse(&mut buf, click_at, 1.0);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags_near(&flags, click_at, 3),
+            "expected impulse click near {click_at}, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn dc_step_click_on_analog_saw_is_detected() {
+        let mut buf = render_oscillator(Waveform::Saw, 220.0, 4096);
+        let click_at = 2000;
+        inject_dc_step(&mut buf, click_at, 0.5);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags_near(&flags, click_at, 3),
+            "expected DC-step click near {click_at}, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn phase_splice_click_on_analog_saw_is_detected() {
+        let mut buf = render_oscillator(Waveform::Saw, 220.0, 4096);
+        let click_at = 2000;
+        let period_samples = (48_000.0 / 220.0) as usize;
+        inject_phase_splice(&mut buf, click_at, period_samples / 2);
+        let flags = find_click_indices(&buf, 0, buf.len(), 0.5);
+        assert!(
+            flags_near(&flags, click_at, 3),
+            "expected phase-splice click near {click_at}, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn sample_drop_click_on_sine_is_detected() {
+        let n = 4096;
+        let mut buf: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * std::f32::consts::TAU / 64.0).sin())
+            .collect();
+        let click_at = 2000;
+        inject_sample_drop(&mut buf, click_at);
+        let flags = find_click_indices(&buf, 0, n, 0.5);
+        assert!(
+            flags_near(&flags, click_at, 3),
+            "expected sine drop click near {click_at}, got {flags:?}"
+        );
+    }
+
+    #[test]
+    fn two_real_clicks_are_both_detected() {
+        let n = 4096;
+        let mut buf: Vec<f32> = (0..n)
+            .map(|i| (i as f32 * std::f32::consts::TAU / 64.0).sin())
+            .collect();
+        inject_sample_drop(&mut buf, 1000);
+        inject_sample_drop(&mut buf, 3000);
+        let flags = find_click_indices(&buf, 0, n, 0.5);
+        assert!(
+            flags_near(&flags, 1000, 3),
+            "missing first click; got {flags:?}"
+        );
+        assert!(
+            flags_near(&flags, 3000, 3),
+            "missing second click; got {flags:?}"
+        );
     }
 }
