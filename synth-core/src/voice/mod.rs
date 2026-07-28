@@ -102,6 +102,30 @@ pub(crate) struct NoteGlide {
     pub enabled: bool,
 }
 
+/// How an inactive [`VoiceBlock`] should advance for one sample.
+///
+/// The manager chooses this from allocation foresight: which silent block will
+/// likely receive the next note. The block itself does not decide.
+///
+/// In hardware the oscillator, filter, and DC-coupling stages keep running while
+/// the VCA gate is closed. Digitally we only pay that cost for blocks that are
+/// about to speak; everyone else only keeps free-running LFOs in phase.
+#[derive(Clone, Copy)]
+pub(crate) enum IdleAdvance {
+    /// No note is expected soon: advance LFOs (and their control routing) only.
+    ///
+    /// Skips oscillators, filter, and DC blocker. Used for silent packs that are
+    /// not the next polyphonic steal target and are outside the unison warm set.
+    Cold,
+    /// A note is expected soon: run the full pre-VCA chain so state is settled.
+    ///
+    /// Needed so wide-pulse / asymmetric waveforms do not click when the gate
+    /// opens: the DC blocker and filter need time at the upcoming waveform
+    /// before the amp becomes audible. Used for the next poly allocation's pack
+    /// and for the leading packs in a unison group.
+    Warm,
+}
+
 /// Four-lane subtractive voice: oscillators → filter → amplifier.
 ///
 /// Each lane can represent a separate note. Envelopes, LFOs, and modulation are
@@ -131,7 +155,7 @@ impl VoiceBlock {
             oscillators: Oscillators::new(sample_rate),
             filter: Filter::new(sample_rate),
             amplifier: Amplifier::new(sample_rate),
-            dc_blocker: DcBlocker::new(),
+            dc_blocker: DcBlocker::new(sample_rate),
             aux: AuxEnv::new(sample_rate),
             aux_amount: ParameterSmoother::new(
                 0.0,
@@ -189,7 +213,6 @@ impl VoiceBlock {
             reset_key_synced_lfos,
             tuning_cents,
             NoteGlide::default(),
-            true,
         );
     }
 
@@ -201,7 +224,6 @@ impl VoiceBlock {
         reset_key_synced_lfos: bool,
         tuning_cents: [f32; WideF32::LANES],
         glide: NoteGlide,
-        reset_persistent_dsp: bool,
     ) {
         self.lanes.activate_lifecycle_lane(
             lane,
@@ -223,10 +245,6 @@ impl VoiceBlock {
             .map(|start| f32::from(start) + tuning_cents[lane] / 100.0);
         self.oscillators
             .note_on_with_glide(lane, semitones, start, glide.enabled);
-        if reset_persistent_dsp {
-            self.filter.reset_dsp_lane(lane);
-            self.dc_blocker.reset_lane(lane);
-        }
     }
 
     pub(crate) fn retrigger_sounding_with_glide(
@@ -358,6 +376,7 @@ impl VoiceBlock {
         modulation: &PatchModulation,
         ctx: &mut RenderContext<'_>,
     ) -> (f32, f32) {
+        self.lanes.advance_ages();
         self.start_pending_notes();
         self.lanes.smooth_velocities();
         crate::profiler_begin!(ctx, RenderStage::EnvelopesAndModulation);
@@ -535,28 +554,37 @@ impl VoiceBlock {
         }
     }
 
-    pub(crate) fn advance_idle_lfos(
+    pub(crate) fn advance_idle(
         &mut self,
+        mode: IdleAdvance,
         performance: PerformanceModulation,
         modulation: &PatchModulation,
+        ctx: &mut RenderContext<'_>,
     ) {
-        if !modulation.plan().any_modulation {
-            return;
+        match mode {
+            IdleAdvance::Cold => {
+                if !modulation.plan().any_modulation {
+                    return;
+                }
+                let context = ModSignalContext {
+                    performance,
+                    velocities: WideF32::ZERO,
+                    filter_env: WideF32::ZERO,
+                    amp_env: WideF32::ZERO,
+                    aux_env: WideF32::ZERO,
+                    aux_signal: WideF32::ZERO,
+                };
+                let lfo_control = if modulation.plan().control_count == 0 {
+                    LfoControlModulation::default()
+                } else {
+                    self.evaluate_lfo_control_routes(modulation, context)
+                };
+                self.advance_lfos(lfo_control, modulation);
+            }
+            IdleAdvance::Warm => {
+                let _ = self.next(performance, modulation, ctx);
+            }
         }
-        let context = ModSignalContext {
-            performance,
-            velocities: WideF32::ZERO,
-            filter_env: WideF32::ZERO,
-            amp_env: WideF32::ZERO,
-            aux_env: WideF32::ZERO,
-            aux_signal: WideF32::ZERO,
-        };
-        let lfo_control = if modulation.plan().control_count == 0 {
-            LfoControlModulation::default()
-        } else {
-            self.evaluate_lfo_control_routes(modulation, context)
-        };
-        self.advance_lfos(lfo_control, modulation);
     }
 
     #[cfg(test)]
@@ -611,8 +639,7 @@ impl VoiceBlock {
             };
 
             self.amplifier.reset_lane(lane);
-            self.filter.reset_lane(lane);
-            self.dc_blocker.reset_lane(lane);
+            self.filter.reset_envelope_lane(lane);
             self.aux.reset_lane(lane);
             self.note_on_tuned_with_glide(
                 lane,
@@ -621,7 +648,6 @@ impl VoiceBlock {
                 pending.reset_key_synced_lfos,
                 self.lanes.tuning_cents_array(),
                 pending.glide,
-                true,
             );
         }
     }
@@ -630,10 +656,6 @@ impl VoiceBlock {
         (0..WideF32::LANES)
             .filter(|&lane| !self.is_lane_silent(lane))
             .count()
-    }
-
-    pub fn age_active_lanes(&mut self) {
-        self.lanes.advance_ages();
     }
 
     pub fn oldest_lane(&self) -> usize {

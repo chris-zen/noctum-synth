@@ -80,13 +80,8 @@ impl Filter {
         self.envelope.release_all();
     }
 
-    pub fn reset_lane(&mut self, lane: usize) {
+    pub fn reset_envelope_lane(&mut self, lane: usize) {
         self.envelope.reset_lane(lane);
-        self.engine.reset_lane(lane);
-    }
-
-    pub(crate) fn reset_dsp_lane(&mut self, lane: usize) {
-        self.engine.reset_lane(lane);
     }
 
     pub fn set_oversampling(&mut self, oversampling: FilterOversampling) {

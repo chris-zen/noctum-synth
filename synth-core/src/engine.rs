@@ -1552,4 +1552,46 @@ mod tests {
             "blocked wide-pulse note should stay audible, RMS {rms}"
         );
     }
+
+    #[test]
+    fn warmed_wide_pulse_does_not_emit_a_note_on_dc_transient() {
+        let sample_rate = 48_000.0;
+        let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(sample_rate);
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1Waveform, 3.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 57.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1ShapeMod, 0.67));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1KeyboardOn, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1NoteReset, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 8_000.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::MasterVolume, 1.0));
+        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 0.0));
+
+        let mut warmup = std::vec![0.0; sample_rate as usize];
+        engine.process(&mut warmup);
+        engine.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+
+        let mut onset = std::vec![0.0; (sample_rate * 0.1) as usize * 2];
+        engine.process(&mut onset);
+        let left = channel_samples(&onset, 2, 0);
+        let mean = left.iter().sum::<f32>() / left.len() as f32;
+        let rms = left_rms(&onset);
+        assert!(
+            mean.abs() < 0.002,
+            "a warmed DC blocker should not turn pulse DC into a note-on transient, mean={mean}"
+        );
+        assert!(
+            rms > 0.1,
+            "the warmed pulse note should remain audible, RMS={rms}"
+        );
+    }
 }

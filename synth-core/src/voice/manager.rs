@@ -14,7 +14,7 @@ use crate::midi::cutoff_raw_to_hz;
 use crate::pressed_keys::PressedKeys;
 use crate::profiling::RenderContext;
 use crate::voice::{
-    NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
+    IdleAdvance, NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
 };
 use crate::{
     ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, ModDestination, ParamId, Patch,
@@ -297,14 +297,20 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
             if !self.allocated.held.contains(voice_idx) {
                 continue;
             }
-            let (block_idx, lane) = AllocatedVoices::<PACKS>::voice_location(voice_idx);
+            let VoiceLocation {
+                block_index: block_idx,
+                lane,
+            } = AllocatedVoices::<PACKS>::voice_location(voice_idx);
             self.blocks[block_idx].note_off_lane(lane);
             self.allocated.held.remove(voice_idx);
             self.allocated.sustained.remove(voice_idx);
         }
 
         for (voice_idx, note) in targets[..target_len].iter().copied().enumerate() {
-            let (block_idx, lane) = AllocatedVoices::<PACKS>::voice_location(voice_idx);
+            let VoiceLocation {
+                block_index: block_idx,
+                lane,
+            } = AllocatedVoices::<PACKS>::voice_location(voice_idx);
             self.allocated.sustained.remove(voice_idx);
             let was_active = self.allocated.held.contains(voice_idx)
                 && self.blocks[block_idx].active_note(lane).is_some();
@@ -345,7 +351,6 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
                         start_note: lane_glide_start,
                         enabled: should_glide,
                     },
-                    true,
                 );
             } else {
                 block.schedule_note_on_tuned_with_glide(
@@ -386,7 +391,10 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
             if !self.allocated.held.contains(voice_idx) {
                 continue;
             }
-            let (block_idx, lane) = AllocatedVoices::<PACKS>::voice_location(voice_idx);
+            let VoiceLocation {
+                block_index: block_idx,
+                lane,
+            } = AllocatedVoices::<PACKS>::voice_location(voice_idx);
             self.blocks[block_idx].note_off_lane(lane);
             self.allocated.held.remove(voice_idx);
             self.allocated.sustained.remove(voice_idx);
@@ -631,13 +639,37 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         let mut left = 0.0f32;
         let mut right = 0.0f32;
         let mut effects = EffectModulation::default();
-        for block in &mut self.blocks {
+        let next_poly_block = if self.unison.enabled {
+            None
+        } else {
+            let voice = self.allocated.allocate(&self.blocks);
+            Some(AllocatedVoices::<PACKS>::voice_location(voice).block_index)
+        };
+        let unison_warm_blocks = if self.unison.enabled {
+            let voices = self
+                .unison
+                .mode
+                .voice_count()
+                .unwrap_or_else(|| self.unison.chord.intervals().len().max(1))
+                .min(Self::VOICE_COUNT);
+            voices.div_ceil(WideF32::LANES)
+        } else {
+            0
+        };
+
+        for (block_index, block) in self.blocks.iter_mut().enumerate() {
             let block_voice_count = block.active_lane_count();
             if block_voice_count == 0 {
-                block.advance_idle_lfos(self.performance, &self.modulation);
+                let mode = if next_poly_block == Some(block_index)
+                    || block_index < unison_warm_blocks
+                {
+                    IdleAdvance::Warm
+                } else {
+                    IdleAdvance::Cold
+                };
+                block.advance_idle(mode, self.performance, &self.modulation, ctx);
                 continue;
             }
-            block.age_active_lanes();
             let (block_left, block_right) = block.next(self.performance, &self.modulation, ctx);
             left += block_left;
             right += block_right;
@@ -858,6 +890,11 @@ impl Iterator for SustainedVoicesIter {
     }
 }
 
+struct VoiceLocation {
+    block_index: usize,
+    lane: usize,
+}
+
 struct AllocatedVoices<const PACKS: usize> {
     held: FixedIndexList<PACKS, { WideF32::LANES }>,
     sustained: SustainedVoices,
@@ -883,8 +920,11 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
         self.sustained.clear();
     }
 
-    fn voice_location(voice_idx: usize) -> (usize, usize) {
-        (voice_idx / WideF32::LANES, voice_idx % WideF32::LANES)
+    fn voice_location(voice_idx: usize) -> VoiceLocation {
+        VoiceLocation {
+            block_index: voice_idx / WideF32::LANES,
+            lane: voice_idx % WideF32::LANES,
+        }
     }
 
     fn mark_held(&mut self, voice_idx: usize) {
@@ -897,7 +937,10 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
 
     fn find_active_voice(&self, blocks: &[VoiceBlock; PACKS], note: u8) -> Option<usize> {
         for voice_idx in self.held.iter() {
-            let (block_idx, lane) = Self::voice_location(voice_idx);
+            let VoiceLocation {
+            block_index: block_idx,
+            lane,
+        } = Self::voice_location(voice_idx);
             if blocks[block_idx].active_note(lane) == Some(note) {
                 return Some(voice_idx);
             }
@@ -908,7 +951,10 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
     fn allocate(&self, blocks: &[VoiceBlock; PACKS]) -> usize {
         for offset in 0..Self::VOICE_COUNT {
             let idx = (self.next_voice + offset) % Self::VOICE_COUNT;
-            let (block_idx, lane) = Self::voice_location(idx);
+            let VoiceLocation {
+                block_index: block_idx,
+                lane,
+            } = Self::voice_location(idx);
             if blocks[block_idx].is_lane_silent(lane) {
                 return idx;
             }
@@ -916,7 +962,10 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
 
         for offset in 0..Self::VOICE_COUNT {
             let idx = (self.next_voice + offset) % Self::VOICE_COUNT;
-            let (block_idx, lane) = Self::voice_location(idx);
+            let VoiceLocation {
+                block_index: block_idx,
+                lane,
+            } = Self::voice_location(idx);
             if blocks[block_idx].is_lane_released(lane) {
                 return idx;
             }
@@ -942,7 +991,10 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
     ) {
         let active_voice_idx = self.find_active_voice(blocks, note);
         let voice_idx = active_voice_idx.unwrap_or_else(|| self.allocate(blocks));
-        let (block_idx, lane) = Self::voice_location(voice_idx);
+        let VoiceLocation {
+            block_index: block_idx,
+            lane,
+        } = Self::voice_location(voice_idx);
         self.sustained.remove(voice_idx);
         let block = &mut blocks[block_idx];
         let silent = block.is_lane_silent(lane);
@@ -958,7 +1010,6 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
                         start_note: glide_start,
                         enabled: should_glide,
                     },
-                    true,
                 );
             } else {
                 block.retrigger_sounding_with_glide(
@@ -988,7 +1039,10 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
 
     fn poly_note_off(&mut self, blocks: &mut [VoiceBlock; PACKS], note: u8) {
         while let Some(voice_idx) = self.find_active_voice(blocks, note) {
-            let (block_idx, lane) = Self::voice_location(voice_idx);
+            let VoiceLocation {
+            block_index: block_idx,
+            lane,
+        } = Self::voice_location(voice_idx);
             self.held.remove(voice_idx);
             if self.sustain_pressed {
                 self.sustained.insert(voice_idx);
@@ -1005,7 +1059,10 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
     fn release_sustained(&mut self, blocks: &mut [VoiceBlock; PACKS]) {
         while !self.sustained.is_empty() {
             let voice_idx = self.sustained.iter().next().expect("non-empty");
-            let (block_idx, lane) = Self::voice_location(voice_idx);
+            let VoiceLocation {
+            block_index: block_idx,
+            lane,
+        } = Self::voice_location(voice_idx);
             blocks[block_idx].note_off_lane(lane);
             self.sustained.remove(voice_idx);
         }
@@ -1688,8 +1745,10 @@ mod tests {
     fn physical_voices_use_the_rev2_pan_pattern() {
         let voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for voice_index in 0..crate::REV2_VOICE_PAN_POSITIONS.len() {
-            let (block, lane) =
-                AllocatedVoices::<{ crate::VOICE_PACKS }>::voice_location(voice_index);
+            let VoiceLocation {
+                block_index: block,
+                lane,
+            } = AllocatedVoices::<{ crate::VOICE_PACKS }>::voice_location(voice_index);
             assert_eq!(
                 voices[block].lanes().pan_positions_array()[lane],
                 crate::REV2_VOICE_PAN_POSITIONS[voice_index]
