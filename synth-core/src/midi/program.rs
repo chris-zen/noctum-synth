@@ -1,8 +1,7 @@
 //! Imported program dumps from external MIDI sources.
 
 use crate::Patch;
-use crate::midi::p08::ProgramData as P08ProgramData;
-use crate::midi::rev2::ProgramData as Rev2ProgramData;
+use crate::midi::{p08, rev2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiProgramSource {
@@ -11,12 +10,12 @@ pub enum MidiProgramSource {
 }
 
 #[derive(Debug, Clone)]
-pub enum MidiProgramImport {
-    Rev2(Rev2ProgramData),
-    P08(P08ProgramData),
+pub enum ProgramData {
+    Rev2(rev2::ProgramData),
+    P08(p08::ProgramData),
 }
 
-impl MidiProgramImport {
+impl ProgramData {
     pub fn source(&self) -> MidiProgramSource {
         match self {
             Self::Rev2(_) => MidiProgramSource::Rev2,

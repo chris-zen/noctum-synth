@@ -4,7 +4,7 @@ use crate::patch::{
     CHORD_MEMORY_CAPACITY, DedicatedModSource, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination,
     ModSource, PATCH_NAME_CAPACITY,
 };
-use crate::{ParamId, LayerPatch};
+use crate::{LayerPatch, ParamId};
 
 pub const LAYER_PATCH_RECORD_SIZE: usize = 512;
 
@@ -104,7 +104,9 @@ impl LayerPatchRecord {
     }
 
     /// Decode one flash slot. A completely erased slot is the default patch.
-    pub fn decode(input: &[u8; LAYER_PATCH_RECORD_SIZE]) -> Result<LayerPatch, LayerPatchRecordError> {
+    pub fn decode(
+        input: &[u8; LAYER_PATCH_RECORD_SIZE],
+    ) -> Result<LayerPatch, LayerPatchRecordError> {
         if Self::is_erased(input) {
             return Ok(LayerPatch::default());
         }
@@ -583,14 +585,16 @@ mod tests {
             0
         );
         for message in FACTORY_BANK.chunks_exact(crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN) {
-            let imported = crate::midi::rev2::MidiDecoder::program_data(message).unwrap();
+            let imported = crate::midi::rev2::decode::program_data(message).unwrap();
             let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-            LayerPatchRecord::encode(&imported.patch.layer_a, &mut record).unwrap_or_else(|error| {
-                panic!(
-                    "encode bank={} program={}: {error:?}",
-                    imported.bank, imported.program
-                )
-            });
+            LayerPatchRecord::encode(&imported.patch.layer_a, &mut record).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "encode bank={} program={}: {error:?}",
+                        imported.bank, imported.program
+                    )
+                },
+            );
             let decoded = LayerPatchRecord::decode(&record).unwrap_or_else(|error| {
                 panic!(
                     "decode bank={} program={}: {error:?}",
@@ -605,7 +609,7 @@ mod tests {
     fn factory_rev2_program_round_trips_through_record() {
         const FACTORY_BANK: &[u8] =
             include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
-        let imported = crate::midi::rev2::MidiDecoder::program_data(
+        let imported = crate::midi::rev2::decode::program_data(
             &FACTORY_BANK[..crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN],
         )
         .unwrap()

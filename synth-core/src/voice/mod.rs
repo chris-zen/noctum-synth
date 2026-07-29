@@ -20,7 +20,9 @@ use crate::effects::EffectModulation;
 use crate::math::{F32, WideF32};
 #[cfg(test)]
 use crate::patch::DedicatedModSource;
-use crate::patch::{ClockDivision, LFO_COUNT, LfoSyncDivision, ModDestination, PanModMode, LayerPatch};
+use crate::patch::{
+    ClockDivision, LFO_COUNT, LayerPatch, LfoSyncDivision, ModDestination, PanModMode,
+};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::{DEFAULT_TEMPO_BPM, GlideMode, ModSource, ParamId, VOICE_COUNT};
 use amplifier::Amplifier;
@@ -1709,7 +1711,8 @@ mod tests {
     #[test]
     fn compiled_modulation_matches_two_pass_reference_for_4096_samples() {
         let (mut compiled, mut compiled_modulation) = test_block(48_000.0, &LayerPatch::default());
-        let (mut reference, mut reference_modulation) = test_block(48_000.0, &LayerPatch::default());
+        let (mut reference, mut reference_modulation) =
+            test_block(48_000.0, &LayerPatch::default());
         configure_compiled_reference_case(&mut compiled, &mut compiled_modulation);
         configure_compiled_reference_case(&mut reference, &mut reference_modulation);
 

@@ -41,6 +41,14 @@ pub enum LayerId {
     B,
 }
 
+/// Resolves a patch edit either against the engine's current edit layer or an
+/// explicitly addressed layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerTarget {
+    Edit,
+    Explicit(LayerId),
+}
+
 /// Prophet two-layer keyboard mode. Raw values follow the official [Prophet '08
 /// manual], the official Rev2 factory corpus, and [Edisyn's live value order].
 ///

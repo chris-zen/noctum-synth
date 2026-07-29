@@ -11,7 +11,7 @@ use embassy_daisy::Board;
 use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET};
 use noctum_micro::patch_transition::PatchTransition;
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use synth_core::midi::rev2::{MidiDecoder, PROGRAM_DATA_SYSEX_LEN};
+use synth_core::midi::rev2::{decode, PROGRAM_DATA_SYSEX_LEN};
 use synth_core::{
     profiling::RenderStage, ControlMessage, ModDestination, ParamId, SynthEngineWithMemory,
 };
@@ -69,7 +69,7 @@ fn main() -> ! {
     let mut adaptive_summary = AdaptiveBudgetSummary::new();
     for index in 0..FACTORY_PRESET_COUNT {
         read_message(&mut qspi, index, &mut message);
-        let program = match MidiDecoder::program_data(&message) {
+        let program = match decode::program_data(&message) {
             Ok(program) => program,
             Err(_) => bank_failure(index, "decode failed after validation"),
         };
@@ -200,7 +200,7 @@ fn validate_factory_bank(qspi: &mut QspiFlash, message: &mut [u8; PROGRAM_DATA_S
     for index in 0..FACTORY_PRESET_COUNT {
         read_message(qspi, index, message);
         crc.update(message);
-        let program = match MidiDecoder::program_data(message) {
+        let program = match decode::program_data(message) {
             Ok(program) => program,
             Err(_) => bank_failure(index, "invalid SysEx message"),
         };

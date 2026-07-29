@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use wmidi::MidiMessage;
 
 use synth_core::midi::clock::{MidiClockMode, MidiRealtimeEvent};
-use synth_core::midi::program::MidiProgramImport;
+use synth_core::midi::program::ProgramData;
 use synth_core::midi::{p08, rev2};
-use synth_core::{ModDestination, ModRoute, ModSource, ParamId, Patch};
+use synth_core::{LayerId, LayerTarget, ModDestination, ModRoute, ModSource, ParamId, Patch};
 
 use crate::engine::SynthEngineControl;
 use crate::ui::settings_view::MidiInputEntry;
@@ -88,7 +88,7 @@ impl MidiInputFlags {
         message: &[u8],
         input_port: &str,
         control: &SynthEngineControl,
-        decoder: &mut rev2::MidiDecoder,
+        decoder: &mut rev2::ControllerDecoder,
         output: &MidiOutputHandle,
         clock_mode: &SharedMidiClockMode,
     ) {
@@ -161,7 +161,7 @@ struct ManagedInput {
 
 struct MidiOutputState {
     connection: Option<MidiOutputConnection>,
-    encoder: rev2::MidiEncoder,
+    encoder: rev2::ControllerEncoder,
     last_nrpn_values: HashMap<u16, u16>,
     configured_port: Option<String>,
     available_ports: Vec<String>,
@@ -214,7 +214,7 @@ impl MidiOutputState {
             return true;
         };
         let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        let Ok(length) = rev2::MidiEncoder::program_edit_buffer(patch, &mut message) else {
+        let Ok(length) = rev2::encode::program_edit_buffer(patch, &mut message) else {
             return false;
         };
         if connection.send(&message[..length]).is_err() {
@@ -275,7 +275,7 @@ impl Default for MidiOutputHandle {
     fn default() -> Self {
         let state = Arc::new(Mutex::new(MidiOutputState {
             connection: None,
-            encoder: rev2::MidiEncoder::default(),
+            encoder: rev2::ControllerEncoder::default(),
             last_nrpn_values: HashMap::new(),
             configured_port: None,
             available_ports: Vec::new(),
@@ -453,7 +453,8 @@ impl MidiOutputHandle {
                     }
                 }
                 ModRoute::Dedicated(dedicated) => {
-                    if let Some(slot) = layer_patch.mod_matrix.dedicated.get_mut(dedicated.index()) {
+                    if let Some(slot) = layer_patch.mod_matrix.dedicated.get_mut(dedicated.index())
+                    {
                         slot.enabled = enabled;
                         slot.destination = destination;
                         slot.amount = amount;
@@ -621,7 +622,7 @@ impl MidiInputManager {
                 .map(|name| name.to_lowercase().contains(&filter_lower))
                 .unwrap_or(false)
         })?;
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         let input_port = port_name.to_owned();
         let control = self.control.clone();
         let output = self.output.clone();
@@ -650,7 +651,7 @@ impl MidiInputManager {
 fn handle_midi_sysex(
     message: &[u8],
     control: &SynthEngineControl,
-    _decoder: &mut rev2::MidiDecoder,
+    _decoder: &mut rev2::ControllerDecoder,
 ) {
     let mut remaining = message;
     while let Some(start) = remaining.iter().position(|byte| *byte == 0xf0) {
@@ -677,9 +678,9 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
         return;
     };
     match (*model, *command) {
-        (0x2f, 0x02) => match rev2::MidiDecoder::program_data(message) {
+        (0x2f, 0x02) => match rev2::decode::program_data(message) {
             Ok(program) => {
-                if !control.queue_midi_program(MidiProgramImport::Rev2(program)) {
+                if !control.queue_midi_program(ProgramData::Rev2(program)) {
                     eprintln!("MIDI program import queue is full");
                 }
             }
@@ -688,16 +689,16 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
                 message.len()
             ),
         },
-        (0x2f, 0x03) => match rev2::MidiDecoder::program_edit_buffer(message) {
+        (0x2f, 0x03) => match rev2::decode::program_edit_buffer(message) {
             Ok(program) => control.load_midi_patch(&program.layer_a),
             Err(err) => eprintln!(
                 "Invalid Rev2 Program Edit Buffer message: {err:?} ({} bytes)",
                 message.len()
             ),
         },
-        (0x23, 0x02) => match p08::MidiDecoder::program_data(message) {
+        (0x23, 0x02) => match p08::decode::program_data(message) {
             Ok(program) => {
-                if !control.queue_midi_program(MidiProgramImport::P08(program)) {
+                if !control.queue_midi_program(ProgramData::P08(program)) {
                     eprintln!("MIDI program import queue is full");
                 }
             }
@@ -706,7 +707,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
                 message.len()
             ),
         },
-        (0x23, 0x03) => match p08::MidiDecoder::program_edit_buffer(message) {
+        (0x23, 0x03) => match p08::decode::program_edit_buffer(message) {
             Ok(patch) => control.load_midi_patch(&patch.layer_a),
             Err(err) => eprintln!(
                 "Invalid Prophet '08 Program Edit Buffer message: {err:?} ({} bytes)",
@@ -720,7 +721,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
 fn handle_midi_control(
     message: &[u8],
     control: &SynthEngineControl,
-    decoder: &mut rev2::MidiDecoder,
+    decoder: &mut rev2::ControllerDecoder,
 ) {
     let msg = match MidiMessage::try_from(message) {
         Ok(msg) => msg,
@@ -775,11 +776,30 @@ fn port_is_available(port: &str, available_ports: &[String]) -> bool {
 
 fn dispatch_inbound_update(control: &SynthEngineControl, update: rev2::MidiUpdate) {
     match update {
-        rev2::MidiUpdate::Param(param, value) => control.set_midi_param(param, value),
-        rev2::MidiUpdate::MidiClockMode(_) => {}
-        rev2::MidiUpdate::Modulation { route, parameter } => {
+        rev2::MidiUpdate::Param {
+            target: LayerTarget::Edit | LayerTarget::Explicit(LayerId::A),
+            param,
+            value,
+        } => {
+            control.set_midi_param(param, value);
+        }
+        rev2::MidiUpdate::Modulation {
+            target: LayerTarget::Edit | LayerTarget::Explicit(LayerId::A),
+            route,
+            parameter,
+        } => {
             control.set_midi_modulation_param(route, parameter);
         }
+        rev2::MidiUpdate::Param {
+            target: LayerTarget::Explicit(LayerId::B),
+            ..
+        }
+        | rev2::MidiUpdate::Modulation {
+            target: LayerTarget::Explicit(LayerId::B),
+            ..
+        }
+        | rev2::MidiUpdate::MidiClockMode(_)
+        | rev2::MidiUpdate::EditLayer(_) => {}
     }
 }
 
@@ -866,7 +886,11 @@ mod tests {
     use crate::engine::{MidiUiUpdate, create_synth_engine_bridge};
     use synth_core::{ControlMessage, LayerPatch};
 
-    fn handle_midi(message: &[u8], control: &SynthEngineControl, decoder: &mut rev2::MidiDecoder) {
+    fn handle_midi(
+        message: &[u8],
+        control: &SynthEngineControl,
+        decoder: &mut rev2::ControllerDecoder,
+    ) {
         if message.first() == Some(&0xf0) {
             handle_midi_sysex(message, control, decoder);
             return;
@@ -877,7 +901,7 @@ mod tests {
     fn test_output_state() -> MidiOutputState {
         MidiOutputState {
             connection: None,
-            encoder: rev2::MidiEncoder::default(),
+            encoder: rev2::ControllerEncoder::default(),
             last_nrpn_values: HashMap::new(),
             configured_port: None,
             available_ports: Vec::new(),
@@ -893,7 +917,7 @@ mod tests {
 
     fn stored_program_message(bank: u8, program: u8) -> [u8; rev2::PROGRAM_DATA_SYSEX_LEN] {
         let mut edit = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        rev2::MidiEncoder::program_edit_buffer(&Patch::default(), &mut edit).unwrap();
+        rev2::encode::program_edit_buffer(&Patch::default(), &mut edit).unwrap();
         let mut message = [0_u8; rev2::PROGRAM_DATA_SYSEX_LEN];
         message[..6].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02, bank, program]);
         let payload_end = message.len() - 1;
@@ -918,7 +942,7 @@ mod tests {
     #[test]
     fn inbound_nrpn_fans_out_to_engine_and_ui_without_output_path() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         for (controller, value) in [(99, 0), (98, 20), (6, 1), (38, 126)] {
             assert!(decoder.control_change(0, controller, value, |update| {
                 dispatch_inbound_update(&bridge.control, update);
@@ -936,6 +960,35 @@ mod tests {
             ui_update,
             Some(MidiUiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
         );
+    }
+
+    #[test]
+    fn temporary_single_layer_adapter_applies_edit_and_a_but_ignores_b() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        for target in [LayerTarget::Edit, LayerTarget::Explicit(LayerId::A)] {
+            dispatch_inbound_update(
+                &bridge.control,
+                rev2::MidiUpdate::Param {
+                    target,
+                    param: ParamId::FilterResonance,
+                    value: 0.5,
+                },
+            );
+            assert!(matches!(
+                audio.control.0.pop(),
+                Ok(ControlMessage::SetParam(ParamId::FilterResonance, 0.5))
+            ));
+        }
+
+        dispatch_inbound_update(
+            &bridge.control,
+            rev2::MidiUpdate::Param {
+                target: LayerTarget::Explicit(LayerId::B),
+                param: ParamId::FilterResonance,
+                value: 1.0,
+            },
+        );
+        assert!(audio.control.0.pop().is_err());
     }
 
     #[test]
@@ -1031,7 +1084,7 @@ mod tests {
             let output = MidiOutputHandle::default();
             let flags = all_flags();
             flags.clock.store(true, Ordering::Relaxed);
-            let mut decoder = rev2::MidiDecoder::default();
+            let mut decoder = rev2::ControllerDecoder::default();
             flags.as_ref().handle_message(
                 42,
                 &[0xf8],
@@ -1079,7 +1132,7 @@ mod tests {
             state.record_echo(&[0x80, 64, 0]);
             state.record_echo(&[0x80, 62, 0]);
         }
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         let flags = all_flags();
 
         for message in [[0x80, 64, 0], [0x80, 62, 0]] {
@@ -1110,13 +1163,13 @@ mod tests {
         let (_audio, bridge) = create_synth_engine_bridge(16);
         let output = MidiOutputHandle::default();
         let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        rev2::MidiEncoder::program_edit_buffer(&Patch::default(), &mut message).unwrap();
+        rev2::encode::program_edit_buffer(&Patch::default(), &mut message).unwrap();
         {
             let mut state = output.state.lock();
             state.configured_port = Some("loopback".to_owned());
             state.record_echo(&message);
         }
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
 
         all_flags().as_ref().handle_message(
             0,
@@ -1143,8 +1196,8 @@ mod tests {
             ..Patch::default()
         };
         let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        rev2::MidiEncoder::program_edit_buffer(&program, &mut message).unwrap();
-        let mut decoder = rev2::MidiDecoder::default();
+        rev2::encode::program_edit_buffer(&program, &mut message).unwrap();
+        let mut decoder = rev2::ControllerDecoder::default();
         handle_midi(&message, &bridge.control, &mut decoder);
 
         let mut found = false;
@@ -1160,7 +1213,7 @@ mod tests {
     fn inbound_stored_program_is_queued_without_updating_ui() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
         let message = stored_program_message(4, 0);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         handle_midi(&message, &bridge.control, &mut decoder);
 
         let mut imported = None;
@@ -1183,7 +1236,7 @@ mod tests {
         let mut batch = Vec::with_capacity(first.len() + second.len());
         batch.extend_from_slice(&first);
         batch.extend_from_slice(&second);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         handle_midi(&batch, &bridge.control, &mut decoder);
 
         let mut locations = Vec::new();
@@ -1196,7 +1249,7 @@ mod tests {
     #[test]
     fn control_flag_gates_note_messages() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         let flags = Arc::new(MidiInputFlags {
             control: AtomicBool::new(false),
             patches: AtomicBool::new(true),
@@ -1218,7 +1271,7 @@ mod tests {
     #[test]
     fn selected_clock_source_routes_realtime_with_midir_timestamp() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         let flags = Arc::new(MidiInputFlags {
             control: AtomicBool::new(false),
             patches: AtomicBool::new(false),
@@ -1259,7 +1312,7 @@ mod tests {
     #[test]
     fn patches_flag_gates_sysex_messages() {
         let (_audio, bridge) = create_synth_engine_bridge(16);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         let flags = Arc::new(MidiInputFlags {
             control: AtomicBool::new(true),
             patches: AtomicBool::new(false),
@@ -1295,7 +1348,7 @@ mod tests {
     #[test]
     fn all_flags_process_control_and_sysex() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
-        let mut decoder = rev2::MidiDecoder::default();
+        let mut decoder = rev2::ControllerDecoder::default();
         let output = MidiOutputHandle::default();
         all_flags().as_ref().handle_message(
             0,

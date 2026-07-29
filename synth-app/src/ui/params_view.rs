@@ -9,9 +9,9 @@ use synth_core::midi::clock::MidiClockMode;
 use synth_core::midi::prophet::filter_cutoff_max_hz;
 use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, GlideMode, KeyMode, LfoSyncDivision, ModDestination, ModMatrix,
-    ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
-    LayerPatch, Patch, UnisonMode, glide_seconds,
+    EffectParams, EffectType, GlideMode, KeyMode, LayerPatch, LfoSyncDivision, ModDestination,
+    ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode,
+    ParamId, Patch, UnisonMode, glide_seconds,
 };
 
 use crate::config::APP_NAME_FOLDER;
@@ -3362,15 +3362,15 @@ impl PatchManager {
 
     pub fn save_midi_program(
         &self,
-        program: &synth_core::midi::program::MidiProgramImport,
+        program: &synth_core::midi::program::ProgramData,
     ) -> std::io::Result<PathBuf> {
         let name = match program {
-            synth_core::midi::program::MidiProgramImport::Rev2(program) => rev2_program_filename(
+            synth_core::midi::program::ProgramData::Rev2(program) => rev2_program_filename(
                 program.bank,
                 program.program,
                 program.patch.layer_a.name.as_str(),
             ),
-            synth_core::midi::program::MidiProgramImport::P08(program) => p08_program_filename(
+            synth_core::midi::program::ProgramData::P08(program) => p08_program_filename(
                 program.bank,
                 program.program,
                 program.patch.layer_a.name.as_str(),
@@ -3875,8 +3875,8 @@ mod tests {
             config_dir: root.clone(),
             patches_dir,
         };
-        let mut program = synth_core::midi::program::MidiProgramImport::Rev2(
-            synth_core::midi::rev2::ProgramData {
+        let mut program =
+            synth_core::midi::program::ProgramData::Rev2(synth_core::midi::rev2::ProgramData {
                 bank: 4,
                 program: 0,
                 patch: Patch {
@@ -3887,14 +3887,13 @@ mod tests {
                     },
                     ..Patch::default()
                 },
-            },
-        );
+            });
         let path = manager.save_midi_program(&program).unwrap();
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
             Some("U1-001-LosVangelis2041.json")
         );
-        if let synth_core::midi::program::MidiProgramImport::Rev2(program) = &mut program {
+        if let synth_core::midi::program::ProgramData::Rev2(program) = &mut program {
             program.patch.layer_a.master_volume = 0.25;
         }
         manager.save_midi_program(&program).unwrap();
@@ -3918,7 +3917,7 @@ mod tests {
             patches_dir,
         };
         let program =
-            synth_core::midi::program::MidiProgramImport::P08(synth_core::midi::p08::ProgramData {
+            synth_core::midi::program::ProgramData::P08(synth_core::midi::p08::ProgramData {
                 bank: 0,
                 program: 0,
                 patch: Patch {

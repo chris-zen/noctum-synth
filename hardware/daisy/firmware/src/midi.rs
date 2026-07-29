@@ -226,7 +226,7 @@ mod tests {
     use embassy_daisy::usb::midi::{
         DecodeError, Decoder, MessageHandler, MidiEventHandler, MidiEventPacket, dispatch_events,
     };
-    use synth_core::midi::rev2::{MidiEncoder, PROGRAM_EDIT_BUFFER_SYSEX_LEN};
+    use synth_core::midi::rev2::{encode, PROGRAM_EDIT_BUFFER_SYSEX_LEN};
 
     #[derive(Default)]
     struct Collector {
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn decoder_reassembles_full_rev2_edit_buffer() {
         let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        MidiEncoder::program_edit_buffer(&synth_core::Patch::default(), &mut message)
+        encode::program_edit_buffer(&synth_core::Patch::default(), &mut message)
             .unwrap();
         let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         let complete = message.len() - 1;
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn decoder_waits_for_detached_f7_after_usb_end_marker() {
         let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        MidiEncoder::program_edit_buffer(&synth_core::Patch::default(), &mut message)
+        encode::program_edit_buffer(&synth_core::Patch::default(), &mut message)
             .unwrap();
         let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
         let chunks = message[..message.len() - 1].chunks_exact(3);
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn decoder_keeps_single_cin_f_data_byte_in_active_sysex() {
         let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        MidiEncoder::program_edit_buffer(&synth_core::Patch::default(), &mut message)
+        encode::program_edit_buffer(&synth_core::Patch::default(), &mut message)
             .unwrap();
         let mut decoder = Decoder::<_, SYSEX_CAPACITY>::new(DecodedCollector::default());
 

@@ -874,11 +874,7 @@ fn mean_first_diff(buffer: &[f32], start: usize, end: usize) -> f32 {
         sum += buffer[i + 1] - buffer[i];
         count += 1;
     }
-    if count == 0 {
-        0.0
-    } else {
-        sum / count as f32
-    }
+    if count == 0 { 0.0 } else { sum / count as f32 }
 }
 
 fn is_waveform_wrap(buffer: &[f32], n: usize) -> bool {
@@ -1784,9 +1780,7 @@ mod tests {
     use synth_core::math::WideF32;
 
     fn flags_near(flags: &[usize], target: usize, tol: usize) -> bool {
-        flags
-            .iter()
-            .any(|&i| i.abs_diff(target) <= tol)
+        flags.iter().any(|&i| i.abs_diff(target) <= tol)
     }
 
     fn render_oscillator(waveform: Waveform, freq_hz: f32, n: usize) -> Vec<f32> {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use synth_core::dsp::FilterType;
-use synth_core::{ParamId, LayerPatch};
+use synth_core::{LayerPatch, ParamId};
 
 use crate::audio::AudioManager;
 use crate::config::Config;
@@ -177,7 +177,8 @@ impl App {
         self.config.muted = self.muted;
         self.config.input_enabled = self.engine.control.input_enabled();
         self.config.save();
-        self.patch_mgr.save_autosave(&LayerPatch::from(&self.ui_state));
+        self.patch_mgr
+            .save_autosave(&LayerPatch::from(&self.ui_state));
     }
 }
 

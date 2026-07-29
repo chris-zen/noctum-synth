@@ -1,0 +1,63 @@
+//! Shared Rev2 SysEx program image constants and types.
+
+use crate::LayerMode;
+use crate::Patch;
+use crate::midi::prophet::packed_program_len;
+
+pub mod decode;
+pub mod encode;
+
+/// Raw program-mode values follow the official [Prophet '08 manual], [Edisyn],
+/// a working [Electra One implementation], and Sequential's official Rev2 factory bank.
+///
+/// [Prophet '08 manual]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+/// [Edisyn]: https://github.com/eclab/edisyn
+/// [Electra One implementation]: https://forum.electra.one/t/dsi-sequential-prophet-rev-2/130
+const LAYER_MODES_BY_RAW_VALUE: [LayerMode; 3] =
+    [LayerMode::Normal, LayerMode::Stack, LayerMode::Split];
+
+pub const PROGRAM_DATA_LEN: usize = 2046;
+pub const PROGRAM_PACKED_LEN: usize = packed_program_len(PROGRAM_DATA_LEN);
+pub const PROGRAM_DATA_SYSEX_LEN: usize = 2346;
+pub const PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
+
+/// Program-mode byte offset, verified against Sequential's official [Rev2 factory bank].
+///
+/// [Rev2 factory bank]: https://sequential.com/support/download/prophet-rev2-sounds/
+pub(super) const LAYER_MODE_OFFSET: usize = 231;
+
+/// Split-point byte offset for the range documented in the official [Rev2 User's Guide].
+///
+/// [Rev2 User's Guide]: https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf
+pub(super) const SPLIT_POINT_OFFSET: usize = 232;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SysexError {
+    InvalidLength,
+    InvalidFraming,
+    InvalidManufacturer,
+    InvalidModel,
+    UnsupportedCommand,
+    InvalidBank,
+    NonSevenBitData,
+    InvalidProgramData,
+    OutputTooSmall,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramData {
+    pub bank: u8,
+    pub program: u8,
+    pub patch: Patch,
+}
+
+pub(super) fn layer_mode_from_raw(raw: u8) -> Option<LayerMode> {
+    LAYER_MODES_BY_RAW_VALUE.get(usize::from(raw)).copied()
+}
+
+pub(super) fn layer_mode_raw(mode: LayerMode) -> u8 {
+    LAYER_MODES_BY_RAW_VALUE
+        .iter()
+        .position(|candidate| *candidate == mode)
+        .unwrap_or(0) as u8
+}

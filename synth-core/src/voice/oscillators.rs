@@ -3,7 +3,7 @@
 use crate::dsp::analog_oscillator::EngineOscillator;
 use crate::dsp::{AnalogSubOscillator, Waveform, WhiteNoise};
 use crate::math::{F32, WideF32};
-use crate::patch::{OscillatorPatch, LayerPatch};
+use crate::patch::{LayerPatch, OscillatorPatch};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::{GlideMode, ParamId};
 
@@ -772,11 +772,10 @@ fn oscillator_frequency(
 }
 
 fn frequency_to_semitones(frequency_hz: f32) -> f32 {
-    69.0
-        + 12.0
-            * F32(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
-                .accurate_log2()
-                .as_f32()
+    69.0 + 12.0
+        * F32(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
+            .accurate_log2()
+            .as_f32()
 }
 
 fn pitch_to_q16(semitones: f32) -> i32 {

@@ -1,7 +1,7 @@
 use crate::math::WideF32;
 use crate::patch::{
-    AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LfoParams,
-    MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, LayerPatch,
+    AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LayerPatch, LfoParams,
+    MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
 };
 use crate::{ModSource, ModulationParam};
 

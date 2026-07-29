@@ -74,14 +74,14 @@ pub use engine::{SynthEngine, SynthEngineWithMemory};
 pub use patch::{
     AmplifierParams, ArpMode, ArpParams, ArpSustainMode, AuxEnvelopeParams, ChordMemory,
     ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterParams,
-    GlideMode, KeyMode, LFO_COUNT, LfoParams, LfoSyncDivision, MOD_MATRIX_FREE_SLOT_COUNT,
-    ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode,
-    LayerPatch, PatchName, UnisonMode,
+    GlideMode, KeyMode, LFO_COUNT, LayerPatch, LfoParams, LfoSyncDivision,
+    MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
+    OscillatorPatch, PanModMode, PatchName, UnisonMode,
 };
 pub use patch_storage::{LAYER_PATCH_RECORD_SIZE, LayerPatchRecord, LayerPatchRecordError};
 pub use profiling::{RenderContext, RenderProfiler, RenderStage};
 pub use program::{
-    DEFAULT_SPLIT_POINT, LayerId, LayerMode, MAX_SPLIT_POINT, MIN_SPLIT_POINT, Patch,
+    DEFAULT_SPLIT_POINT, LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, MIN_SPLIT_POINT, Patch,
 };
 pub use tuning::midi_to_hz;
 pub use voice::{

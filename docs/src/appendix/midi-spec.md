@@ -10,9 +10,10 @@ published on the Sequential forum:
 > <https://forum.sequential.com/index.php?topic=2056.msg22693.html#msg22693>
 
 The synth also accepts **Prophet '08** Program Data and Program Edit Buffer
-SysEx messages. P08 programs are decoded into the same internal patch format as
-Rev2 Layer A and are saved to persistent program memory on the hardware
-(banks 4–5, mapped from P08 banks 0–1). See [Prophet '08
+SysEx messages. P08 programs are decoded into the same complete two-layer
+internal patch format as Rev2 programs. Until native two-layer persistence is
+introduced, the hardware stores the decoded Layer A in banks 4–5 (mapped from
+P08 banks 0–1). See [Prophet '08
 Compatibility](#prophet-08-compatibility) below.
 
 See [Factory Presets](factory-presets.md) for instructions on loading the
@@ -214,6 +215,11 @@ All CC values are 7-bit (0–127).
 
 NRPN values are 14-bit (0–16383). Each parameter has a documented maximum raw
 value shown in the Max column. Values beyond this maximum are clamped.
+The tables list Layer A numbers; add 2048 for the corresponding Layer B
+parameter. Global NRPN 4190 selects the current edit layer (`0` = A, `1` = B),
+while CC parameter updates are emitted as edit-layer-relative events. The MIDI
+decoder does not retain the edit selection; the layered engine resolves those
+events against its own state.
 
 ### Oscillators
 
@@ -388,9 +394,9 @@ command byte. Program Edit Buffer messages omit bank and program.
 
 #### Prophet Rev2 Program Image Layout
 
-The unpacked Rev2 program image is 2,046 bytes (1,024 per layer). The synth
-decodes Layer A only; Layer B is ignored. The byte offsets below were
-reverse-engineered by Razmo and verified against the Rev2 v1.0 factory bank.
+The unpacked Rev2 program image is 2,046 bytes (1,024 per layer). The codec
+decodes and encodes both layers. The byte offsets below were reverse-engineered
+by Razmo and verified against the Rev2 v1.0 factory bank.
 
 **Important:** NRPN parameter numbers do not match SysEx byte offsets. The
 offsets below are the unpacked byte positions within Layer A. Where a parameter
@@ -522,7 +528,7 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 208 | Unison Detune | 0–16 |
 | 209 | Pan Mod Mode | 0 = alternate, 1 = fixed |
 | 210–230 | (unused) | — |
-| 231 | Layer Mode | 0 = layer A, 1 = split AB, 2 = stack AB |
+| 231 | Layer Mode | 0 = normal, 1 = stack, 2 = split |
 | 232 | Split Point | 0–120 (MIDI note number) |
 | 233–234 | (unused) | — |
 | 235–254 | Layer A Name | 20 ASCII characters |
@@ -568,13 +574,13 @@ source or destination byte instead.
 ##### Layer B
 
 Layer B occupies bytes 1024–2043 and follows the same layout as Layer A. The
-synth currently ignores Layer B.
+synth decodes and encodes Layer B independently, including its 20-character
+name. Live Layer B NRPNs use the documented Layer A number plus 2048.
 
 ## Prophet Rev2 Unsupported Features
 
 The following Prophet Rev2 systems are not implemented by this synth:
 
-- Layer B parameter control
 - Sequencer and arpeggiator
 - Rev2 SysEx import/export of the undocumented chord-memory voicing bytes
 - Global settings (tuning, MIDI channel, pedal config, etc.)
@@ -585,8 +591,8 @@ The following Prophet Rev2 systems are not implemented by this synth:
 
 The synth accepts Prophet '08 Program Data and Program Edit Buffer SysEx for
 importing factory banks and loading patches from a Prophet '08 editor. Imported
-programs are converted into the internal Rev2-style patch format (Layer A
-parameters only) and are saved to persistent program memory on the hardware
+programs are converted into the internal two-layer patch format and are saved
+to persistent program memory on the hardware
 (P08 bank 0 → hardware bank 4, P08 bank 1 → hardware bank 5). Live MIDI
 control uses the Prophet Rev2 protocol above; only SysEx import is supported
 for Prophet '08 parameters.
@@ -613,9 +619,9 @@ command byte from `02` to `03` and removing the bank and program bytes.
 ### Prophet '08 Program Image Layout
 
 The unpacked Prophet '08 program image is 384 bytes: Layer A (bytes 0–199) and
-Layer B (bytes 200–383). The synth decodes Layer A only. Layer B uses the same
-field layout at offset +200 (for example, Output Spread is byte 28 in Layer A
-and byte 228 in Layer B).
+Layer B (bytes 200–383). The codec decodes both layers using the same voice-field
+layout at offset +200 (for example, Output Spread is byte 28 in Layer A and
+byte 228 in Layer B).
 
 Bipolar values (max 254) and other values above 127 use the same split-MSB
 sideband scheme as Rev2 (low 7 bits in one byte, bit 8 in bit 7 of another).
@@ -767,21 +773,22 @@ Level) is a plain 0–127 field with no MSB sideband. Key mode and the
 Prophet '08 unison fields are applied: the three fixed detune modes map to
 eight Rev2-style voices at progressively larger detune values. The two
 oscillator Glide rates and Glide mode are imported, with Glide enabled when
-either rate is nonzero. Sequencer, arpeggiator, tempo, and split settings are
-present in the image but not applied.
+either rate is nonzero. The split point and Normal/Stack/Split mode are decoded
+from bytes 118 and 119. Sequencer, arpeggiator, and tempo settings remain
+unsupported.
 
 #### Layer B (bytes 200–383)
 
-Layer B follows the same layout at offset +200. The synth currently ignores
-Layer B.
+Layer B follows the same voice-parameter layout at offset +200 and is decoded
+with the same conversions as Layer A. The Prophet '08 stores only one program
+name at bytes 184–199, so that shared name is copied to both imported layers;
+bytes 368–383 belong to Layer B sequence track 4, not a second name.
 
 ### Prophet '08 Unsupported Features
 
 The following Prophet '08 systems are not implemented:
 
-- Layer B parameter control
 - Live MIDI control of Prophet '08 parameters (SysEx only, no CC/NRPN)
 - Sequencer and arpeggiator
-- Split and stack program modes
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)

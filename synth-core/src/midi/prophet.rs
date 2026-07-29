@@ -1,4 +1,4 @@
-//! Shared Prophet Rev2 / '08 parameter conversions.
+//! Shared Prophet Rev2 / '08 parameter conversions and SysEx packing.
 //!
 //! Program/NRPN cutoff is converted to Hz at the MIDI frontier; [`LayerPatch`] stores
 //! Hz only. Official docs: 0–164 in semitone steps over more than 13 octaves
@@ -98,6 +98,50 @@ pub(crate) fn attack_decay_raw(seconds: f32) -> u16 {
 /// Inverse of [`release_seconds`] for Rev2 NRPN and SysEx encoding.
 pub(crate) fn release_raw(seconds: f32) -> u16 {
     envelope_raw(seconds, RELEASE_MAX_SECONDS)
+}
+
+/// Packed SysEx length for an unpacked Sequential program image of `raw_len` bytes.
+pub(crate) const fn packed_program_len(raw_len: usize) -> usize {
+    raw_len + raw_len.div_ceil(7)
+}
+
+/// Packs an unpacked Sequential program image into 7-bit SysEx data bytes.
+pub(crate) fn pack_program_data(raw: &[u8], packed: &mut [u8]) {
+    let expected = packed_program_len(raw.len());
+    debug_assert_eq!(packed.len(), expected);
+    let mut output = 0;
+    for chunk in raw.chunks(7) {
+        let mut high_bits = 0_u8;
+        for (index, byte) in chunk.iter().copied().enumerate() {
+            high_bits |= (byte >> 7) << (6 - index);
+        }
+        packed[output] = high_bits;
+        output += 1;
+        for byte in chunk.iter().copied() {
+            packed[output] = byte & 0x7f;
+            output += 1;
+        }
+    }
+    debug_assert_eq!(output, expected);
+}
+
+/// Unpacks 7-bit SysEx data bytes into an unpacked Sequential program image.
+pub(crate) fn unpack_program_data(packed: &[u8], raw: &mut [u8]) {
+    let expected = packed_program_len(raw.len());
+    debug_assert_eq!(packed.len(), expected);
+    let mut input = 0;
+    let mut output = 0;
+    while output < raw.len() {
+        let high_bits = packed[input];
+        input += 1;
+        let count = (raw.len() - output).min(7);
+        for index in 0..count {
+            raw[output] = packed[input] | (((high_bits >> (6 - index)) & 1) << 7);
+            input += 1;
+            output += 1;
+        }
+    }
+    debug_assert_eq!(input, expected);
 }
 
 fn envelope_seconds(raw: u16, max_seconds: f32) -> f32 {

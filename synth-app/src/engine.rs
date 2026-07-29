@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
-use synth_core::midi::program::MidiProgramImport;
+use synth_core::midi::program::ProgramData;
 use synth_core::{
-    ChordMemory, ControlMessage, ModDestination, ModRoute, ModSource, ModulationParam, ParamId,
-    LayerPatch, Patch,
+    ChordMemory, ControlMessage, LayerPatch, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, Patch,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -106,7 +106,7 @@ pub struct SynthEngineView {
     midi_clock: Arc<RwLock<Option<MidiClockStatus>>>,
     feedback_receiver: Arc<Mutex<rtrb::Consumer<FeedbackMessage>>>,
     midi_ui_receiver: Arc<Mutex<rtrb::Consumer<MidiUiUpdate>>>,
-    midi_program_receiver: Arc<Mutex<rtrb::Consumer<Box<MidiProgramImport>>>>,
+    midi_program_receiver: Arc<Mutex<rtrb::Consumer<Box<ProgramData>>>>,
     total_voices: usize,
 }
 
@@ -155,7 +155,7 @@ impl SynthEngineView {
         }
     }
 
-    pub fn drain_midi_program_imports(&self, mut handler: impl FnMut(MidiProgramImport)) {
+    pub fn drain_midi_program_imports(&self, mut handler: impl FnMut(ProgramData)) {
         let mut receiver = self.midi_program_receiver.lock();
         while let Ok(program) = receiver.pop() {
             handler(*program);
@@ -171,7 +171,7 @@ type ControlConsumer = rtrb::Consumer<ControlMessage>;
 pub struct SynthEngineControl {
     sender: Arc<Mutex<ControlProducer>>,
     midi_ui_sender: Arc<Mutex<rtrb::Producer<MidiUiUpdate>>>,
-    midi_program_sender: Arc<Mutex<rtrb::Producer<Box<MidiProgramImport>>>>,
+    midi_program_sender: Arc<Mutex<rtrb::Producer<Box<ProgramData>>>>,
     midi_output: MidiOutputHandle,
     midi_clock_status: Arc<RwLock<Option<MidiClockStatus>>>,
     input_enabled: Arc<AtomicBool>,
@@ -387,7 +387,7 @@ impl SynthEngineControl {
         });
     }
 
-    pub fn queue_midi_program(&self, program: MidiProgramImport) -> bool {
+    pub fn queue_midi_program(&self, program: ProgramData) -> bool {
         self.midi_program_sender
             .lock()
             .push(Box::new(program))
@@ -573,15 +573,12 @@ mod tests {
 
         let control = bridge.control.clone();
         let note_thread = std::thread::spawn(move || control.note_on(72, 1.0));
-        let mut first = None;
+        let mut found_note = false;
         audio.control.drain(|message| {
-            if first.is_none() {
-                first = Some(message);
-            }
+            found_note |= matches!(message, ControlMessage::NoteOn { note: 72, .. });
         });
         note_thread.join().unwrap();
 
-        let mut found_note = false;
         audio.control.drain(|message| {
             found_note |= matches!(message, ControlMessage::NoteOn { note: 72, .. });
         });

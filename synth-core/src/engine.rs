@@ -7,13 +7,13 @@ use crate::dsp::lookahead_limiter::LookaheadLimiter;
 use crate::dsp::{FilterOversampling, FilterType};
 use crate::effects::EngineEffects;
 use crate::midi::clock::MidiClockFollower;
+use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::rate_adapter::RateAdapter;
 use crate::voice::VoiceManager;
 use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, ParamId, LayerPatch, VOICE_PACKS,
+    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, LayerPatch, ParamId, VOICE_PACKS,
 };
-use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
 ///
@@ -328,7 +328,8 @@ mod tests {
     use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent, MidiTransportState};
     use crate::{
         ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
-        EffectType, ModDestination, ModRoute, ModSource, ParamId, LayerPatch, SynthEngine, VOICE_PACKS,
+        EffectType, LayerPatch, ModDestination, ModRoute, ModSource, ParamId, SynthEngine,
+        VOICE_PACKS,
     };
 
     extern crate std;

@@ -1,8 +1,8 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use synth_core::LayerPatch;
 use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::midi::clock::{MidiClockMode, MidiTransportState};
-use synth_core::LayerPatch;
 
 use crate::audio::{AppliedAudioConfig, AudioConfig, AudioManager};
 use crate::engine::SynthEngineControl;

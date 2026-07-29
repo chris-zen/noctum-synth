@@ -17,8 +17,8 @@ use crate::voice::{
     IdleAdvance, NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
 };
 use crate::{
-    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, ModDestination, ParamId, LayerPatch,
-    UnisonMode, VOICE_PACKS,
+    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, LayerPatch, ModDestination,
+    ParamId, UnisonMode, VOICE_PACKS,
 };
 
 const MIDI_CC_FILTER_RESONANCE: u8 = 71;
@@ -660,13 +660,12 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         for (block_index, block) in self.blocks.iter_mut().enumerate() {
             let block_voice_count = block.active_lane_count();
             if block_voice_count == 0 {
-                let mode = if next_poly_block == Some(block_index)
-                    || block_index < unison_warm_blocks
-                {
-                    IdleAdvance::Warm
-                } else {
-                    IdleAdvance::Cold
-                };
+                let mode =
+                    if next_poly_block == Some(block_index) || block_index < unison_warm_blocks {
+                        IdleAdvance::Warm
+                    } else {
+                        IdleAdvance::Cold
+                    };
                 block.advance_idle(mode, self.performance, &self.modulation, ctx);
                 continue;
             }
@@ -938,9 +937,9 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
     fn find_active_voice(&self, blocks: &[VoiceBlock; PACKS], note: u8) -> Option<usize> {
         for voice_idx in self.held.iter() {
             let VoiceLocation {
-            block_index: block_idx,
-            lane,
-        } = Self::voice_location(voice_idx);
+                block_index: block_idx,
+                lane,
+            } = Self::voice_location(voice_idx);
             if blocks[block_idx].active_note(lane) == Some(note) {
                 return Some(voice_idx);
             }
@@ -1040,9 +1039,9 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
     fn poly_note_off(&mut self, blocks: &mut [VoiceBlock; PACKS], note: u8) {
         while let Some(voice_idx) = self.find_active_voice(blocks, note) {
             let VoiceLocation {
-            block_index: block_idx,
-            lane,
-        } = Self::voice_location(voice_idx);
+                block_index: block_idx,
+                lane,
+            } = Self::voice_location(voice_idx);
             self.held.remove(voice_idx);
             if self.sustain_pressed {
                 self.sustained.insert(voice_idx);
@@ -1060,9 +1059,9 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
         while !self.sustained.is_empty() {
             let voice_idx = self.sustained.iter().next().expect("non-empty");
             let VoiceLocation {
-            block_index: block_idx,
-            lane,
-        } = Self::voice_location(voice_idx);
+                block_index: block_idx,
+                lane,
+            } = Self::voice_location(voice_idx);
             blocks[block_idx].note_off_lane(lane);
             self.sustained.remove(voice_idx);
         }

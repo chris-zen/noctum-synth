@@ -2,7 +2,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use synth_core::voice::PatchModulation;
-use synth_core::{ModDestination, LayerPatch, PerformanceModulation, VoiceBlock};
+use synth_core::{LayerPatch, ModDestination, PerformanceModulation, VoiceBlock};
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 200_000;
