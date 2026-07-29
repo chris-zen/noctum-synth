@@ -278,7 +278,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                     if !self.enqueue_storage(ProgramStorageRequest::Save {
                         bank,
                         program: program_number,
-                        patch: program.patch.layer_a,
+                        patch: program.patch,
                     }) {
                         crate::diagnostics::emit(
                             crate::diagnostics::Event::ProgramStorageQueueFull,
@@ -303,7 +303,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                     if !self.enqueue_storage(ProgramStorageRequest::Save {
                         bank,
                         program: program_number,
-                        patch: program.patch.layer_a,
+                        patch: program.patch,
                     }) {
                         crate::diagnostics::emit(
                             crate::diagnostics::Event::ProgramStorageQueueFull,

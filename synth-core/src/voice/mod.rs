@@ -10,7 +10,9 @@ mod modulation;
 mod oscillators;
 mod pan;
 
-pub use manager::{ActiveNotes, VoiceManager, unison_detune_cents};
+#[cfg(test)]
+pub(crate) use manager::TestLayerEngine;
+pub use manager::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion, unison_detune_cents};
 
 use crate::dsp::{
     DEFAULT_PARAMETER_SMOOTHING_SECONDS, DcBlocker, FilterOversampling, FilterType, LfoWaveform,
@@ -1431,7 +1433,7 @@ mod tests {
     use super::*;
     use crate::dsp::MAX_LFO_RATE_HZ;
     use crate::patch::{DedicatedModSource, ModRoute};
-    use crate::voice::VoiceManager;
+    use crate::voice::TestLayerEngine;
     use crate::{ControlMessage, ParamId};
 
     fn test_block(sample_rate: f32, patch: &LayerPatch) -> (VoiceBlock, PatchModulation) {
@@ -1443,7 +1445,7 @@ mod tests {
         (block, modulation)
     }
 
-    fn stereo_rms(voices: &mut VoiceManager, frames: usize) -> (f32, f32) {
+    fn stereo_rms(voices: &mut TestLayerEngine, frames: usize) -> (f32, f32) {
         let mut left_sum = 0.0;
         let mut right_sum = 0.0;
         let mut ctx = crate::create_render_context!();
@@ -1458,7 +1460,7 @@ mod tests {
         )
     }
 
-    fn process_frames(voices: &mut VoiceManager, frames: usize) {
+    fn process_frames(voices: &mut TestLayerEngine, frames: usize) {
         let mut ctx = crate::create_render_context!();
         for _ in 0..frames {
             voices.next(&mut ctx);
@@ -1953,7 +1955,7 @@ mod tests {
 
     #[test]
     fn pan_spread_creates_stereo_separation() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -1988,7 +1990,7 @@ mod tests {
 
     #[test]
     fn pan_spread_pans_a_single_voice_to_its_physical_position() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -2005,7 +2007,7 @@ mod tests {
 
     #[test]
     fn pan_lfo_modulates_spread_width_instead_of_offset() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Waveform, 3.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
@@ -2033,7 +2035,7 @@ mod tests {
 
     #[test]
     fn repeated_notes_advance_through_physical_voice_pan_positions() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
 
@@ -2063,7 +2065,7 @@ mod tests {
 
     #[test]
     fn oscillator_tuning_param_does_not_replace_midi_note() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 72.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 64,
@@ -2092,7 +2094,7 @@ mod tests {
 
     #[test]
     fn oscillator_frequency_and_fine_tune_use_natural_units_and_clamp() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 240.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1FineTune, 99.0));
         voices.handle_control(ControlMessage::NoteOn {
@@ -2129,7 +2131,7 @@ mod tests {
 
     #[test]
     fn osc_mix_is_canonical_balance_control() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Enabled, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.25));
@@ -2140,7 +2142,7 @@ mod tests {
 
     #[test]
     fn osc_slop_zero_is_stable_and_full_slop_offsets_lanes() {
-        let mut stable = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut stable = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         for note in [60, 64, 67, 72] {
             stable.handle_control(ControlMessage::NoteOn {
                 note,
@@ -2157,7 +2159,7 @@ mod tests {
             );
         }
 
-        let mut sloppy = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut sloppy = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         sloppy.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 1.0));
         for note in [60, 64, 67, 72] {
             sloppy.handle_control(ControlMessage::NoteOn {
@@ -2179,7 +2181,7 @@ mod tests {
 
     #[test]
     fn clearing_osc_slop_restores_intended_frequency() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 1.0));
         for note in [60, 64, 67, 72] {
             voices.handle_control(ControlMessage::NoteOn {
@@ -2202,7 +2204,7 @@ mod tests {
 
     #[test]
     fn note_reset_flags_are_routed_to_oscillators() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc1NoteReset, 0.0));
         voices.handle_control(ControlMessage::SetParam(ParamId::Osc2NoteReset, 1.0));
 
@@ -2213,7 +2215,7 @@ mod tests {
 
     #[test]
     fn hard_sync_param_is_routed_to_oscillators() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
 
         assert!(voices[0].oscillators.params().sync);
@@ -2221,7 +2223,7 @@ mod tests {
 
     #[test]
     fn aux_envelope_to_oscillator_frequency_modulates_pitch() {
-        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
             ModDestination::Osc1Frequency.index() as f32,
@@ -2248,7 +2250,7 @@ mod tests {
 
     #[test]
     fn aux_repeat_keeps_envelope_cycling_while_held() {
-        let mut repeating = VoiceManager::<{ crate::VOICE_PACKS }>::new(1_000.0);
+        let mut repeating = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(1_000.0);
         repeating.handle_control(ControlMessage::SetParam(
             ParamId::AuxEgDestination,
             ModDestination::FilterCutoff.index() as f32,
@@ -2279,7 +2281,7 @@ mod tests {
 
     #[test]
     fn vca_initial_level_at_one_ignores_amp_envelope_amount() {
-        let mut drone = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut drone = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
@@ -2296,7 +2298,7 @@ mod tests {
             "full VCA level should bypass amp envelope amount, RMS {drone_left}"
         );
 
-        let mut gated = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut gated = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         gated.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
         gated.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
         gated.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
@@ -2313,7 +2315,7 @@ mod tests {
             "zero VCA level and envelope amount should be silent, RMS {gated_left}"
         );
 
-        let mut enveloped = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut enveloped = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         enveloped.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
         enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
         enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
@@ -2333,7 +2335,7 @@ mod tests {
 
     #[test]
     fn vca_initial_level_keeps_drone_rendering_after_amp_release() {
-        let mut drone = VoiceManager::<{ crate::VOICE_PACKS }>::new(44_100.0);
+        let mut drone = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.25));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
         drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));

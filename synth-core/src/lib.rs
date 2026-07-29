@@ -13,9 +13,10 @@
 //! # Architecture
 //!
 //! ```text
-//! ControlMessage ──► VoiceManager ──► [VoiceBlock; VOICE_PACKS] ──► stereo sum
-//!                              │
-//!                              └── ParamId / patch state per voice
+//! ControlMessage ──► LayerEngine ──► VoicePool ──► stereo sum
+//!                         │              │
+//!                         │              └── [VoiceBlock; VOICE_PACKS]
+//!                         └── allocation / patch / effects state
 //! ```
 //!
 //! Host applications send [`ControlMessage`] values (note events, MIDI
@@ -39,7 +40,7 @@
 //! - [`dsp`] — generic signal processing (oscillators, filter, envelopes, LFOs)
 //! - [`engine`] — top-level [`SynthEngine`] and master gain
 //! - [`midi`] — MIDI clock, program import, and instrument SysEx codecs
-//! - [`voice`] — voice manager (polyphony, stealing) and per-block DSP chain
+//! - [`voice`] — layer allocation, shared voice storage, and per-block DSP chain
 //! - [`patch`] — parameter bundles and LFO destinations
 
 #![no_std]
@@ -69,7 +70,7 @@ pub mod voice;
 
 use crate::math::WideF32;
 
-pub use effects::{EffectModulation, Effects, EffectsWithMemory};
+pub use effects::{EffectModulation, Effects, EffectsState, EffectsWithMemory};
 pub use engine::{SynthEngine, SynthEngineWithMemory};
 pub use patch::{
     AmplifierParams, ArpMode, ArpParams, ArpSustainMode, AuxEnvelopeParams, ChordMemory,
@@ -78,16 +79,16 @@ pub use patch::{
     MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
     OscillatorPatch, PanModMode, PatchName, UnisonMode,
 };
-pub use patch_storage::{LAYER_PATCH_RECORD_SIZE, LayerPatchRecord, LayerPatchRecordError};
+pub use patch_storage::{PATCH_RECORD_SIZE, PatchRecord, PatchRecordError};
 pub use profiling::{RenderContext, RenderProfiler, RenderStage};
 pub use program::{
     DEFAULT_SPLIT_POINT, LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, MIN_SPLIT_POINT, Patch,
 };
 pub use tuning::midi_to_hz;
 pub use voice::{
-    ActiveNotes, OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput,
-    OscillatorsParams, PerformanceModulation, REV2_VOICE_PAN_POSITIONS, VoiceBlock, VoiceManager,
-    glide_seconds, voice_pan_position,
+    ActiveNotes, LayerEngine, OscillatorModulation, OscillatorParams, Oscillators,
+    OscillatorsOutput, OscillatorsParams, PerformanceModulation, REV2_VOICE_PAN_POSITIONS,
+    VoiceBlock, VoicePool, VoiceRegion, glide_seconds, voice_pan_position,
 };
 
 use crate::dsp::{FilterOversampling, FilterType};
@@ -95,7 +96,7 @@ use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent};
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
 ///
-/// The UI, MIDI mapping layer, and [`VoiceManager`] all use this enum
+/// The UI, MIDI mapping layer, and [`LayerEngine`] all use this enum
 /// to address patch state uniformly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamId {

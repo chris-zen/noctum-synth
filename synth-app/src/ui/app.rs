@@ -104,7 +104,7 @@ impl App {
         let mut patch_mgr = PatchManager::new();
         let mut ui_state = UiState::default();
         if let Some((patch, loaded_name, baseline, save_name)) = patch_mgr.load_autosave() {
-            ui_state.apply_from_patch(&patch);
+            ui_state.apply_from_patch(&patch.layer_a);
             patch_mgr.restore_autosave_metadata(loaded_name, baseline, save_name, &patch);
         }
         let muted = config.muted;

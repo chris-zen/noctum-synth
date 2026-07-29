@@ -4,8 +4,8 @@ use embassy_daisy::qspi::{FlashError, QspiFlash};
 
 use crate::audio::PatchQueue;
 use crate::diagnostics::{self, StorageFailureReason, StorageOperation};
-use crate::program::{ProgramStorageQueue, ProgramStorageRequest};
 use crate::program::store::{ProgramStore, ProgramStoreError};
+use crate::program::{ProgramStorageQueue, ProgramStorageRequest};
 
 #[embassy_executor::task]
 pub async fn run_task(
@@ -22,7 +22,7 @@ pub async fn run_task(
                 let program = *program;
                 match store.load(bank, program) {
                     Ok(patch) => {
-                        if patches.try_send(patch).is_err() {
+                        if patches.try_send(patch.layer_a).is_err() {
                             diagnostics::emit(diagnostics::Event::PatchQueueFull);
                         } else {
                             diagnostics::emit(diagnostics::Event::ProgramLoaded {

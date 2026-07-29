@@ -35,7 +35,7 @@ static EXECUTOR: InterruptExecutor = InterruptExecutor::new();
 static OVERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 static UNDERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 
-pub type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
+pub type HardwareSynth = SynthEngineWithMemory<&'static mut [f32], 1>;
 pub type PatchQueue = Channel<CriticalSectionRawMutex, LayerPatch, PATCH_QUEUE_CAPACITY>;
 
 pub struct ControlQueue {

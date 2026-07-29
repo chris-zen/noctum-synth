@@ -4,24 +4,25 @@ use crate::patch::{
     CHORD_MEMORY_CAPACITY, DedicatedModSource, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination,
     ModSource, PATCH_NAME_CAPACITY,
 };
-use crate::{LayerPatch, ParamId};
+use crate::{LayerMode, LayerPatch, MAX_SPLIT_POINT, ParamId, Patch};
 
-pub const LAYER_PATCH_RECORD_SIZE: usize = 512;
+pub const PATCH_RECORD_SIZE: usize = 1024;
 
-const MAGIC: [u8; 4] = *b"ASPR";
+const MAGIC: [u8; 4] = *b"ASPG";
 const VERSION: u8 = 1;
 const HEADER_LEN: usize = 12;
 const PARAM_COUNT: usize = PARAM_IDS.len();
-const PAYLOAD_LEN: usize = PARAM_COUNT * 2
+const LAYER_PAYLOAD_LEN: usize = PARAM_COUNT * 2
     + MOD_MATRIX_FREE_SLOT_COUNT * 5
     + DedicatedModSource::COUNT * 4
     + 1
     + PATCH_NAME_CAPACITY
     + 1
     + CHORD_MEMORY_CAPACITY;
+const PAYLOAD_LEN: usize = 2 + LAYER_PAYLOAD_LEN * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayerPatchRecordError {
+pub enum PatchRecordError {
     InvalidMagic,
     UnsupportedVersion,
     InvalidLength,
@@ -32,70 +33,35 @@ pub enum LayerPatchRecordError {
     CodecDrift,
 }
 
-pub struct LayerPatchRecord;
+pub struct PatchRecord;
 
-impl LayerPatchRecord {
-    /// Encode one patch into a complete flash slot. Unused bytes remain erased.
+impl PatchRecord {
+    /// Encode one complete two-layer patch into a flash slot. Unused bytes remain erased.
     pub fn encode(
-        patch: &LayerPatch,
-        output: &mut [u8; LAYER_PATCH_RECORD_SIZE],
-    ) -> Result<(), LayerPatchRecordError> {
+        patch: &Patch,
+        output: &mut [u8; PATCH_RECORD_SIZE],
+    ) -> Result<(), PatchRecordError> {
         output.fill(0xff);
         output[..4].copy_from_slice(&MAGIC);
         output[4] = VERSION;
         output[5] = PARAM_COUNT as u8;
         output[6..8].copy_from_slice(&(PAYLOAD_LEN as u16).to_le_bytes());
+        if patch.split_point > MAX_SPLIT_POINT {
+            return Err(PatchRecordError::ValueOutOfRange);
+        }
 
         let payload = &mut output[HEADER_LEN..HEADER_LEN + PAYLOAD_LEN];
         let mut cursor = Writer::new(payload);
-        let mut index = 0;
-        let mut error = None;
-        patch.for_each_param(|id, value| {
-            if error.is_some() {
-                return;
-            }
-            if PARAM_IDS.get(index) != Some(&id) {
-                error = Some(LayerPatchRecordError::CodecDrift);
-                return;
-            }
-            match encode_value(value) {
-                Ok(value) => cursor.u16(value),
-                Err(value_error) => {
-                    error = Some(value_error);
-                    return;
-                }
-            }
-            index += 1;
+        cursor.u8(match patch.mode {
+            LayerMode::Normal => 0,
+            LayerMode::Stack => 1,
+            LayerMode::Split => 2,
         });
-        if let Some(error) = error {
-            return Err(error);
-        }
-        if index != PARAM_COUNT {
-            return Err(LayerPatchRecordError::CodecDrift);
-        }
-
-        for slot in patch.mod_matrix.free_slots {
-            cursor.u8(u8::from(slot.enabled));
-            cursor.u8(slot.source.index() as u8);
-            cursor.u8(slot.destination.index() as u8);
-            cursor.u16(encode_value(slot.amount)?);
-        }
-        for slot in patch.mod_matrix.dedicated {
-            cursor.u8(u8::from(slot.enabled));
-            cursor.u8(slot.destination.index() as u8);
-            cursor.u16(encode_value(slot.amount)?);
-        }
-
-        let name = patch.name.as_bytes();
-        cursor.u8(name.len() as u8);
-        cursor.bytes(name);
-        cursor.zeroes(PATCH_NAME_CAPACITY - name.len());
-        let chord = patch.unison_chord.intervals();
-        cursor.u8(chord.len() as u8);
-        cursor.bytes(chord);
-        cursor.zeroes(CHORD_MEMORY_CAPACITY - chord.len());
+        cursor.u8(patch.split_point);
+        encode_layer(&patch.layer_a, &mut cursor)?;
+        encode_layer(&patch.layer_b, &mut cursor)?;
         if cursor.position() != PAYLOAD_LEN {
-            return Err(LayerPatchRecordError::CodecDrift);
+            return Err(PatchRecordError::CodecDrift);
         }
 
         let checksum = crc32(payload);
@@ -104,94 +70,166 @@ impl LayerPatchRecord {
     }
 
     /// Decode one flash slot. A completely erased slot is the default patch.
-    pub fn decode(
-        input: &[u8; LAYER_PATCH_RECORD_SIZE],
-    ) -> Result<LayerPatch, LayerPatchRecordError> {
+    pub fn decode(input: &[u8; PATCH_RECORD_SIZE]) -> Result<Patch, PatchRecordError> {
         if Self::is_erased(input) {
-            return Ok(LayerPatch::default());
+            return Ok(Patch::default());
         }
         if input[..4] != MAGIC {
-            return Err(LayerPatchRecordError::InvalidMagic);
+            return Err(PatchRecordError::InvalidMagic);
         }
         if input[4] != VERSION {
-            return Err(LayerPatchRecordError::UnsupportedVersion);
+            return Err(PatchRecordError::UnsupportedVersion);
         }
         if usize::from(input[5]) != PARAM_COUNT {
-            return Err(LayerPatchRecordError::CodecDrift);
+            return Err(PatchRecordError::CodecDrift);
         }
         let payload_len = usize::from(u16::from_le_bytes([input[6], input[7]]));
-        if payload_len != PAYLOAD_LEN || HEADER_LEN + payload_len > LAYER_PATCH_RECORD_SIZE {
-            return Err(LayerPatchRecordError::InvalidLength);
+        if payload_len != PAYLOAD_LEN || HEADER_LEN + payload_len > PATCH_RECORD_SIZE {
+            return Err(PatchRecordError::InvalidLength);
         }
         let payload = &input[HEADER_LEN..HEADER_LEN + payload_len];
         let expected = u32::from_le_bytes([input[8], input[9], input[10], input[11]]);
         if crc32(payload) != expected {
-            return Err(LayerPatchRecordError::ChecksumMismatch);
+            return Err(PatchRecordError::ChecksumMismatch);
         }
 
         let mut cursor = Reader::new(payload);
-        let mut patch = LayerPatch::default();
-        for id in PARAM_IDS {
-            let value = f16_to_f32(cursor.u16()?);
-            if !value.is_finite() {
-                return Err(LayerPatchRecordError::NonFiniteValue);
-            }
-            patch.set_param(id, value);
+        let mode = match cursor.u8()? {
+            0 => LayerMode::Normal,
+            1 => LayerMode::Stack,
+            2 => LayerMode::Split,
+            _ => return Err(PatchRecordError::InvalidPayload),
+        };
+        let split_point = cursor.u8()?;
+        if split_point > MAX_SPLIT_POINT {
+            return Err(PatchRecordError::InvalidPayload);
         }
-        for slot in &mut patch.mod_matrix.free_slots {
-            slot.enabled = cursor.u8()? != 0;
-            let source = usize::from(cursor.u8()?);
-            let destination = usize::from(cursor.u8()?);
-            if source >= ModSource::ALL.len() || destination >= ModDestination::COUNT {
-                return Err(LayerPatchRecordError::InvalidPayload);
-            }
-            slot.source = ModSource::from_index(source);
-            slot.destination = ModDestination::from_index(destination);
-            slot.amount = f16_to_f32(cursor.u16()?);
-            if !slot.amount.is_finite() {
-                return Err(LayerPatchRecordError::NonFiniteValue);
-            }
-        }
-        for slot in &mut patch.mod_matrix.dedicated {
-            slot.enabled = cursor.u8()? != 0;
-            let destination = usize::from(cursor.u8()?);
-            if destination >= ModDestination::COUNT {
-                return Err(LayerPatchRecordError::InvalidPayload);
-            }
-            slot.destination = ModDestination::from_index(destination);
-            slot.amount = f16_to_f32(cursor.u16()?);
-            if !slot.amount.is_finite() {
-                return Err(LayerPatchRecordError::NonFiniteValue);
-            }
-        }
-
-        let name_len = usize::from(cursor.u8()?);
-        if name_len > PATCH_NAME_CAPACITY {
-            return Err(LayerPatchRecordError::InvalidPayload);
-        }
-        let name_bytes = cursor.bytes(PATCH_NAME_CAPACITY)?;
-        let name = core::str::from_utf8(&name_bytes[..name_len])
-            .map_err(|_| LayerPatchRecordError::InvalidPayload)?;
-        patch
-            .name
-            .push_str(name)
-            .map_err(|_| LayerPatchRecordError::InvalidPayload)?;
-
-        let chord_len = usize::from(cursor.u8()?);
-        if chord_len > CHORD_MEMORY_CAPACITY {
-            return Err(LayerPatchRecordError::InvalidPayload);
-        }
-        let chord = cursor.bytes(CHORD_MEMORY_CAPACITY)?;
-        patch.unison_chord = crate::ChordMemory::from_intervals(&chord[..chord_len]);
+        let layer_a = decode_layer(&mut cursor)?;
+        let layer_b = decode_layer(&mut cursor)?;
         if cursor.position() != PAYLOAD_LEN {
-            return Err(LayerPatchRecordError::InvalidLength);
+            return Err(PatchRecordError::InvalidLength);
         }
-        Ok(patch)
+        Ok(Patch::new(layer_a, layer_b, mode, split_point))
     }
 
-    pub fn is_erased(input: &[u8; LAYER_PATCH_RECORD_SIZE]) -> bool {
+    pub fn is_erased(input: &[u8; PATCH_RECORD_SIZE]) -> bool {
         input.iter().all(|byte| *byte == 0xff)
     }
+}
+
+fn encode_layer(patch: &LayerPatch, cursor: &mut Writer<'_>) -> Result<(), PatchRecordError> {
+    let start = cursor.position();
+    let mut index = 0;
+    let mut error = None;
+    patch.for_each_param(|id, value| {
+        if error.is_some() {
+            return;
+        }
+        if PARAM_IDS.get(index) != Some(&id) {
+            error = Some(PatchRecordError::CodecDrift);
+            return;
+        }
+        match encode_value(value) {
+            Ok(value) => cursor.u16(value),
+            Err(value_error) => {
+                error = Some(value_error);
+                return;
+            }
+        }
+        index += 1;
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    if index != PARAM_COUNT {
+        return Err(PatchRecordError::CodecDrift);
+    }
+
+    for slot in patch.mod_matrix.free_slots {
+        cursor.u8(u8::from(slot.enabled));
+        cursor.u8(slot.source.index() as u8);
+        cursor.u8(slot.destination.index() as u8);
+        cursor.u16(encode_value(slot.amount)?);
+    }
+    for slot in patch.mod_matrix.dedicated {
+        cursor.u8(u8::from(slot.enabled));
+        cursor.u8(slot.destination.index() as u8);
+        cursor.u16(encode_value(slot.amount)?);
+    }
+
+    let name = patch.name.as_bytes();
+    cursor.u8(name.len() as u8);
+    cursor.bytes(name);
+    cursor.zeroes(PATCH_NAME_CAPACITY - name.len());
+    let chord = patch.unison_chord.intervals();
+    cursor.u8(chord.len() as u8);
+    cursor.bytes(chord);
+    cursor.zeroes(CHORD_MEMORY_CAPACITY - chord.len());
+    if cursor.position() - start != LAYER_PAYLOAD_LEN {
+        return Err(PatchRecordError::CodecDrift);
+    }
+    Ok(())
+}
+
+fn decode_layer(cursor: &mut Reader<'_>) -> Result<LayerPatch, PatchRecordError> {
+    let start = cursor.position();
+    let mut patch = LayerPatch::default();
+    for id in PARAM_IDS {
+        let value = f16_to_f32(cursor.u16()?);
+        if !value.is_finite() {
+            return Err(PatchRecordError::NonFiniteValue);
+        }
+        patch.set_param(id, value);
+    }
+    for slot in &mut patch.mod_matrix.free_slots {
+        slot.enabled = cursor.u8()? != 0;
+        let source = usize::from(cursor.u8()?);
+        let destination = usize::from(cursor.u8()?);
+        if source >= ModSource::ALL.len() || destination >= ModDestination::COUNT {
+            return Err(PatchRecordError::InvalidPayload);
+        }
+        slot.source = ModSource::from_index(source);
+        slot.destination = ModDestination::from_index(destination);
+        slot.amount = f16_to_f32(cursor.u16()?);
+        if !slot.amount.is_finite() {
+            return Err(PatchRecordError::NonFiniteValue);
+        }
+    }
+    for slot in &mut patch.mod_matrix.dedicated {
+        slot.enabled = cursor.u8()? != 0;
+        let destination = usize::from(cursor.u8()?);
+        if destination >= ModDestination::COUNT {
+            return Err(PatchRecordError::InvalidPayload);
+        }
+        slot.destination = ModDestination::from_index(destination);
+        slot.amount = f16_to_f32(cursor.u16()?);
+        if !slot.amount.is_finite() {
+            return Err(PatchRecordError::NonFiniteValue);
+        }
+    }
+
+    let name_len = usize::from(cursor.u8()?);
+    if name_len > PATCH_NAME_CAPACITY {
+        return Err(PatchRecordError::InvalidPayload);
+    }
+    let name_bytes = cursor.bytes(PATCH_NAME_CAPACITY)?;
+    let name = core::str::from_utf8(&name_bytes[..name_len])
+        .map_err(|_| PatchRecordError::InvalidPayload)?;
+    patch
+        .name
+        .push_str(name)
+        .map_err(|_| PatchRecordError::InvalidPayload)?;
+
+    let chord_len = usize::from(cursor.u8()?);
+    if chord_len > CHORD_MEMORY_CAPACITY {
+        return Err(PatchRecordError::InvalidPayload);
+    }
+    let chord = cursor.bytes(CHORD_MEMORY_CAPACITY)?;
+    patch.unison_chord = crate::ChordMemory::from_intervals(&chord[..chord_len]);
+    if cursor.position() - start != LAYER_PAYLOAD_LEN {
+        return Err(PatchRecordError::InvalidLength);
+    }
+    Ok(patch)
 }
 
 struct Writer<'a> {
@@ -239,29 +277,29 @@ impl<'a> Reader<'a> {
         Self { bytes, position: 0 }
     }
 
-    fn u8(&mut self) -> Result<u8, LayerPatchRecordError> {
+    fn u8(&mut self) -> Result<u8, PatchRecordError> {
         let value = *self
             .bytes
             .get(self.position)
-            .ok_or(LayerPatchRecordError::InvalidLength)?;
+            .ok_or(PatchRecordError::InvalidLength)?;
         self.position += 1;
         Ok(value)
     }
 
-    fn u16(&mut self) -> Result<u16, LayerPatchRecordError> {
+    fn u16(&mut self) -> Result<u16, PatchRecordError> {
         let bytes = self.bytes(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
     }
 
-    fn bytes(&mut self, count: usize) -> Result<&'a [u8], LayerPatchRecordError> {
+    fn bytes(&mut self, count: usize) -> Result<&'a [u8], PatchRecordError> {
         let end = self
             .position
             .checked_add(count)
-            .ok_or(LayerPatchRecordError::InvalidLength)?;
+            .ok_or(PatchRecordError::InvalidLength)?;
         let value = self
             .bytes
             .get(self.position..end)
-            .ok_or(LayerPatchRecordError::InvalidLength)?;
+            .ok_or(PatchRecordError::InvalidLength)?;
         self.position = end;
         Ok(value)
     }
@@ -304,13 +342,13 @@ fn f32_to_f16(value: f32) -> u16 {
     half
 }
 
-fn encode_value(value: f32) -> Result<u16, LayerPatchRecordError> {
+fn encode_value(value: f32) -> Result<u16, PatchRecordError> {
     if !value.is_finite() {
-        return Err(LayerPatchRecordError::NonFiniteValue);
+        return Err(PatchRecordError::NonFiniteValue);
     }
     let encoded = f32_to_f16(value);
     if encoded & 0x7c00 == 0x7c00 {
-        Err(LayerPatchRecordError::ValueOutOfRange)
+        Err(PatchRecordError::ValueOutOfRange)
     } else {
         Ok(encoded)
     }
@@ -457,131 +495,10 @@ const PARAM_IDS: [ParamId; 107] = [
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::{DedicatedModSlot, ModMatrixSlot};
     use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg32;
-
-    use crate::{
-        DedicatedModSlot, LayerPatch, ModDestination, ModMatrixSlot, ModSource,
-        patch_storage::{LAYER_PATCH_RECORD_SIZE, LayerPatchRecord, LayerPatchRecordError, crc32},
-    };
-
-    use super::{HEADER_LEN, PARAM_COUNT, PARAM_IDS, PAYLOAD_LEN, f16_to_f32, f32_to_f16};
-
-    #[test]
-    fn default_patch_round_trips() {
-        let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-        let patch = LayerPatch::default();
-        LayerPatchRecord::encode(&patch, &mut record).unwrap();
-        let decoded = LayerPatchRecord::decode(&record).unwrap();
-        assert_patch_close(&patch, &decoded);
-        assert!(
-            record[HEADER_LEN + PAYLOAD_LEN..]
-                .iter()
-                .all(|byte| *byte == 0xff)
-        );
-    }
-
-    #[test]
-    fn populated_patch_round_trips() {
-        let mut patch = LayerPatch::default();
-        patch.name.push_str("Storage test é").unwrap();
-        patch.unison_chord = crate::ChordMemory::from_intervals(&[0, 3, 7, 12]);
-        patch.filter.cutoff = 4321.25;
-        patch.osc1.fine_tune = -17.75;
-        patch.lfos[2].rate_hz = 13.125;
-        patch.mod_matrix.free_slots[3] = ModMatrixSlot {
-            enabled: true,
-            source: ModSource::Velocity,
-            destination: ModDestination::FilterCutoff,
-            amount: -0.625,
-        };
-        patch.mod_matrix.dedicated[1] = DedicatedModSlot {
-            enabled: true,
-            destination: ModDestination::FxMix,
-            amount: 0.375,
-        };
-        let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-        LayerPatchRecord::encode(&patch, &mut record).unwrap();
-        assert_patch_close(&patch, &LayerPatchRecord::decode(&record).unwrap());
-    }
-
-    #[test]
-    fn randomized_patches_round_trip() {
-        let mut rng = Pcg32::seed_from_u64(0x5eed_f1a5_1234_5678);
-        for _ in 0..128 {
-            let mut patch = LayerPatch::default();
-            for id in PARAM_IDS {
-                patch.set_param(id, random_unit(&mut rng) * 510.0 - 10.0);
-            }
-            for slot in &mut patch.mod_matrix.free_slots {
-                slot.enabled = rng.next_u32() & 1 != 0;
-                slot.source = ModSource::from_index(rng.next_u32() as usize % ModSource::ALL.len());
-                slot.destination =
-                    ModDestination::from_index(rng.next_u32() as usize % ModDestination::COUNT);
-                slot.amount = random_unit(&mut rng) * 2.0 - 1.0;
-            }
-            for slot in &mut patch.mod_matrix.dedicated {
-                slot.enabled = rng.next_u32() & 1 != 0;
-                slot.destination =
-                    ModDestination::from_index(rng.next_u32() as usize % ModDestination::COUNT);
-                slot.amount = random_unit(&mut rng) * 2.0 - 1.0;
-            }
-            let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-            LayerPatchRecord::encode(&patch, &mut record).unwrap();
-            assert_patch_close(&patch, &LayerPatchRecord::decode(&record).unwrap());
-        }
-    }
-
-    #[test]
-    fn erased_slot_is_default_patch() {
-        let erased = [0xff; LAYER_PATCH_RECORD_SIZE];
-        let mut encoded_default = [0; LAYER_PATCH_RECORD_SIZE];
-        LayerPatchRecord::encode(&LayerPatch::default(), &mut encoded_default).unwrap();
-        assert_patch_close(
-            &LayerPatchRecord::decode(&encoded_default).unwrap(),
-            &LayerPatchRecord::decode(&erased).unwrap(),
-        );
-    }
-
-    #[test]
-    fn corruption_and_versions_are_rejected() {
-        let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-        LayerPatchRecord::encode(&LayerPatch::default(), &mut record).unwrap();
-        record[HEADER_LEN + 7] ^= 1;
-        assert!(matches!(
-            LayerPatchRecord::decode(&record),
-            Err(LayerPatchRecordError::ChecksumMismatch)
-        ));
-        LayerPatchRecord::encode(&LayerPatch::default(), &mut record).unwrap();
-        record[4] += 1;
-        assert!(matches!(
-            LayerPatchRecord::decode(&record),
-            Err(LayerPatchRecordError::UnsupportedVersion)
-        ));
-    }
-
-    #[test]
-    fn values_outside_binary16_range_are_rejected_before_storage() {
-        let mut patch = LayerPatch::default();
-        patch.filter.cutoff = f32::MAX;
-        let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-        assert_eq!(
-            LayerPatchRecord::encode(&patch, &mut record),
-            Err(LayerPatchRecordError::ValueOutOfRange)
-        );
-    }
-
-    #[test]
-    fn binary16_handles_storage_value_range() {
-        for value in [0.0, -0.0, 0.0005, 0.022, 0.25, 1.0, 120.0, 500.0, 20_000.0] {
-            assert_close(value, f16_to_f32(f32_to_f16(value)));
-        }
-    }
-
-    #[test]
-    fn crc32_matches_standard_vector() {
-        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
-    }
 
     fn assert_close(expected: f32, actual: f32) {
         let tolerance = expected.abs().max(1.0) * 0.001;
@@ -630,5 +547,170 @@ mod tests {
             assert_eq!(expected.destination, actual.destination);
             assert_close(expected.amount, actual.amount);
         }
+    }
+
+    #[test]
+    fn default_patch_round_trips() {
+        let mut record = [0; PATCH_RECORD_SIZE];
+        let patch = Patch::default();
+        PatchRecord::encode(&patch, &mut record).unwrap();
+        let decoded = PatchRecord::decode(&record).unwrap();
+        assert_patch_close(&patch.layer_a, &decoded.layer_a);
+        assert_patch_close(&patch.layer_b, &decoded.layer_b);
+        assert_eq!(patch.mode, decoded.mode);
+        assert_eq!(patch.split_point, decoded.split_point);
+        assert!(
+            record[HEADER_LEN + PAYLOAD_LEN..]
+                .iter()
+                .all(|byte| *byte == 0xff)
+        );
+    }
+
+    #[test]
+    fn populated_patch_round_trips() {
+        let mut patch = Patch {
+            mode: LayerMode::Split,
+            split_point: 72,
+            ..Patch::default()
+        };
+        patch.layer_a.name.push_str("Storage test A").unwrap();
+        patch.layer_b.name.push_str("Storage test B").unwrap();
+        patch.layer_a.unison_chord = crate::ChordMemory::from_intervals(&[0, 3, 7, 12]);
+        patch.layer_a.filter.cutoff = 4321.25;
+        patch.layer_b.filter.cutoff = 8765.0;
+        patch.layer_a.osc1.fine_tune = -17.75;
+        patch.layer_b.lfos[2].rate_hz = 13.125;
+        patch.layer_a.mod_matrix.free_slots[3] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Velocity,
+            destination: ModDestination::FilterCutoff,
+            amount: -0.625,
+        };
+        patch.layer_b.mod_matrix.dedicated[1] = DedicatedModSlot {
+            enabled: true,
+            destination: ModDestination::FxMix,
+            amount: 0.375,
+        };
+        let mut record = [0; PATCH_RECORD_SIZE];
+        PatchRecord::encode(&patch, &mut record).unwrap();
+        let decoded = PatchRecord::decode(&record).unwrap();
+        assert_patch_close(&patch.layer_a, &decoded.layer_a);
+        assert_patch_close(&patch.layer_b, &decoded.layer_b);
+        assert_eq!(decoded.mode, LayerMode::Split);
+        assert_eq!(decoded.split_point, 72);
+    }
+
+    #[test]
+    fn randomized_patches_round_trip() {
+        let mut rng = Pcg32::seed_from_u64(0x5eed_f1a5_1234_5678);
+        for _ in 0..128 {
+            let mut patch = Patch::default();
+            for layer in [&mut patch.layer_a, &mut patch.layer_b] {
+                for id in PARAM_IDS {
+                    layer.set_param(id, random_unit(&mut rng) * 510.0 - 10.0);
+                }
+                for slot in &mut layer.mod_matrix.free_slots {
+                    slot.enabled = rng.next_u32() & 1 != 0;
+                    slot.source =
+                        ModSource::from_index(rng.next_u32() as usize % ModSource::ALL.len());
+                    slot.destination =
+                        ModDestination::from_index(rng.next_u32() as usize % ModDestination::COUNT);
+                    slot.amount = random_unit(&mut rng) * 2.0 - 1.0;
+                }
+                for slot in &mut layer.mod_matrix.dedicated {
+                    slot.enabled = rng.next_u32() & 1 != 0;
+                    slot.destination =
+                        ModDestination::from_index(rng.next_u32() as usize % ModDestination::COUNT);
+                    slot.amount = random_unit(&mut rng) * 2.0 - 1.0;
+                }
+            }
+            patch.mode = match rng.next_u32() % 3 {
+                0 => LayerMode::Normal,
+                1 => LayerMode::Stack,
+                _ => LayerMode::Split,
+            };
+            patch.split_point = (rng.next_u32() % 121) as u8;
+            let mut record = [0; PATCH_RECORD_SIZE];
+            PatchRecord::encode(&patch, &mut record).unwrap();
+            let decoded = PatchRecord::decode(&record).unwrap();
+            assert_patch_close(&patch.layer_a, &decoded.layer_a);
+            assert_patch_close(&patch.layer_b, &decoded.layer_b);
+            assert_eq!(patch.mode, decoded.mode);
+            assert_eq!(patch.split_point, decoded.split_point);
+        }
+    }
+
+    #[test]
+    fn erased_slot_is_default_patch() {
+        let erased = [0xff; PATCH_RECORD_SIZE];
+        let mut encoded_default = [0; PATCH_RECORD_SIZE];
+        PatchRecord::encode(&Patch::default(), &mut encoded_default).unwrap();
+        let encoded = PatchRecord::decode(&encoded_default).unwrap();
+        let erased = PatchRecord::decode(&erased).unwrap();
+        assert_patch_close(&encoded.layer_a, &erased.layer_a);
+        assert_patch_close(&encoded.layer_b, &erased.layer_b);
+    }
+
+    #[test]
+    fn corruption_and_versions_are_rejected() {
+        let mut record = [0; PATCH_RECORD_SIZE];
+        PatchRecord::encode(&Patch::default(), &mut record).unwrap();
+        record[HEADER_LEN + 7] ^= 1;
+        assert!(matches!(
+            PatchRecord::decode(&record),
+            Err(PatchRecordError::ChecksumMismatch)
+        ));
+        PatchRecord::encode(&Patch::default(), &mut record).unwrap();
+        record[4] += 1;
+        assert!(matches!(
+            PatchRecord::decode(&record),
+            Err(PatchRecordError::UnsupportedVersion)
+        ));
+
+        PatchRecord::encode(&Patch::default(), &mut record).unwrap();
+        record[5] = record[5].wrapping_add(1);
+        assert!(matches!(
+            PatchRecord::decode(&record),
+            Err(PatchRecordError::CodecDrift)
+        ));
+
+        PatchRecord::encode(&Patch::default(), &mut record).unwrap();
+        record[6..8].copy_from_slice(&0_u16.to_le_bytes());
+        assert!(matches!(
+            PatchRecord::decode(&record),
+            Err(PatchRecordError::InvalidLength)
+        ));
+
+        PatchRecord::encode(&Patch::default(), &mut record).unwrap();
+        record[HEADER_LEN] = 3;
+        let checksum = crc32(&record[HEADER_LEN..HEADER_LEN + PAYLOAD_LEN]);
+        record[8..12].copy_from_slice(&checksum.to_le_bytes());
+        assert!(matches!(
+            PatchRecord::decode(&record),
+            Err(PatchRecordError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn values_outside_binary16_range_are_rejected_before_storage() {
+        let mut patch = Patch::default();
+        patch.layer_b.filter.cutoff = f32::MAX;
+        let mut record = [0; PATCH_RECORD_SIZE];
+        assert_eq!(
+            PatchRecord::encode(&patch, &mut record),
+            Err(PatchRecordError::ValueOutOfRange)
+        );
+    }
+
+    #[test]
+    fn binary16_handles_storage_value_range() {
+        for value in [0.0, -0.0, 0.0005, 0.022, 0.25, 1.0, 120.0, 500.0, 20_000.0] {
+            assert_close(value, f16_to_f32(f32_to_f16(value)));
+        }
+    }
+
+    #[test]
+    fn crc32_matches_standard_vector() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
     }
 }

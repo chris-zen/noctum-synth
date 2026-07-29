@@ -1,6 +1,9 @@
 //! Post-voice effects.
 
-use core::marker::PhantomData;
+use core::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use crate::dsp::{ParameterSmoother, smoothing_coefficient_euler_approx};
 use crate::math::{F32, TAU};
@@ -168,19 +171,17 @@ struct ProcessContext {
     lowest_note: Option<u8>,
 }
 
-/// Effects processor backed by caller-selected mutable sample storage.
+/// Allocation-free effects processor state.
 ///
-/// `Memory` is deliberately expressed only in terms of ordinary slice access. A
-/// host can use an array or `Vec`, while embedded firmware can borrow memory
-/// initialized by its board support package.
-pub struct EffectsWithMemory<Memory> {
+/// Delay memory is supplied temporarily to [`EffectsState::next`], so this
+/// state can live in an engine that owns and partitions the backing storage.
+pub struct EffectsState {
     sample_rate: f32,
     tempo_bpm: f32,
     mix: f32,
     enabled: bool,
     selected: SelectedEffect,
     modulation_smoother: EffectModulationSmoother,
-    buffer: Memory,
     delay_mono: MonoDelay,
     ddl_stereo: StereoDelay,
     bucket_brigade_delay: BucketBrigadeDelay,
@@ -196,14 +197,17 @@ pub struct EffectsWithMemory<Memory> {
     high_pass: HighPass,
 }
 
+/// Owning convenience wrapper around [`EffectsState`] and its delay memory.
+///
+/// `Memory` uses ordinary slice access: a host can own an array or boxed slice,
+/// while firmware can borrow memory initialized by its board support package.
+pub struct EffectsWithMemory<Memory> {
+    state: EffectsState,
+    buffer: Memory,
+}
+
 /// Effects processor with inline, statically sized sample storage.
 pub type Effects<const SAMPLES: usize> = EffectsWithMemory<[f32; SAMPLES]>;
-
-/// Effects implementation selected at the effects subsystem boundary.
-///
-/// Keeping the alias here lets an embedded kernel be introduced without
-/// leaking platform selection into the engine.
-pub(crate) type EngineEffects<Memory> = EffectsWithMemory<Memory>;
 
 impl<const SAMPLES: usize> EffectsWithMemory<[f32; SAMPLES]> {
     /// Creates an effects processor with an inline, statically sized buffer.
@@ -211,26 +215,8 @@ impl<const SAMPLES: usize> EffectsWithMemory<[f32; SAMPLES]> {
         // Construct the large inline array in place. Passing it through the
         // generic constructor creates an additional debug-build stack copy.
         Self {
-            sample_rate: sample_rate.max(1.0),
-            tempo_bpm: DEFAULT_TEMPO_BPM,
-            mix: 0.0,
-            enabled: false,
-            selected: SelectedEffect::DelayMono,
-            modulation_smoother: EffectModulationSmoother::new(sample_rate),
+            state: EffectsState::new(sample_rate),
             buffer: [0.0; SAMPLES],
-            delay_mono: MonoDelay::default(),
-            ddl_stereo: StereoDelay::default(),
-            bucket_brigade_delay: BucketBrigadeDelay::default(),
-            chorus: Chorus::default(),
-            phaser_high: Phaser::default(),
-            phaser_low: Phaser::default(),
-            phaser_mst: Phaser::default(),
-            flanger1: Flanger::new(FLANGER_1_FEEDBACK),
-            flanger2: Flanger::new(FLANGER_2_FEEDBACK),
-            reverb: Reverb::default(),
-            ring_mod: RingMod::default(),
-            distortion: Distortion::default(),
-            high_pass: HighPass::default(),
         }
     }
 }
@@ -243,13 +229,53 @@ where
     pub fn new_with_memory(sample_rate: f32, mut buffer: Memory) -> Self {
         buffer.as_mut().fill(0.0);
         Self {
+            state: EffectsState::new(sample_rate),
+            buffer,
+        }
+    }
+
+    pub fn next(
+        &mut self,
+        left: f32,
+        right: f32,
+        modulation: EffectModulation,
+        lowest_note: Option<u8>,
+        ctx: &mut RenderContext<'_>,
+    ) -> (f32, f32) {
+        self.state.next(
+            left,
+            right,
+            self.buffer.as_mut(),
+            modulation,
+            lowest_note,
+            ctx,
+        )
+    }
+}
+
+impl<Memory> Deref for EffectsWithMemory<Memory> {
+    type Target = EffectsState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl<Memory> DerefMut for EffectsWithMemory<Memory> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl EffectsState {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
             sample_rate: sample_rate.max(1.0),
             tempo_bpm: DEFAULT_TEMPO_BPM,
             mix: 0.0,
             enabled: false,
             selected: SelectedEffect::DelayMono,
             modulation_smoother: EffectModulationSmoother::new(sample_rate),
-            buffer,
             delay_mono: MonoDelay::default(),
             ddl_stereo: StereoDelay::default(),
             bucket_brigade_delay: BucketBrigadeDelay::default(),
@@ -333,6 +359,7 @@ where
         &mut self,
         left: f32,
         right: f32,
+        buffer: &mut [f32],
         modulation: EffectModulation,
         lowest_note: Option<u8>,
         ctx: &mut RenderContext<'_>,
@@ -356,19 +383,12 @@ where
         crate::profiler_end!(ctx, RenderStage::EffectsPreparation);
 
         let wet = match self.selected {
-            SelectedEffect::DelayMono => {
-                self.delay_mono
-                    .next(left, right, self.buffer.as_mut(), context)
-            }
-            SelectedEffect::DdlStereo => {
-                self.ddl_stereo
-                    .next(left, right, self.buffer.as_mut(), context)
-            }
+            SelectedEffect::DelayMono => self.delay_mono.next(left, right, buffer, context),
+            SelectedEffect::DdlStereo => self.ddl_stereo.next(left, right, buffer, context),
             SelectedEffect::BucketBrigadeDelay => {
-                self.bucket_brigade_delay
-                    .next(left, right, self.buffer.as_mut(), context)
+                self.bucket_brigade_delay.next(left, right, buffer, context)
             }
-            SelectedEffect::Chorus => self.chorus.next(left, right, self.buffer.as_mut(), context),
+            SelectedEffect::Chorus => self.chorus.next(left, right, buffer, context),
             SelectedEffect::PhaserHigh => {
                 Some(
                     self.phaser_high
@@ -387,18 +407,9 @@ where
                         .next(left, right, context, PHASER_MST_FEEDBACK),
                 )
             }
-            SelectedEffect::Flanger1 => {
-                self.flanger1
-                    .next(left, right, self.buffer.as_mut(), context)
-            }
-            SelectedEffect::Flanger2 => {
-                self.flanger2
-                    .next(left, right, self.buffer.as_mut(), context)
-            }
-            SelectedEffect::Reverb => {
-                self.reverb
-                    .next(left, right, self.buffer.as_mut(), context, ctx)
-            }
+            SelectedEffect::Flanger1 => self.flanger1.next(left, right, buffer, context),
+            SelectedEffect::Flanger2 => self.flanger2.next(left, right, buffer, context),
+            SelectedEffect::Reverb => self.reverb.next(left, right, buffer, context, ctx),
             SelectedEffect::RingMod => Some(self.ring_mod.next(left, right, context)),
             SelectedEffect::Distortion => Some(self.distortion.next(left, right, context)),
             SelectedEffect::HighPass => Some(self.high_pass.next(left, right, context)),
@@ -1421,13 +1432,16 @@ mod tests {
     #[test]
     fn caller_provided_storage_matches_inline_storage() {
         let mut borrowed_memory = [0.0; 128];
+        let mut state_memory = [0.0; 128];
         let mut inline = Effects::<128>::new(DEFAULT_SAMPLE_RATE);
         let mut borrowed =
             EffectsWithMemory::new_with_memory(DEFAULT_SAMPLE_RATE, borrowed_memory.as_mut_slice());
+        let mut state = EffectsState::new(DEFAULT_SAMPLE_RATE);
 
         for effect in [
             &mut inline as &mut dyn EffectSetup,
             &mut borrowed as &mut dyn EffectSetup,
+            &mut state as &mut dyn EffectSetup,
         ] {
             effect.configure_delay();
         }
@@ -1435,20 +1449,32 @@ mod tests {
         let mut ctx = crate::create_render_context!();
         for frame in 0..256 {
             let input = if frame == 0 { (0.5, -0.25) } else { (0.0, 0.0) };
+            let expected = inline.next(
+                input.0,
+                input.1,
+                EffectModulation::default(),
+                None,
+                &mut ctx,
+            );
             assert_eq!(
-                inline.next(
-                    input.0,
-                    input.1,
-                    EffectModulation::default(),
-                    None,
-                    &mut ctx
-                ),
+                expected,
                 borrowed.next(
                     input.0,
                     input.1,
                     EffectModulation::default(),
                     None,
                     &mut ctx
+                ),
+            );
+            assert_eq!(
+                expected,
+                state.next(
+                    input.0,
+                    input.1,
+                    &mut state_memory,
+                    EffectModulation::default(),
+                    None,
+                    &mut ctx,
                 ),
             );
         }
@@ -1462,6 +1488,16 @@ mod tests {
     where
         Memory: AsRef<[f32]> + AsMut<[f32]>,
     {
+        fn configure_delay(&mut self) {
+            self.set_enabled(true);
+            self.set_type(EffectType::DelayMono);
+            self.set_mix(0.7);
+            self.set_param1(0.2);
+            self.set_param2(0.3);
+        }
+    }
+
+    impl EffectSetup for EffectsState {
         fn configure_delay(&mut self) {
             self.set_enabled(true);
             self.set_type(EffectType::DelayMono);

@@ -22,7 +22,7 @@ const EFFECTS_SAMPLES: usize = 48_000 * 2;
 const WARMUP_BLOCKS: usize = 128;
 const MEASURED_BLOCKS: usize = 512;
 
-type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
+type HardwareSynth = SynthEngineWithMemory<&'static mut [f32], 1>;
 
 #[cortex_m_rt::entry]
 fn main() -> ! {

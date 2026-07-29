@@ -35,7 +35,7 @@ const PROFILED_BLOCKS: usize = 256;
 const PROFILE_THRESHOLD_CYCLES: u32 = 272_000;
 const PROFILE_TRIGGER_CYCLES: u32 = PROFILE_THRESHOLD_CYCLES;
 
-type HardwareSynth<'a> = SynthEngineWithMemory<1, &'a mut [f32]>;
+type HardwareSynth<'a> = SynthEngineWithMemory<&'a mut [f32], 1>;
 
 #[cortex_m_rt::entry]
 fn main() -> ! {

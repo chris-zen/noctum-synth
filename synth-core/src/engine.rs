@@ -5,15 +5,12 @@ use crate::EffectType;
 use crate::RenderProfiler;
 use crate::dsp::lookahead_limiter::LookaheadLimiter;
 use crate::dsp::{FilterOversampling, FilterType};
-use crate::effects::EngineEffects;
 use crate::midi::clock::MidiClockFollower;
 use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::rate_adapter::RateAdapter;
-use crate::voice::VoiceManager;
-use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, LayerPatch, ParamId, VOICE_PACKS,
-};
+use crate::voice::{LayerEngine, VoicePool};
+use crate::{ActiveNotes, ClockDivision, ControlMessage, LayerPatch, ParamId, VOICE_PACKS};
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
 ///
@@ -23,62 +20,67 @@ const MIX_BUS_GAIN: f32 = 0.55;
 
 /// Synthesis engine with inline effects storage.
 pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize = 48_000> =
-    SynthEngineWithMemory<PACKS, [f32; FX_SAMPLES]>;
+    SynthEngineWithMemory<[f32; FX_SAMPLES], PACKS>;
 
 /// Owns all voices and renders stereo audio from [`ControlMessage`] input.
 ///
 /// Construct with [`SynthEngine::new`], feed control messages from the host
 /// thread, then call [`SynthEngine::process`] or
 /// [`SynthEngine::process_interleaved`] on the audio thread.
-pub struct SynthEngineWithMemory<const PACKS: usize, Memory> {
-    voices: VoiceManager<PACKS>,
-    effects: EngineEffects<Memory>,
-    local_tempo_bpm: f32,
-    tempo_bpm: f32,
+pub struct SynthEngineWithMemory<Memory, const PACKS: usize, const LAYERS: usize = 1> {
+    effects_memory: Memory,
+    voice_pool: VoicePool<PACKS>,
+    layer: LayerEngine<PACKS>,
     midi_clock: MidiClockFollower,
-    clock_division: ClockDivision,
-    master_volume: f32,
     output_limiter: LookaheadLimiter,
     rate_adapter: RateAdapter,
 }
 
-impl<const PACKS: usize, const FX_SAMPLES: usize> SynthEngineWithMemory<PACKS, [f32; FX_SAMPLES]> {
+impl<const PACKS: usize, const FX_SAMPLES: usize>
+    SynthEngineWithMemory<[f32; FX_SAMPLES], PACKS, 1>
+{
     /// Creates an engine at `sample_rate` with inline effects storage.
     pub fn new(sample_rate: f32) -> Self {
         let internal_sample_rate = RateAdapter::internal_sample_rate(sample_rate);
-        let mut effects = crate::effects::Effects::new(internal_sample_rate);
-        effects.set_tempo_bpm(DEFAULT_TEMPO_BPM);
         Self {
-            voices: VoiceManager::<PACKS>::new(internal_sample_rate),
-            effects,
-            local_tempo_bpm: DEFAULT_TEMPO_BPM,
-            tempo_bpm: DEFAULT_TEMPO_BPM,
+            effects_memory: [0.0; FX_SAMPLES],
+            voice_pool: VoicePool::<PACKS>::new(internal_sample_rate),
+            layer: LayerEngine::<PACKS>::new(internal_sample_rate),
             midi_clock: MidiClockFollower::new(sample_rate),
-            clock_division: ClockDivision::default(),
-            master_volume: 0.8,
             output_limiter: LookaheadLimiter::new(internal_sample_rate),
             rate_adapter: RateAdapter::default(),
         }
     }
 }
 
-impl<const PACKS: usize, Memory> SynthEngineWithMemory<PACKS, Memory>
+impl<Memory, const PACKS: usize, const LAYERS: usize> SynthEngineWithMemory<Memory, PACKS, LAYERS>
 where
     Memory: AsRef<[f32]> + AsMut<[f32]>,
 {
+    const VALID_LAYER_COUNT: () = assert!(LAYERS == 1, "phase 4 supports exactly one layer");
+
     /// Creates an engine using caller-provided effects memory.
-    pub fn new_with_effects_memory(sample_rate: f32, effects_memory: Memory) -> Self {
+    ///
+    /// Phase 4 supports `LAYERS = 1`; Phase 5 enables and validates the
+    /// two-layer form.
+    ///
+    /// ```compile_fail
+    /// use synth_core::SynthEngineWithMemory;
+    ///
+    /// let _ = SynthEngineWithMemory::<[f32; 64], 1, 2>::new_with_effects_memory(
+    ///     48_000.0,
+    ///     [0.0; 64],
+    /// );
+    /// ```
+    pub fn new_with_effects_memory(sample_rate: f32, mut effects_memory: Memory) -> Self {
+        let () = Self::VALID_LAYER_COUNT;
+        effects_memory.as_mut().fill(0.0);
         let internal_sample_rate = RateAdapter::internal_sample_rate(sample_rate);
-        let mut effects = EngineEffects::new_with_memory(internal_sample_rate, effects_memory);
-        effects.set_tempo_bpm(DEFAULT_TEMPO_BPM);
         Self {
-            voices: VoiceManager::<PACKS>::new(internal_sample_rate),
-            effects,
-            local_tempo_bpm: DEFAULT_TEMPO_BPM,
-            tempo_bpm: DEFAULT_TEMPO_BPM,
+            effects_memory,
+            voice_pool: VoicePool::<PACKS>::new(internal_sample_rate),
+            layer: LayerEngine::<PACKS>::new(internal_sample_rate),
             midi_clock: MidiClockFollower::new(sample_rate),
-            clock_division: ClockDivision::default(),
-            master_volume: 0.8,
             output_limiter: LookaheadLimiter::new(internal_sample_rate),
             rate_adapter: RateAdapter::default(),
         }
@@ -88,26 +90,27 @@ where
     pub fn handle_control(&mut self, msg: ControlMessage) {
         match msg {
             ControlMessage::SetParam(ParamId::MasterVolume, value) => {
-                self.master_volume = value.clamp(0.0, 1.0);
+                self.layer.set_program_volume(value);
             }
             ControlMessage::SetParam(ParamId::EffectEnabled, value) => {
-                self.effects.set_enabled(value >= 0.5);
+                self.layer.effects_mut().set_enabled(value >= 0.5);
             }
             ControlMessage::SetParam(ParamId::EffectType, value) => {
-                self.effects
+                self.layer
+                    .effects_mut()
                     .set_type(EffectType::from_index(value as usize));
             }
             ControlMessage::SetParam(ParamId::EffectMix, value) => {
-                self.effects.set_mix(value);
+                self.layer.effects_mut().set_mix(value);
             }
             ControlMessage::SetParam(ParamId::EffectClockSync, value) => {
-                self.effects.set_clock_sync(value >= 0.5);
+                self.layer.effects_mut().set_clock_sync(value >= 0.5);
             }
             ControlMessage::SetParam(ParamId::EffectParam1, value) => {
-                self.effects.set_param1(value);
+                self.layer.effects_mut().set_param1(value);
             }
             ControlMessage::SetParam(ParamId::EffectParam2, value) => {
-                self.effects.set_param2(value);
+                self.layer.effects_mut().set_param2(value);
             }
             ControlMessage::SetTempoBpm { bpm } => self.set_tempo_bpm(bpm),
             ControlMessage::SetMidiClockMode(mode) => self.set_midi_clock_mode(mode),
@@ -120,7 +123,7 @@ where
                 self.set_filter_oversampling(oversampling);
             }
             ControlMessage::SetFilterType(filter_type) => self.set_filter_type(filter_type),
-            message => self.voices.handle_control(message),
+            message => self.layer.handle_control(&mut self.voice_pool, message),
         }
     }
 
@@ -130,20 +133,17 @@ where
 
     /// Applies every parameter and modulation route in a patch.
     pub fn apply_patch(&mut self, patch: &LayerPatch) {
-        self.set_tempo_bpm(patch.bpm);
+        self.layer.set_local_tempo_bpm(patch.bpm);
         let effective_tempo_bpm = self
             .midi_clock
             .learned_bpm()
             .filter(|_| self.midi_clock.mode().receives_clock())
-            .unwrap_or(self.local_tempo_bpm);
-        self.set_clock_division(patch.clock_divide);
-        self.voices.apply_patch(patch);
-        self.effects.set_params(patch.effects);
-        // VoiceManager::apply_patch writes the patch BPM into each block. Restore the
+            .unwrap_or(self.layer.local_tempo_bpm());
+        self.layer.apply_patch(&mut self.voice_pool, patch);
+        // LayerEngine::apply_patch writes the patch BPM into each block. Restore the
         // externally learned tempo after that write when the engine is slaved;
         // in local modes this simply reapplies the patch BPM.
         self.apply_effective_tempo(effective_tempo_bpm);
-        self.master_volume = patch.master_volume.clamp(0.0, 1.0);
     }
 
     /// Updates the global tempo and propagates it to clock-synchronized consumers.
@@ -151,29 +151,27 @@ where
     /// In slave modes this updates the editable fallback without displacing an
     /// already-learned external tempo.
     pub fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
-        self.local_tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
+        self.layer.set_local_tempo_bpm(tempo_bpm);
         if self.midi_clock.learned_bpm().is_none() || !self.midi_clock.mode().receives_clock() {
-            self.apply_effective_tempo(self.local_tempo_bpm);
+            self.apply_effective_tempo(self.layer.local_tempo_bpm());
         }
     }
 
     fn apply_effective_tempo(&mut self, tempo_bpm: f32) {
-        self.tempo_bpm = tempo_bpm.clamp(30.0, 250.0);
-        self.effects.set_tempo_bpm(self.tempo_bpm);
-        self.voices.set_tempo_bpm(self.tempo_bpm);
+        self.layer.set_tempo_bpm(&mut self.voice_pool, tempo_bpm);
     }
 
     pub fn tempo_bpm(&self) -> f32 {
-        self.tempo_bpm
+        self.layer.tempo_bpm()
     }
 
     pub fn local_tempo_bpm(&self) -> f32 {
-        self.local_tempo_bpm
+        self.layer.local_tempo_bpm()
     }
 
     pub fn set_midi_clock_mode(&mut self, mode: MidiClockMode) {
         if self.midi_clock.set_mode(mode) {
-            self.apply_effective_tempo(self.local_tempo_bpm);
+            self.apply_effective_tempo(self.layer.local_tempo_bpm());
         }
     }
 
@@ -184,26 +182,28 @@ where
     }
 
     pub fn midi_clock_status(&self) -> MidiClockStatus {
-        self.midi_clock.status(self.tempo_bpm)
+        self.midi_clock.status(self.layer.tempo_bpm())
     }
 
     pub fn set_clock_division(&mut self, division: ClockDivision) {
-        self.clock_division = division;
-        self.voices.set_clock_division(division);
+        self.layer
+            .set_clock_division(&mut self.voice_pool, division);
     }
 
     pub fn clock_division(&self) -> ClockDivision {
-        self.clock_division
+        self.layer.clock_division()
     }
 
     /// Applies the nonlinear filter oversampling policy to all voices.
     pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
-        self.voices.set_filter_oversampling(oversampling);
+        self.layer
+            .set_filter_oversampling(&mut self.voice_pool, oversampling);
     }
 
     /// Applies a filter model to all voices, resetting their filter state.
     pub fn set_filter_type(&mut self, filter_type: FilterType) {
-        self.voices.set_filter_type(filter_type);
+        self.layer
+            .set_filter_type(&mut self.voice_pool, filter_type);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -291,34 +291,39 @@ where
     }
 
     fn next(&mut self, ctx: &mut RenderContext<'_>) -> (f32, f32) {
-        let (left, right) = self.voices.next(ctx);
+        let (left, right) = self.layer.next(&mut self.voice_pool, ctx);
+        let effect_modulation = self.layer.effect_modulation();
+        let lowest_active_note = self.layer.lowest_active_note(&self.voice_pool);
 
         crate::profiler_begin!(ctx, RenderStage::Effects);
         let left = left * MIX_BUS_GAIN;
         let right = right * MIX_BUS_GAIN;
-        let (left, right) = self.effects.next(
+        let (effects, program_volume) = self.layer.effects_and_volume();
+        let (left, right) = effects.next(
             left,
             right,
-            self.voices.effect_modulation(),
-            self.voices.lowest_active_note(),
+            self.effects_memory.as_mut(),
+            effect_modulation,
+            lowest_active_note,
             ctx,
         );
         crate::profiler_end!(ctx, RenderStage::Effects);
 
         crate::profiler_begin!(ctx, RenderStage::MasterOutput);
-        let gain = self.master_volume;
-        let (left, right) = self.output_limiter.next(left * gain, right * gain);
+        let (left, right) = self
+            .output_limiter
+            .next(left * program_volume, right * program_volume);
         let output = (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0));
         crate::profiler_end!(ctx, RenderStage::MasterOutput);
         output
     }
 
     pub fn active_notes(&self) -> ActiveNotes<PACKS> {
-        self.voices.active_notes()
+        self.layer.active_notes(&self.voice_pool)
     }
 
     pub fn active_voice_count(&self) -> usize {
-        self.voices.active_voice_count()
+        self.layer.active_voice_count(&self.voice_pool)
     }
 }
 
@@ -1534,7 +1539,7 @@ mod tests {
         patch.effects.enabled = true;
         patch.effects.mix = 0.75;
         engine.apply_patch(&patch);
-        assert_eq!(engine.master_volume, 0.25);
+        assert_eq!(engine.layer.program_volume(), 0.25);
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub use task::run_task;
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use synth_core::LayerPatch;
+use synth_core::Patch;
 
 pub use selection::ProgramSelection;
 
@@ -20,7 +20,7 @@ pub const STORAGE_QUEUE_CAPACITY: usize = 8;
 #[derive(Clone, Debug)]
 pub enum ProgramStorageRequest {
     Load { bank: u8, program: u8 },
-    Save { bank: u8, program: u8, patch: LayerPatch },
+    Save { bank: u8, program: u8, patch: Patch },
 }
 
 pub type ProgramStorageQueue =
@@ -36,7 +36,7 @@ pub fn init(
     resources: embassy_daisy::qspi::QspiFlashResources,
 ) -> (
     store::ProgramStore<embassy_daisy::qspi::QspiFlash>,
-    synth_core::LayerPatch,
+    synth_core::Patch,
     u8,
 ) {
     let mut qspi = QspiFlash::new(resources);
@@ -77,7 +77,7 @@ pub fn init(
                 last_bank,
                 last_program
             );
-            synth_core::LayerPatch::default()
+            synth_core::Patch::default()
         }
     };
     (program_store, initial_patch, last_bank)

@@ -167,11 +167,15 @@ The app accepts both formats:
 | Prophet '08 sound bank | `F0 01 23 02 … F7` (banks 0–1) | **F5–F6** |
 
 Rev2 factory programs therefore land under F1–F4; Prophet '08 programs under
-F5 and F6. Each message is decoded to Layer A and written as pretty JSON
-without changing the active engine or UI. Filenames use the bank label, a
+F5 and F6. Each message is decoded as a complete two-layer program and written
+as versioned pretty JSON without changing the active engine or UI. Filenames use the bank label, a
 1-based program number, and the embedded Layer A name — for example
 `F1-001-LosVangelis2041.json` or `F5-001-Wagnerian.json`. Receiving the same
 bank and program again overwrites that file.
+
+Native files use schema version 1 and contain `mode`, `split_point`, and
+`layers.a` / `layers.b`. Older raw single-`LayerPatch` JSON files are not
+accepted; re-import their source programs instead.
 
 Imported patches are saved alongside user-saved patches:
 
@@ -186,8 +190,9 @@ Send SysEx at a reasonable speed. Hardware program memory accepts both Rev2 and
 Prophet '08 Program Data; see [Factory Presets](appendix/factory-presets.md).
 
 Whole patch loads and initial device synchronization use one Rev2 Program Edit
-Buffer SysEx message. Layer A contains the local patch, Layer B contains the
-local default patch, and unsupported raw fields are zero. Live UI edits remain
+Buffer SysEx message. The current UI edits and renders Layer A while native
+persistence preserves Layer B, mode, and split point for the layered engine
+phases. Unsupported raw fields are zero. Live UI edits remain
 Rev2 NRPN messages on channel 1. Repeated values that quantize to the same Rev2
 value are suppressed. Parameter changes and patches received from MIDI update
 the local engine and UI without being copied to MIDI output, preventing

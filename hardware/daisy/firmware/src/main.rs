@@ -9,9 +9,7 @@ use {defmt_rtt as _, panic_probe as _};
 
 use synth_core::midi::clock::MidiClockMode;
 
-use noctum_micro::audio::{
-    ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue,
-};
+use noctum_micro::audio::{ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue};
 use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use noctum_micro::pending_releases::PendingReleases;
 use noctum_micro::{audio, diagnostics, fatal, indicator, midi, program, usb_audio};
@@ -74,7 +72,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         engine.set_filter_type(FILTER_TYPE);
         engine.set_filter_oversampling(FILTER_OVERSAMPLING);
         engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
-        engine.apply_patch(&initial_patch);
+        engine.apply_patch(&initial_patch.layer_a);
         engine
     }) else {
         fatal("synth engine already initialized");

@@ -178,11 +178,15 @@ public release:
 
 ## Program storage
 
-8 banks × 128 programs (512-byte records) in QSPI flash starting at offset
-`0x000C0000`. The bootloader/application reservation below this offset is never
-erased. On first boot or when the catalog is invalid, firmware formats the
-region. Empty slots load the default patch. One thread-mode task owns QSPI;
-neither flash erase nor page programming runs in the audio path.
+8 banks × 128 complete two-layer programs (1024-byte records) are stored in
+QSPI. Catalog A is at `0x000C0000`, records occupy
+`0x000C1000..0x001C1000`, and Catalog B is at `0x001C1000`. The
+bootloader/application reservation below this region and the high-address raw
+factory bank are never erased. On first boot or when neither versioned catalog
+is valid, firmware formats only this region. Empty slots load the default
+complete patch. Until layered rendering lands, firmware renders Layer A from
+the loaded record. One thread-mode task owns QSPI; neither flash erase nor page
+programming runs in the audio path.
 
 Bank Select (CC0/CC32, values 0–7) followed by Program Change loads a program.
 Rev2 and Prophet '08 Program Data SysEx messages save to their addressed slot.

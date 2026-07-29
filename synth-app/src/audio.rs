@@ -960,7 +960,7 @@ fn find_device(devices: &[cpal::Device], filter: &str) -> Option<cpal::Device> {
 /// spectrum blocks and timing metrics back to the UI.
 struct Renderer {
     engine_audio: SynthEngineAudio,
-    engine: SynthEngineWithMemory<VOICE_PACKS, Box<[f32]>>,
+    engine: SynthEngineWithMemory<Box<[f32]>, VOICE_PACKS>,
     timing: AudioTiming,
     input: Option<rtrb::Consumer<f32>>,
     input_enabled: Arc<AtomicBool>,
@@ -983,7 +983,7 @@ impl Renderer {
         // Rev2's documented maximum. Heap storage avoids a large audio-thread
         // stack object at high host sample rates.
         let effects_memory = vec![0.0; sample_rate.max(1.0) as usize * 2].into_boxed_slice();
-        let mut engine = SynthEngineWithMemory::<VOICE_PACKS, _>::new_with_effects_memory(
+        let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS>::new_with_effects_memory(
             sample_rate,
             effects_memory,
         );
