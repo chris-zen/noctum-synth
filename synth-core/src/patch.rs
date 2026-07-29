@@ -1293,7 +1293,8 @@ pub struct LayerPatch {
     pub effects: EffectParams,
     #[cfg_attr(feature = "serde", serde(default))]
     pub arp: ArpParams,
-    pub master_volume: f32,
+    #[cfg_attr(feature = "serde", serde(alias = "master_volume"))]
+    pub program_volume: f32,
     pub name: PatchName,
 }
 
@@ -1330,7 +1331,7 @@ impl Default for LayerPatch {
             mod_matrix: ModMatrix::default(),
             effects: EffectParams::default(),
             arp: ArpParams::default(),
-            master_volume: 0.8,
+            program_volume: 0.8,
             name: PatchName::new(),
         }
     }
@@ -1506,7 +1507,7 @@ impl LayerPatch {
             },
         );
 
-        f(ParamId::MasterVolume, self.master_volume);
+        f(ParamId::ProgramVolume, self.program_volume);
         f(ParamId::AnalogDrift, self.osc_slop);
     }
 
@@ -1658,7 +1659,7 @@ impl LayerPatch {
             ParamId::EffectClockSync => self.effects.clock_sync = flag,
             ParamId::EffectParam1 => self.effects.param1 = value,
             ParamId::EffectParam2 => self.effects.param2 = value,
-            ParamId::MasterVolume => self.master_volume = value,
+            ParamId::ProgramVolume => self.program_volume = value,
             ParamId::ArpEnabled => self.arp.enabled = flag,
             ParamId::ArpMode => self.arp.mode = ArpMode::from_index(value as usize),
             ParamId::ArpRange => self.arp.range = (value as u8).clamp(0, 2) + 1,
@@ -1677,11 +1678,7 @@ impl LayerPatch {
         }
     }
 
-    pub(crate) fn set_modulation_param(
-        &mut self,
-        route: ModRoute,
-        parameter: crate::ModulationParam,
-    ) {
+    pub fn set_modulation_param(&mut self, route: ModRoute, parameter: crate::ModulationParam) {
         match route {
             ModRoute::Free(index) => {
                 if let Some(slot) = self.mod_matrix.free_slots.get_mut(index) {

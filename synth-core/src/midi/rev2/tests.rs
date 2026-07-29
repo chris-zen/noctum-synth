@@ -18,11 +18,11 @@ use crate::{
                 MappedUpdate, emit_nrpn, emit_osc_shape, map_cc, map_nrpn, program_nrpn_value,
                 store_program_nrpn,
             },
+            program::decode::program_payload as decode_program_payload,
             program::{
                 PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN,
                 PROGRAM_PACKED_LEN, layer_mode_from_raw, layer_mode_raw,
             },
-            program::decode::program_payload as decode_program_payload,
         },
     },
 };
@@ -201,6 +201,41 @@ fn global_midi_clock_mode_round_trips_as_nrpn_4099() {
         });
         assert_eq!(decoded, Some(MidiUpdate::MidiClockMode(mode)));
     }
+}
+
+#[test]
+fn master_volume_cc7_is_global_and_nrpn_29_is_program_volume() {
+    let mut decoder = ControllerDecoder::default();
+    let mut updates = Vec::<MidiUpdate, 4>::new();
+    assert!(decoder.control_change(0, 7, 64, |update| {
+        let _ = updates.push(update);
+    }));
+    assert_eq!(updates.as_slice(), &[MidiUpdate::MasterVolume(64.0 / 127.0)]);
+
+    updates.clear();
+    let mut encoder = ControllerEncoder::default();
+    encoder.master_volume(0, 64.0 / 127.0, |message| {
+        assert_eq!(message, [0xb0, 7, 64]);
+        decoder.control_change(0, message[1], message[2], |update| {
+            let _ = updates.push(update);
+        });
+    });
+    assert_eq!(updates.as_slice(), &[MidiUpdate::MasterVolume(64.0 / 127.0)]);
+
+    updates.clear();
+    assert!(encoder.param_for_layer(0, LayerId::A, ParamId::ProgramVolume, 64.0 / 127.0, |message| {
+        decoder.control_change(0, message[1], message[2], |update| {
+            let _ = updates.push(update);
+        });
+    }));
+    assert_eq!(
+        updates.as_slice(),
+        &[param_update(
+            LayerTarget::Explicit(LayerId::A),
+            ParamId::ProgramVolume,
+            64.0 / 127.0,
+        )]
+    );
 }
 
 #[test]
@@ -691,6 +726,79 @@ fn layer_b_nrpn_and_edit_layer_updates_are_explicit() {
             32.0 / 127.0,
         )]
     );
+}
+
+#[test]
+fn controller_encoder_addresses_layer_b_and_edit_layer_explicitly() {
+    let mut encoder = ControllerEncoder::default();
+    let mut decoder = ControllerDecoder::default();
+    let mut updates = Vec::<MidiUpdate, 8>::new();
+
+    assert!(
+        encoder.param_for_layer(0, LayerId::B, ParamId::FilterResonance, 0.75, |message| {
+            decoder.control_change(0, message[1], message[2], |update| {
+                updates.push(update).unwrap();
+            });
+        },)
+    );
+    assert!(matches!(
+        updates.as_slice(),
+        [MidiUpdate::Param {
+            target: LayerTarget::Explicit(LayerId::B),
+            param: ParamId::FilterResonance,
+            ..
+        }]
+    ));
+
+    updates.clear();
+    assert!(encoder.param_for_layer(0, LayerId::A, ParamId::Osc1Enabled, 0.0, |_| {}));
+    assert!(
+        encoder.param_for_layer(0, LayerId::B, ParamId::Osc1Waveform, 3.0, |message| {
+            decoder.control_change(0, message[1], message[2], |update| {
+                updates.push(update).unwrap();
+            });
+        },)
+    );
+    assert!(updates.iter().any(|update| matches!(
+        update,
+        MidiUpdate::Param {
+            target: LayerTarget::Explicit(LayerId::B),
+            param: ParamId::Osc1Enabled,
+            value,
+        } if *value == 1.0
+    )));
+
+    updates.clear();
+    encoder.modulation_for_layer(
+        0,
+        LayerId::B,
+        crate::ModRoute::Free(0),
+        true,
+        ModSource::Lfo1,
+        ModDestination::FilterCutoff,
+        0.5,
+        |message| {
+            decoder.control_change(0, message[1], message[2], |update| {
+                updates.push(update).unwrap();
+            });
+        },
+    );
+    assert_eq!(updates.len(), 3);
+    assert!(updates.iter().all(|update| matches!(
+        update,
+        MidiUpdate::Modulation {
+            target: LayerTarget::Explicit(LayerId::B),
+            ..
+        }
+    )));
+
+    updates.clear();
+    encoder.edit_layer(0, LayerId::B, |message| {
+        decoder.control_change(0, message[1], message[2], |update| {
+            updates.push(update).unwrap();
+        });
+    });
+    assert_eq!(updates.as_slice(), &[MidiUpdate::EditLayer(LayerId::B)]);
 }
 
 #[test]

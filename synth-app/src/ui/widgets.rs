@@ -645,7 +645,7 @@ pub fn master_volume(
         if knob_response.changed() {
             *value = knob_value;
             if echo_midi {
-                control.set_param(ParamId::MasterVolume, *value);
+                control.set_master_volume(*value);
             }
         }
 
@@ -681,7 +681,7 @@ pub fn master_volume(
                 if (*value - new_linear).abs() > f32::EPSILON {
                     *value = new_linear;
                     if echo_midi {
-                        control.set_param(ParamId::MasterVolume, *value);
+                        control.set_master_volume(*value);
                     }
                 }
                 edit_text = format_master_volume(*value);

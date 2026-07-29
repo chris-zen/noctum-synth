@@ -3,7 +3,9 @@
 use crate::arp::{ArpEngine, ArpEvent};
 #[cfg(test)]
 use crate::dsp::filter::MAX_CUTOFF_HZ;
-use crate::dsp::{FilterOversampling, FilterType};
+use crate::dsp::{
+    DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, ParameterSmoother,
+};
 use crate::effects::{EffectModulation, EffectsState};
 use crate::fixed_index_list::FixedIndexList;
 use crate::math::F32;
@@ -158,7 +160,7 @@ pub struct LayerEngine<const PACKS: usize = VOICE_PACKS> {
     local_tempo_bpm: f32,
     tempo_bpm: f32,
     clock_division: ClockDivision,
-    program_volume: f32,
+    program_volume: ParameterSmoother,
 }
 
 impl<const PACKS: usize> LayerEngine<PACKS> {
@@ -187,7 +189,11 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             local_tempo_bpm: crate::DEFAULT_TEMPO_BPM,
             tempo_bpm: crate::DEFAULT_TEMPO_BPM,
             clock_division: ClockDivision::default(),
-            program_volume: 0.8,
+            program_volume: ParameterSmoother::new(
+                0.8,
+                sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
         }
     }
 
@@ -217,7 +223,8 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.effects.set_params(patch.effects);
         self.local_tempo_bpm = patch.bpm.clamp(30.0, 250.0);
         self.clock_division = patch.clock_divide;
-        self.program_volume = patch.master_volume.clamp(0.0, 1.0);
+        self.program_volume
+            .snap(patch.program_volume.clamp(0.0, 1.0));
         self.rebuild_sounding_notes(pool);
     }
 
@@ -266,7 +273,9 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             }
             ControlMessage::SetParam { param, value, .. } => self.set_param(pool, param, value),
             ControlMessage::SetFilterType(filter_type) => self.set_filter_type(pool, filter_type),
-            ControlMessage::SetMidiClockMode(_) | ControlMessage::MidiRealtime(_) => {}
+            ControlMessage::SetMidiClockMode(_)
+            | ControlMessage::SetMasterVolume(_)
+            | ControlMessage::MidiRealtime(_) => {}
             ControlMessage::SetModulation {
                 route,
                 enabled,
@@ -901,16 +910,22 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
     }
 
     pub(crate) fn effects_and_volume(&mut self) -> (&mut EffectsState, f32) {
-        let program_volume = self.program_volume();
+        let program_volume = self.program_volume.next();
         (&mut self.effects, program_volume)
     }
 
     pub(crate) fn set_program_volume(&mut self, volume: f32) {
-        self.program_volume = volume.clamp(0.0, 1.0);
+        self.program_volume.set_target(volume.clamp(0.0, 1.0));
     }
 
+    #[cfg(test)]
     pub(crate) fn program_volume(&self) -> f32 {
-        self.program_volume
+        self.program_volume.target()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn program_volume_current(&self) -> f32 {
+        self.program_volume.value()
     }
 
     #[cfg(test)]

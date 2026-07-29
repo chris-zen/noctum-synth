@@ -6,33 +6,62 @@ use crate::midi::clock::MidiClockMode;
 use crate::midi::prophet::{
     FILTER_CUTOFF_RAW_MAX, attack_decay_raw, cutoff_hz_to_raw, key_track_to_raw, release_raw,
 };
-use crate::{DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ParamId};
+use crate::{
+    DedicatedModSource, LayerId, LfoSyncDivision, ModDestination, ModRoute, ModSource, ParamId,
+};
 
 use super::map::{bool_raw, emit_nrpn, key_mode_raw, quantize, quantize_log};
 
 /// Stateful Rev2 NRPN encoder. Oscillator shape combines enabled/waveform state.
 pub struct ControllerEncoder {
-    oscillator_waveforms: [u8; 2],
-    oscillator_enabled: [bool; 2],
+    oscillator_waveforms: [[u8; 2]; 2],
+    oscillator_enabled: [[bool; 2]; 2],
 }
 
 impl Default for ControllerEncoder {
     fn default() -> Self {
         Self {
-            oscillator_waveforms: [0; 2],
-            oscillator_enabled: [true, false],
+            oscillator_waveforms: [[0; 2]; 2],
+            oscillator_enabled: [[true, false]; 2],
         }
     }
 }
 
 impl ControllerEncoder {
+    pub fn edit_layer(&mut self, channel: u8, layer: LayerId, mut emit: impl FnMut([u8; 3])) {
+        emit_nrpn(
+            channel,
+            4190,
+            match layer {
+                LayerId::A => 0,
+                LayerId::B => 1,
+            },
+            &mut emit,
+        );
+    }
+
     pub fn param(
         &mut self,
         channel: u8,
         param: ParamId,
         value: f32,
+        emit: impl FnMut([u8; 3]),
+    ) -> bool {
+        self.param_for_layer(channel, LayerId::A, param, value, emit)
+    }
+
+    pub fn param_for_layer(
+        &mut self,
+        channel: u8,
+        layer: LayerId,
+        param: ParamId,
+        value: f32,
         mut emit: impl FnMut([u8; 3]),
     ) -> bool {
+        let layer_index = match layer {
+            LayerId::A => 0,
+            LayerId::B => 1,
+        };
         if param == ParamId::PanModMode {
             emit([
                 0xb0 | (channel & 0x0f),
@@ -43,23 +72,23 @@ impl ControllerEncoder {
         }
         let mapped = match param {
             ParamId::Osc1Waveform => {
-                self.oscillator_waveforms[0] = value as u8;
-                (2, u16::from(self.oscillator_shape(0)))
+                self.oscillator_waveforms[layer_index][0] = value as u8;
+                (2, u16::from(self.oscillator_shape(layer_index, 0)))
             }
             ParamId::Osc1Enabled => {
-                self.oscillator_enabled[0] = value >= 0.5;
-                (2, u16::from(self.oscillator_shape(0)))
+                self.oscillator_enabled[layer_index][0] = value >= 0.5;
+                (2, u16::from(self.oscillator_shape(layer_index, 0)))
             }
             ParamId::Osc1Frequency => (0, quantize(value, 0.0, 120.0, 120)),
             ParamId::Osc1FineTune => (1, quantize(value, -50.0, 50.0, 100)),
             ParamId::Osc1ShapeMod => (102, quantize(value, 0.0, 1.0, 99)),
             ParamId::Osc2Waveform => {
-                self.oscillator_waveforms[1] = value as u8;
-                (7, u16::from(self.oscillator_shape(1)))
+                self.oscillator_waveforms[layer_index][1] = value as u8;
+                (7, u16::from(self.oscillator_shape(layer_index, 1)))
             }
             ParamId::Osc2Enabled => {
-                self.oscillator_enabled[1] = value >= 0.5;
-                (7, u16::from(self.oscillator_shape(1)))
+                self.oscillator_enabled[layer_index][1] = value >= 0.5;
+                (7, u16::from(self.oscillator_shape(layer_index, 1)))
             }
             ParamId::Osc2Frequency => (5, quantize(value, 0.0, 120.0, 120)),
             ParamId::Osc2FineTune => (6, quantize(value, -50.0, 50.0, 100)),
@@ -166,7 +195,7 @@ impl ControllerEncoder {
             ParamId::EffectClockSync => (158, bool_raw(value)),
             ParamId::EffectParam1 => (156, quantize(value, 0.0, 1.0, 255)),
             ParamId::EffectParam2 => (157, quantize(value, 0.0, 1.0, 127)),
-            ParamId::MasterVolume => (29, quantize(value, 0.0, 1.0, 127)),
+            ParamId::ProgramVolume => (29, quantize(value, 0.0, 1.0, 127)),
             ParamId::PitchBendRange => (100, quantize(value, 0.0, 12.0, 12)),
             ParamId::ArpEnabled => (172, bool_raw(value)),
             ParamId::ArpMode => (173, quantize(value, 0.0, 4.0, 4)),
@@ -175,7 +204,11 @@ impl ControllerEncoder {
             ParamId::ArpRelatch => (178, bool_raw(value)),
             _ => return false,
         };
-        emit_nrpn(channel, mapped.0, mapped.1, &mut emit);
+        let layer_offset = match layer {
+            LayerId::A => 0,
+            LayerId::B => 2048,
+        };
+        emit_nrpn(channel, mapped.0 + layer_offset, mapped.1, &mut emit);
         true
     }
 
@@ -187,11 +220,39 @@ impl ControllerEncoder {
         source: ModSource,
         destination: ModDestination,
         amount: f32,
+        emit: impl FnMut([u8; 3]),
+    ) {
+        self.modulation_for_layer(
+            channel,
+            LayerId::A,
+            route,
+            enabled,
+            source,
+            destination,
+            amount,
+            emit,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn modulation_for_layer(
+        &mut self,
+        channel: u8,
+        layer: LayerId,
+        route: ModRoute,
+        enabled: bool,
+        source: ModSource,
+        destination: ModDestination,
+        amount: f32,
         mut emit: impl FnMut([u8; 3]),
     ) {
+        let layer_offset = match layer {
+            LayerId::A => 0,
+            LayerId::B => 2048,
+        };
         match route {
             ModRoute::Free(index) if index < 8 => {
-                let base = 65 + index as u16 * 3;
+                let base = layer_offset + 65 + index as u16 * 3;
                 emit_nrpn(
                     channel,
                     base,
@@ -213,7 +274,7 @@ impl ControllerEncoder {
                 else {
                     return;
                 };
-                let base = 116 + index as u16 * 2;
+                let base = layer_offset + 116 + index as u16 * 2;
                 emit_nrpn(channel, base, quantize(amount, -1.0, 1.0, 254), &mut emit);
                 emit_nrpn(
                     channel,
@@ -240,9 +301,18 @@ impl ControllerEncoder {
         emit_nrpn(channel, 4099, mode.index() as u16, &mut emit);
     }
 
-    fn oscillator_shape(&self, index: usize) -> u8 {
-        if self.oscillator_enabled[index] {
-            self.oscillator_waveforms[index].min(3) + 1
+    /// Encode the device-global Master Volume as CC 7.
+    pub fn master_volume(&mut self, channel: u8, value: f32, mut emit: impl FnMut([u8; 3])) {
+        emit([
+            0xb0 | (channel & 0x0f),
+            7,
+            quantize(value, 0.0, 1.0, 127) as u8,
+        ]);
+    }
+
+    fn oscillator_shape(&self, layer: usize, index: usize) -> u8 {
+        if self.oscillator_enabled[layer][index] {
+            self.oscillator_waveforms[layer][index].min(3) + 1
         } else {
             0
         }

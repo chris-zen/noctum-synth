@@ -1,6 +1,5 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use synth_core::LayerPatch;
 use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::midi::clock::{MidiClockMode, MidiTransportState};
 
@@ -142,8 +141,6 @@ pub fn show(
     filter_type: FilterType,
     control: &crate::engine::SynthEngineControl,
     midi_inputs: &mut midi::MidiInputManager,
-    current_patch: &LayerPatch,
-    muted: bool,
 ) {
     let previous_clock_mode = settings.midi_clock_mode;
     let previous_clock_source = settings.midi_clock_source.clone();
@@ -173,8 +170,6 @@ pub fn show(
                 control,
                 &midi_input_ports,
                 &midi_output_ports,
-                current_patch,
-                muted,
             );
             ui.add_space(PANEL_SPACING);
 
@@ -223,8 +218,6 @@ fn midi_settings_panel(
     control: &SynthEngineControl,
     midi_input_ports: &[String],
     midi_output_ports: &[String],
-    current_patch: &LayerPatch,
-    muted: bool,
 ) {
     let frame = egui::Frame::group(ui.style());
     let content_width = (width - frame.total_margin().sum().x).max(0.0);
@@ -363,9 +356,7 @@ fn midi_settings_panel(
                                 && (!selected || !control.midi_output_connected())
                             {
                                 settings.midi_output_port = Some(port.clone());
-                                if control.set_midi_output_port(Some(port)) {
-                                    control.load_patch_respecting_mute(current_patch, muted);
-                                }
+                                control.set_midi_output_port(Some(port));
                             }
                         }
                         let none_selected = settings.midi_output_port.is_none();

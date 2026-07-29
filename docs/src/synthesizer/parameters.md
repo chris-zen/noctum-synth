@@ -50,8 +50,12 @@ bypass-style patches. Amplifier velocity changes loudness response. Filter envel
 amount, filter velocity, and auxiliary envelope amount and velocity use the same
 short (~5 ms) de-zippering on live knob or MIDI changes; patch recall snaps those
 values instantly. Pan spread increases the
-left/right placement applied to successive voices, while master volume sets the
-final output level.
+left/right placement applied to successive voices. Program volume sets each
+layer's stored output level after effects. Master volume is a device-global
+listening level applied after the output limiter and is not stored in the patch.
+Live program-volume and master-volume changes use the same short (~5 ms)
+de-zippering as amplifier and filter amount knobs; patch recall snaps program
+volume instantly.
 
 ## Unison and key mode
 

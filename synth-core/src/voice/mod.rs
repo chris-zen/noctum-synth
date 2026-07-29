@@ -1063,7 +1063,7 @@ impl VoiceBlock {
             ParamId::Lfo3KeySync => self.set_lfo_key_sync(2, value >= 0.5),
             ParamId::Lfo4KeySync => self.set_lfo_key_sync(3, value >= 0.5),
             ParamId::PitchBendRange => self.set_pitch_bend_range(value),
-            ParamId::MasterVolume
+            ParamId::ProgramVolume
             | ParamId::KeyMode
             | ParamId::UnisonEnabled
             | ParamId::UnisonMode

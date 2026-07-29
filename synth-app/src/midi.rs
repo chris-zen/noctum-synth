@@ -10,7 +10,10 @@ use wmidi::MidiMessage;
 use synth_core::midi::clock::{MidiClockMode, MidiRealtimeEvent};
 use synth_core::midi::program::ProgramData;
 use synth_core::midi::{p08, rev2};
-use synth_core::{LayerId, LayerTarget, ModDestination, ModRoute, ModSource, ParamId, Patch};
+use synth_core::{
+    LayerId, LayerMode, LayerTarget, ModDestination, ModRoute, ModSource, ModulationParam, ParamId,
+    Patch,
+};
 
 use crate::engine::SynthEngineControl;
 use crate::ui::settings_view::MidiInputEntry;
@@ -172,6 +175,7 @@ struct MidiOutputState {
     master_bpm: f32,
     next_clock_deadline: Option<Instant>,
     desired_patch: Option<Patch>,
+    selected_layer: LayerId,
 }
 
 impl MidiOutputState {
@@ -207,24 +211,27 @@ impl MidiOutputState {
     }
 
     fn resend_desired_patch(&mut self) -> bool {
-        let Some(connection) = self.connection.as_mut() else {
+        if self.connection.is_none() {
             return false;
-        };
-        let Some(patch) = self.desired_patch.as_ref() else {
-            return true;
-        };
-        let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        let Ok(length) = rev2::encode::program_edit_buffer(patch, &mut message) else {
-            return false;
-        };
-        if connection.send(&message[..length]).is_err() {
-            self.clear();
-            false
-        } else {
+        }
+        if let Some(patch) = self.desired_patch.as_ref() {
+            let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+            let Ok(length) = rev2::encode::program_edit_buffer(patch, &mut message) else {
+                return false;
+            };
+            if self
+                .connection
+                .as_mut()
+                .is_none_or(|connection| connection.send(&message[..length]).is_err())
+            {
+                self.clear();
+                return false;
+            }
             self.last_nrpn_values.clear();
             self.record_echo(&message[..length]);
-            true
         }
+        self.send_selected_layer();
+        self.connection.is_some()
     }
 
     fn send_messages(&mut self, messages: &[[u8; 3]]) {
@@ -245,6 +252,41 @@ impl MidiOutputState {
             for message in sent {
                 self.record_echo(&message);
             }
+        }
+    }
+
+    fn send_controller_messages(&mut self, messages: &[[u8; 3]]) {
+        let Some(connection) = self.connection.as_mut() else {
+            return;
+        };
+        let mut sent = Vec::new();
+        for message in messages {
+            if connection.send(message).is_err() {
+                self.clear();
+                return;
+            }
+            sent.push(message.to_vec());
+        }
+        for message in sent {
+            self.record_echo(&message);
+        }
+    }
+
+    fn send_selected_layer(&mut self) {
+        let mut messages = [[0_u8; 3]; 4];
+        let mut len = 0;
+        self.encoder.edit_layer(0, self.selected_layer, |message| {
+            messages[len] = message;
+            len += 1;
+        });
+        self.send_messages(&messages[..len]);
+    }
+
+    fn sync_encoder_from_patch(&mut self, patch: &Patch) {
+        for layer in [LayerId::A, LayerId::B] {
+            patch.layer(layer).for_each_param(|param, value| {
+                let _ = self.encoder.param_for_layer(0, layer, param, value, |_| {});
+            });
         }
     }
 
@@ -286,6 +328,7 @@ impl Default for MidiOutputHandle {
             master_bpm: 120.0,
             next_clock_deadline: None,
             desired_patch: None,
+            selected_layer: LayerId::A,
         }));
         spawn_master_clock_worker(&state);
         Self { state }
@@ -390,6 +433,15 @@ impl MidiOutputHandle {
         state.connection.is_none() || state.send_output_clock_mode()
     }
 
+    pub fn send_master_volume(&self, volume: f32) {
+        let mut state = self.state.lock();
+        let mut message = [0_u8; 3];
+        state.encoder.master_volume(0, volume, |encoded| {
+            message = encoded;
+        });
+        state.send_controller_messages(core::slice::from_ref(&message));
+    }
+
     pub fn send_raw(&self, message: &[u8]) {
         let mut state = self.state.lock();
         let Some(connection) = state.connection.as_mut() else {
@@ -413,27 +465,39 @@ impl MidiOutputHandle {
         state.consume_echo(message)
     }
 
-    pub fn send_param(&self, param: ParamId, value: f32) {
+    pub fn send_param(&self, layer: LayerId, param: ParamId, value: f32) {
         let mut state = self.state.lock();
         if let Some(patch) = state.desired_patch.as_mut() {
-            patch.layer_a.set_param(param, value);
+            patch.layer_mut(layer).set_param(param, value);
         }
-        if state.connection.is_none() {
-            return;
+        if param == ParamId::PanModMode {
+            state.selected_layer = layer;
+            // CC 10 is edit-targeted on the Rev2, so explicitly select the
+            // requested layer even when our cached selection already matches.
+            state.last_nrpn_values.remove(&4190);
+            state.send_selected_layer();
         }
         let mut messages = [[0_u8; 3]; 4];
         let mut len = 0;
-        if !state.encoder.param(0, param, value, |message| {
-            messages[len] = message;
-            len += 1;
-        }) {
+        if !state
+            .encoder
+            .param_for_layer(0, layer, param, value, |message| {
+                messages[len] = message;
+                len += 1;
+            })
+        {
             return;
         }
-        state.send_messages(&messages[..len]);
+        if param == ParamId::PanModMode {
+            state.send_controller_messages(&messages[..len]);
+        } else {
+            state.send_messages(&messages[..len]);
+        }
     }
 
     pub fn send_modulation(
         &self,
+        layer: LayerId,
         route: ModRoute,
         enabled: bool,
         source: ModSource,
@@ -442,7 +506,7 @@ impl MidiOutputHandle {
     ) {
         let mut state = self.state.lock();
         if let Some(patch) = state.desired_patch.as_mut() {
-            let layer_patch = &mut patch.layer_a;
+            let layer_patch = patch.layer_mut(layer);
             match route {
                 ModRoute::Free(index) => {
                     if let Some(slot) = layer_patch.mod_matrix.free_slots.get_mut(index) {
@@ -467,19 +531,99 @@ impl MidiOutputHandle {
         }
         let mut messages = [[0_u8; 3]; 12];
         let mut len = 0;
-        state
-            .encoder
-            .modulation(0, route, enabled, source, destination, amount, |message| {
+        state.encoder.modulation_for_layer(
+            0,
+            layer,
+            route,
+            enabled,
+            source,
+            destination,
+            amount,
+            |message| {
                 messages[len] = message;
                 len += 1;
-            });
+            },
+        );
         state.send_messages(&messages[..len]);
+    }
+
+    pub fn send_edit_layer(&self, layer: LayerId) {
+        let mut state = self.state.lock();
+        state.selected_layer = layer;
+        if let Some(patch) = state.desired_patch.as_ref() {
+            state.master_bpm = patch.layer(layer).bpm.clamp(30.0, 250.0);
+        }
+        state.send_selected_layer();
     }
 
     pub fn send_patch(&self, patch: &Patch) -> bool {
         let mut state = self.state.lock();
+        state.sync_encoder_from_patch(patch);
         state.desired_patch = Some(patch.clone());
+        state.selected_layer = LayerId::A;
         state.resend_desired_patch()
+    }
+
+    pub fn cache_patch(&self, patch: &Patch) {
+        let mut state = self.state.lock();
+        state.sync_encoder_from_patch(patch);
+        state.desired_patch = Some(patch.clone());
+        state.selected_layer = LayerId::A;
+    }
+
+    pub fn cache_edit_layer(&self, layer: LayerId) {
+        let mut state = self.state.lock();
+        state.selected_layer = layer;
+        if let Some(patch) = state.desired_patch.as_ref() {
+            state.master_bpm = patch.layer(layer).bpm.clamp(30.0, 250.0);
+        }
+    }
+
+    pub fn cache_layer_mode(&self, mode: LayerMode) {
+        if let Some(patch) = self.state.lock().desired_patch.as_mut() {
+            patch.mode = mode;
+        }
+    }
+
+    pub fn cache_split_point(&self, split_point: u8) {
+        if let Some(patch) = self.state.lock().desired_patch.as_mut() {
+            patch.set_split_point(split_point);
+        }
+    }
+
+    pub fn cache_param(&self, target: LayerTarget, param: ParamId, value: f32) {
+        let mut state = self.state.lock();
+        let layer = match target {
+            LayerTarget::Edit => state.selected_layer,
+            LayerTarget::Explicit(layer) => layer,
+        };
+        if let Some(patch) = state.desired_patch.as_mut() {
+            patch.layer_mut(layer).set_param(param, value);
+        }
+        if param == ParamId::Bpm && layer == state.selected_layer {
+            state.master_bpm = value.clamp(30.0, 250.0);
+        }
+        let _ = state
+            .encoder
+            .param_for_layer(0, layer, param, value, |_| {});
+    }
+
+    pub fn cache_modulation_param(
+        &self,
+        target: LayerTarget,
+        route: ModRoute,
+        parameter: ModulationParam,
+    ) {
+        let mut state = self.state.lock();
+        let layer = match target {
+            LayerTarget::Edit => state.selected_layer,
+            LayerTarget::Explicit(layer) => layer,
+        };
+        if let Some(patch) = state.desired_patch.as_mut() {
+            patch
+                .layer_mut(layer)
+                .set_modulation_param(route, parameter);
+        }
     }
 }
 
@@ -680,6 +824,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
     match (*model, *command) {
         (0x2f, 0x02) => match rev2::decode::program_data(message) {
             Ok(program) => {
+                control.load_midi_program(&program.patch);
                 if !control.queue_midi_program(ProgramData::Rev2(program)) {
                     eprintln!("MIDI program import queue is full");
                 }
@@ -690,7 +835,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
             ),
         },
         (0x2f, 0x03) => match rev2::decode::program_edit_buffer(message) {
-            Ok(program) => control.load_midi_patch(&program.layer_a),
+            Ok(program) => control.load_midi_program(&program),
             Err(err) => eprintln!(
                 "Invalid Rev2 Program Edit Buffer message: {err:?} ({} bytes)",
                 message.len()
@@ -698,6 +843,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
         },
         (0x23, 0x02) => match p08::decode::program_data(message) {
             Ok(program) => {
+                control.load_midi_program(&program.patch);
                 if !control.queue_midi_program(ProgramData::P08(program)) {
                     eprintln!("MIDI program import queue is full");
                 }
@@ -708,7 +854,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
             ),
         },
         (0x23, 0x03) => match p08::decode::program_edit_buffer(message) {
-            Ok(patch) => control.load_midi_patch(&patch.layer_a),
+            Ok(patch) => control.load_midi_program(&patch),
             Err(err) => eprintln!(
                 "Invalid Prophet '08 Program Edit Buffer message: {err:?} ({} bytes)",
                 message.len()
@@ -777,29 +923,22 @@ fn port_is_available(port: &str, available_ports: &[String]) -> bool {
 fn dispatch_inbound_update(control: &SynthEngineControl, update: rev2::MidiUpdate) {
     match update {
         rev2::MidiUpdate::Param {
-            target: LayerTarget::Edit | LayerTarget::Explicit(LayerId::A),
+            target,
             param,
             value,
         } => {
-            control.set_midi_param(param, value);
+            control.set_midi_param(target, param, value);
         }
         rev2::MidiUpdate::Modulation {
-            target: LayerTarget::Edit | LayerTarget::Explicit(LayerId::A),
+            target,
             route,
             parameter,
         } => {
-            control.set_midi_modulation_param(route, parameter);
+            control.set_midi_modulation_param(target, route, parameter);
         }
-        rev2::MidiUpdate::Param {
-            target: LayerTarget::Explicit(LayerId::B),
-            ..
-        }
-        | rev2::MidiUpdate::Modulation {
-            target: LayerTarget::Explicit(LayerId::B),
-            ..
-        }
-        | rev2::MidiUpdate::MidiClockMode(_)
-        | rev2::MidiUpdate::EditLayer(_) => {}
+        rev2::MidiUpdate::MidiClockMode(mode) => control.set_midi_clock_mode(mode),
+        rev2::MidiUpdate::MasterVolume(volume) => control.set_midi_master_volume(volume),
+        rev2::MidiUpdate::EditLayer(layer) => control.set_midi_edit_layer(layer),
     }
 }
 
@@ -883,8 +1022,8 @@ fn send_changed_nrpn_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{MidiUiUpdate, create_synth_engine_bridge};
-    use synth_core::{ControlMessage, LayerPatch};
+    use crate::engine::{AudioCommand, MidiUiUpdate, create_synth_engine_bridge};
+    use synth_core::{ControlMessage, LayerTarget};
 
     fn handle_midi(
         message: &[u8],
@@ -912,6 +1051,7 @@ mod tests {
             master_bpm: 120.0,
             next_clock_deadline: None,
             desired_patch: None,
+            selected_layer: LayerId::A,
         }
     }
 
@@ -950,24 +1090,28 @@ mod tests {
         }
         assert!(matches!(
             audio.control.0.pop(),
-            Ok(ControlMessage::SetParam {
-                target: LayerTarget::Edit,
+            Ok(AudioCommand::Control(ControlMessage::SetParam {
+                target: LayerTarget::Explicit(LayerId::A),
                 param: ParamId::FilterEnvAmount,
                 value: 1.0,
-            })
+            }))
         ));
         let mut ui_update = None;
         bridge
             .view
             .drain_midi_ui_updates(|update| ui_update = Some(update));
-        assert_eq!(
+        assert!(matches!(
             ui_update,
-            Some(MidiUiUpdate::Param(ParamId::FilterEnvAmount, 1.0))
-        );
+            Some(MidiUiUpdate::Param {
+                target: LayerTarget::Explicit(LayerId::A),
+                param: ParamId::FilterEnvAmount,
+                value: 1.0,
+            })
+        ));
     }
 
     #[test]
-    fn temporary_single_layer_adapter_applies_edit_and_a_but_ignores_b() {
+    fn inbound_layer_targets_are_preserved_for_the_dual_layer_engine() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
         for target in [LayerTarget::Edit, LayerTarget::Explicit(LayerId::A)] {
             dispatch_inbound_update(
@@ -980,11 +1124,11 @@ mod tests {
             );
             assert!(matches!(
                 audio.control.0.pop(),
-                Ok(ControlMessage::SetParam {
-                    target: LayerTarget::Edit,
+                Ok(AudioCommand::Control(ControlMessage::SetParam {
+                    target: queued_target,
                     param: ParamId::FilterResonance,
                     value: 0.5,
-                })
+                })) if queued_target == target
             ));
         }
 
@@ -996,7 +1140,14 @@ mod tests {
                 value: 1.0,
             },
         );
-        assert!(audio.control.0.pop().is_err());
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(AudioCommand::Control(ControlMessage::SetParam {
+                target: LayerTarget::Explicit(LayerId::B),
+                param: ParamId::FilterResonance,
+                value: 1.0,
+            }))
+        ));
     }
 
     #[test]
@@ -1011,7 +1162,7 @@ mod tests {
         let output = MidiOutputHandle::default();
         assert!(!output.send_patch(&Patch::default()));
 
-        output.send_param(ParamId::Bpm, 137.0);
+        output.send_param(LayerId::A, ParamId::Bpm, 137.0);
         assert!(output.set_output_clock_mode(MidiClockMode::SlaveNoStartStop));
 
         let state = output.state.lock();
@@ -1070,6 +1221,36 @@ mod tests {
         assert_eq!(sent, 8);
         assert_eq!(cache.get(&179), Some(&120));
         assert_eq!(cache.get(&4099), Some(&2));
+    }
+
+    #[test]
+    fn output_cache_tracks_both_layers_topology_and_selected_tempo() {
+        let output = MidiOutputHandle::default();
+        let mut patch = Patch::default();
+        patch.layer_a.bpm = 90.0;
+        patch.layer_b.bpm = 150.0;
+        output.cache_patch(&patch);
+        output.cache_edit_layer(LayerId::B);
+        output.cache_layer_mode(LayerMode::Split);
+        output.cache_split_point(72);
+        output.cache_param(
+            LayerTarget::Explicit(LayerId::A),
+            ParamId::FilterResonance,
+            0.25,
+        );
+        output.send_param(LayerId::B, ParamId::PanModMode, 1.0);
+
+        let state = output.state.lock();
+        let cached = state.desired_patch.as_ref().unwrap();
+        assert_eq!(state.selected_layer, LayerId::B);
+        assert_eq!(state.master_bpm, 150.0);
+        assert_eq!(cached.mode, LayerMode::Split);
+        assert_eq!(cached.split_point, 72);
+        assert_eq!(cached.layer_a.filter.resonance, 0.25);
+        assert_eq!(
+            cached.layer_b.amplifier.pan_mod_mode,
+            synth_core::PanModMode::Fixed
+        );
     }
 
     #[test]
@@ -1157,11 +1338,11 @@ mod tests {
 
         assert!(matches!(
             audio.control.0.pop(),
-            Ok(ControlMessage::NoteOff { note: 64 })
+            Ok(AudioCommand::Control(ControlMessage::NoteOff { note: 64 }))
         ));
         assert!(matches!(
             audio.control.0.pop(),
-            Ok(ControlMessage::NoteOff { note: 62 })
+            Ok(AudioCommand::Control(ControlMessage::NoteOff { note: 62 }))
         ));
         assert_eq!(output.state.lock().recent_messages.len(), 2);
     }
@@ -1196,29 +1377,36 @@ mod tests {
 
     #[test]
     fn inbound_edit_buffer_updates_engine_and_ui_path() {
-        let (_audio, bridge) = create_synth_engine_bridge(16);
-        let mut patch = LayerPatch::default();
-        patch.filter.resonance = 1.0;
-        let program = Patch {
-            layer_a: patch,
-            ..Patch::default()
-        };
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let mut program = Patch::default();
+        program.mode = synth_core::LayerMode::Stack;
+        program.layer_a.filter.resonance = 1.0;
+        program.layer_b.filter.resonance = 0.5;
         let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
         rev2::encode::program_edit_buffer(&program, &mut message).unwrap();
         let mut decoder = rev2::ControllerDecoder::default();
         handle_midi(&message, &bridge.control, &mut decoder);
 
-        let mut found = false;
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(AudioCommand::Program(patch))
+                if patch.mode == synth_core::LayerMode::Stack
+                    && (patch.layer_b.filter.resonance - 0.5).abs() < 0.01
+        ));
+        let mut ui_program = None;
         bridge.view.drain_midi_ui_updates(|update| {
-            if update == MidiUiUpdate::Param(ParamId::FilterResonance, 1.0) {
-                found = true;
+            if let MidiUiUpdate::Program(program) = update {
+                ui_program = Some(program);
             }
         });
-        assert!(found);
+        let ui_program = ui_program.expect("complete program UI update");
+        assert_eq!(ui_program.mode, synth_core::LayerMode::Stack);
+        assert!((ui_program.layer_a.filter.resonance - 1.0).abs() < 0.01);
+        assert!((ui_program.layer_b.filter.resonance - 0.5).abs() < 0.01);
     }
 
     #[test]
-    fn inbound_stored_program_is_queued_without_updating_ui() {
+    fn inbound_stored_program_is_saved_and_loaded_for_audition() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
         let message = stored_program_message(4, 0);
         let mut decoder = rev2::ControllerDecoder::default();
@@ -1232,8 +1420,11 @@ mod tests {
         assert_eq!((imported.bank(), imported.program()), (4, 0));
         let mut ui_updates = 0;
         bridge.view.drain_midi_ui_updates(|_| ui_updates += 1);
-        assert_eq!(ui_updates, 0);
-        assert!(audio.control.0.pop().is_err());
+        assert!(ui_updates > 0);
+        assert!(matches!(
+            audio.control.0.pop(),
+            Ok(AudioCommand::Program(_))
+        ));
     }
 
     #[test]
@@ -1298,11 +1489,11 @@ mod tests {
         );
         assert!(matches!(
             audio.control.0.pop(),
-            Ok(ControlMessage::MidiRealtime(
+            Ok(AudioCommand::Control(ControlMessage::MidiRealtime(
                 MidiRealtimeEvent::TimingClock {
                     timestamp_micros: 123_456
                 }
-            ))
+            )))
         ));
 
         flags.as_ref().handle_message(
@@ -1369,7 +1560,10 @@ mod tests {
         );
         assert!(matches!(
             audio.control.0.pop(),
-            Ok(ControlMessage::NoteOn { note: 60, .. })
+            Ok(AudioCommand::Control(ControlMessage::NoteOn {
+                note: 60,
+                ..
+            }))
         ));
     }
 }

@@ -87,6 +87,9 @@ pub fn message_to_controls(
                 rev2::MidiUpdate::MidiClockMode(mode) => {
                     emit(ControlMessage::SetMidiClockMode(mode));
                 }
+                rev2::MidiUpdate::MasterVolume(volume) => {
+                    emit(ControlMessage::SetMasterVolume(volume));
+                }
                 rev2::MidiUpdate::Modulation {
                     target: target @ (LayerTarget::Edit | LayerTarget::Explicit(LayerId::A)),
                     route,

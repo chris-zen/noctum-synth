@@ -15,6 +15,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum MappedUpdate {
     Param(ParamId, f32),
+    MasterVolume(f32),
     MidiClockMode(MidiClockMode),
     Modulation {
         route: ModRoute,
@@ -241,7 +242,7 @@ pub(super) fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(MappedUpdate
             F32(ranged(raw, 127, 0.0, 12.0)).round().as_f32(),
         ),
         5 => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
-        7 | 37 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
+        7 | 37 => emit(MappedUpdate::MasterVolume(unit(raw, 127))),
         8 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
         9 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
         10 => emit_param(emit, ParamId::PanModMode, f32::from(raw >= 64)),
@@ -419,7 +420,7 @@ pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate
         25 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
         26 => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
         28 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
-        29 => emit_param(emit, ParamId::MasterVolume, unit(raw, 127)),
+        29 => emit_param(emit, ParamId::ProgramVolume, unit(raw, 127)),
         30 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
         31 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
         32 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),

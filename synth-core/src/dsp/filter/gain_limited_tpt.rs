@@ -777,7 +777,7 @@ mod tests {
             if amp_velocity > 0.0 { 0.0 } else { 1.0 },
         );
         engine.set_param(ParamId::AmpVelocity, amp_velocity);
-        engine.set_param(ParamId::MasterVolume, 1.0);
+        engine.set_param(ParamId::ProgramVolume, 1.0);
         engine.note_on(note, velocity);
 
         let mut settle = std::vec![0.0; 48_000 * 2];
@@ -819,7 +819,7 @@ mod tests {
         engine.set_param(ParamId::AmpEgDecay, 0.0005);
         engine.set_param(ParamId::AmpEgSustain, 1.0);
         engine.set_param(ParamId::AmpVelocity, 0.0);
-        engine.set_param(ParamId::MasterVolume, 1.0);
+        engine.set_param(ParamId::ProgramVolume, 1.0);
         for &note in notes {
             engine.note_on(note, 1.0);
         }
@@ -854,7 +854,7 @@ mod tests {
         engine.set_param(ParamId::AmpEgAttack, 0.0005);
         engine.set_param(ParamId::AmpEgDecay, 0.0005);
         engine.set_param(ParamId::AmpEgSustain, 1.0);
-        engine.set_param(ParamId::MasterVolume, 1.0);
+        engine.set_param(ParamId::ProgramVolume, 1.0);
         for &note in notes {
             engine.note_on(note, 1.0);
         }

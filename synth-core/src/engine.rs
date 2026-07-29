@@ -4,7 +4,9 @@ use crate::EffectType;
 #[cfg(feature = "profiling")]
 use crate::RenderProfiler;
 use crate::dsp::lookahead_limiter::LookaheadLimiter;
-use crate::dsp::{FilterOversampling, FilterType};
+use crate::dsp::{
+    DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, ParameterSmoother,
+};
 use crate::midi::clock::MidiClockFollower;
 use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 use crate::profiling::{RenderContext, RenderStage};
@@ -47,6 +49,7 @@ pub struct LayerPlaybackStatus {
 enum TransitionState {
     Idle,
     FadeOut,
+    Apply,
     FadeIn,
 }
 
@@ -66,19 +69,38 @@ impl Default for TopologyTransition {
 
 impl TopologyTransition {
     fn request(&mut self) {
-        self.state = TransitionState::FadeOut;
+        if self.state != TransitionState::Apply {
+            self.state = TransitionState::FadeOut;
+        }
     }
 
-    fn advance(&mut self) -> bool {
+    fn cancel(&mut self) {
+        self.state = if self.gain >= 1.0 {
+            TransitionState::Idle
+        } else {
+            TransitionState::FadeIn
+        };
+    }
+
+    const fn needs_apply(&self) -> bool {
+        matches!(self.state, TransitionState::Apply)
+    }
+
+    const fn is_idle(&self) -> bool {
+        matches!(self.state, TransitionState::Idle)
+    }
+
+    fn advance(&mut self) {
         let step = 1.0 / TOPOLOGY_FADE_SAMPLES as f32;
         match self.state {
             TransitionState::Idle => self.gain = 1.0,
             TransitionState::FadeOut => {
                 self.gain = (self.gain - step).max(0.0);
                 if self.gain == 0.0 {
-                    return true;
+                    self.state = TransitionState::Apply;
                 }
             }
+            TransitionState::Apply => {}
             TransitionState::FadeIn => {
                 self.gain = (self.gain + step).min(1.0);
                 if self.gain == 1.0 {
@@ -86,7 +108,6 @@ impl TopologyTransition {
                 }
             }
         }
-        false
     }
 
     fn begin_fade_in(&mut self) {
@@ -116,8 +137,10 @@ pub struct SynthEngineWithMemory<Memory, const PACKS: usize, const LAYERS: usize
     filter_oversampling: FilterOversampling,
     filter_type: FilterType,
     midi_clock: MidiClockFollower,
+    master_volume: ParameterSmoother,
     output_limiter: LookaheadLimiter,
     rate_adapter: RateAdapter,
+    has_rendered_audio: bool,
 }
 
 impl<const PACKS: usize, const FX_SAMPLES: usize>
@@ -182,8 +205,14 @@ where
             filter_oversampling: FilterOversampling::default(),
             filter_type: FilterType::default(),
             midi_clock: MidiClockFollower::new(sample_rate),
+            master_volume: ParameterSmoother::new(
+                1.0,
+                internal_sample_rate,
+                DEFAULT_PARAMETER_SMOOTHING_SECONDS,
+            ),
             output_limiter: LookaheadLimiter::new(internal_sample_rate),
             rate_adapter: RateAdapter::default(),
+            has_rendered_audio: false,
         }
     }
 
@@ -212,6 +241,9 @@ where
                 self.set_target_param(target, ParamId::Bpm, bpm)
             }
             ControlMessage::SetMidiClockMode(mode) => self.set_midi_clock_mode(mode),
+            ControlMessage::SetMasterVolume(volume) => {
+                self.master_volume.set_target(volume.clamp(0.0, 1.0));
+            }
             ControlMessage::MidiRealtime(event) => self.handle_midi_realtime(event),
             ControlMessage::SetModulation {
                 target,
@@ -267,6 +299,12 @@ where
             }
             ControlMessage::SetEditLayer(layer) => {
                 self.edit_layer = layer;
+                // In a fully rendered two-layer topology the edit selection is
+                // metadata only: changing it must not rebuild the voice pool or
+                // disturb either layer's running state.
+                if LAYERS > 1 && self.applied_mode != LayerMode::Normal {
+                    self.applied_edit_layer = layer;
+                }
                 self.request_topology_change();
             }
             ControlMessage::SetFilterOversampling(oversampling) => {
@@ -320,15 +358,31 @@ where
     }
 
     /// Applies a complete two-layer program and resets the audition layer to A.
+    ///
+    /// Setup before the first rendered sample is immediate. Live topology changes
+    /// use the bounded transition so voice-pool reconstruction happens silently.
     pub fn apply_patch(&mut self, patch: &Patch) {
-        let mut next_patch = patch.clone();
+        self.apply_patch_owned(patch.clone());
+    }
+
+    /// Applies an owned complete program without cloning it on the calling thread.
+    pub fn apply_patch_owned(&mut self, mut next_patch: Patch) {
         next_patch.validate();
         let topology_unchanged = next_patch.mode == self.applied_mode
             && next_patch.split_point == self.applied_split_point
-            && self.applied_edit_layer == LayerId::A;
+            && (LAYERS > 1 && next_patch.mode != LayerMode::Normal
+                || self.applied_edit_layer == LayerId::A);
         self.patch = next_patch;
         self.edit_layer = LayerId::A;
-        if topology_unchanged {
+        if topology_unchanged && LAYERS > 1 && self.applied_mode != LayerMode::Normal {
+            self.applied_edit_layer = LayerId::A;
+        }
+        if !self.has_rendered_audio {
+            self.commit_topology();
+            self.transition = TopologyTransition::default();
+            return;
+        }
+        if topology_unchanged && self.transition.is_idle() {
             if LAYERS == 1 {
                 self.layers[0].apply_patch(&mut self.voice_pool, &self.patch.layer_a);
             } else {
@@ -341,11 +395,9 @@ where
                 }
             }
             self.apply_effective_tempos();
-            self.transition = TopologyTransition::default();
             return;
         }
-        self.commit_topology();
-        self.transition = TopologyTransition::default();
+        self.transition.request();
     }
 
     /// Updates the edit layer's local tempo.
@@ -373,6 +425,10 @@ where
         if self.midi_clock.set_mode(mode) {
             self.apply_effective_tempos();
         }
+    }
+
+    pub fn master_volume(&self) -> f32 {
+        self.master_volume.target()
     }
 
     pub fn handle_midi_realtime(&mut self, event: MidiRealtimeEvent) {
@@ -491,7 +547,7 @@ where
         };
 
         match param {
-            ParamId::MasterVolume => self.layers[index].set_program_volume(value),
+            ParamId::ProgramVolume => self.layers[index].set_program_volume(value),
             ParamId::EffectEnabled => self.layers[index].effects_mut().set_enabled(value >= 0.5),
             ParamId::EffectType => self.layers[index]
                 .effects_mut()
@@ -594,6 +650,8 @@ where
             || self.edit_layer != self.applied_edit_layer
         {
             self.transition.request();
+        } else {
+            self.transition.cancel();
         }
     }
 
@@ -603,6 +661,7 @@ where
         }
         self.voice_pool.reset();
         self.output_limiter.reset();
+        self.rate_adapter = RateAdapter::default();
         self.applied_mode = self.patch.mode;
         self.applied_split_point = self.patch.split_point;
         self.applied_edit_layer = self.edit_layer;
@@ -629,9 +688,7 @@ where
         }
         self.apply_effective_tempos();
         let oversampling = self.filter_oversampling;
-        self.for_each_active_layer(|layer, pool| {
-            layer.set_filter_oversampling(pool, oversampling)
-        });
+        self.for_each_active_layer(|layer, pool| layer.set_filter_oversampling(pool, oversampling));
         let filter_type = self.filter_type;
         self.for_each_active_layer(|layer, pool| layer.set_filter_type(pool, filter_type));
 
@@ -809,6 +866,13 @@ where
 
         self.midi_clock.advance(buffer.len() / channels);
 
+        if self.transition.needs_apply() {
+            self.commit_topology();
+            self.transition.begin_fade_in();
+            buffer.fill(0.0);
+            return;
+        }
+
         for frame in buffer.chunks_exact_mut(channels) {
             if self.rate_adapter.needs_render() {
                 let rendered = self.next(ctx);
@@ -852,6 +916,11 @@ where
     }
 
     fn next(&mut self, ctx: &mut RenderContext<'_>) -> (f32, f32) {
+        self.has_rendered_audio = true;
+        if self.transition.needs_apply() {
+            return (0.0, 0.0);
+        }
+
         let mut mixed_left = 0.0;
         let mut mixed_right = 0.0;
         let mask = self.rendered_mask();
@@ -884,17 +953,13 @@ where
 
         crate::profiler_begin!(ctx, RenderStage::MasterOutput);
         let (left, right) = self.output_limiter.next(mixed_left, mixed_right);
-        let apply_topology = self.transition.advance();
-        let gain = self.transition.gain;
+        self.transition.advance();
+        let gain = self.master_volume.next() * self.transition.gain;
         let output = (
             (left * gain).clamp(-1.0, 1.0),
             (right * gain).clamp(-1.0, 1.0),
         );
         crate::profiler_end!(ctx, RenderStage::MasterOutput);
-        if apply_topology {
-            self.commit_topology();
-            self.transition.begin_fade_in();
-        }
         output
     }
 
@@ -970,6 +1035,8 @@ mod tests {
     {
         let mut output = [0.0; super::TOPOLOGY_FADE_SAMPLES * 4];
         engine.process(&mut output);
+        engine.process(&mut output);
+        engine.process(&mut output);
         assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
@@ -1000,8 +1067,10 @@ mod tests {
     #[test]
     fn normal_a_and_b_each_own_the_complete_voice_pool() {
         let mut engine =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-                .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         for note in 48..64 {
             engine.note_on(note, 1.0);
         }
@@ -1020,8 +1089,10 @@ mod tests {
         let mut stack_patch = Patch::default();
         stack_patch.mode = LayerMode::Stack;
         let mut stack =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-                .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         stack.apply_patch(&stack_patch);
         for note in 48..56 {
             stack.note_on(note, 1.0);
@@ -1034,8 +1105,10 @@ mod tests {
         split_patch.mode = LayerMode::Split;
         split_patch.split_point = 60;
         let mut split =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-                .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         split.apply_patch(&split_patch);
         for note in 40..48 {
             split.note_on(note, 1.0);
@@ -1052,15 +1125,73 @@ mod tests {
     }
 
     #[test]
+    fn stack_and_split_edit_selection_preserves_running_audio_state() {
+        for mode in [LayerMode::Stack, LayerMode::Split] {
+            let mut patch = Patch {
+                mode,
+                split_point: 60,
+                ..Patch::default()
+            };
+            patch.layer_a.set_param(ParamId::EffectEnabled, 1.0);
+            patch.layer_b.set_param(ParamId::EffectEnabled, 1.0);
+
+            let mut reference =
+                SynthEngineWithMemory::<[f32; 128], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                    48_000.0, [0.0; 128],
+                )
+                .unwrap();
+            let mut switched =
+                SynthEngineWithMemory::<[f32; 128], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                    48_000.0, [0.0; 128],
+                )
+                .unwrap();
+            reference.apply_patch(&patch);
+            switched.apply_patch(&patch);
+            for note in [48, 72] {
+                reference.note_on(note, 0.8);
+                switched.note_on(note, 0.8);
+            }
+
+            let mut reference_warmup = [0.0; 512];
+            let mut switched_warmup = [0.0; 512];
+            reference.process(&mut reference_warmup);
+            switched.process(&mut switched_warmup);
+            assert_eq!(reference_warmup, switched_warmup);
+            let counts = [
+                switched.layer_active_voice_count(LayerId::A),
+                switched.layer_active_voice_count(LayerId::B),
+            ];
+
+            switched.handle_control(ControlMessage::SetEditLayer(LayerId::B));
+            assert!(switched.transition.is_idle());
+            assert_eq!(switched.playback_status().edit_layer, LayerId::B);
+            assert_eq!(switched.playback_status().rendered_mask, 0b11);
+            assert_eq!(
+                [
+                    switched.layer_active_voice_count(LayerId::A),
+                    switched.layer_active_voice_count(LayerId::B),
+                ],
+                counts
+            );
+
+            let mut reference_output = [0.0; 1024];
+            let mut switched_output = [0.0; 1024];
+            reference.process(&mut reference_output);
+            switched.process(&mut switched_output);
+            assert_eq!(switched_output, reference_output);
+        }
+    }
+
+    #[test]
     fn note_off_uses_the_route_recorded_by_note_on() {
         let mut patch = Patch::default();
         patch.mode = LayerMode::Split;
         patch.split_point = 60;
-        let mut engine = SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
-            48_000.0,
-            [0.0; 64],
-        )
-        .unwrap();
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         engine.apply_patch(&patch);
         engine.note_on(59, 1.0);
         assert!(engine.layers[0].has_pressed_key(59));
@@ -1073,10 +1204,11 @@ mod tests {
 
     #[test]
     fn layer_effects_memory_regions_are_disjoint() {
-        let mut engine = SynthEngineWithMemory::<[f32; 128], { VOICE_PACKS }, 2>::new_with_effects_memory(
-            48_000.0, [0.0; 128],
-        )
-        .unwrap();
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 128], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 128],
+            )
+            .unwrap();
         engine.handle_control(ControlMessage::SetParam {
             target: LayerTarget::Explicit(LayerId::A),
             param: ParamId::EffectEnabled,
@@ -1123,8 +1255,10 @@ mod tests {
     #[test]
     fn topology_change_repartitions_and_retriggers_physically_held_notes() {
         let mut engine =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-        .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         engine.set_filter_oversampling(FilterOversampling::X2);
         #[cfg(feature = "filter-all")]
         engine.set_filter_type(FilterType::GainLimitedTpt);
@@ -1150,27 +1284,86 @@ mod tests {
     }
 
     #[test]
+    fn live_patch_topology_change_uses_a_silent_apply_block() {
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        engine.note_on(60, 1.0);
+        engine.process(&mut [0.0; 2]);
+
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Stack;
+        engine.apply_patch(&patch);
+        assert_eq!(engine.playback_status().rendered_mask, 0b01);
+
+        let mut fade = [0.0; super::TOPOLOGY_FADE_SAMPLES * 4];
+        engine.process(&mut fade);
+        assert_eq!(engine.playback_status().rendered_mask, 0b01);
+        assert!(engine.transition.needs_apply());
+
+        let mut apply_block = [1.0; 64];
+        engine.process(&mut apply_block);
+        assert!(apply_block.iter().all(|sample| *sample == 0.0));
+        assert_eq!(engine.playback_status().rendered_mask, 0b11);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 1);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+    }
+
+    #[test]
+    fn restoring_applied_topology_reverses_pending_fade_without_committing() {
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        engine.note_on(60, 1.0);
+        engine.process(&mut [0.0; 2]);
+        engine.handle_control(ControlMessage::SetLayerMode(LayerMode::Stack));
+        engine.process(&mut [0.0; 64]);
+
+        engine.handle_control(ControlMessage::SetLayerMode(LayerMode::Normal));
+        assert!(matches!(
+            engine.transition.state,
+            super::TransitionState::FadeIn
+        ));
+
+        let mut output = [0.0; super::TOPOLOGY_FADE_SAMPLES * 2];
+        engine.process(&mut output);
+        assert!(matches!(
+            engine.transition.state,
+            super::TransitionState::Idle
+        ));
+        assert_eq!(engine.playback_status().rendered_mask, 0b01);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 1);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 0);
+    }
+
+    #[test]
     fn targeted_layer_parameters_remain_independent() {
         let mut patch = Patch::default();
         patch.mode = LayerMode::Stack;
-        patch.layer_a.master_volume = 0.2;
-        patch.layer_b.master_volume = 0.8;
+        patch.layer_a.program_volume = 0.2;
+        patch.layer_b.program_volume = 0.8;
         let mut engine =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-                .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         engine.apply_patch(&patch);
         assert_eq!(engine.layers[0].program_volume(), 0.2);
         assert_eq!(engine.layers[1].program_volume(), 0.8);
 
         engine.handle_control(ControlMessage::SetParam {
             target: LayerTarget::Explicit(LayerId::B),
-            param: ParamId::MasterVolume,
+            param: ParamId::ProgramVolume,
             value: 0.4,
         });
         assert_eq!(engine.layers[0].program_volume(), 0.2);
         assert_eq!(engine.layers[1].program_volume(), 0.4);
-        assert_eq!(engine.patch.layer_a.master_volume, 0.2);
-        assert_eq!(engine.patch.layer_b.master_volume, 0.4);
+        assert_eq!(engine.patch.layer_a.program_volume, 0.2);
+        assert_eq!(engine.patch.layer_b.program_volume, 0.4);
 
         engine.handle_control(ControlMessage::SetModulation {
             target: LayerTarget::Explicit(LayerId::B),
@@ -1185,6 +1378,75 @@ mod tests {
     }
 
     #[test]
+    fn live_program_volume_smooths_while_patch_recall_snaps() {
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.handle_control(ControlMessage::edit_param(ParamId::ProgramVolume, 1.0));
+        let mut settle = std::vec![0.0; 2_048 * 2];
+        engine.process(&mut settle);
+        assert!((engine.layers[0].program_volume_current() - 1.0).abs() < 1e-3);
+
+        engine.handle_control(ControlMessage::edit_param(ParamId::ProgramVolume, 0.0));
+        assert_eq!(engine.layers[0].program_volume(), 0.0);
+        assert!(
+            engine.layers[0].program_volume_current() > 0.9,
+            "live edits must de-zipper instead of jumping"
+        );
+
+        let mut during_ramp = std::vec![0.0; 64];
+        engine.process(&mut during_ramp);
+        let current = engine.layers[0].program_volume_current();
+        assert!(current < 0.9);
+        assert!(current > 0.0);
+
+        let mut patch = LayerPatch::default();
+        patch.program_volume = 0.0;
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        assert_eq!(engine.layers[0].program_volume(), 0.0);
+        assert_eq!(engine.layers[0].program_volume_current(), 0.0);
+    }
+
+    #[test]
+    fn global_master_volume_scales_output_without_changing_program_volume() {
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.handle_control(ControlMessage::edit_param(ParamId::ProgramVolume, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgDecay, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
+        engine.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+
+        let settle_frames = 2_048;
+        let mut settle = std::vec![0.0; settle_frames * 2];
+        engine.process(&mut settle);
+
+        let mut full = std::vec![0.0; 512];
+        engine.process(&mut full);
+        let full_peak = full.iter().copied().fold(0.0_f32, |a, s| a.max(s.abs()));
+
+        engine.handle_control(ControlMessage::SetMasterVolume(0.25));
+        assert_eq!(engine.master_volume(), 0.25);
+        assert_eq!(engine.layers[0].program_volume(), 1.0);
+        assert_eq!(engine.patch.layer_a.program_volume, 1.0);
+
+        let mut settle_quiet = std::vec![0.0; settle_frames * 2];
+        engine.process(&mut settle_quiet);
+
+        let mut quiet = std::vec![0.0; 512];
+        engine.process(&mut quiet);
+        let quiet_peak = quiet.iter().copied().fold(0.0_f32, |a, s| a.max(s.abs()));
+
+        assert!(full_peak > 1e-3);
+        assert!(quiet_peak < full_peak * 0.4);
+        assert!(quiet_peak > full_peak * 0.15);
+    }
+
+    #[test]
     fn layer_unison_and_sustain_state_stays_inside_each_region() {
         let mut patch = Patch::default();
         patch.mode = LayerMode::Stack;
@@ -1192,8 +1454,10 @@ mod tests {
         patch.layer_a.unison_mode = crate::UnisonMode::V4;
         patch.layer_b.unison_enabled = false;
         let mut engine =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-                .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         engine.apply_patch(&patch);
         engine.note_on(60, 1.0);
         assert_eq!(engine.layer_active_voice_count(LayerId::A), 4);
@@ -1215,8 +1479,10 @@ mod tests {
         patch.layer_a.clock_divide = ClockDivision::Quarter;
         patch.layer_b.clock_divide = ClockDivision::Sixteenth;
         let mut engine =
-            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
-                .unwrap();
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
         engine.apply_patch(&patch);
         assert_eq!(engine.layers[0].tempo_bpm(), 80.0);
         assert_eq!(engine.layers[1].tempo_bpm(), 120.0);
@@ -2428,7 +2694,7 @@ mod tests {
     fn apply_patch_updates_engine_owned_parameters() {
         let mut engine = SynthEngine::<1, 64>::new(48_000.0);
         let mut patch = LayerPatch::default();
-        patch.master_volume = 0.25;
+        patch.program_volume = 0.25;
         patch.effects.enabled = true;
         patch.effects.mix = 0.75;
         engine.apply_patch(&Patch {
@@ -2452,7 +2718,7 @@ mod tests {
         engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
         engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgDecay, 0.0005));
         engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
-        engine.handle_control(ControlMessage::edit_param(ParamId::MasterVolume, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::ProgramVolume, 1.0));
         engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 0.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 36,
@@ -2497,7 +2763,7 @@ mod tests {
         engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
         engine.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 1.0));
         engine.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.0));
-        engine.handle_control(ControlMessage::edit_param(ParamId::MasterVolume, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::ProgramVolume, 1.0));
         engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 0.0));
 
         let mut warmup = std::vec![0.0; sample_rate as usize];

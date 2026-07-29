@@ -12,6 +12,7 @@ pub enum MidiUpdate {
         param: ParamId,
         value: f32,
     },
+    MasterVolume(f32),
     MidiClockMode(MidiClockMode),
     EditLayer(LayerId),
     Modulation {
@@ -169,6 +170,7 @@ fn emit_mapped(target: LayerTarget, update: MappedUpdate, emit: &mut impl FnMut(
             param,
             value,
         },
+        MappedUpdate::MasterVolume(volume) => MidiUpdate::MasterVolume(volume),
         MappedUpdate::MidiClockMode(mode) => MidiUpdate::MidiClockMode(mode),
         MappedUpdate::Modulation { route, parameter } => MidiUpdate::Modulation {
             target,

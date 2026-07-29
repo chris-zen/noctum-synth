@@ -176,7 +176,7 @@ All CC values are 7-bit (0–127).
 
 | CC | Parameter | Range | Description |
 |---|---|---|---|
-| 7, 37 | Master Volume | 0–127 → 0%–100% | |
+| 7, 37 | Master Volume | 0–127 → 0%–100% | Device-global output level (not stored in the program) |
 | 10 | Pan Mod Mode | 0–63 = Alternate, 64–127 = Fixed | Boolean threshold at 64 |
 | 75 | Amp Envelope Sustain | 0–127 → 0%–100% | |
 | 76 | Amp Envelope Release | 0–127 → 0.5 ms – 10 seconds | |
@@ -267,7 +267,7 @@ offset from MIDI 60.
 | NRPN | Parameter | Raw Range | Max |
 |---|---|---|---|
 | 28 | Pan Spread | 0–127 → 0%–100% | 127 |
-| 29 | Master Volume | 0–127 → 0%–100% | 127 |
+| 29 | Program Volume | 0–127 → 0%–100% | 127 |
 | 30 | Amp Envelope Amount | 0–127 → 0%–100% | 127 |
 | 31 | Amp Envelope Velocity | 0–127 → 0%–100% | 127 |
 | 32 | Amp Envelope Delay | 0–127 → 0–5 s | 127 |

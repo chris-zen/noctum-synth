@@ -207,7 +207,7 @@ pub enum ParamId {
     ArpHold,
     ArpBeatSync,
     ArpSustainMode,
-    MasterVolume,
+    ProgramVolume,
     PitchBendRange,
 }
 
@@ -321,7 +321,7 @@ impl ParamId {
             Self::ArpHold => "Arp Hold",
             Self::ArpBeatSync => "Arp Beat Sync",
             Self::ArpSustainMode => "Arp Sustain Mode",
-            Self::MasterVolume => "Master Volume",
+            Self::ProgramVolume => "Program Volume",
             Self::PitchBendRange => "Pitch Bend Range",
         }
     }
@@ -356,6 +356,8 @@ pub enum ControlMessage {
         bpm: f32,
     },
     SetMidiClockMode(MidiClockMode),
+    /// Sets the device-global master output level (not stored in the patch).
+    SetMasterVolume(f32),
     MidiRealtime(MidiRealtimeEvent),
     SetModulation {
         target: LayerTarget,
@@ -451,6 +453,6 @@ mod tests {
         assert_eq!(ParamId::AmpEgAttack.name(), "Amp Attack");
         assert_eq!(ParamId::Lfo4Destination.name(), "LFO 4 Destination");
         assert_eq!(ParamId::EffectParam2.name(), "Effect Param 2");
-        assert_eq!(ParamId::MasterVolume.name(), "Master Volume");
+        assert_eq!(ParamId::ProgramVolume.name(), "Program Volume");
     }
 }

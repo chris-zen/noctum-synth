@@ -266,7 +266,7 @@ pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate))
         )),
         27 => emit(MidiUpdate::Param(ParamId::VcaInitialLevel, unit(raw, 127))),
         28 => emit(MidiUpdate::Param(ParamId::PanSpread, unit(raw, 127))),
-        29 => emit(MidiUpdate::Param(ParamId::MasterVolume, unit(raw, 127))),
+        29 => emit(MidiUpdate::Param(ParamId::ProgramVolume, unit(raw, 127))),
         30 => emit(MidiUpdate::Param(ParamId::AmpEnvAmount, unit(raw, 127))),
         31 => emit(MidiUpdate::Param(ParamId::AmpVelocity, unit(raw, 127))),
         32 => emit(MidiUpdate::Param(

@@ -9,9 +9,10 @@ use synth_core::midi::clock::MidiClockMode;
 use synth_core::midi::prophet::filter_cutoff_max_hz;
 use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, GlideMode, KeyMode, LayerMode, LayerPatch, LfoSyncDivision,
-    MAX_SPLIT_POINT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource,
-    ModulationParam, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode, glide_seconds,
+    EffectParams, EffectType, GlideMode, KeyMode, LayerId, LayerMode, LayerPatch,
+    LayerPlaybackStatus, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination, ModMatrix,
+    ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
+    Patch, UnisonMode, glide_seconds,
 };
 
 use crate::config::APP_NAME_FOLDER;
@@ -172,6 +173,7 @@ pub struct UiState {
     pub effect_param2: f32,
     effect_runtime_params: [EffectRuntimeParams; EFFECT_TYPE_COUNT],
     pub master_volume: f32,
+    pub program_volume: f32,
     pub play_pitch_class: u8,
     pub play_octave: i8,
 }
@@ -273,7 +275,8 @@ impl Default for UiState {
             effect_param1: 0.25,
             effect_param2: 0.25,
             effect_runtime_params: [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT],
-            master_volume: 0.8,
+            master_volume: 1.0,
+            program_volume: 0.8,
             play_pitch_class: 0,
             play_octave: 4,
         }
@@ -376,7 +379,7 @@ impl UiState {
         self.effect_param2 = patch.effects.param2;
         self.effect_runtime_params = [EffectRuntimeParams::default(); EFFECT_TYPE_COUNT];
         self.store_active_effect_params();
-        self.master_volume = patch.master_volume;
+        self.program_volume = patch.program_volume;
 
         self.arp_enabled = patch.arp.enabled;
         self.arp_mode = patch.arp.mode.index();
@@ -392,12 +395,34 @@ impl UiState {
         };
     }
 
+    /// Writes every UI-owned layer value without replacing fields that have no
+    /// desktop control, such as the layer name and per-oscillator level.
+    pub fn write_to_patch(&self, patch: &mut LayerPatch) {
+        let updated = LayerPatch::from(self);
+        updated.for_each_param(|param, value| {
+            if !matches!(param, ParamId::Osc1Level | ParamId::Osc2Level) {
+                patch.set_param(param, value);
+            }
+        });
+        patch.unison_chord = updated.unison_chord;
+        patch.mod_matrix = updated.mod_matrix;
+    }
+
     pub fn apply_midi_update(&mut self, update: MidiUiUpdate) {
         match update {
-            MidiUiUpdate::Param(param, value) => self.apply_midi_param(param, value),
-            MidiUiUpdate::Modulation { route, parameter } => {
+            MidiUiUpdate::Param { param, value, .. } => self.apply_midi_param(param, value),
+            MidiUiUpdate::MasterVolume(volume) => {
+                self.master_volume = volume.clamp(0.0, 1.0);
+            }
+            MidiUiUpdate::Modulation {
+                route, parameter, ..
+            } => {
                 self.apply_midi_modulation(route, parameter);
             }
+            MidiUiUpdate::LayerMode(_)
+            | MidiUiUpdate::SplitPoint(_)
+            | MidiUiUpdate::EditLayer(_)
+            | MidiUiUpdate::Program(_) => {}
         }
     }
 
@@ -505,7 +530,7 @@ impl UiState {
             ParamId::EffectClockSync => self.effect_clock_sync = enabled,
             ParamId::EffectParam1 => self.effect_param1 = value,
             ParamId::EffectParam2 => self.effect_param2 = value,
-            ParamId::MasterVolume => self.master_volume = value,
+            ParamId::ProgramVolume => self.program_volume = value,
             ParamId::ArpEnabled => self.arp_enabled = enabled,
             ParamId::ArpMode => self.arp_mode = value as usize,
             ParamId::ArpRange => self.arp_range = (value as u8).clamp(0, 2) + 1,
@@ -738,7 +763,7 @@ impl From<&UiState> for LayerPatch {
                 param1: state.effect_param1,
                 param2: state.effect_param2,
             },
-            master_volume: state.master_volume,
+            program_volume: state.program_volume,
             arp: synth_core::ArpParams {
                 enabled: state.arp_enabled,
                 mode: ArpMode::from_index(state.arp_mode),
@@ -761,6 +786,9 @@ impl From<&UiState> for LayerPatch {
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut UiState,
+    patch: &mut Patch,
+    edit_layer: &mut LayerId,
+    playback_status: LayerPlaybackStatus,
     control: &SynthEngineControl,
     analysis_open: &mut bool,
     patch_mgr: &mut PatchManager,
@@ -773,6 +801,8 @@ pub fn show(
         control,
         analysis_open,
         state,
+        patch,
+        edit_layer,
         patch_mgr,
         midi_output_port,
         muted,
@@ -782,6 +812,10 @@ pub fn show(
 
     ui.spacing_mut().scroll.fade.strength = 0.0;
     egui::ScrollArea::vertical().show(ui, |ui| {
+        layer_control_bar(ui, state, patch, edit_layer, playback_status, control);
+
+        ui.add_space(8.0);
+
         module_panel(ui, "Oscillators", |ui| {
             oscillators_module(ui, state, control);
         });
@@ -915,6 +949,105 @@ pub fn show(
     });
 }
 
+fn layer_control_bar(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    patch: &mut Patch,
+    edit_layer: &mut LayerId,
+    playback_status: LayerPlaybackStatus,
+    control: &SynthEngineControl,
+) {
+    state.write_to_patch(patch.layer_mut(*edit_layer));
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Layers");
+                ui.separator();
+                ui.label("Mode");
+                for (mode, label) in [
+                    (LayerMode::Normal, "Normal"),
+                    (LayerMode::Stack, "Stack"),
+                    (LayerMode::Split, "Split"),
+                ] {
+                    if ui
+                        .add(egui::Button::selectable(patch.mode == mode, label))
+                        .clicked()
+                    {
+                        patch.mode = mode;
+                        control.set_layer_mode(mode);
+                    }
+                }
+
+                ui.separator();
+                ui.label("Edit");
+                for (layer, label) in [(LayerId::A, "Layer A"), (LayerId::B, "Layer B")] {
+                    if ui
+                        .add(egui::Button::selectable(*edit_layer == layer, label))
+                        .clicked()
+                        && *edit_layer != layer
+                    {
+                        select_ui_edit_layer(state, patch, edit_layer, layer);
+                        control.set_edit_layer(layer);
+                    }
+                }
+
+                ui.separator();
+                ui.label("Split");
+                let mut split_point = i32::from(patch.split_point);
+                let split = ui.add_enabled_ui(patch.mode == LayerMode::Split, |ui| {
+                    ui.add_sized(
+                        [140.0, 18.0],
+                        egui::Slider::new(&mut split_point, 0..=i32::from(MAX_SPLIT_POINT))
+                            .show_value(false)
+                            .custom_formatter(|value, _| format_midi_note(value as u8)),
+                    )
+                });
+                let split = split.inner;
+                if split.changed() {
+                    patch.set_split_point(split_point as u8);
+                    control.set_split_point(patch.split_point);
+                }
+                split.on_hover_text("Notes below the split point play Layer A; the split note and above play Layer B");
+                ui.monospace(format_midi_note(patch.split_point));
+
+                ui.separator();
+                let rendering = match playback_status.rendered_mask {
+                    0b01 => "A",
+                    0b10 => "B",
+                    0b11 => "A + B",
+                    _ => "—",
+                };
+                ui.label(format!("Playing {rendering}"));
+                if playback_status.degraded {
+                    ui.colored_label(ui.visuals().warn_fg_color, "Constrained playback");
+                }
+            });
+        });
+}
+
+fn select_ui_edit_layer(
+    state: &mut UiState,
+    patch: &mut Patch,
+    edit_layer: &mut LayerId,
+    next: LayerId,
+) {
+    if *edit_layer == next {
+        return;
+    }
+    state.write_to_patch(patch.layer_mut(*edit_layer));
+    *edit_layer = next;
+    state.apply_from_patch(patch.layer(next));
+}
+
+fn format_midi_note(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = i16::from(note) / 12 - 1;
+    format!("{}{} ({note})", NAMES[usize::from(note % 12)], octave)
+}
+
 const MODIFIED_SUFFIX: &str = " *";
 const PATCH_NAME_FIELD_ID: &str = "patch_name_field";
 const PATCH_LOAD_FILTER_ID: &str = "patch_load_filter";
@@ -930,13 +1063,17 @@ fn load_patch_by_name(
     patch_mgr: &mut PatchManager,
     control: &SynthEngineControl,
     state: &mut UiState,
+    patch: &mut Patch,
+    edit_layer: &mut LayerId,
     name: &str,
     muted: bool,
 ) {
-    if let Some(patch) = patch_mgr.load_patch(name) {
+    if let Some(loaded) = patch_mgr.load_patch(name) {
+        *patch = loaded;
+        *edit_layer = LayerId::A;
         state.apply_from_patch(&patch.layer_a);
-        control.load_patch_respecting_mute(&patch.layer_a, muted);
-        patch_mgr.set_loaded_patch(name, &patch);
+        control.load_program_respecting_mute(patch, muted);
+        patch_mgr.set_loaded_patch(name, patch);
     }
 }
 
@@ -974,10 +1111,13 @@ fn command_row(
     control: &SynthEngineControl,
     analysis_open: &mut bool,
     state: &mut UiState,
+    patch: &mut Patch,
+    edit_layer: &mut LayerId,
     patch_mgr: &mut PatchManager,
     midi_output_port: Option<&str>,
     muted: &mut bool,
 ) {
+    state.write_to_patch(patch.layer_mut(*edit_layer));
     ui.horizontal(|ui| {
         let left = ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -987,11 +1127,19 @@ fn command_row(
                 if prev.clicked() {
                     patch_mgr.refresh();
                     if let Some(name) = patch_mgr.adjacent_patch_name(-1).map(str::to_string) {
-                        load_patch_by_name(patch_mgr, control, state, &name, *muted);
+                        load_patch_by_name(
+                            patch_mgr,
+                            control,
+                            state,
+                            patch,
+                            edit_layer,
+                            &name,
+                            *muted,
+                        );
                     }
                 }
                 prev.on_hover_text("Previous patch");
-                let modified = patch_mgr.is_modified(&LayerPatch::from(&*state));
+                let modified = patch_mgr.is_program_modified(patch);
                 egui::Frame::NONE
                     .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                     .inner_margin(egui::Margin::symmetric(4, 2))
@@ -1012,7 +1160,15 @@ fn command_row(
                 if next.clicked() {
                     patch_mgr.refresh();
                     if let Some(name) = patch_mgr.adjacent_patch_name(1).map(str::to_string) {
-                        load_patch_by_name(patch_mgr, control, state, &name, *muted);
+                        load_patch_by_name(
+                            patch_mgr,
+                            control,
+                            state,
+                            patch,
+                            edit_layer,
+                            &name,
+                            *muted,
+                        );
                     }
                 }
                 next.on_hover_text("Next patch");
@@ -1104,13 +1260,13 @@ fn command_row(
                                                 .selectable_label(false, PATCH_RESET_LABEL)
                                                 .clicked()
                                             {
-                                                let default_patch = Patch::default();
-                                                state.apply_from_patch(&default_patch.layer_a);
-                                                control.load_patch_respecting_mute(
-                                                    &default_patch.layer_a,
-                                                    *muted,
+                                                *patch = Patch::default();
+                                                *edit_layer = LayerId::A;
+                                                state.apply_from_patch(&patch.layer_a);
+                                                control.load_program_respecting_mute(
+                                                    patch, *muted,
                                                 );
-                                                patch_mgr.set_loaded_patch("", &default_patch);
+                                                patch_mgr.set_loaded_patch("", patch);
                                                 ui.close();
                                             }
                                         }
@@ -1140,7 +1296,15 @@ fn command_row(
                                 });
                             if let Some(name) = selected_name {
                                 ui.close();
-                                load_patch_by_name(patch_mgr, control, state, &name, *muted);
+                                load_patch_by_name(
+                                    patch_mgr,
+                                    control,
+                                    state,
+                                    patch,
+                                    edit_layer,
+                                    &name,
+                                    *muted,
+                                );
                             } else if !filter.is_empty() || selected_bank.is_some() {
                                 let any_match = patch_mgr.patch_names.iter().any(|name| {
                                     if !filter.is_empty()
@@ -1170,8 +1334,8 @@ fn command_row(
                 if ui.button("Save").clicked() {
                     let name = patch_mgr.canonical_save_name();
                     if !name.is_empty() {
-                        let patch = LayerPatch::from(&*state);
-                        match patch_mgr.save_patch(&name, &patch) {
+                        state.write_to_patch(patch.layer_mut(*edit_layer));
+                        match patch_mgr.save_program(&name, patch) {
                             Ok(()) => patch_mgr.refresh(),
                             Err(err) => eprintln!("Failed to save patch {name}: {err}"),
                         }
@@ -1179,10 +1343,10 @@ fn command_row(
                 }
                 let send = ui.add_enabled(midi_output_port.is_some(), egui::Button::new("Send"));
                 if send.clicked() {
-                    let program = patch_mgr.with_layer_a(&LayerPatch::from(&*state));
-                    let sent = control.send_midi_program(&program)
+                    state.write_to_patch(patch.layer_mut(*edit_layer));
+                    let sent = control.send_midi_program(patch)
                         || (control.set_midi_output_port(midi_output_port)
-                            && control.send_midi_program(&program));
+                            && control.send_midi_program(patch));
                     if !sent {
                         eprintln!("Failed to send Rev2 Program Edit Buffer");
                     }
@@ -1320,7 +1484,7 @@ fn command_row(
                 if *muted {
                     if (displayed_volume - volume_before_edit).abs() > f32::EPSILON {
                         state.master_volume = displayed_volume;
-                        control.set_param_audio_only(ParamId::MasterVolume, 0.0);
+                        control.set_master_volume_audio_only(0.0);
                     }
                 } else {
                     state.master_volume = displayed_volume;
@@ -1329,9 +1493,10 @@ fn command_row(
                 if framed_selectable(ui, *muted, "Mute").clicked() {
                     *muted = !*muted;
                     if *muted {
-                        control.set_param_audio_only(ParamId::MasterVolume, 0.0);
+                        control.mute_all_layers();
                     } else {
-                        control.set_param_audio_only(ParamId::MasterVolume, state.master_volume);
+                        control.set_output_muted(false);
+                        control.set_master_volume_audio_only(state.master_volume);
                     }
                 }
             },
@@ -2854,17 +3019,6 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
                 control_cell(ui, |ui| {
                     param_knob_f32(
                         ui,
-                        "VCA Level",
-                        &mut state.amp_vca_initial_level,
-                        0.0..=1.0,
-                        0.0,
-                        ParamId::VcaInitialLevel,
-                        control,
-                    );
-                });
-                control_cell(ui, |ui| {
-                    param_knob_f32(
-                        ui,
                         "Env Amt",
                         &mut state.amp_env_amount,
                         0.0..=1.0,
@@ -2892,6 +3046,17 @@ fn amplifier_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngin
                         0.0..=5.0,
                         0.0,
                         ParamId::AmpEgDelay,
+                        control,
+                    );
+                });
+                control_cell(ui, |ui| {
+                    param_knob_f32(
+                        ui,
+                        "Prog Vol",
+                        &mut state.program_volume,
+                        0.0..=1.0,
+                        0.8,
+                        ParamId::ProgramVolume,
                         control,
                     );
                 });
@@ -3378,6 +3543,7 @@ impl PatchManager {
         self.baseline = Some(patch.clone());
     }
 
+    #[cfg(test)]
     pub fn is_modified(&self, current: &LayerPatch) -> bool {
         !self.loaded_name.is_empty()
             && self
@@ -3386,10 +3552,19 @@ impl PatchManager {
                 .is_some_and(|baseline| !patches_equal(baseline, &self.with_layer_a(current)))
     }
 
+    pub fn is_program_modified(&self, current: &Patch) -> bool {
+        !self.loaded_name.is_empty()
+            && self
+                .baseline
+                .as_ref()
+                .is_some_and(|baseline| !patches_equal(baseline, current))
+    }
+
     pub fn canonical_save_name(&self) -> String {
         strip_modified_suffix(self.save_name.trim()).to_string()
     }
 
+    #[cfg(test)]
     pub fn save_patch(&mut self, name: &str, patch: &LayerPatch) -> std::io::Result<()> {
         let path = self.patches_dir.join(format!("{name}.json"));
         let patch = self.with_layer_a(patch);
@@ -3397,6 +3572,15 @@ impl PatchManager {
             .map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
         self.set_loaded_patch(name, &patch);
+        Ok(())
+    }
+
+    pub fn save_program(&mut self, name: &str, patch: &Patch) -> std::io::Result<()> {
+        let path = self.patches_dir.join(format!("{name}.json"));
+        let json =
+            serde_json::to_string_pretty(&PatchFile::from(patch)).map_err(std::io::Error::other)?;
+        std::fs::write(&path, json)?;
+        self.set_loaded_patch(name, patch);
         Ok(())
     }
 
@@ -3429,12 +3613,27 @@ impl PatchManager {
         Ok(path)
     }
 
+    #[cfg(test)]
     pub fn save_autosave(&self, patch: &LayerPatch) {
         let path = self.config_dir.join("patch.json");
         let patch = self.with_layer_a(patch);
         let file = AutosaveFile {
             schema_version: PATCH_SCHEMA_VERSION,
             patch: PatchFile::from(&patch),
+            loaded_name: self.loaded_name.clone(),
+            baseline: self.baseline.as_ref().map(PatchFile::from),
+            save_name: self.save_name.clone(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&file) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    pub fn save_program_autosave(&self, patch: &Patch) {
+        let path = self.config_dir.join("patch.json");
+        let file = AutosaveFile {
+            schema_version: PATCH_SCHEMA_VERSION,
+            patch: PatchFile::from(patch),
             loaded_name: self.loaded_name.clone(),
             baseline: self.baseline.as_ref().map(PatchFile::from),
             save_name: self.save_name.clone(),
@@ -3467,6 +3666,7 @@ impl PatchManager {
             .and_then(PatchFile::into_patch)
     }
 
+    #[cfg(test)]
     pub fn with_layer_a(&self, layer_a: &LayerPatch) -> Patch {
         let mut patch = self.working_patch.clone();
         patch.layer_a = layer_a.clone();
@@ -3576,10 +3776,18 @@ mod tests {
     #[test]
     fn midi_parameter_updates_visible_ui_state() {
         let mut state = UiState::default();
-        state.apply_midi_update(MidiUiUpdate::Param(ParamId::FilterCutoff, 440.0));
-        state.apply_midi_update(MidiUiUpdate::Param(ParamId::Osc2Enabled, 1.0));
-        state.apply_midi_update(MidiUiUpdate::Param(ParamId::EffectType, 3.0));
-        state.apply_midi_update(MidiUiUpdate::Param(ParamId::EffectMix, 0.75));
+        for (param, value) in [
+            (ParamId::FilterCutoff, 440.0),
+            (ParamId::Osc2Enabled, 1.0),
+            (ParamId::EffectType, 3.0),
+            (ParamId::EffectMix, 0.75),
+        ] {
+            state.apply_midi_update(MidiUiUpdate::Param {
+                target: synth_core::LayerTarget::Edit,
+                param,
+                value,
+            });
+        }
 
         assert_eq!(state.filter_cutoff, 440.0);
         assert!(state.osc2_enabled);
@@ -3639,16 +3847,19 @@ mod tests {
     fn midi_modulation_fields_update_and_enable_ui_routes() {
         let mut state = UiState::default();
         state.apply_midi_update(MidiUiUpdate::Modulation {
+            target: synth_core::LayerTarget::Edit,
             route: ModRoute::Free(2),
             parameter: ModulationParam::Source(ModSource::Lfo2),
         });
         assert!(!state.mod_enabled[2]);
 
         state.apply_midi_update(MidiUiUpdate::Modulation {
+            target: synth_core::LayerTarget::Edit,
             route: ModRoute::Free(2),
             parameter: ModulationParam::Destination(ModDestination::FilterCutoff),
         });
         state.apply_midi_update(MidiUiUpdate::Modulation {
+            target: synth_core::LayerTarget::Edit,
             route: ModRoute::Free(2),
             parameter: ModulationParam::Amount(-0.5),
         });
@@ -3660,6 +3871,117 @@ mod tests {
             ModDestination::FilterCutoff.index()
         );
         assert_eq!(state.mod_amounts[2], -0.5);
+    }
+
+    #[test]
+    fn program_modified_state_covers_both_layers_and_topology() {
+        let baseline = Patch::default();
+        let mut manager = test_patch_manager(&["a"], "a");
+        manager.set_loaded_patch("a", &baseline);
+        assert!(!manager.is_program_modified(&baseline));
+
+        let mut changed = baseline.clone();
+        changed.layer_b.filter.resonance = 0.75;
+        assert!(manager.is_program_modified(&changed));
+        changed = baseline.clone();
+        changed.mode = LayerMode::Stack;
+        assert!(manager.is_program_modified(&changed));
+        changed = baseline.clone();
+        changed.split_point += 1;
+        assert!(manager.is_program_modified(&changed));
+    }
+
+    #[test]
+    fn switching_edit_layers_swaps_every_displayed_parameter_source() {
+        let mut patch = Patch::default();
+        patch.layer_a.name.push_str("Layer A name").unwrap();
+        patch.layer_a.osc1.level = 0.31;
+        patch.layer_a.osc2.level = 0.41;
+        patch.layer_b.name.push_str("Layer B name").unwrap();
+        patch.layer_b.osc1.level = 0.61;
+        patch.layer_b.osc2.level = 0.71;
+
+        let mut parameters = Vec::new();
+        patch
+            .layer_b
+            .for_each_param(|param, value| parameters.push((param, value)));
+        for (param, value) in parameters {
+            if !matches!(param, ParamId::Osc1Level | ParamId::Osc2Level) {
+                patch
+                    .layer_b
+                    .set_param(param, if value == 0.0 { 1.0 } else { 0.0 });
+            }
+        }
+        patch.layer_b.unison_chord = ChordMemory::from_notes([48, 55, 60]);
+        for (index, slot) in patch.layer_b.mod_matrix.free_slots.iter_mut().enumerate() {
+            slot.enabled = true;
+            slot.source = ModSource::Lfo1;
+            slot.destination = ModDestination::FilterCutoff;
+            slot.amount = (index as f32 + 1.0) * 0.1;
+        }
+        for (index, slot) in patch.layer_b.mod_matrix.dedicated.iter_mut().enumerate() {
+            slot.enabled = true;
+            slot.destination = ModDestination::Osc1Frequency;
+            slot.amount = -((index as f32 + 1.0) * 0.1);
+        }
+
+        let mut state = UiState::default();
+        state.apply_from_patch(&patch.layer_a);
+        let mut edit_layer = LayerId::A;
+
+        select_ui_edit_layer(&mut state, &mut patch, &mut edit_layer, LayerId::B);
+        assert_ui_matches_layer(&state, &patch.layer_b);
+
+        state.filter_cutoff = 6_600.0;
+        select_ui_edit_layer(&mut state, &mut patch, &mut edit_layer, LayerId::A);
+        assert_ui_matches_layer(&state, &patch.layer_a);
+        assert_eq!(patch.layer_b.filter.cutoff, 6_600.0);
+        assert_eq!(patch.layer_a.name.as_str(), "Layer A name");
+        assert_eq!(patch.layer_a.osc1.level, 0.31);
+        assert_eq!(patch.layer_a.osc2.level, 0.41);
+        assert_eq!(patch.layer_b.name.as_str(), "Layer B name");
+        assert_eq!(patch.layer_b.osc1.level, 0.61);
+        assert_eq!(patch.layer_b.osc2.level, 0.71);
+    }
+
+    fn assert_ui_matches_layer(state: &UiState, expected: &LayerPatch) {
+        let visible = LayerPatch::from(state);
+        let mut expected_params = Vec::new();
+        let mut visible_params = Vec::new();
+        expected.for_each_param(|param, value| {
+            if !matches!(param, ParamId::Osc1Level | ParamId::Osc2Level) {
+                expected_params.push((param, value));
+            }
+        });
+        visible.for_each_param(|param, value| {
+            if !matches!(param, ParamId::Osc1Level | ParamId::Osc2Level) {
+                visible_params.push((param, value));
+            }
+        });
+        assert_eq!(visible_params, expected_params);
+        assert_eq!(visible.unison_chord, expected.unison_chord);
+
+        for (visible, expected) in visible
+            .mod_matrix
+            .free_slots
+            .iter()
+            .zip(&expected.mod_matrix.free_slots)
+        {
+            assert_eq!(visible.enabled, expected.enabled);
+            assert_eq!(visible.source, expected.source);
+            assert_eq!(visible.destination, expected.destination);
+            assert_eq!(visible.amount, expected.amount);
+        }
+        for (visible, expected) in visible
+            .mod_matrix
+            .dedicated
+            .iter()
+            .zip(&expected.mod_matrix.dedicated)
+        {
+            assert_eq!(visible.enabled, expected.enabled);
+            assert_eq!(visible.destination, expected.destination);
+            assert_eq!(visible.amount, expected.amount);
+        }
     }
 
     fn test_patch_manager(names: &[&str], loaded_name: &str) -> PatchManager {
@@ -3787,7 +4109,7 @@ mod tests {
         patch.lfos[0].rate_hz = 11.053047;
         patch.effects.effect_type = EffectType::PhaserLow;
         patch.effects.clock_sync = true;
-        patch.master_volume = 0.9448819;
+        patch.program_volume = 0.9448819;
         let mut state = UiState::default();
         state.apply_from_patch(&patch);
         let loaded = LayerPatch::from(&state);
@@ -3797,12 +4119,22 @@ mod tests {
         let mut analysis_open = false;
         let mut filter_type = FilterType::default();
         let mut muted = false;
+        let mut program = patch_with_layer_a(loaded.clone());
+        let mut edit_layer = LayerId::A;
 
         egui::__run_test_ui(|ui| {
             ui.set_min_size(egui::vec2(1_200.0, 3_000.0));
             show(
                 ui,
                 &mut state,
+                &mut program,
+                &mut edit_layer,
+                LayerPlaybackStatus {
+                    mode: LayerMode::Normal,
+                    edit_layer: LayerId::A,
+                    rendered_mask: 0b01,
+                    degraded: false,
+                },
                 &bridge.control,
                 &mut analysis_open,
                 &mut manager,
@@ -3843,7 +4175,7 @@ mod tests {
     fn restore_autosave_derives_modified_state_and_preserves_draft_name() {
         let baseline = Patch::default();
         let mut restored = baseline.clone();
-        restored.layer_a.master_volume = 0.25;
+        restored.layer_a.program_volume = 0.25;
         let mut mgr = test_patch_manager(&["preset"], "preset");
         mgr.restore_autosave_metadata(
             "preset".to_string(),
@@ -3878,7 +4210,7 @@ mod tests {
             patches_dir,
         };
         let mut patch = LayerPatch::default();
-        patch.master_volume = 0.25;
+        patch.program_volume = 0.25;
 
         manager.save_patch("renamed", &patch).unwrap();
 
@@ -3894,7 +4226,7 @@ mod tests {
         assert!(json.get("layers").is_some());
         assert!(json.get("layer_a").is_none());
         let loaded = manager.load_patch("renamed").unwrap();
-        assert_eq!(loaded.layer_a.master_volume, 0.25);
+        assert_eq!(loaded.layer_a.program_volume, 0.25);
         assert_eq!(loaded.layer_b.name.as_str(), "preserved b");
         assert_eq!(loaded.layer_b.filter.cutoff, 8_000.0);
         std::fs::remove_dir_all(root).unwrap();
@@ -3916,7 +4248,7 @@ mod tests {
             patches_dir: root.join("missing/patches"),
         };
         let mut changed = baseline.layer_a.clone();
-        changed.master_volume = 0.25;
+        changed.program_volume = 0.25;
 
         assert!(manager.save_patch("renamed", &changed).is_err());
         assert_eq!(manager.loaded_name, "original");
@@ -3944,12 +4276,12 @@ mod tests {
             patches_dir: root.join("patches"),
         };
         let mut patch = LayerPatch::default();
-        patch.master_volume = 0.25;
+        patch.program_volume = 0.25;
         manager.save_autosave(&patch);
         let (loaded_patch, loaded_name, baseline, save_name) = manager.load_autosave().unwrap();
         assert_eq!(loaded_name, "preset");
         assert_eq!(save_name, "preset *");
-        assert_eq!(loaded_patch.layer_a.master_volume, 0.25);
+        assert_eq!(loaded_patch.layer_a.program_volume, 0.25);
         assert_eq!(loaded_patch.layer_b.name.as_str(), "autosave b");
         assert_eq!(loaded_patch.mode, LayerMode::Split);
         assert_eq!(loaded_patch.split_point, 48);
@@ -4016,7 +4348,7 @@ mod tests {
             Some("U1-001-LosVangelis2041.json")
         );
         if let synth_core::midi::program::ProgramData::Rev2(program) = &mut program {
-            program.patch.layer_a.master_volume = 0.25;
+            program.patch.layer_a.program_volume = 0.25;
             program.patch.layer_b.name.push_str("Layer B").unwrap();
             program.patch.mode = LayerMode::Stack;
         }
@@ -4025,7 +4357,7 @@ mod tests {
             .unwrap()
             .into_patch()
             .unwrap();
-        assert_eq!(decoded.layer_a.master_volume, 0.25);
+        assert_eq!(decoded.layer_a.program_volume, 0.25);
         assert_eq!(decoded.layer_b.name.as_str(), "Layer B");
         assert_eq!(decoded.mode, LayerMode::Stack);
         std::fs::remove_dir_all(root).unwrap();

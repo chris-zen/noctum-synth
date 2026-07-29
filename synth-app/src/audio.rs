@@ -50,7 +50,8 @@ fn describe_config(config: &AudioConfig) -> String {
 }
 
 use crate::engine::{
-    self, AudioBlock, AudioMetrics, SynthEngineAudio, SynthEngineBridge, rebind_audio_channels,
+    self, AudioBlock, AudioCommand, AudioMetrics, SynthEngineAudio, SynthEngineBridge,
+    rebind_audio_channels,
 };
 
 // ============================================================================
@@ -967,6 +968,7 @@ struct Renderer {
     sample_rate: f32,
     channels: usize,
     last_midi_clock_status: MidiClockStatus,
+    last_layer_playback_status: synth_core::LayerPlaybackStatus,
 }
 
 impl Renderer {
@@ -996,6 +998,7 @@ impl Renderer {
             filter_oversampling.factor(sample_rate)
         ));
         let last_midi_clock_status = engine.midi_clock_status();
+        let last_layer_playback_status = engine.playback_status();
         Ok(Self {
             engine_audio,
             engine,
@@ -1005,6 +1008,7 @@ impl Renderer {
             sample_rate,
             channels,
             last_midi_clock_status,
+            last_layer_playback_status,
         })
     }
 
@@ -1021,14 +1025,15 @@ impl Renderer {
         let mut pending_oversampling = None;
         let mut pending_filter_type = None;
 
-        self.engine_audio.control.drain(|message| match message {
-            ControlMessage::SetFilterOversampling(oversampling) => {
+        self.engine_audio.control.drain(|command| match command {
+            AudioCommand::Program(patch) => self.engine.apply_patch_owned(patch),
+            AudioCommand::Control(ControlMessage::SetFilterOversampling(oversampling)) => {
                 pending_oversampling = Some(oversampling);
             }
-            ControlMessage::SetFilterType(filter_type) => {
+            AudioCommand::Control(ControlMessage::SetFilterType(filter_type)) => {
                 pending_filter_type = Some(filter_type);
             }
-            message => self.engine.handle_control(message),
+            AudioCommand::Control(message) => self.engine.handle_control(message),
         });
 
         if let Some(oversampling) = pending_oversampling {
@@ -1064,6 +1069,16 @@ impl Renderer {
             && self.engine_audio.feedback.push_midi_clock(clock_status)
         {
             self.last_midi_clock_status = clock_status;
+        }
+
+        let layer_playback_status = self.engine.playback_status();
+        if layer_playback_status != self.last_layer_playback_status
+            && self
+                .engine_audio
+                .feedback
+                .push_layer_playback(layer_playback_status)
+        {
+            self.last_layer_playback_status = layer_playback_status;
         }
 
         if let Some(metrics) =

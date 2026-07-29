@@ -39,7 +39,7 @@ fn representative_one_layer_render_is_bit_identical() {
         (ParamId::EffectMix, 0.36),
         (ParamId::EffectParam1, 0.08),
         (ParamId::EffectParam2, 0.41),
-        (ParamId::MasterVolume, 0.77),
+        (ParamId::ProgramVolume, 0.77),
     ] {
         engine.handle_control(ControlMessage::edit_param(param, value));
     }
@@ -77,7 +77,7 @@ fn representative_one_layer_render_is_bit_identical() {
     patch.effects.mix = 0.29;
     patch.effects.param1 = 0.53;
     patch.effects.param2 = 0.22;
-    patch.master_volume = 0.68;
+    patch.program_volume = 0.68;
     engine.apply_patch(&Patch {
         layer_a: patch,
         ..Patch::default()

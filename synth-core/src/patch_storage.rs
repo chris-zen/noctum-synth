@@ -489,7 +489,7 @@ const PARAM_IDS: [ParamId; 107] = [
     ParamId::ArpHold,
     ParamId::ArpBeatSync,
     ParamId::ArpSustainMode,
-    ParamId::MasterVolume,
+    ParamId::ProgramVolume,
     ParamId::AnalogDrift,
 ];
 

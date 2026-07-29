@@ -66,7 +66,7 @@ impl<L: Layer> LayerDecoder<L> {
             if let Some(value) = program_nrpn_value(raw, number, L::DATA_OFFSET) {
                 map_nrpn_with_lfo(number, value, &mut state, &mut |update| match update {
                     MappedUpdate::Param(param, value) => patch.set_param(param, value),
-                    MappedUpdate::MidiClockMode(_) => {}
+                    MappedUpdate::MasterVolume(_) | MappedUpdate::MidiClockMode(_) => {}
                     MappedUpdate::Modulation { route, parameter } => {
                         patch.set_modulation_param(route, parameter)
                     }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use synth_core::dsp::FilterType;
-use synth_core::{LayerPatch, ParamId};
+use synth_core::{LayerId, LayerTarget, Patch};
 
 use crate::audio::AudioManager;
 use crate::config::Config;
@@ -34,6 +34,8 @@ pub struct App {
     pub analysis_viewport: DeferredViewport,
     pub main_viewport: RootViewport,
     pub ui_state: UiState,
+    pub patch: Patch,
+    pub edit_layer: LayerId,
     pub midi_inputs: MidiInputManager,
     pub patch_mgr: PatchManager,
     filter_type: Arc<Mutex<FilterType>>,
@@ -103,14 +105,14 @@ impl App {
 
         let mut patch_mgr = PatchManager::new();
         let mut ui_state = UiState::default();
-        if let Some((patch, loaded_name, baseline, save_name)) = patch_mgr.load_autosave() {
-            ui_state.apply_from_patch(&patch.layer_a);
-            patch_mgr.restore_autosave_metadata(loaded_name, baseline, save_name, &patch);
+        let mut patch = Patch::default();
+        if let Some((restored, loaded_name, baseline, save_name)) = patch_mgr.load_autosave() {
+            patch_mgr.restore_autosave_metadata(loaded_name, baseline, save_name, &restored);
+            patch = restored;
         }
+        ui_state.apply_from_patch(&patch.layer_a);
         let muted = config.muted;
-        engine
-            .control
-            .load_patch_respecting_mute(&LayerPatch::from(&ui_state), muted);
+        engine.control.load_program_respecting_mute(&patch, muted);
 
         Self {
             engine,
@@ -126,6 +128,8 @@ impl App {
             ),
             main_viewport: RootViewport::from_config(config.main_viewport),
             ui_state,
+            patch,
+            edit_layer: LayerId::A,
             patch_mgr,
             filter_type,
             midi_inputs,
@@ -150,11 +154,18 @@ impl App {
         if applied.error.is_none() {
             self.config.settings.sample_rate = applied.sample_rate_setting;
             self.audio_baseline = AudioBaseline::from_settings(&self.config.settings);
-            let patch = LayerPatch::from(&self.ui_state);
+            self.sync_current_layer();
             self.engine.control.all_notes_off();
-            self.engine
-                .control
-                .load_patch_respecting_mute(&patch, self.muted);
+            self.engine.control.reload_program_preserving_edit(
+                &self.patch,
+                self.edit_layer,
+                self.muted,
+            );
+            if !self.muted {
+                self.engine
+                    .control
+                    .set_master_volume_audio_only(self.ui_state.master_volume);
+            }
             self.engine
                 .control
                 .set_filter_oversampling(self.config.settings.filter_oversampling);
@@ -177,8 +188,79 @@ impl App {
         self.config.muted = self.muted;
         self.config.input_enabled = self.engine.control.input_enabled();
         self.config.save();
-        self.patch_mgr
-            .save_autosave(&LayerPatch::from(&self.ui_state));
+        self.sync_current_layer();
+        self.patch_mgr.save_program_autosave(&self.patch);
+    }
+
+    fn sync_current_layer(&mut self) {
+        self.ui_state
+            .write_to_patch(self.patch.layer_mut(self.edit_layer));
+    }
+
+    fn select_edit_layer(&mut self, layer: LayerId) {
+        if layer == self.edit_layer {
+            return;
+        }
+        self.sync_current_layer();
+        self.edit_layer = layer;
+        self.ui_state.apply_from_patch(self.patch.layer(layer));
+    }
+
+    fn apply_midi_ui_update(&mut self, update: crate::engine::MidiUiUpdate) {
+        use crate::engine::MidiUiUpdate;
+        match update {
+            MidiUiUpdate::Program(program) => {
+                self.patch = *program;
+                self.edit_layer = LayerId::A;
+                self.ui_state.apply_from_patch(&self.patch.layer_a);
+            }
+            MidiUiUpdate::EditLayer(layer) => self.select_edit_layer(layer),
+            MidiUiUpdate::LayerMode(mode) => self.patch.mode = mode,
+            MidiUiUpdate::SplitPoint(split_point) => self.patch.set_split_point(split_point),
+            MidiUiUpdate::MasterVolume(volume) => {
+                if !self.muted {
+                    self.ui_state.master_volume = volume.clamp(0.0, 1.0);
+                }
+            }
+            MidiUiUpdate::Param {
+                target,
+                param,
+                value,
+            } => {
+                let layer = match target {
+                    LayerTarget::Edit => self.edit_layer,
+                    LayerTarget::Explicit(layer) => layer,
+                };
+                self.patch.layer_mut(layer).set_param(param, value);
+                if layer == self.edit_layer {
+                    self.ui_state.apply_midi_update(MidiUiUpdate::Param {
+                        target,
+                        param,
+                        value,
+                    });
+                }
+            }
+            MidiUiUpdate::Modulation {
+                target,
+                route,
+                parameter,
+            } => {
+                let layer = match target {
+                    LayerTarget::Edit => self.edit_layer,
+                    LayerTarget::Explicit(layer) => layer,
+                };
+                self.patch
+                    .layer_mut(layer)
+                    .set_modulation_param(route, parameter);
+                if layer == self.edit_layer {
+                    self.ui_state.apply_midi_update(MidiUiUpdate::Modulation {
+                        target,
+                        route,
+                        parameter,
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -192,9 +274,13 @@ impl eframe::App for App {
         self.engine.view.drain_feedback();
         self.main_viewport.drive(ctx);
 
-        self.engine.view.drain_midi_ui_updates(|update| {
-            self.ui_state.apply_midi_update(update);
-        });
+        let mut midi_updates = Vec::new();
+        self.engine
+            .view
+            .drain_midi_ui_updates(|update| midi_updates.push(update));
+        for update in midi_updates {
+            self.apply_midi_ui_update(update);
+        }
 
         let mut imports = Vec::new();
         self.engine
@@ -222,12 +308,6 @@ impl eframe::App for App {
             self.patch_mgr.refresh();
         }
 
-        if self.muted {
-            self.engine
-                .control
-                .set_param_audio_only(ParamId::MasterVolume, 0.0);
-        }
-
         if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
             self.persist();
             self.last_autosave = Instant::now();
@@ -235,6 +315,10 @@ impl eframe::App for App {
 
         self.midi_inputs.tick();
         self.engine.control.midi_output().tick();
+
+        if self.muted {
+            self.engine.control.mute_all_layers();
+        }
 
         let engine_view = self.engine.view.clone();
         let analysis = self.analysis.clone();
@@ -284,9 +368,13 @@ impl eframe::App for App {
         egui::CentralPanel::default().show_inside(ui, |ui| match self.active_tab {
             Tab::Parameters => {
                 let mut filter_type = self.filter_type.lock();
+                let playback_status = self.engine.view.layer_playback_status();
                 params_view::show(
                     ui,
                     &mut self.ui_state,
+                    &mut self.patch,
+                    &mut self.edit_layer,
+                    playback_status,
                     &self.engine.control,
                     &mut self.analysis_viewport.open,
                     &mut self.patch_mgr,
@@ -294,9 +382,11 @@ impl eframe::App for App {
                     self.config.settings.midi_output_port.as_deref(),
                     &mut self.muted,
                 );
+                self.ui_state
+                    .write_to_patch(self.patch.layer_mut(self.edit_layer));
             }
             Tab::Settings => {
-                let current_patch = LayerPatch::from(&self.ui_state);
+                self.sync_current_layer();
                 let applied = self.audio_manager.applied();
                 let filter_type = *self.filter_type.lock();
                 settings_view::show(
@@ -308,8 +398,6 @@ impl eframe::App for App {
                     filter_type,
                     &self.engine.control,
                     &mut self.midi_inputs,
-                    &current_patch,
-                    self.muted,
                 );
                 if self.config.settings.dark_theme != self.theme_dark {
                     self.theme_dark = self.config.settings.dark_theme;

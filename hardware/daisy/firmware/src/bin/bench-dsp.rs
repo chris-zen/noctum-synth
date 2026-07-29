@@ -438,7 +438,7 @@ fn u1_001_patch() -> LayerPatch {
     patch.effects.clock_sync = false;
     patch.effects.param1 = 0.333_333_34;
     patch.effects.param2 = 0.377_952_75;
-    patch.master_volume = 1.0;
+    patch.program_volume = 1.0;
 
     patch
 }
@@ -737,7 +737,7 @@ fn run_control_burst_scenario(
         ParamId::EffectParam2,
         ParamId::OscMix,
         ParamId::PanSpread,
-        ParamId::MasterVolume,
+        ParamId::ProgramVolume,
     ];
     let mut timing = RawTiming::new();
     let mut control_max = 0_u32;
