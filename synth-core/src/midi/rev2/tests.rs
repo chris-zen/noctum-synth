@@ -1,62 +1,31 @@
 //! Rev2 MIDI codec tests.
 
-use super::layer::{Layer, LayerA, LayerB};
-use super::map::{
-    MappedUpdate, emit_nrpn, emit_osc_shape, map_cc, map_nrpn, program_nrpn_value,
-    store_program_nrpn,
-};
-use super::program::decode::program_payload as decode_program_payload;
-use super::program::{PROGRAM_DATA_LEN, PROGRAM_PACKED_LEN, layer_mode_from_raw, layer_mode_raw};
-use super::*;
-use crate::midi::clock::MidiClockMode;
-use crate::midi::prophet::{
-    attack_decay_raw, attack_decay_seconds, cutoff_raw_to_hz, pack_program_data, release_raw,
-    release_seconds, unpack_program_data,
-};
+use heapless::Vec;
+
 use crate::{
     LayerId, LayerMode, LayerPatch, LayerTarget, LfoSyncDivision, ModDestination, ModSource,
     ParamId, Patch,
+    midi::{
+        clock::MidiClockMode,
+        prophet::{
+            attack_decay_raw, attack_decay_seconds, cutoff_raw_to_hz, pack_program_data,
+            release_raw, release_seconds, unpack_program_data,
+        },
+        rev2::{
+            ControllerDecoder, ControllerEncoder, MidiUpdate, SysexError, decode, encode,
+            layer::{Layer, LayerA, LayerB},
+            map::{
+                MappedUpdate, emit_nrpn, emit_osc_shape, map_cc, map_nrpn, program_nrpn_value,
+                store_program_nrpn,
+            },
+            program::{
+                PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN,
+                PROGRAM_PACKED_LEN, layer_mode_from_raw, layer_mode_raw,
+            },
+            program::decode::program_payload as decode_program_payload,
+        },
+    },
 };
-
-fn param_update(target: LayerTarget, param: ParamId, value: f32) -> MidiUpdate {
-    MidiUpdate::Param {
-        target,
-        param,
-        value,
-    }
-}
-
-fn decode_nrpn<const N: usize>(
-    decoder: &mut ControllerDecoder,
-    number: u16,
-    value: u16,
-    updates: &mut heapless::Vec<MidiUpdate, N>,
-) {
-    emit_nrpn(0, number, value, &mut |message| {
-        decoder.control_change(0, message[1], message[2], |update| {
-            updates.push(update).unwrap();
-        });
-    });
-}
-
-fn program_with_layer_a(layer_a: LayerPatch) -> Patch {
-    Patch {
-        layer_a,
-        ..Patch::default()
-    }
-}
-
-fn program_data_message(bank: u8, program: u8, patch: &LayerPatch) -> [u8; PROGRAM_DATA_SYSEX_LEN] {
-    let mut edit = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-    encode::program_edit_buffer(&program_with_layer_a(patch.clone()), &mut edit).unwrap();
-    let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
-    message[..4].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02]);
-    message[4] = bank;
-    message[5] = program;
-    message[6..6 + PROGRAM_PACKED_LEN].copy_from_slice(&edit[4..4 + PROGRAM_PACKED_LEN]);
-    message[PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
-    message
-}
 
 #[test]
 fn rev2_envelope_mapping_matches_measured_anchors() {
@@ -659,14 +628,6 @@ fn stored_program_data_rejects_invalid_metadata_and_payload() {
     ));
 }
 
-const FACTORY_SYSEX: &[u8] =
-    include_bytes!("../../../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
-
-fn factory_message(program: usize) -> &'static [u8] {
-    let offset = program * PROGRAM_DATA_SYSEX_LEN;
-    &FACTORY_SYSEX[offset..offset + PROGRAM_DATA_SYSEX_LEN]
-}
-
 #[test]
 fn layer_mode_raw_values_follow_the_reference_contract() {
     assert_eq!(layer_mode_from_raw(0), Some(LayerMode::Normal));
@@ -680,101 +641,9 @@ fn layer_mode_raw_values_follow_the_reference_contract() {
 }
 
 #[test]
-fn official_factory_bank_has_the_verified_layer_mode_distribution() {
-    let mut counts = [0_usize; 3];
-
-    for message in FACTORY_SYSEX.chunks_exact(PROGRAM_DATA_SYSEX_LEN) {
-        let decoded = decode::program_data(message).unwrap();
-        let index = usize::from(layer_mode_raw(decoded.patch.mode));
-        counts[index] += 1;
-    }
-
-    assert_eq!(counts, [174, 266, 72]);
-}
-
-#[test]
-fn official_factory_bank_decodes_two_finite_layers() {
-    assert_eq!(FACTORY_SYSEX.len() / PROGRAM_DATA_SYSEX_LEN, 512);
-    for (index, message) in FACTORY_SYSEX
-        .chunks_exact(PROGRAM_DATA_SYSEX_LEN)
-        .enumerate()
-    {
-        let patch = decode::program_data(message).unwrap().patch;
-        for layer in [LayerId::A, LayerId::B] {
-            patch.layer(layer).for_each_param(|param, value| {
-                assert!(value.is_finite(), "program {index} {layer:?} {param:?}");
-            });
-            patch.layer(layer).for_each_modulation(|route, slot| {
-                assert!(
-                    slot.amount.is_finite(),
-                    "program {index} {layer:?} {route:?}"
-                );
-            });
-        }
-    }
-}
-
-#[test]
-fn documented_factory_regressions_preserve_layer_b_identity() {
-    let cases = [
-        (
-            1,
-            "All That Glitter",
-            "All That Glitter B",
-            24.0,
-            74.0 / 127.0,
-        ),
-        (5, "BoiteMusique", "BoiteMusique", 62.0, 0.0),
-        (18, "Horn Busker", "League Brass", 24.0, 37.0 / 127.0),
-        (37, "Sitcom Piano", "Sitcom Pad", 43.0, 90.0 / 127.0),
-    ];
-    for (program, name_a, name_b, osc1_frequency_b, resonance_b) in cases {
-        let patch = decode::program_data(factory_message(program))
-            .unwrap()
-            .patch;
-        assert_eq!(patch.layer_a.name.as_str(), name_a);
-        assert_eq!(patch.layer_b.name.as_str(), name_b);
-        assert_eq!(patch.layer_b.osc1.frequency, osc1_frequency_b);
-        assert!((patch.layer_b.filter.resonance - resonance_b).abs() < 0.001);
-    }
-}
-
-#[test]
-fn factory_decode_encode_decode_preserves_both_layers_and_mode() {
-    for program in [1, 5, 18, 37] {
-        let source = decode::program_data(factory_message(program))
-            .unwrap()
-            .patch;
-        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        encode::program_edit_buffer(&source, &mut message).unwrap();
-        let decoded = decode::program_edit_buffer(&message).unwrap();
-
-        assert_eq!(decoded.mode, source.mode, "program {program}");
-        assert_eq!(decoded.split_point, source.split_point, "program {program}");
-        for layer in [LayerId::A, LayerId::B] {
-            let expected = source.layer(layer);
-            let actual = decoded.layer(layer);
-            assert_eq!(actual.name, expected.name, "program {program} {layer:?}");
-            assert_eq!(
-                actual.osc1.frequency, expected.osc1.frequency,
-                "program {program} {layer:?}"
-            );
-            assert!(
-                (actual.filter.cutoff - expected.filter.cutoff).abs() < 0.05,
-                "program {program} {layer:?}"
-            );
-            assert!(
-                (actual.filter.resonance - expected.filter.resonance).abs() < 0.001,
-                "program {program} {layer:?}"
-            );
-        }
-    }
-}
-
-#[test]
 fn layer_b_nrpn_and_edit_layer_updates_are_explicit() {
     let mut decoder = ControllerDecoder::default();
-    let mut updates = heapless::Vec::<MidiUpdate, 8>::new();
+    let mut updates = Vec::<MidiUpdate, 8>::new();
     emit_nrpn(0, LayerB::NRPN_OFFSET + 16, 96, &mut |message| {
         decoder.control_change(0, message[1], message[2], |update| {
             updates.push(update).unwrap();
@@ -827,7 +696,7 @@ fn layer_b_nrpn_and_edit_layer_updates_are_explicit() {
 #[test]
 fn interleaved_layer_lfo_state_is_independent() {
     let mut decoder = ControllerDecoder::default();
-    let mut updates = heapless::Vec::<MidiUpdate, 16>::new();
+    let mut updates = Vec::<MidiUpdate, 16>::new();
 
     decode_nrpn(&mut decoder, 41, 1, &mut updates);
     updates.clear();
@@ -851,21 +720,6 @@ fn interleaved_layer_lfo_state_is_independent() {
             ..
         }]
     ));
-}
-
-#[test]
-fn factory_program_decodes_mod_destination_indices() {
-    let message = &FACTORY_SYSEX[..PROGRAM_DATA_SYSEX_LEN];
-    let decoded = decode::program_data(message).unwrap();
-    assert_eq!(
-        decoded.patch.layer_a.lfos[2].destination,
-        ModDestination::Osc1ShapeMod
-    );
-
-    let mut raw = [0_u8; PROGRAM_DATA_LEN];
-    unpack_program_data(&message[6..6 + PROGRAM_PACKED_LEN], &mut raw);
-    assert_eq!(raw[67] & 0x7f, 7);
-    assert_eq!(raw[93] & 0x7f, 3);
 }
 
 #[test]
@@ -923,4 +777,44 @@ fn mod_destination_matches_cc_chart_indices() {
     assert_eq!(ModDestination::from_index(4), ModDestination::OscMix);
     assert_eq!(ModDestination::from_index(7), ModDestination::Osc1ShapeMod);
     assert_eq!(ModDestination::Osc1ShapeMod.index(), 7);
+}
+
+fn param_update(target: LayerTarget, param: ParamId, value: f32) -> MidiUpdate {
+    MidiUpdate::Param {
+        target,
+        param,
+        value,
+    }
+}
+
+fn decode_nrpn<const N: usize>(
+    decoder: &mut ControllerDecoder,
+    number: u16,
+    value: u16,
+    updates: &mut Vec<MidiUpdate, N>,
+) {
+    emit_nrpn(0, number, value, &mut |message| {
+        decoder.control_change(0, message[1], message[2], |update| {
+            updates.push(update).unwrap();
+        });
+    });
+}
+
+fn program_with_layer_a(layer_a: LayerPatch) -> Patch {
+    Patch {
+        layer_a,
+        ..Patch::default()
+    }
+}
+
+fn program_data_message(bank: u8, program: u8, patch: &LayerPatch) -> [u8; PROGRAM_DATA_SYSEX_LEN] {
+    let mut edit = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+    encode::program_edit_buffer(&program_with_layer_a(patch.clone()), &mut edit).unwrap();
+    let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
+    message[..4].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02]);
+    message[4] = bank;
+    message[5] = program;
+    message[6..6 + PROGRAM_PACKED_LEN].copy_from_slice(&edit[4..4 + PROGRAM_PACKED_LEN]);
+    message[PROGRAM_DATA_SYSEX_LEN - 1] = 0xf7;
+    message
 }

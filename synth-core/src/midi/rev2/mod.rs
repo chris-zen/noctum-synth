@@ -18,5 +18,8 @@ mod tests;
 
 pub use controller::{ControllerDecoder, MidiUpdate};
 pub use encoder::ControllerEncoder;
-pub use program::{PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN, ProgramData, SysexError};
+pub use program::{
+    PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN, PROGRAM_PACKED_LEN,
+    ProgramData, SysexError,
+};
 pub use program::{decode, encode};

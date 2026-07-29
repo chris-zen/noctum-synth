@@ -58,6 +58,13 @@ cargo run --release -p synth-tools --bin voice_block_perf
 cargo run --release -p synth-tools --bin filter_perf
 ```
 
+Official Sequential factory-bank regressions are opt-in integration tests.
+They need the gitignored factory `.syx` archives on disk and:
+
+```bash
+RUST_MIN_STACK=16777216 cargo test -p synth-core --features official-sysex-fixtures --test official_sysex_fixtures
+```
+
 The `synth-core` Makefile sets `RUST_MIN_STACK` and runs a curated feature
 matrix (widths × math backends, plus Daisy-like smoke configs) via
 `make -C synth-core test-matrix`.

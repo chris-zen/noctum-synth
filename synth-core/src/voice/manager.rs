@@ -2663,4 +2663,226 @@ mod tests {
             "arp should restart with currently held keys"
         );
     }
+
+
+    #[test]
+    fn unison_glide_releases_every_ordered_note_sequence() {
+        let patch = unison_glide_retrigger_patch();
+        assert!(patch.unison_enabled && patch.glide_enabled);
+        assert_eq!(patch.unison_mode, UnisonMode::V8);
+        assert_eq!(patch.key_mode, KeyMode::HighRetrigger);
+
+        let release_orders = [
+            [48, 59, 72],
+            [48, 72, 59],
+            [59, 48, 72],
+            [59, 72, 48],
+            [72, 48, 59],
+            [72, 59, 48],
+        ];
+        for frames_between_events in [0, 1, 32, 256] {
+            for release_order in release_orders {
+                let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
+                voices.apply_patch(&patch);
+                for note in [59, 48, 72] {
+                    voices.handle_control(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    });
+                    process_frames(&mut voices, frames_between_events);
+                }
+                for note in release_order {
+                    voices.handle_control(ControlMessage::NoteOff { note });
+                    process_frames(&mut voices, frames_between_events);
+                }
+
+                assert!(
+                    voices.active_notes().is_empty(),
+                    "gate or pending note survived release order {release_order:?} with delay {frames_between_events}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn patch_rebuild_cannot_resurrect_released_pending_notes() {
+        let patch = unison_glide_retrigger_patch();
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 59,
+            velocity: 1.0,
+        });
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOff { note: 72 });
+        voices.handle_control(ControlMessage::NoteOff { note: 59 });
+        for _ in 0..512 {
+            process_frames(&mut voices, 1);
+        }
+
+        assert!(voices.active_notes().is_empty());
+    }
+
+    #[test]
+    #[cfg(not(feature = "fast-math"))]
+    fn last_retrigger_glides_in_place_without_pending_voices() {
+        let mut patch = unison_glide_retrigger_patch();
+        patch.key_mode = KeyMode::LastRetrigger;
+        let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        let before = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
+
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+        let start = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
+        assert!(
+            (start - before).abs() < 0.1,
+            "glide should start from current pitch; before={before}, start={start}"
+        );
+        for voice in 0..8 {
+            assert!(!voices[voice / WideF32::LANES].has_pending_note(voice % WideF32::LANES));
+        }
+
+        for _ in 0..32 {
+            process_frames(&mut voices, 1);
+        }
+        let progressing = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
+        assert!(progressing > start);
+        assert!(progressing < before * 2.0);
+
+        for _ in 0..48_000 {
+            process_frames(&mut voices, 1);
+        }
+        let pre = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
+        for _ in 0..1_000 {
+            process_frames(&mut voices, 1);
+        }
+        let post = voices[0].oscillators().osc1_frequency_hz().to_array()[0];
+        assert!(
+            (post - pre).abs() / pre < 1.0e-6,
+            "frequency should be stable after glide completes; pre {pre}, post {post}"
+        );
+    }
+
+    #[test]
+    fn unison_glide_final_release_reaches_idle() {
+        let patch = unison_glide_retrigger_patch();
+        const SAMPLE_RATE: f32 = 1_000.0;
+        let mut voices = VoiceManager::<2>::new(SAMPLE_RATE);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        for _ in 0..SAMPLE_RATE as usize {
+            process_frames(&mut voices, 1);
+        }
+        voices.handle_control(ControlMessage::NoteOff { note: 60 });
+        assert!(voices.active_notes().is_empty());
+        assert!(
+            voices.active_voice_count() > 0,
+            "release tail should still render"
+        );
+
+        let release_frames = ((patch.amplifier.eg_release + 1.0) * SAMPLE_RATE) as usize;
+        for _ in 0..release_frames {
+            process_frames(&mut voices, 1);
+        }
+        assert_eq!(
+            voices.active_voice_count(),
+            0,
+            "release envelope never reached idle"
+        );
+    }
+
+    #[test]
+    #[cfg(not(feature = "wide-1"))]
+    fn unison_glide_matches_pressed_key_model_under_adversarial_ordering() {
+        let base_patch = unison_glide_retrigger_patch();
+        for key_mode in KeyMode::ALL {
+            for glide_mode in GlideMode::ALL {
+                let mut patch = base_patch.clone();
+                patch.key_mode = key_mode;
+                patch.glide_mode = glide_mode;
+                let mut voices = VoiceManager::<2>::new(48_000.0);
+                voices.apply_patch(&patch);
+                let mut pressed = heapless::Vec::<u8, 128>::new();
+                let mut random = 0x6d2b_79f5_u32;
+
+                for event in 0..4_096 {
+                    random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let note = 48 + ((random >> 16) % 25) as u8;
+                    if random & 1 == 0 {
+                        if let Some(index) = pressed.iter().position(|held| *held == note) {
+                            pressed.remove(index);
+                        }
+                        pressed.push(note).unwrap();
+                        voices.handle_control(ControlMessage::NoteOn {
+                            note,
+                            velocity: 1.0,
+                        });
+                    } else {
+                        if let Some(index) = pressed.iter().position(|held| *held == note) {
+                            pressed.remove(index);
+                        }
+                        voices.handle_control(ControlMessage::NoteOff { note });
+                    }
+                    for _ in 0..((random >> 8) & 3) {
+                        process_frames(&mut voices, 1);
+                    }
+
+                    let active = voices.active_notes();
+                    if pressed.is_empty() {
+                        assert!(
+                            active.is_empty(),
+                            "{key_mode:?}/{glide_mode:?} event {event}: unpressed note remained gated or pending"
+                        );
+                        continue;
+                    }
+                    let selected = match key_mode {
+                        KeyMode::Low | KeyMode::LowRetrigger => *pressed.iter().min().unwrap(),
+                        KeyMode::High | KeyMode::HighRetrigger => *pressed.iter().max().unwrap(),
+                        KeyMode::Last | KeyMode::LastRetrigger => *pressed.last().unwrap(),
+                    };
+                    assert_eq!(
+                        active.len(),
+                        8,
+                        "{key_mode:?}/{glide_mode:?} event {event}: incomplete unison group"
+                    );
+                    assert!(
+                        active.iter().all(|note| note == selected),
+                        "{key_mode:?}/{glide_mode:?} event {event}: selected {selected}, active {active:?}, pressed={pressed:?}"
+                    );
+                }
+
+                voices.handle_control(ControlMessage::AllNotesOff);
+                assert!(voices.active_notes().is_empty());
+            }
+        }
+    }
+
+    fn unison_glide_retrigger_patch() -> LayerPatch {
+        let mut patch = LayerPatch::default();
+        let _ = patch.name.push_str("UnisonGlideHR");
+        patch.unison_enabled = true;
+        patch.unison_mode = UnisonMode::V8;
+        patch.key_mode = KeyMode::HighRetrigger;
+        patch.glide_enabled = true;
+        patch.glide_mode = GlideMode::FixedRate;
+        patch.osc1.glide = 64.0 / 127.0;
+        patch.osc2.glide = 64.0 / 127.0;
+        patch.amplifier.eg_release = 21.415_247;
+        patch
+    }
 }

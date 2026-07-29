@@ -1,0 +1,32 @@
+---
+description: Rust test modules — helpers after tests, consts at top
+globs: "**/*.rs"
+alwaysApply: false
+---
+
+# Rust test module layout
+
+In `#[cfg(test)]` modules, `*_tests.rs`, and `tests/` files:
+
+1. `use` imports at the top.
+2. `const` / `static` fixtures next (including `include_bytes!` banks).
+3. `#[test]` functions in call-flow or topic order.
+4. Test helpers (`fn` utilities used only by tests) at the **end** of the module.
+
+Do not place helper functions between imports and the first test. Consts may stay above the tests.
+
+```rust
+use super::*;
+
+const FIXTURE: &[u8] = include_bytes!("fixture.bin");
+
+#[test]
+fn decodes_fixture() {
+    let msg = fixture_message(0);
+    assert!(decode(msg).is_ok());
+}
+
+fn fixture_message(index: usize) -> &'static [u8] {
+    &FIXTURE[index..index + LEN]
+}
+```

@@ -126,7 +126,7 @@ pub(crate) fn pack_program_data(raw: &[u8], packed: &mut [u8]) {
 }
 
 /// Unpacks 7-bit SysEx data bytes into an unpacked Sequential program image.
-pub(crate) fn unpack_program_data(packed: &[u8], raw: &mut [u8]) {
+pub fn unpack_program_data(packed: &[u8], raw: &mut [u8]) {
     let expected = packed_program_len(raw.len());
     debug_assert_eq!(packed.len(), expected);
     let mut input = 0;

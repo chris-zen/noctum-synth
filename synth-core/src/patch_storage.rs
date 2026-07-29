@@ -457,59 +457,15 @@ const PARAM_IDS: [ParamId; 107] = [
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{DedicatedModSlot, ModMatrixSlot};
     use rand_core::{Rng, SeedableRng};
     use rand_pcg::Pcg32;
 
-    fn assert_close(expected: f32, actual: f32) {
-        let tolerance = expected.abs().max(1.0) * 0.001;
-        assert!(
-            (expected - actual).abs() <= tolerance,
-            "{expected} != {actual}"
-        );
-    }
+    use crate::{
+        DedicatedModSlot, LayerPatch, ModDestination, ModMatrixSlot, ModSource,
+        patch_storage::{LAYER_PATCH_RECORD_SIZE, LayerPatchRecord, LayerPatchRecordError, crc32},
+    };
 
-    fn random_unit(rng: &mut impl Rng) -> f32 {
-        rng.next_u32() as f32 / u32::MAX as f32
-    }
-
-    fn assert_patch_close(expected: &LayerPatch, actual: &LayerPatch) {
-        let mut actual_values = [0.0; PARAM_COUNT];
-        let mut count = 0;
-        actual.for_each_param(|_, value| {
-            actual_values[count] = value;
-            count += 1;
-        });
-        let mut count = 0;
-        expected.for_each_param(|_, value| {
-            assert_close(value, actual_values[count]);
-            count += 1;
-        });
-        assert_eq!(expected.name, actual.name);
-        assert_eq!(expected.unison_chord, actual.unison_chord);
-        for (expected, actual) in expected
-            .mod_matrix
-            .free_slots
-            .iter()
-            .zip(actual.mod_matrix.free_slots.iter())
-        {
-            assert_eq!(expected.enabled, actual.enabled);
-            assert_eq!(expected.source, actual.source);
-            assert_eq!(expected.destination, actual.destination);
-            assert_close(expected.amount, actual.amount);
-        }
-        for (expected, actual) in expected
-            .mod_matrix
-            .dedicated
-            .iter()
-            .zip(actual.mod_matrix.dedicated.iter())
-        {
-            assert_eq!(expected.enabled, actual.enabled);
-            assert_eq!(expected.destination, actual.destination);
-            assert_close(expected.amount, actual.amount);
-        }
-    }
+    use super::{HEADER_LEN, PARAM_COUNT, PARAM_IDS, PAYLOAD_LEN, f16_to_f32, f32_to_f16};
 
     #[test]
     fn default_patch_round_trips() {
@@ -577,50 +533,6 @@ mod tests {
     }
 
     #[test]
-    fn all_factory_rev2_programs_round_trip_through_record() {
-        const FACTORY_BANK: &[u8] =
-            include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
-        assert_eq!(
-            FACTORY_BANK.len() % crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN,
-            0
-        );
-        for message in FACTORY_BANK.chunks_exact(crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN) {
-            let imported = crate::midi::rev2::decode::program_data(message).unwrap();
-            let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-            LayerPatchRecord::encode(&imported.patch.layer_a, &mut record).unwrap_or_else(
-                |error| {
-                    panic!(
-                        "encode bank={} program={}: {error:?}",
-                        imported.bank, imported.program
-                    )
-                },
-            );
-            let decoded = LayerPatchRecord::decode(&record).unwrap_or_else(|error| {
-                panic!(
-                    "decode bank={} program={}: {error:?}",
-                    imported.bank, imported.program
-                )
-            });
-            assert_patch_close(&imported.patch.layer_a, &decoded);
-        }
-    }
-
-    #[test]
-    fn factory_rev2_program_round_trips_through_record() {
-        const FACTORY_BANK: &[u8] =
-            include_bytes!("../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
-        let imported = crate::midi::rev2::decode::program_data(
-            &FACTORY_BANK[..crate::midi::rev2::PROGRAM_DATA_SYSEX_LEN],
-        )
-        .unwrap()
-        .patch
-        .layer_a;
-        let mut record = [0; LAYER_PATCH_RECORD_SIZE];
-        LayerPatchRecord::encode(&imported, &mut record).unwrap();
-        assert_patch_close(&imported, &LayerPatchRecord::decode(&record).unwrap());
-    }
-
-    #[test]
     fn erased_slot_is_default_patch() {
         let erased = [0xff; LAYER_PATCH_RECORD_SIZE];
         let mut encoded_default = [0; LAYER_PATCH_RECORD_SIZE];
@@ -669,5 +581,54 @@ mod tests {
     #[test]
     fn crc32_matches_standard_vector() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+    }
+
+    fn assert_close(expected: f32, actual: f32) {
+        let tolerance = expected.abs().max(1.0) * 0.001;
+        assert!(
+            (expected - actual).abs() <= tolerance,
+            "{expected} != {actual}"
+        );
+    }
+
+    fn random_unit(rng: &mut impl Rng) -> f32 {
+        rng.next_u32() as f32 / u32::MAX as f32
+    }
+
+    fn assert_patch_close(expected: &LayerPatch, actual: &LayerPatch) {
+        let mut actual_values = [0.0; PARAM_COUNT];
+        let mut count = 0;
+        actual.for_each_param(|_, value| {
+            actual_values[count] = value;
+            count += 1;
+        });
+        let mut count = 0;
+        expected.for_each_param(|_, value| {
+            assert_close(value, actual_values[count]);
+            count += 1;
+        });
+        assert_eq!(expected.name, actual.name);
+        assert_eq!(expected.unison_chord, actual.unison_chord);
+        for (expected, actual) in expected
+            .mod_matrix
+            .free_slots
+            .iter()
+            .zip(actual.mod_matrix.free_slots.iter())
+        {
+            assert_eq!(expected.enabled, actual.enabled);
+            assert_eq!(expected.source, actual.source);
+            assert_eq!(expected.destination, actual.destination);
+            assert_close(expected.amount, actual.amount);
+        }
+        for (expected, actual) in expected
+            .mod_matrix
+            .dedicated
+            .iter()
+            .zip(actual.mod_matrix.dedicated.iter())
+        {
+            assert_eq!(expected.enabled, actual.enabled);
+            assert_eq!(expected.destination, actual.destination);
+            assert_close(expected.amount, actual.amount);
+        }
     }
 }

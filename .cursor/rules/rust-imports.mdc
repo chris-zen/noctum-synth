@@ -1,0 +1,52 @@
+---
+description: Rust import style — absolute paths, grouped by crate kind
+globs: "**/*.rs"
+alwaysApply: true
+---
+
+# Rust imports
+
+Prefer absolute paths. Avoid `super::` / `self::` imports. Exception: private items of a parent module that are not reachable through a `pub` path may use a small `use super::{…}` block after the `crate::` block.
+
+## Blocks (blank line between each non-empty group)
+
+1. **External crates** — deps from crates.io / explicit `std`
+2. **Project crates** — other workspace packages (`synth_core`, `synth_app`, …)
+3. **This crate** — `crate::…` (including `#[cfg]`-gated `crate::` imports; no blank line within the group)
+4. **Private parent** — optional `super::{…}` only for the exception above
+
+Omit empty groups. Do not mix kinds in one `use`.
+
+## One `use` per crate
+
+All paths from a given crate root go in a single brace list:
+
+```rust
+use heapless::Vec;
+use rand_core::{Rng, SeedableRng};
+use rand_pcg::Pcg32;
+
+use synth_core::{
+    LayerPatch,
+    midi::{
+        p08::{PROGRAM_DATA_SYSEX_LEN, decode},
+        prophet::unpack_program_data,
+    },
+    patch_storage::{LAYER_PATCH_RECORD_SIZE, LayerPatchRecord},
+};
+
+use crate::{
+    ControlMessage, ParamId, VoiceManager,
+    dsp::MIN_LFO_RATE_HZ,
+    midi::{
+        p08::{
+            decode,
+            layer::{Layer, LayerA},
+            map::{MidiUpdate, map_nrpn},
+        },
+        rev2::SysexError,
+    },
+};
+```
+
+`#[cfg(…)]` on an import stays on that import line (or the group item); keep cfg’d imports in the correct crate block.
