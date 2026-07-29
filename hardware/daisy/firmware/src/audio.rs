@@ -12,7 +12,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use heapless::Deque;
-use synth_core::{ControlMessage, LayerPatch, SynthEngineWithMemory};
+use synth_core::{ControlMessage, LayerPatch, Patch, SynthEngineWithMemory};
 
 use crate::pending_releases::PendingReleases;
 #[cfg(feature = "audio-profiling")]
@@ -82,18 +82,32 @@ impl ControlQueue {
 
 fn replaceable_same_field(existing: &ControlMessage, incoming: &ControlMessage) -> bool {
     match (existing, incoming) {
-        (ControlMessage::SetParam(left, _), ControlMessage::SetParam(right, _)) => left == right,
+        (
+            ControlMessage::SetParam {
+                target: left_target,
+                param: left,
+                ..
+            },
+            ControlMessage::SetParam {
+                target: right_target,
+                param: right,
+                ..
+            },
+        ) => left_target == right_target && left == right,
         (
             ControlMessage::SetModulationParam {
+                target: left_target,
                 route: left_route,
                 parameter: left_parameter,
             },
             ControlMessage::SetModulationParam {
+                target: right_target,
                 route: right_route,
                 parameter: right_parameter,
             },
         ) => {
-            left_route == right_route
+            left_target == right_target
+                && left_route == right_route
                 && core::mem::discriminant(left_parameter)
                     == core::mem::discriminant(right_parameter)
         }
@@ -282,7 +296,10 @@ pub async fn run_task(
             profiler.begin(RenderStage::ControlDrain);
         }
         if let Ok(patch) = patches.try_receive() {
-            engine.apply_patch(&patch);
+            engine.apply_patch(&Patch {
+                layer_a: patch,
+                ..Patch::default()
+            });
             adaptive_control_budget.reset();
         }
         apply_pending_releases(engine, pending_releases);
@@ -371,16 +388,18 @@ fn apply_pending_releases(engine: &mut HardwareSynth, pending: &PendingReleases)
 #[cfg(feature = "diagnostics")]
 fn emit_control_diagnostics(command: &ControlMessage) {
     match command {
-        ControlMessage::SetParam(param, value) => diagnostics::emit(diagnostics::Event::Param {
-            param: *param,
-            value: *value,
-        }),
-        ControlMessage::SetModulationParam { route, parameter } => {
-            diagnostics::emit(diagnostics::Event::ModulationParam {
-                route: *route,
-                parameter: *parameter,
+        ControlMessage::SetParam { param, value, .. } => {
+            diagnostics::emit(diagnostics::Event::Param {
+                param: *param,
+                value: *value,
             })
         }
+        ControlMessage::SetModulationParam {
+            route, parameter, ..
+        } => diagnostics::emit(diagnostics::Event::ModulationParam {
+            route: *route,
+            parameter: *parameter,
+        }),
         _ => {}
     }
 }

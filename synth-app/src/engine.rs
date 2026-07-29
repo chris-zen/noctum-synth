@@ -10,8 +10,8 @@ use synth_core::dsp::{FilterOversampling, FilterType};
 use synth_core::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 use synth_core::midi::program::ProgramData;
 use synth_core::{
-    ChordMemory, ControlMessage, LayerPatch, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId, Patch,
+    ChordMemory, ControlMessage, LayerPatch, LayerTarget, ModDestination, ModRoute, ModSource,
+    ModulationParam, ParamId, Patch,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -188,6 +188,7 @@ impl SynthEngineControl {
         amount: f32,
     ) {
         self.send(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route,
             enabled,
             source,
@@ -199,7 +200,7 @@ impl SynthEngineControl {
     }
 
     pub fn set_param(&self, param: ParamId, value: f32) {
-        self.send(ControlMessage::SetParam(param, value));
+        self.send(ControlMessage::edit_param(param, value));
         if param == ParamId::Bpm {
             self.midi_output.set_master_bpm(value);
         }
@@ -207,12 +208,12 @@ impl SynthEngineControl {
     }
 
     pub fn set_param_audio_only(&self, param: ParamId, value: f32) {
-        self.send(ControlMessage::SetParam(param, value));
+        self.send(ControlMessage::edit_param(param, value));
     }
 
     /// Sends a MIDI-originated parameter change to audio and mirrors it to UI.
     pub fn set_midi_param(&self, param: ParamId, value: f32) {
-        self.send(ControlMessage::SetParam(param, value));
+        self.send(ControlMessage::edit_param(param, value));
         if param == ParamId::Bpm {
             self.midi_output.set_master_bpm(value);
         }
@@ -221,7 +222,11 @@ impl SynthEngineControl {
 
     /// Sends one MIDI-originated modulation field to audio and UI.
     pub fn set_midi_modulation_param(&self, route: ModRoute, parameter: ModulationParam) {
-        self.send(ControlMessage::SetModulationParam { route, parameter });
+        self.send(ControlMessage::SetModulationParam {
+            target: LayerTarget::Edit,
+            route,
+            parameter,
+        });
         self.send_midi_ui(MidiUiUpdate::Modulation { route, parameter });
     }
 
@@ -288,7 +293,7 @@ impl SynthEngineControl {
     }
 
     pub fn set_unison_chord(&self, chord: ChordMemory) {
-        self.send(ControlMessage::SetUnisonChord(chord));
+        self.send(ControlMessage::edit_unison_chord(chord));
     }
 
     pub fn pitch_bend(&self, value: f32) {
@@ -331,9 +336,10 @@ impl SynthEngineControl {
     pub fn load_patch(&self, patch: &LayerPatch) {
         self.midi_output.set_master_bpm(patch.bpm);
         self.set_unison_chord(patch.unison_chord);
-        patch.for_each_param(|id, value| self.send(ControlMessage::SetParam(id, value)));
+        patch.for_each_param(|id, value| self.send(ControlMessage::edit_param(id, value)));
         patch.for_each_modulation(|route, slot| {
             self.send(ControlMessage::SetModulation {
+                target: LayerTarget::Edit,
                 route,
                 enabled: slot.enabled,
                 source: slot.source,
@@ -366,6 +372,7 @@ impl SynthEngineControl {
         patch.for_each_param(|id, value| self.set_midi_param(id, value));
         patch.for_each_modulation(|route, slot| {
             self.send(ControlMessage::SetModulation {
+                target: LayerTarget::Edit,
                 route,
                 enabled: slot.enabled,
                 source: slot.source,
@@ -555,7 +562,10 @@ mod tests {
             }
         });
         match first {
-            Some(ControlMessage::SetUnisonChord(chord)) => {
+            Some(ControlMessage::SetUnisonChord {
+                target: LayerTarget::Edit,
+                chord,
+            }) => {
                 assert_eq!(chord, patch.unison_chord)
             }
             _ => panic!("patch load must queue chord memory first"),

@@ -13,8 +13,9 @@ use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use synth_core::dsp::{FilterOversampling, Waveform};
 use synth_core::{
-    profiling::RenderStage, ControlMessage, DedicatedModSource, EffectType, GlideMode,
-    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, LayerPatch, SynthEngineWithMemory,
+    profiling::RenderStage, ControlMessage, DedicatedModSource, EffectType, GlideMode, LayerPatch,
+    LayerTarget, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    SynthEngineWithMemory,
 };
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
@@ -48,17 +49,17 @@ fn main() -> ! {
         engine.note_on(60, 1.0);
     });
     run_scenario(&mut sdram, "U1-001-one-note", |engine| {
-        engine.apply_patch(&u1_001_patch());
+        apply_layer_patch(engine, u1_001_patch());
         engine.note_on(60, 1.0);
     });
     run_scenario(&mut sdram, "U1-001-four-notes", |engine| {
-        engine.apply_patch(&u1_001_patch());
+        apply_layer_patch(engine, u1_001_patch());
         configure_four_notes(engine);
     });
     run_scenario(&mut sdram, "U1-001-four-notes-effects-off", |engine| {
         let mut patch = u1_001_patch();
         patch.effects.enabled = false;
-        engine.apply_patch(&patch);
+        apply_layer_patch(engine, patch);
         configure_four_notes(engine);
     });
     run_scenario(&mut sdram, "U1-001-four-notes-flat-osc1-shape", |engine| {
@@ -66,14 +67,14 @@ fn main() -> ! {
         patch.osc1.shape_mod = 0.0;
         patch.lfos[3].depth = 0.0;
         patch.lfos[3].destination = ModDestination::Off;
-        engine.apply_patch(&patch);
+        apply_layer_patch(engine, patch);
         configure_four_notes(engine);
     });
     run_scenario(&mut sdram, "U1-001-four-notes-static-filter", |engine| {
         let mut patch = u1_001_patch();
         patch.filter.key_track = 0.0;
         patch.filter.velocity = 0.0;
-        engine.apply_patch(&patch);
+        apply_layer_patch(engine, patch);
         configure_four_notes(engine);
     });
     run_scenario(&mut sdram, "U1-001-four-notes-no-modulation", |engine| {
@@ -83,7 +84,7 @@ fn main() -> ! {
             lfo.destination = ModDestination::Off;
         }
         patch.mod_matrix = Default::default();
-        engine.apply_patch(&patch);
+        apply_layer_patch(engine, patch);
         configure_four_notes(engine);
     });
     run_scenario(&mut sdram, "four-note-osc1-saw", |engine| {
@@ -122,6 +123,7 @@ fn main() -> ! {
     run_scenario(&mut sdram, "four-note-osc1-pulse-dc-shape", |engine| {
         configure_single_oscillator_pulse(engine, 0.5);
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::Dc,
@@ -134,6 +136,7 @@ fn main() -> ! {
         engine.set_param(ParamId::Lfo1Rate, 5.0);
         engine.set_param(ParamId::Lfo1Depth, 1.0);
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::Lfo1,
@@ -175,6 +178,7 @@ fn main() -> ! {
     run_scenario(&mut sdram, "four-note-filter-cutoff-dc", |engine| {
         configure_cutoff_modulation_base(engine);
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::Dc,
@@ -194,6 +198,7 @@ fn main() -> ! {
         configure_cutoff_modulation_base(engine);
         configure_cutoff_lfo(engine);
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::Lfo1,
@@ -291,7 +296,8 @@ fn run_scenario(sdram: &mut Sdram, name: &str, configure: impl FnOnce(&mut Hardw
     let effects_memory = sdram
         .allocate_f32(EFFECTS_SAMPLES)
         .expect("SDRAM effects allocation failed");
-    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
+    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory)
+        .expect("benchmark effects-memory layout is valid");
     configure_benchmark_defaults(&mut engine);
     configure(&mut engine);
     benchmark_case(&mut engine, name);
@@ -302,6 +308,13 @@ fn configure_benchmark_defaults(engine: &mut HardwareSynth) {
     // explicitly selects another model or oversampling mode.
     engine.set_filter_type(FILTER_TYPE);
     engine.set_filter_oversampling(FILTER_OVERSAMPLING);
+}
+
+fn apply_layer_patch(engine: &mut HardwareSynth, layer_a: LayerPatch) {
+    engine.apply_patch(&Patch {
+        layer_a,
+        ..Patch::default()
+    });
 }
 
 /// Prophet Rev2 factory preset U1-001, "LosVangelis2041".
@@ -569,6 +582,7 @@ fn configure_lfo_route(
 ) {
     configure_cutoff_lfo(engine);
     engine.handle_control(ControlMessage::SetModulation {
+        target: LayerTarget::Edit,
         route,
         enabled: true,
         source: ModSource::Lfo1,
@@ -617,6 +631,7 @@ fn configure_eight_free_routes(engine: &mut HardwareSynth) {
     ];
     for index in 0..8 {
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(index),
             enabled: true,
             source: sources[index],
@@ -650,6 +665,7 @@ fn configure_route_saturation(engine: &mut HardwareSynth) {
         (DedicatedModSource::Footswitch, ModDestination::FxMix),
     ] {
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Dedicated(source),
             enabled: true,
             source: source.source(),
@@ -663,7 +679,8 @@ fn run_effect_transition_scenario(sdram: &mut Sdram) {
     let effects_memory = sdram
         .allocate_f32(EFFECTS_SAMPLES)
         .expect("SDRAM effects allocation failed");
-    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
+    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory)
+        .expect("benchmark effects-memory layout is valid");
     configure_benchmark_defaults(&mut engine);
     configure_single_oscillator_waveform(&mut engine, Waveform::Saw);
     configure_effect(&mut engine, EffectType::Reverb);
@@ -699,7 +716,8 @@ fn run_control_burst_scenario(
     let effects_memory = sdram
         .allocate_f32(EFFECTS_SAMPLES)
         .expect("SDRAM effects allocation failed");
-    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
+    let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory)
+        .expect("benchmark effects-memory layout is valid");
     configure_benchmark_defaults(&mut engine);
     configure_route_saturation(&mut engine);
     configure_effect(&mut engine, EffectType::Reverb);
@@ -730,11 +748,12 @@ fn run_control_burst_scenario(
         for index in 0..count {
             let command = if modulation_routes {
                 ControlMessage::SetModulationParam {
+                    target: LayerTarget::Edit,
                     route: ModRoute::Free(index),
                     parameter: ModulationParam::Amount(value),
                 }
             } else {
-                ControlMessage::SetParam(params[index], value)
+                ControlMessage::edit_param(params[index], value)
             };
             assert!(controls.try_send(command).is_ok());
         }
@@ -793,6 +812,7 @@ fn configure_modulation_heavy(engine: &mut HardwareSynth) {
     engine.set_param(ParamId::Lfo1Rate, 5.0);
     engine.set_param(ParamId::Lfo1Depth, 0.8);
     engine.handle_control(ControlMessage::SetModulation {
+        target: LayerTarget::Edit,
         route: ModRoute::Free(0),
         enabled: true,
         source: ModSource::Lfo1,

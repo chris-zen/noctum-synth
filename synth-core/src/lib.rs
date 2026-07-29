@@ -13,10 +13,11 @@
 //! # Architecture
 //!
 //! ```text
-//! ControlMessage ──► LayerEngine ──► VoicePool ──► stereo sum
-//!                         │              │
-//!                         │              └── [VoiceBlock; VOICE_PACKS]
-//!                         └── allocation / patch / effects state
+//! ControlMessage ──► SynthEngine ──► LayerEngine(s) ──► VoicePool ──► stereo sum
+//!                         │                │                 │
+//!                         │                │                 └── [VoiceBlock; VOICE_PACKS]
+//!                         │                └── allocation / patch / effects state
+//!                         └── layer targeting / note routing / topology
 //! ```
 //!
 //! Host applications send [`ControlMessage`] values (note events, MIDI
@@ -71,7 +72,7 @@ pub mod voice;
 use crate::math::WideF32;
 
 pub use effects::{EffectModulation, Effects, EffectsState, EffectsWithMemory};
-pub use engine::{SynthEngine, SynthEngineWithMemory};
+pub use engine::{EngineInitError, LayerPlaybackStatus, SynthEngine, SynthEngineWithMemory};
 pub use patch::{
     AmplifierParams, ArpMode, ArpParams, ArpSustainMode, AuxEnvelopeParams, ChordMemory,
     ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterParams,
@@ -339,16 +340,25 @@ pub enum ModulationParam {
 
 /// Host-to-engine control and performance input.
 pub enum ControlMessage {
-    SetParam(ParamId, f32),
+    SetParam {
+        target: LayerTarget,
+        param: ParamId,
+        value: f32,
+    },
     /// Replaces the native chord-memory voicing used by unison Chord mode.
-    SetUnisonChord(ChordMemory),
+    SetUnisonChord {
+        target: LayerTarget,
+        chord: ChordMemory,
+    },
     /// Updates the local tempo used when an external MIDI clock is not active.
     SetTempoBpm {
+        target: LayerTarget,
         bpm: f32,
     },
     SetMidiClockMode(MidiClockMode),
     MidiRealtime(MidiRealtimeEvent),
     SetModulation {
+        target: LayerTarget,
         route: ModRoute,
         enabled: bool,
         source: ModSource,
@@ -356,9 +366,13 @@ pub enum ControlMessage {
         amount: f32,
     },
     SetModulationParam {
+        target: LayerTarget,
         route: ModRoute,
         parameter: ModulationParam,
     },
+    SetLayerMode(LayerMode),
+    SetSplitPoint(u8),
+    SetEditLayer(LayerId),
     /// Changes nonlinear filter self-oscillation oversampling without rebuilding
     /// the audio stream.
     SetFilterOversampling(FilterOversampling),
@@ -388,6 +402,25 @@ pub enum ControlMessage {
         controller: u8,
         value: f32,
     },
+}
+
+impl ControlMessage {
+    /// Builds an edit-layer parameter update for controls without an explicit layer.
+    pub const fn edit_param(param: ParamId, value: f32) -> Self {
+        Self::SetParam {
+            target: LayerTarget::Edit,
+            param,
+            value,
+        }
+    }
+
+    /// Builds an edit-layer chord-memory update.
+    pub const fn edit_unison_chord(chord: ChordMemory) -> Self {
+        Self::SetUnisonChord {
+            target: LayerTarget::Edit,
+            chord,
+        }
+    }
 }
 
 /// Total polyphonic voice count.

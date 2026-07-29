@@ -6,8 +6,8 @@
 ))]
 
 use synth_core::{
-    ArpMode, ControlMessage, EffectType, GlideMode, LayerPatch, ModDestination, ModRoute,
-    ModSource, ParamId, SynthEngine, UnisonMode,
+    ArpMode, ControlMessage, EffectType, GlideMode, LayerPatch, LayerTarget, ModDestination,
+    ModRoute, ModSource, ParamId, Patch, SynthEngine, UnisonMode,
 };
 
 #[test]
@@ -41,9 +41,10 @@ fn representative_one_layer_render_is_bit_identical() {
         (ParamId::EffectParam2, 0.41),
         (ParamId::MasterVolume, 0.77),
     ] {
-        engine.handle_control(ControlMessage::SetParam(param, value));
+        engine.handle_control(ControlMessage::edit_param(param, value));
     }
     engine.handle_control(ControlMessage::SetModulation {
+        target: LayerTarget::Edit,
         route: ModRoute::Free(0),
         enabled: true,
         source: ModSource::Velocity,
@@ -77,7 +78,10 @@ fn representative_one_layer_render_is_bit_identical() {
     patch.effects.param1 = 0.53;
     patch.effects.param2 = 0.22;
     patch.master_volume = 0.68;
-    engine.apply_patch(&patch);
+    engine.apply_patch(&Patch {
+        layer_a: patch,
+        ..Patch::default()
+    });
     engine.note_off(55);
     engine.sustain_pedal(false);
     engine.note_on(67, 0.91);
@@ -86,12 +90,12 @@ fn representative_one_layer_render_is_bit_identical() {
     engine.process(&mut rendered[start..]);
 
     engine.all_notes_off();
-    engine.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 0.0));
-    engine.handle_control(ControlMessage::SetParam(
+    engine.handle_control(ControlMessage::edit_param(ParamId::UnisonEnabled, 0.0));
+    engine.handle_control(ControlMessage::edit_param(
         ParamId::ArpMode,
         ArpMode::UpDown.index() as f32,
     ));
-    engine.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+    engine.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
     engine.note_on(60, 0.72);
     engine.note_on(64, 0.76);
     engine.note_on(67, 0.8);

@@ -13,7 +13,8 @@ use noctum_micro::patch_transition::PatchTransition;
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use synth_core::midi::rev2::{decode, PROGRAM_DATA_SYSEX_LEN};
 use synth_core::{
-    profiling::RenderStage, ControlMessage, ModDestination, ParamId, SynthEngineWithMemory,
+    profiling::RenderStage, ControlMessage, LayerPatch, ModDestination, ParamId, Patch,
+    SynthEngineWithMemory,
 };
 
 use tools_micro::{self as factory_banks, Crc32};
@@ -36,6 +37,13 @@ const PROFILE_THRESHOLD_CYCLES: u32 = 272_000;
 const PROFILE_TRIGGER_CYCLES: u32 = PROFILE_THRESHOLD_CYCLES;
 
 type HardwareSynth<'a> = SynthEngineWithMemory<&'a mut [f32], 1>;
+
+fn apply_layer_patch(engine: &mut HardwareSynth<'_>, layer_a: &LayerPatch) {
+    engine.apply_patch(&Patch {
+        layer_a: layer_a.clone(),
+        ..Patch::default()
+    });
+}
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -78,7 +86,8 @@ fn main() -> ! {
         // envelope, limiter, and delay-history state. The SDRAM slice is
         // reborrowed and reused; initialization is outside every timed region.
         let mut engine =
-            HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory);
+            HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory)
+                .expect("benchmark effects-memory layout is valid");
         engine.set_filter_type(FILTER_TYPE);
         engine.set_filter_oversampling(FILTER_OVERSAMPLING);
         for note in [60, 64, 67, 72] {
@@ -173,7 +182,7 @@ fn main() -> ! {
             .iter()
             .any(|timing| timing.maximum >= PROFILE_TRIGGER_CYCLES)
         {
-            engine.apply_patch(&program.patch.layer_a);
+            engine.apply_patch(&program.patch);
             let snapshot = measure_profiled(&mut engine, &mut output);
             report_profile(program.bank, program.program, snapshot);
         }
@@ -345,7 +354,7 @@ fn measure_control_stress(
             ),
         ] {
             assert!(controls
-                .try_send(ControlMessage::SetParam(param, value))
+                .try_send(ControlMessage::edit_param(param, value))
                 .is_ok());
         }
         let started = DWT::cycle_count();
@@ -383,7 +392,7 @@ fn run_callback(
         adaptive_budget.reset();
     }
     if let Some(patch) = action.patch {
-        engine.apply_patch(&patch);
+        apply_layer_patch(engine, &patch);
     }
     if let Ok(command) = controls.try_receive() {
         engine.handle_control(command);
@@ -433,10 +442,11 @@ impl AdaptiveBudgetSummary {
         program: u8,
     ) {
         let mut engine =
-            HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory);
+            HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, &mut *effects_memory)
+                .expect("benchmark effects-memory layout is valid");
         engine.set_filter_type(FILTER_TYPE);
         engine.set_filter_oversampling(FILTER_OVERSAMPLING);
-        engine.apply_patch(patch);
+        apply_layer_patch(&mut engine, patch);
 
         let controls = ControlQueue::new();
         for note in [60, 64, 67, 72] {
@@ -454,7 +464,7 @@ impl AdaptiveBudgetSummary {
             (ParamId::EffectParam1, patch.effects.param1),
         ] {
             assert!(controls
-                .try_send(ControlMessage::SetParam(param, value))
+                .try_send(ControlMessage::edit_param(param, value))
                 .is_ok());
         }
         let patches = PatchQueue::new();

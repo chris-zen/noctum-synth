@@ -42,6 +42,16 @@ impl LookaheadLimiter {
         }
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.left_delay.fill(0.0);
+        self.right_delay.fill(0.0);
+        self.write_index = 0;
+        self.gain = 1.0;
+        self.attack_target = 1.0;
+        self.attack_step = 0.0;
+        self.hold_samples = 0;
+    }
+
     #[inline(always)]
     pub(crate) fn next(&mut self, left: f32, right: f32) -> (f32, f32) {
         let delayed_left = self.left_delay[self.write_index];

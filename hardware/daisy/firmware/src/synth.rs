@@ -74,20 +74,28 @@ pub fn message_to_controls(
         if !matches!(controller, 1 | 64 | 120 | 123) {
             if decoder.control_change(channel.index(), controller, value, |update| match update {
                 rev2::MidiUpdate::Param {
-                    target: LayerTarget::Edit | LayerTarget::Explicit(LayerId::A),
+                    target: target @ (LayerTarget::Edit | LayerTarget::Explicit(LayerId::A)),
                     param,
                     value,
                 } => {
-                    emit(ControlMessage::SetParam(param, value));
+                    emit(ControlMessage::SetParam {
+                        target,
+                        param,
+                        value,
+                    });
                 }
                 rev2::MidiUpdate::MidiClockMode(mode) => {
                     emit(ControlMessage::SetMidiClockMode(mode));
                 }
                 rev2::MidiUpdate::Modulation {
-                    target: LayerTarget::Edit | LayerTarget::Explicit(LayerId::A),
+                    target: target @ (LayerTarget::Edit | LayerTarget::Explicit(LayerId::A)),
                     route,
                     parameter,
-                } => emit(ControlMessage::SetModulationParam { route, parameter }),
+                } => emit(ControlMessage::SetModulationParam {
+                    target,
+                    route,
+                    parameter,
+                }),
                 rev2::MidiUpdate::Param {
                     target: LayerTarget::Explicit(LayerId::B),
                     ..
@@ -357,7 +365,7 @@ fn enqueue_command(
 ) {
     let is_replaceable = matches!(
         &command,
-        ControlMessage::SetParam(..) | ControlMessage::SetModulationParam { .. }
+        ControlMessage::SetParam { .. } | ControlMessage::SetModulationParam { .. }
     );
     let result = if is_replaceable {
         controls.try_send(command)
@@ -567,7 +575,11 @@ mod tests {
         }
         assert!(matches!(
             command,
-            Some(ControlMessage::SetParam(ParamId::FilterResonance, 1.0))
+            Some(ControlMessage::SetParam {
+                target: LayerTarget::Explicit(LayerId::A),
+                param: ParamId::FilterResonance,
+                value: 1.0,
+            })
         ));
     }
 

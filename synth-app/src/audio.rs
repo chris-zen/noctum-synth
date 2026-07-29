@@ -567,7 +567,7 @@ fn build_session(
         input_consumer,
         config.filter_oversampling,
         config.filter_type,
-    );
+    )?;
     let output_stream = build_output_stream(
         &output.device,
         output.config.clone(),
@@ -960,7 +960,7 @@ fn find_device(devices: &[cpal::Device], filter: &str) -> Option<cpal::Device> {
 /// spectrum blocks and timing metrics back to the UI.
 struct Renderer {
     engine_audio: SynthEngineAudio,
-    engine: SynthEngineWithMemory<Box<[f32]>, VOICE_PACKS>,
+    engine: SynthEngineWithMemory<Box<[f32]>, VOICE_PACKS, 2>,
     timing: AudioTiming,
     input: Option<rtrb::Consumer<f32>>,
     input_enabled: Arc<AtomicBool>,
@@ -977,16 +977,17 @@ impl Renderer {
         input: Option<rtrb::Consumer<f32>>,
         filter_oversampling: FilterOversampling,
         filter_type: FilterType,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let input_enabled = engine_audio.input_enabled.clone();
         // Stereo delays need one second of history per channel to match the
         // Rev2's documented maximum. Heap storage avoids a large audio-thread
         // stack object at high host sample rates.
-        let effects_memory = vec![0.0; sample_rate.max(1.0) as usize * 2].into_boxed_slice();
-        let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS>::new_with_effects_memory(
+        let effects_memory = vec![0.0; sample_rate.max(1.0) as usize * 4].into_boxed_slice();
+        let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS, 2>::new_with_effects_memory(
             sample_rate,
             effects_memory,
-        );
+        )
+        .map_err(|error| format!("Invalid synth effects-memory layout: {error:?}"))?;
         engine.set_filter_oversampling(filter_oversampling);
         engine.set_filter_type(filter_type);
         log_audio(&format!(
@@ -995,7 +996,7 @@ impl Renderer {
             filter_oversampling.factor(sample_rate)
         ));
         let last_midi_clock_status = engine.midi_clock_status();
-        Self {
+        Ok(Self {
             engine_audio,
             engine,
             timing: AudioTiming::default(),
@@ -1004,7 +1005,7 @@ impl Renderer {
             sample_rate,
             channels,
             last_midi_clock_status,
-        }
+        })
     }
 
     /// Fills one interleaved output buffer: drains control messages, renders the

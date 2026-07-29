@@ -1956,7 +1956,7 @@ mod tests {
     #[test]
     fn pan_spread_creates_stereo_separation() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1991,7 +1991,7 @@ mod tests {
     #[test]
     fn pan_spread_pans_a_single_voice_to_its_physical_position() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2008,10 +2008,10 @@ mod tests {
     #[test]
     fn pan_lfo_modulates_spread_width_instead_of_offset() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Waveform, 3.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::PanSpread, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Waveform, 3.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::Lfo1Destination,
             ModDestination::Pan.index() as f32,
         ));
@@ -2036,8 +2036,8 @@ mod tests {
     #[test]
     fn repeated_notes_advance_through_physical_voice_pan_positions() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
+        voices.handle_control(ControlMessage::edit_param(ParamId::PanSpread, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AmpEgRelease, 0.0005));
 
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -2066,7 +2066,7 @@ mod tests {
     #[test]
     fn oscillator_tuning_param_does_not_replace_midi_note() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 72.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1Frequency, 72.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 64,
             velocity: 1.0,
@@ -2095,8 +2095,8 @@ mod tests {
     #[test]
     fn oscillator_frequency_and_fine_tune_use_natural_units_and_clamp() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 240.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1FineTune, 99.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1Frequency, 240.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1FineTune, 99.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 24,
             velocity: 1.0,
@@ -2132,9 +2132,9 @@ mod tests {
     #[test]
     fn osc_mix_is_canonical_balance_control() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Enabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.25));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1Enabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc2Enabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.25));
 
         let params = voices[0].oscillators.params();
         assert_eq!(params.osc_mix, 0.25);
@@ -2160,7 +2160,7 @@ mod tests {
         }
 
         let mut sloppy = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        sloppy.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 1.0));
+        sloppy.handle_control(ControlMessage::edit_param(ParamId::OscSlop, 1.0));
         for note in [60, 64, 67, 72] {
             sloppy.handle_control(ControlMessage::NoteOn {
                 note,
@@ -2182,7 +2182,7 @@ mod tests {
     #[test]
     fn clearing_osc_slop_restores_intended_frequency() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::OscSlop, 1.0));
         for note in [60, 64, 67, 72] {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -2190,7 +2190,7 @@ mod tests {
             });
         }
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::OscSlop, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::OscSlop, 0.0));
         let block = &voices[0];
         for lane in 0..WideF32::LANES {
             let expected = crate::midi_to_hz(block.lanes().notes_array()[lane]);
@@ -2205,8 +2205,8 @@ mod tests {
     #[test]
     fn note_reset_flags_are_routed_to_oscillators() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1NoteReset, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc2NoteReset, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1NoteReset, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc2NoteReset, 1.0));
 
         let params = voices[0].oscillators.params();
         assert!(!params.osc1.note_reset);
@@ -2216,7 +2216,7 @@ mod tests {
     #[test]
     fn hard_sync_param_is_routed_to_oscillators() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::HardSync, 1.0));
 
         assert!(voices[0].oscillators.params().sync);
     }
@@ -2224,14 +2224,14 @@ mod tests {
     #[test]
     fn aux_envelope_to_oscillator_frequency_modulates_pitch() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::AuxEgDestination,
             ModDestination::Osc1Frequency.index() as f32,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
-        voices.handle_control(ControlMessage::SetParam(ParamId::AuxEgDecay, 5.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::AuxEgSustain, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgAttack, 0.0005));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgDecay, 5.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgSustain, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2251,16 +2251,16 @@ mod tests {
     #[test]
     fn aux_repeat_keeps_envelope_cycling_while_held() {
         let mut repeating = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(1_000.0);
-        repeating.handle_control(ControlMessage::SetParam(
+        repeating.handle_control(ControlMessage::edit_param(
             ParamId::AuxEgDestination,
             ModDestination::FilterCutoff.index() as f32,
         ));
-        repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
-        repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.001));
-        repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgDecay, 0.001));
-        repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgSustain, 0.5));
-        repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgRelease, 0.001));
-        repeating.handle_control(ControlMessage::SetParam(ParamId::AuxEgLoop, 1.0));
+        repeating.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, 1.0));
+        repeating.handle_control(ControlMessage::edit_param(ParamId::AuxEgAttack, 0.001));
+        repeating.handle_control(ControlMessage::edit_param(ParamId::AuxEgDecay, 0.001));
+        repeating.handle_control(ControlMessage::edit_param(ParamId::AuxEgSustain, 0.5));
+        repeating.handle_control(ControlMessage::edit_param(ParamId::AuxEgRelease, 0.001));
+        repeating.handle_control(ControlMessage::edit_param(ParamId::AuxEgLoop, 1.0));
         repeating.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2282,11 +2282,11 @@ mod tests {
     #[test]
     fn vca_initial_level_at_one_ignores_amp_envelope_amount() {
         let mut drone = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        drone.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 1.0));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.0));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.001));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
         drone.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2299,11 +2299,11 @@ mod tests {
         );
 
         let mut gated = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        gated.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
-        gated.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
-        gated.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        gated.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
-        gated.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        gated.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 0.0));
+        gated.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.0));
+        gated.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+        gated.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.001));
+        gated.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
         gated.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2316,11 +2316,11 @@ mod tests {
         );
 
         let mut enveloped = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        enveloped.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.0));
-        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
-        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.001));
-        enveloped.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        enveloped.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 0.0));
+        enveloped.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 1.0));
+        enveloped.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+        enveloped.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.001));
+        enveloped.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
         enveloped.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2336,10 +2336,10 @@ mod tests {
     #[test]
     fn vca_initial_level_keeps_drone_rendering_after_amp_release() {
         let mut drone = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        drone.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 0.25));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
-        drone.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
+        drone.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 0.25));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 1.0));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
+        drone.handle_control(ControlMessage::edit_param(ParamId::AmpEgRelease, 0.0005));
         drone.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,

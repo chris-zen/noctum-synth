@@ -34,6 +34,7 @@ pub fn unison_detune_cents(voice_index: usize, voice_count: usize, amount: f32) 
 /// Physical SIMD voice storage shared by logical layer engines.
 pub struct VoicePool<const PACKS: usize = VOICE_PACKS> {
     blocks: [VoiceBlock; PACKS],
+    sample_rate: f32,
 }
 
 impl<const PACKS: usize> VoicePool<PACKS> {
@@ -48,19 +49,48 @@ impl<const PACKS: usize> VoicePool<PACKS> {
     /// ```
     pub fn new(sample_rate: f32) -> Self {
         let () = Self::VALID_PACK_COUNT;
+        let mut blocks = Self::new_blocks(sample_rate);
+        for block in &mut blocks {
+            block.refresh_lfo_engines();
+        }
+        Self {
+            blocks,
+            sample_rate,
+        }
+    }
+
+    fn new_blocks(sample_rate: f32) -> [VoiceBlock; PACKS] {
         let patch = LayerPatch::default();
-        let mut blocks = core::array::from_fn(|block_index| {
+        core::array::from_fn(|block_index| {
             let mut block = VoiceBlock::new(sample_rate);
             block.apply_voice_patch(&patch);
             block.set_pan_positions(core::array::from_fn(|lane| {
                 voice_pan_position(block_index * WideF32::LANES + lane, PACKS * WideF32::LANES)
             }));
             block
-        });
-        for block in &mut blocks {
-            block.refresh_lfo_engines();
+        })
+    }
+
+    pub(crate) fn reset(&mut self) {
+        let patch = LayerPatch::default();
+        let voice_count = PACKS * WideF32::LANES;
+        for (block_index, block) in self.blocks.iter_mut().enumerate() {
+            let mut replacement = VoiceBlock::new(self.sample_rate);
+            replacement.apply_voice_patch(&patch);
+            replacement.set_pan_positions(core::array::from_fn(|lane| {
+                voice_pan_position(block_index * WideF32::LANES + lane, voice_count)
+            }));
+            *block = replacement;
         }
-        Self { blocks }
+    }
+
+    fn set_region_pan_positions(&mut self, region: VoiceRegion) {
+        let voice_count = region.voice_capacity();
+        for (block_index, block) in self.region_mut(region).iter_mut().enumerate() {
+            block.set_pan_positions(core::array::from_fn(|lane| {
+                voice_pan_position(block_index * WideF32::LANES + lane, voice_count)
+            }));
+        }
     }
 
     fn region(&self, region: VoiceRegion) -> &[VoiceBlock] {
@@ -84,6 +114,13 @@ impl VoiceRegion {
         Self {
             start_pack: 0,
             pack_count: PACKS,
+        }
+    }
+
+    pub(crate) const fn from_packs(start_pack: usize, pack_count: usize) -> Self {
+        Self {
+            start_pack,
+            pack_count,
         }
     }
 
@@ -162,6 +199,7 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
 
     pub(crate) fn apply_patch(&mut self, pool: &mut VoicePool<PACKS>, patch: &LayerPatch) {
         self.modulation.apply_from_patch(patch);
+        pool.set_region_pan_positions(self.region);
         for block in pool.region_mut(self.region) {
             block.set_tempo_bpm(patch.bpm);
             block.set_clock_division(patch.clock_divide);
@@ -181,6 +219,19 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.clock_division = patch.clock_divide;
         self.program_volume = patch.master_volume.clamp(0.0, 1.0);
         self.rebuild_sounding_notes(pool);
+    }
+
+    pub(crate) fn assign_region(&mut self, region: VoiceRegion) {
+        self.region = region;
+    }
+
+    pub(crate) fn clear_note_state(&mut self) {
+        self.allocated.clear_occupancy();
+        self.allocated.sustain_pressed = false;
+        self.pressed_keys.clear();
+        self.last_played_note = None;
+        self.arp.all_notes_off();
+        self.arp.set_sustain_pedal(false);
     }
 
     fn voice_count(&self) -> usize {
@@ -207,13 +258,13 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
                 self.pressed_keys.clear();
                 self.arp.all_notes_off();
             }
-            ControlMessage::SetUnisonChord(chord) => {
+            ControlMessage::SetUnisonChord { chord, .. } => {
                 self.unison.chord = chord;
                 if self.unison.enabled && self.unison.mode == UnisonMode::Chord {
                     self.rebuild_sounding_notes(pool);
                 }
             }
-            ControlMessage::SetParam(id, value) => self.set_param(pool, id, value),
+            ControlMessage::SetParam { param, value, .. } => self.set_param(pool, param, value),
             ControlMessage::SetFilterType(filter_type) => self.set_filter_type(pool, filter_type),
             ControlMessage::SetMidiClockMode(_) | ControlMessage::MidiRealtime(_) => {}
             ControlMessage::SetModulation {
@@ -222,12 +273,15 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
                 source,
                 destination,
                 amount,
+                ..
             } => {
                 self.modulation
                     .set_mod_route(route, enabled, source, destination, amount);
                 self.sync_lfo_engines(pool);
             }
-            ControlMessage::SetModulationParam { route, parameter } => {
+            ControlMessage::SetModulationParam {
+                route, parameter, ..
+            } => {
                 self.modulation.set_mod_route_param(route, parameter);
                 self.sync_lfo_engines(pool);
             }
@@ -859,6 +913,11 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.program_volume
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_pressed_key(&self, note: u8) -> bool {
+        self.pressed_keys.iter().any(|(pressed, _)| pressed == note)
+    }
+
     pub(crate) fn tempo_bpm(&self) -> f32 {
         self.tempo_bpm
     }
@@ -869,10 +928,6 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
 
     pub(crate) fn set_local_tempo_bpm(&mut self, bpm: f32) {
         self.local_tempo_bpm = bpm.clamp(30.0, 250.0);
-    }
-
-    pub(crate) fn clock_division(&self) -> ClockDivision {
-        self.clock_division
     }
 }
 
@@ -1301,7 +1356,9 @@ fn midi_filter_cutoff_hz(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ModDestination, ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT};
+    use crate::{
+        LayerTarget, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT,
+    };
 
     fn process_frames<const PACKS: usize>(voices: &mut TestLayerEngine<PACKS>, frames: usize) {
         let mut ctx = crate::create_render_context!();
@@ -1329,20 +1386,20 @@ mod tests {
     }
 
     fn enable_unison<const PACKS: usize>(voices: &mut TestLayerEngine<PACKS>, mode: UnisonMode) {
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::UnisonMode,
             mode.index() as f32,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::UnisonEnabled, 1.0));
     }
 
     fn configure_glide<const PACKS: usize>(voices: &mut TestLayerEngine<PACKS>, mode: GlideMode) {
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Glide, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1Glide, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::GlideMode,
             mode.index() as f32,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::GlideEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::GlideEnabled, 1.0));
     }
 
     fn gated_note_frequency<const PACKS: usize>(voices: &TestLayerEngine<PACKS>, note: u8) -> f32 {
@@ -1477,7 +1534,7 @@ mod tests {
     #[cfg(feature = "wide-4")]
     fn unison_detune_is_symmetric_and_centered() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 16.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::UnisonDetune, 16.0));
         enable_unison(&mut voices, UnisonMode::V4);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -1532,7 +1589,7 @@ mod tests {
     #[test]
     fn retrigger_key_modes_restart_unison_group_in_place() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::KeyMode,
             KeyMode::LowRetrigger.index() as f32,
         ));
@@ -1555,7 +1612,7 @@ mod tests {
     #[test]
     fn last_retrigger_unison_glides_without_a_pending_voice_steal() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(48_000.0);
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::KeyMode,
             KeyMode::LastRetrigger.index() as f32,
         ));
@@ -1729,7 +1786,7 @@ mod tests {
     #[test]
     fn repeated_unison_note_waits_for_click_safe_shutdown_and_keeps_detune() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 12.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::UnisonDetune, 12.0));
         enable_unison(&mut voices, UnisonMode::V4);
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -1760,7 +1817,7 @@ mod tests {
     fn high_and_last_priority_follow_the_documented_selection_rules() {
         for (mode, expected, fallback) in [(KeyMode::High, 67, 60), (KeyMode::Last, 55, 67)] {
             let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-            voices.handle_control(ControlMessage::SetParam(
+            voices.handle_control(ControlMessage::edit_param(
                 ParamId::KeyMode,
                 mode.index() as f32,
             ));
@@ -1789,7 +1846,7 @@ mod tests {
         process_frames(&mut voices, 8);
         let age = voices[0].lanes().age(0);
         let before = voices[0].oscillators().osc1_frequency_hz().to_array();
-        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonDetune, 12.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::UnisonDetune, 12.0));
         let after = voices[0].oscillators().osc1_frequency_hz().to_array();
         assert_eq!(voices[0].lanes().age(0), age);
         assert!(after[0] < before[0]);
@@ -1800,7 +1857,7 @@ mod tests {
     fn chord_memory_transposes_voicing_and_omits_overflow() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         let chord = ChordMemory::from_notes([60, 64, 67]);
-        voices.handle_control(ControlMessage::SetUnisonChord(chord));
+        voices.handle_control(ControlMessage::edit_unison_chord(chord));
         enable_unison(&mut voices, UnisonMode::Chord);
         voices.handle_control(ControlMessage::NoteOn {
             note: 62,
@@ -1836,7 +1893,7 @@ mod tests {
     #[test]
     fn disabling_unison_revoices_all_physically_held_keys_polyphonically() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::KeyMode,
             KeyMode::Last.index() as f32,
         ));
@@ -1848,7 +1905,7 @@ mod tests {
             });
         }
         assert!(voices.active_notes().iter().all(|note| note == 64));
-        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::UnisonEnabled, 0.0));
         let notes = voices.active_notes();
         assert_eq!(notes.len(), 2);
         assert!(notes.contains(&60));
@@ -1951,6 +2008,7 @@ mod tests {
     fn pitch_bend_remains_available_as_a_mod_matrix_source() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             enabled: true,
             source: ModSource::PitchBend,
@@ -2012,9 +2070,9 @@ mod tests {
     #[test]
     fn lfo_key_sync_resets_only_on_first_held_note() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 25.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1KeySync, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Rate, 25.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1KeySync, 1.0));
 
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -2054,9 +2112,9 @@ mod tests {
     #[test]
     fn lfo_key_sync_phase_continues_when_a_later_block_becomes_active() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 25.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1KeySync, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Rate, 25.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1KeySync, 1.0));
 
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
@@ -2081,16 +2139,16 @@ mod tests {
     #[test]
     fn rebuilding_held_notes_does_not_reset_key_synced_lfos() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 25.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Lfo1KeySync, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1Rate, 25.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Lfo1KeySync, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
         });
         process_frames(&mut voices, 64);
 
-        voices.handle_control(ControlMessage::SetParam(ParamId::UnisonEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::UnisonEnabled, 1.0));
         process_frames(&mut voices, 1);
 
         assert!(
@@ -2144,7 +2202,7 @@ mod tests {
     #[cfg(feature = "wide-4")]
     fn stolen_voice_starts_after_five_millisecond_shutdown() {
         let mut voices = TestLayerEngine::<1>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2178,7 +2236,7 @@ mod tests {
     #[test]
     fn note_off_cancels_a_pending_stolen_note() {
         let mut voices = TestLayerEngine::<1>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
         for note in 60..=63 {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -2203,7 +2261,7 @@ mod tests {
     #[cfg(feature = "wide-4")]
     fn sustain_holds_and_then_cancels_a_pending_stolen_note() {
         let mut voices = TestLayerEngine::<1>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
         for note in 60..=63 {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -2317,14 +2375,17 @@ mod tests {
     fn partial_modulation_updates_activate_complete_routes() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         voices.handle_control(ControlMessage::SetModulationParam {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             parameter: ModulationParam::Source(ModSource::Lfo1),
         });
         voices.handle_control(ControlMessage::SetModulationParam {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             parameter: ModulationParam::Destination(ModDestination::FilterCutoff),
         });
         voices.handle_control(ControlMessage::SetModulationParam {
+            target: LayerTarget::Edit,
             route: ModRoute::Free(0),
             parameter: ModulationParam::Amount(0.75),
         });
@@ -2404,7 +2465,7 @@ mod tests {
     #[test]
     fn retrigger_preserves_physical_voice_pan_position() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::PanSpread, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2426,7 +2487,7 @@ mod tests {
     #[test]
     fn reuses_fully_silent_lane_after_release() {
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AmpEgRelease, 0.0005));
         for note in 60..=75u8 {
             voices.handle_control(ControlMessage::NoteOn {
                 note,
@@ -2457,13 +2518,13 @@ mod tests {
     #[test]
     fn staccato_c3_to_c5_triggers_glide_in_fixed_rate_mode() {
         let mut voices = TestLayerEngine::<4>::new(44_100.0);
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc1Glide, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::Osc2Glide, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc1Glide, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::Osc2Glide, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::GlideMode,
             GlideMode::FixedRate.index() as f32,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::GlideEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::GlideEnabled, 1.0));
 
         // Press C3 (MIDI 48), then release it.
         voices.handle_control(ControlMessage::NoteOn {
@@ -2514,14 +2575,14 @@ mod tests {
         let step = (sample_rate / (bps * 1.0)) as usize;
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::ArpMode,
             crate::patch::ArpMode::Assign.index() as f32,
         ));
@@ -2579,16 +2640,16 @@ mod tests {
 
         // Keep filter wide open for audibility
         let mut ctx = crate::create_render_context!();
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
 
         // Press three notes — first note triggers immediate step
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::ArpMode,
             crate::patch::ArpMode::Up.index() as f32,
         ));
@@ -2659,14 +2720,14 @@ mod tests {
         let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::ArpMode,
             crate::patch::ArpMode::Assign.index() as f32,
         ));
@@ -2717,14 +2778,14 @@ mod tests {
         let step = (sample_rate / (bps * 4.0)) as usize;
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::ArpMode,
             crate::patch::ArpMode::Up.index() as f32,
         ));
@@ -2770,14 +2831,14 @@ mod tests {
         let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::ArpMode,
             crate::patch::ArpMode::Up.index() as f32,
         ));
@@ -2822,15 +2883,15 @@ mod tests {
         let step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpHold, 1.0));
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpHold, 1.0));
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::ArpMode,
             crate::patch::ArpMode::Up.index() as f32,
         ));
@@ -2863,15 +2924,15 @@ mod tests {
         let _step = (sample_rate / (120.0 / 60.0 * 1.0)) as usize;
         let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(sample_rate);
 
-        voices.handle_control(ControlMessage::SetParam(
+        voices.handle_control(ControlMessage::edit_param(
             ParamId::FilterCutoff,
             MAX_CUTOFF_HZ,
         ));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        voices.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
 
         // Press notes while arp is ON — they go to arp held_notes, not direct allocation
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
         voices.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -2882,7 +2943,7 @@ mod tests {
         });
 
         // Disable arp — should clear internal state but pressed_keys remain
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 0.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 0.0));
         // Notes are still physically held and revoice polyphonically
         assert!(
             voices.active_notes().len() > 0,
@@ -2890,7 +2951,7 @@ mod tests {
         );
 
         // Re-enable arp — pressed_keys are still held, should rebuild from them
-        voices.handle_control(ControlMessage::SetParam(ParamId::ArpEnabled, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::ArpEnabled, 1.0));
         process_frames(&mut voices, 1);
         assert!(
             voices.active_notes().len() > 0,

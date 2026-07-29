@@ -1,7 +1,7 @@
 //! Official Sequential Rev2 factory-bank regressions.
 
 use synth_core::{
-    LayerId, LayerMode, ModDestination,
+    LayerId, LayerMode, ModDestination, SynthEngineWithMemory, VOICE_PACKS,
     midi::{
         prophet::unpack_program_data,
         rev2::{
@@ -75,6 +75,37 @@ fn documented_factory_regressions_preserve_layer_b_identity() {
         assert_eq!(patch.layer_b.name.as_str(), name_b);
         assert_eq!(patch.layer_b.osc1.frequency, osc1_frequency_b);
         assert!((patch.layer_b.filter.resonance - resonance_b).abs() < 0.001);
+    }
+}
+
+#[test]
+fn documented_factory_layer_programs_render_without_parameter_workarounds() {
+    for program in [1, 5, 18, 37] {
+        let patch = decode::program_data(factory_message(program))
+            .unwrap()
+            .patch;
+        let effects_memory = vec![0.0; 48_000 * 4].into_boxed_slice();
+        let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS, 2>::new_with_effects_memory(
+            48_000.0,
+            effects_memory,
+        )
+        .unwrap();
+        engine.apply_patch(&patch);
+        engine.note_on(60, 1.0);
+
+        let mut output = vec![0.0; 48_000 * 2];
+        engine.process(&mut output);
+        let mean_square = output
+            .iter()
+            .skip(8_192)
+            .map(|sample| sample * sample)
+            .sum::<f32>()
+            / (output.len() - 8_192) as f32;
+        let rms = mean_square.sqrt();
+        assert!(
+            rms > 0.000_01,
+            "factory program {program} should render without changing cutoff or envelope amount; RMS {rms}"
+        );
     }
 }
 

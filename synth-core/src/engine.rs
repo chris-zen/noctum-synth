@@ -9,18 +9,91 @@ use crate::midi::clock::MidiClockFollower;
 use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::rate_adapter::RateAdapter;
-use crate::voice::{LayerEngine, VoicePool};
-use crate::{ActiveNotes, ClockDivision, ControlMessage, LayerPatch, ParamId, VOICE_PACKS};
+use crate::voice::{LayerEngine, VoicePool, VoiceRegion};
+use crate::{
+    ActiveNotes, ClockDivision, ControlMessage, LayerId, LayerMode, LayerTarget, ModDestination,
+    ModRoute, ModSource, ParamId, Patch, VOICE_PACKS,
+};
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
 ///
 /// This models the Prophet's calibrated voice/output summing gain without
 /// changing gain dynamically with the number of active voices.
 const MIX_BUS_GAIN: f32 = 0.55;
+const TOPOLOGY_FADE_SAMPLES: usize = 256;
 
 /// Synthesis engine with inline effects storage.
 pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize = 48_000> =
     SynthEngineWithMemory<[f32; FX_SAMPLES], PACKS>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineInitError {
+    UnsupportedLayerCount,
+    EmptyEffectsMemory,
+    UnevenLayerMemory,
+    InvalidStereoMemory,
+    UnevenVoiceRegions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerPlaybackStatus {
+    pub mode: LayerMode,
+    pub edit_layer: LayerId,
+    pub rendered_mask: u8,
+    pub degraded: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TransitionState {
+    Idle,
+    FadeOut,
+    FadeIn,
+}
+
+struct TopologyTransition {
+    state: TransitionState,
+    gain: f32,
+}
+
+impl Default for TopologyTransition {
+    fn default() -> Self {
+        Self {
+            state: TransitionState::Idle,
+            gain: 1.0,
+        }
+    }
+}
+
+impl TopologyTransition {
+    fn request(&mut self) {
+        self.state = TransitionState::FadeOut;
+    }
+
+    fn advance(&mut self) -> bool {
+        let step = 1.0 / TOPOLOGY_FADE_SAMPLES as f32;
+        match self.state {
+            TransitionState::Idle => self.gain = 1.0,
+            TransitionState::FadeOut => {
+                self.gain = (self.gain - step).max(0.0);
+                if self.gain == 0.0 {
+                    return true;
+                }
+            }
+            TransitionState::FadeIn => {
+                self.gain = (self.gain + step).min(1.0);
+                if self.gain == 1.0 {
+                    self.state = TransitionState::Idle;
+                }
+            }
+        }
+        false
+    }
+
+    fn begin_fade_in(&mut self) {
+        self.gain = 0.0;
+        self.state = TransitionState::FadeIn;
+    }
+}
 
 /// Owns all voices and renders stereo audio from [`ControlMessage`] input.
 ///
@@ -30,7 +103,18 @@ pub type SynthEngine<const PACKS: usize = VOICE_PACKS, const FX_SAMPLES: usize =
 pub struct SynthEngineWithMemory<Memory, const PACKS: usize, const LAYERS: usize = 1> {
     effects_memory: Memory,
     voice_pool: VoicePool<PACKS>,
-    layer: LayerEngine<PACKS>,
+    layers: [LayerEngine<PACKS>; LAYERS],
+    patch: Patch,
+    edit_layer: LayerId,
+    applied_mode: LayerMode,
+    applied_split_point: u8,
+    applied_edit_layer: LayerId,
+    route_mask: [u8; 128],
+    physical_keys: crate::pressed_keys::PressedKeys,
+    sustain_pressed: bool,
+    transition: TopologyTransition,
+    filter_oversampling: FilterOversampling,
+    filter_type: FilterType,
     midi_clock: MidiClockFollower,
     output_limiter: LookaheadLimiter,
     rate_adapter: RateAdapter,
@@ -39,17 +123,15 @@ pub struct SynthEngineWithMemory<Memory, const PACKS: usize, const LAYERS: usize
 impl<const PACKS: usize, const FX_SAMPLES: usize>
     SynthEngineWithMemory<[f32; FX_SAMPLES], PACKS, 1>
 {
+    const VALID_INLINE_MEMORY: () = assert!(
+        FX_SAMPLES > 0 && FX_SAMPLES % 2 == 0,
+        "inline effects memory must contain equal stereo halves"
+    );
+
     /// Creates an engine at `sample_rate` with inline effects storage.
     pub fn new(sample_rate: f32) -> Self {
-        let internal_sample_rate = RateAdapter::internal_sample_rate(sample_rate);
-        Self {
-            effects_memory: [0.0; FX_SAMPLES],
-            voice_pool: VoicePool::<PACKS>::new(internal_sample_rate),
-            layer: LayerEngine::<PACKS>::new(internal_sample_rate),
-            midi_clock: MidiClockFollower::new(sample_rate),
-            output_limiter: LookaheadLimiter::new(internal_sample_rate),
-            rate_adapter: RateAdapter::default(),
-        }
+        let () = Self::VALID_INLINE_MEMORY;
+        Self::build(sample_rate, [0.0; FX_SAMPLES])
     }
 }
 
@@ -57,29 +139,48 @@ impl<Memory, const PACKS: usize, const LAYERS: usize> SynthEngineWithMemory<Memo
 where
     Memory: AsRef<[f32]> + AsMut<[f32]>,
 {
-    const VALID_LAYER_COUNT: () = assert!(LAYERS == 1, "phase 4 supports exactly one layer");
-
     /// Creates an engine using caller-provided effects memory.
-    ///
-    /// Phase 4 supports `LAYERS = 1`; Phase 5 enables and validates the
-    /// two-layer form.
-    ///
-    /// ```compile_fail
-    /// use synth_core::SynthEngineWithMemory;
-    ///
-    /// let _ = SynthEngineWithMemory::<[f32; 64], 1, 2>::new_with_effects_memory(
-    ///     48_000.0,
-    ///     [0.0; 64],
-    /// );
-    /// ```
-    pub fn new_with_effects_memory(sample_rate: f32, mut effects_memory: Memory) -> Self {
-        let () = Self::VALID_LAYER_COUNT;
+    pub fn new_with_effects_memory(
+        sample_rate: f32,
+        mut effects_memory: Memory,
+    ) -> Result<Self, EngineInitError> {
+        let memory_len = effects_memory.as_ref().len();
+        if LAYERS != 1 && LAYERS != 2 {
+            return Err(EngineInitError::UnsupportedLayerCount);
+        }
+        if memory_len == 0 {
+            return Err(EngineInitError::EmptyEffectsMemory);
+        }
+        if memory_len % LAYERS != 0 {
+            return Err(EngineInitError::UnevenLayerMemory);
+        }
+        if (memory_len / LAYERS) % 2 != 0 {
+            return Err(EngineInitError::InvalidStereoMemory);
+        }
+        if LAYERS == 2 && (PACKS < 2 || PACKS % 2 != 0) {
+            return Err(EngineInitError::UnevenVoiceRegions);
+        }
         effects_memory.as_mut().fill(0.0);
+        Ok(Self::build(sample_rate, effects_memory))
+    }
+
+    fn build(sample_rate: f32, effects_memory: Memory) -> Self {
         let internal_sample_rate = RateAdapter::internal_sample_rate(sample_rate);
         Self {
             effects_memory,
             voice_pool: VoicePool::<PACKS>::new(internal_sample_rate),
-            layer: LayerEngine::<PACKS>::new(internal_sample_rate),
+            layers: core::array::from_fn(|_| LayerEngine::<PACKS>::new(internal_sample_rate)),
+            patch: Patch::default(),
+            edit_layer: LayerId::A,
+            applied_mode: LayerMode::Normal,
+            applied_split_point: crate::DEFAULT_SPLIT_POINT,
+            applied_edit_layer: LayerId::A,
+            route_mask: [0; 128],
+            physical_keys: crate::pressed_keys::PressedKeys::default(),
+            sustain_pressed: false,
+            transition: TopologyTransition::default(),
+            filter_oversampling: FilterOversampling::default(),
+            filter_type: FilterType::default(),
             midi_clock: MidiClockFollower::new(sample_rate),
             output_limiter: LookaheadLimiter::new(internal_sample_rate),
             rate_adapter: RateAdapter::default(),
@@ -89,121 +190,556 @@ where
     /// Applies a single control or performance message.
     pub fn handle_control(&mut self, msg: ControlMessage) {
         match msg {
-            ControlMessage::SetParam(ParamId::MasterVolume, value) => {
-                self.layer.set_program_volume(value);
+            ControlMessage::SetParam {
+                target,
+                param,
+                value,
+            } => self.set_target_param(target, param, value),
+            ControlMessage::SetUnisonChord { target, chord } => {
+                let layer_id = self.resolve_target(target);
+                self.patch.layer_mut(layer_id).unison_chord = chord;
+                if let Some(index) = self.active_engine_index(layer_id) {
+                    self.layers[index].handle_control(
+                        &mut self.voice_pool,
+                        ControlMessage::SetUnisonChord {
+                            target: LayerTarget::Explicit(layer_id),
+                            chord,
+                        },
+                    );
+                }
             }
-            ControlMessage::SetParam(ParamId::EffectEnabled, value) => {
-                self.layer.effects_mut().set_enabled(value >= 0.5);
+            ControlMessage::SetTempoBpm { target, bpm } => {
+                self.set_target_param(target, ParamId::Bpm, bpm)
             }
-            ControlMessage::SetParam(ParamId::EffectType, value) => {
-                self.layer
-                    .effects_mut()
-                    .set_type(EffectType::from_index(value as usize));
-            }
-            ControlMessage::SetParam(ParamId::EffectMix, value) => {
-                self.layer.effects_mut().set_mix(value);
-            }
-            ControlMessage::SetParam(ParamId::EffectClockSync, value) => {
-                self.layer.effects_mut().set_clock_sync(value >= 0.5);
-            }
-            ControlMessage::SetParam(ParamId::EffectParam1, value) => {
-                self.layer.effects_mut().set_param1(value);
-            }
-            ControlMessage::SetParam(ParamId::EffectParam2, value) => {
-                self.layer.effects_mut().set_param2(value);
-            }
-            ControlMessage::SetTempoBpm { bpm } => self.set_tempo_bpm(bpm),
             ControlMessage::SetMidiClockMode(mode) => self.set_midi_clock_mode(mode),
             ControlMessage::MidiRealtime(event) => self.handle_midi_realtime(event),
-            ControlMessage::SetParam(ParamId::Bpm, value) => self.set_tempo_bpm(value),
-            ControlMessage::SetParam(ParamId::ClockDivide, value) => {
-                self.set_clock_division(ClockDivision::from_index(value as usize));
+            ControlMessage::SetModulation {
+                target,
+                route,
+                enabled,
+                source,
+                destination,
+                amount,
+            } => {
+                let layer_id = self.resolve_target(target);
+                self.cache_modulation(layer_id, route, enabled, source, destination, amount);
+                if let Some(index) = self.active_engine_index(layer_id) {
+                    self.layers[index].handle_control(
+                        &mut self.voice_pool,
+                        ControlMessage::SetModulation {
+                            target: LayerTarget::Explicit(layer_id),
+                            route,
+                            enabled,
+                            source,
+                            destination,
+                            amount,
+                        },
+                    );
+                }
+            }
+            ControlMessage::SetModulationParam {
+                target,
+                route,
+                parameter,
+            } => {
+                let layer_id = self.resolve_target(target);
+                self.patch
+                    .layer_mut(layer_id)
+                    .set_modulation_param(route, parameter);
+                if let Some(index) = self.active_engine_index(layer_id) {
+                    self.layers[index].handle_control(
+                        &mut self.voice_pool,
+                        ControlMessage::SetModulationParam {
+                            target: LayerTarget::Explicit(layer_id),
+                            route,
+                            parameter,
+                        },
+                    );
+                }
+            }
+            ControlMessage::SetLayerMode(mode) => {
+                self.patch.mode = mode;
+                self.request_topology_change();
+            }
+            ControlMessage::SetSplitPoint(split_point) => {
+                self.patch.set_split_point(split_point);
+                self.request_topology_change();
+            }
+            ControlMessage::SetEditLayer(layer) => {
+                self.edit_layer = layer;
+                self.request_topology_change();
             }
             ControlMessage::SetFilterOversampling(oversampling) => {
                 self.set_filter_oversampling(oversampling);
             }
             ControlMessage::SetFilterType(filter_type) => self.set_filter_type(filter_type),
-            message => self.layer.handle_control(&mut self.voice_pool, message),
+            ControlMessage::NoteOn { note, velocity } => self.route_note_on(note, velocity),
+            ControlMessage::NoteOff { note } => self.route_note_off(note),
+            ControlMessage::AllNotesOff => self.clear_all_notes(),
+            ControlMessage::PitchBend { value } => self.for_each_layer_state(|layer, pool| {
+                layer.handle_control(pool, ControlMessage::PitchBend { value })
+            }),
+            ControlMessage::ModWheel { value } => self.for_each_layer_state(|layer, pool| {
+                layer.handle_control(pool, ControlMessage::ModWheel { value })
+            }),
+            ControlMessage::Pressure { value } => self.for_each_layer_state(|layer, pool| {
+                layer.handle_control(pool, ControlMessage::Pressure { value })
+            }),
+            ControlMessage::SustainPedal { pressed } => {
+                self.sustain_pressed = pressed;
+                self.fan_out_performance(|layer, pool| {
+                    layer.handle_control(pool, ControlMessage::SustainPedal { pressed })
+                });
+            }
+            ControlMessage::ControlChange { controller, value } => {
+                if matches!(controller, 2 | 4 | 11) {
+                    self.for_each_layer_state(|layer, pool| {
+                        layer.handle_control(
+                            pool,
+                            ControlMessage::ControlChange { controller, value },
+                        )
+                    });
+                } else {
+                    self.fan_out_performance(|layer, pool| {
+                        layer.handle_control(
+                            pool,
+                            ControlMessage::ControlChange { controller, value },
+                        )
+                    });
+                }
+            }
         }
     }
 
     pub fn set_param(&mut self, param: ParamId, value: f32) {
-        self.handle_control(ControlMessage::SetParam(param, value));
+        self.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Edit,
+            param,
+            value,
+        });
     }
 
-    /// Applies every parameter and modulation route in a patch.
-    pub fn apply_patch(&mut self, patch: &LayerPatch) {
-        self.layer.set_local_tempo_bpm(patch.bpm);
-        let effective_tempo_bpm = self
-            .midi_clock
-            .learned_bpm()
-            .filter(|_| self.midi_clock.mode().receives_clock())
-            .unwrap_or(self.layer.local_tempo_bpm());
-        self.layer.apply_patch(&mut self.voice_pool, patch);
-        // LayerEngine::apply_patch writes the patch BPM into each block. Restore the
-        // externally learned tempo after that write when the engine is slaved;
-        // in local modes this simply reapplies the patch BPM.
-        self.apply_effective_tempo(effective_tempo_bpm);
+    /// Applies a complete two-layer program and resets the audition layer to A.
+    pub fn apply_patch(&mut self, patch: &Patch) {
+        let mut next_patch = patch.clone();
+        next_patch.validate();
+        let topology_unchanged = next_patch.mode == self.applied_mode
+            && next_patch.split_point == self.applied_split_point
+            && self.applied_edit_layer == LayerId::A;
+        self.patch = next_patch;
+        self.edit_layer = LayerId::A;
+        if topology_unchanged {
+            if LAYERS == 1 {
+                self.layers[0].apply_patch(&mut self.voice_pool, &self.patch.layer_a);
+            } else {
+                let mask = self.rendered_mask();
+                if mask & Self::layer_bit(LayerId::A) != 0 {
+                    self.layers[0].apply_patch(&mut self.voice_pool, &self.patch.layer_a);
+                }
+                if mask & Self::layer_bit(LayerId::B) != 0 {
+                    self.layers[1].apply_patch(&mut self.voice_pool, &self.patch.layer_b);
+                }
+            }
+            self.apply_effective_tempos();
+            self.transition = TopologyTransition::default();
+            return;
+        }
+        self.commit_topology();
+        self.transition = TopologyTransition::default();
     }
 
-    /// Updates the global tempo and propagates it to clock-synchronized consumers.
+    /// Updates the edit layer's local tempo.
     ///
     /// In slave modes this updates the editable fallback without displacing an
     /// already-learned external tempo.
     pub fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
-        self.layer.set_local_tempo_bpm(tempo_bpm);
-        if self.midi_clock.learned_bpm().is_none() || !self.midi_clock.mode().receives_clock() {
-            self.apply_effective_tempo(self.layer.local_tempo_bpm());
-        }
-    }
-
-    fn apply_effective_tempo(&mut self, tempo_bpm: f32) {
-        self.layer.set_tempo_bpm(&mut self.voice_pool, tempo_bpm);
+        self.set_target_param(LayerTarget::Edit, ParamId::Bpm, tempo_bpm);
     }
 
     pub fn tempo_bpm(&self) -> f32 {
-        self.layer.tempo_bpm()
+        if let Some(external) = self.external_tempo() {
+            return external;
+        }
+        self.active_engine_index(self.edit_layer)
+            .map(|index| self.layers[index].tempo_bpm())
+            .unwrap_or_else(|| self.patch.layer(self.edit_layer).bpm.clamp(30.0, 250.0))
     }
 
     pub fn local_tempo_bpm(&self) -> f32 {
-        self.layer.local_tempo_bpm()
+        self.patch.layer(self.edit_layer).bpm.clamp(30.0, 250.0)
     }
 
     pub fn set_midi_clock_mode(&mut self, mode: MidiClockMode) {
         if self.midi_clock.set_mode(mode) {
-            self.apply_effective_tempo(self.layer.local_tempo_bpm());
+            self.apply_effective_tempos();
         }
     }
 
     pub fn handle_midi_realtime(&mut self, event: MidiRealtimeEvent) {
         if let Some(bpm) = self.midi_clock.handle(event) {
-            self.apply_effective_tempo(bpm);
+            self.apply_common_tempo(bpm);
         }
     }
 
     pub fn midi_clock_status(&self) -> MidiClockStatus {
-        self.midi_clock.status(self.layer.tempo_bpm())
+        self.midi_clock.status(self.tempo_bpm())
     }
 
     pub fn set_clock_division(&mut self, division: ClockDivision) {
-        self.layer
-            .set_clock_division(&mut self.voice_pool, division);
+        self.set_target_param(
+            LayerTarget::Edit,
+            ParamId::ClockDivide,
+            division.index() as f32,
+        );
     }
 
     pub fn clock_division(&self) -> ClockDivision {
-        self.layer.clock_division()
+        self.patch.layer(self.edit_layer).clock_divide
     }
 
     /// Applies the nonlinear filter oversampling policy to all voices.
     pub fn set_filter_oversampling(&mut self, oversampling: FilterOversampling) {
-        self.layer
-            .set_filter_oversampling(&mut self.voice_pool, oversampling);
+        self.filter_oversampling = oversampling;
+        self.for_each_active_layer(|layer, pool| layer.set_filter_oversampling(pool, oversampling));
     }
 
     /// Applies a filter model to all voices, resetting their filter state.
     pub fn set_filter_type(&mut self, filter_type: FilterType) {
-        self.layer
-            .set_filter_type(&mut self.voice_pool, filter_type);
+        self.filter_type = filter_type;
+        self.for_each_active_layer(|layer, pool| layer.set_filter_type(pool, filter_type));
+    }
+
+    fn resolve_target(&self, target: LayerTarget) -> LayerId {
+        match target {
+            LayerTarget::Edit => self.edit_layer,
+            LayerTarget::Explicit(layer) => layer,
+        }
+    }
+
+    const fn layer_bit(layer: LayerId) -> u8 {
+        match layer {
+            LayerId::A => 0b01,
+            LayerId::B => 0b10,
+        }
+    }
+
+    const fn layer_index(layer: LayerId) -> usize {
+        match layer {
+            LayerId::A => 0,
+            LayerId::B => 1,
+        }
+    }
+
+    fn rendered_mask(&self) -> u8 {
+        if LAYERS == 1 {
+            return Self::layer_bit(self.applied_edit_layer);
+        }
+        match self.applied_mode {
+            LayerMode::Normal => Self::layer_bit(self.applied_edit_layer),
+            LayerMode::Stack | LayerMode::Split => 0b11,
+        }
+    }
+
+    fn active_engine_index(&self, layer: LayerId) -> Option<usize> {
+        if self.rendered_mask() & Self::layer_bit(layer) == 0 {
+            return None;
+        }
+        if LAYERS == 1 {
+            Some(0)
+        } else {
+            Some(Self::layer_index(layer))
+        }
+    }
+
+    fn for_each_active_layer(
+        &mut self,
+        mut f: impl FnMut(&mut LayerEngine<PACKS>, &mut VoicePool<PACKS>),
+    ) {
+        if LAYERS == 1 {
+            f(&mut self.layers[0], &mut self.voice_pool);
+            return;
+        }
+        let mask = self.rendered_mask();
+        for index in 0..LAYERS {
+            if mask & (1 << index) != 0 {
+                f(&mut self.layers[index], &mut self.voice_pool);
+            }
+        }
+    }
+
+    fn fan_out_performance(
+        &mut self,
+        f: impl FnMut(&mut LayerEngine<PACKS>, &mut VoicePool<PACKS>),
+    ) {
+        self.for_each_active_layer(f);
+    }
+
+    fn for_each_layer_state(
+        &mut self,
+        mut f: impl FnMut(&mut LayerEngine<PACKS>, &mut VoicePool<PACKS>),
+    ) {
+        for layer in &mut self.layers {
+            f(layer, &mut self.voice_pool);
+        }
+    }
+
+    fn set_target_param(&mut self, target: LayerTarget, param: ParamId, value: f32) {
+        let layer_id = self.resolve_target(target);
+        self.patch.layer_mut(layer_id).set_param(param, value);
+        let Some(index) = self.active_engine_index(layer_id) else {
+            return;
+        };
+
+        match param {
+            ParamId::MasterVolume => self.layers[index].set_program_volume(value),
+            ParamId::EffectEnabled => self.layers[index].effects_mut().set_enabled(value >= 0.5),
+            ParamId::EffectType => self.layers[index]
+                .effects_mut()
+                .set_type(EffectType::from_index(value as usize)),
+            ParamId::EffectMix => self.layers[index].effects_mut().set_mix(value),
+            ParamId::EffectClockSync => self.layers[index]
+                .effects_mut()
+                .set_clock_sync(value >= 0.5),
+            ParamId::EffectParam1 => self.layers[index].effects_mut().set_param1(value),
+            ParamId::EffectParam2 => self.layers[index].effects_mut().set_param2(value),
+            ParamId::Bpm => {
+                self.layers[index].set_local_tempo_bpm(value);
+                if let Some(external) = self.external_tempo() {
+                    self.layers[index].set_tempo_bpm(&mut self.voice_pool, external);
+                } else {
+                    let local = self.layers[index].local_tempo_bpm();
+                    self.layers[index].set_tempo_bpm(&mut self.voice_pool, local);
+                }
+            }
+            ParamId::ClockDivide => self.layers[index].set_clock_division(
+                &mut self.voice_pool,
+                ClockDivision::from_index(value as usize),
+            ),
+            _ => self.layers[index].handle_control(
+                &mut self.voice_pool,
+                ControlMessage::SetParam {
+                    target: LayerTarget::Explicit(layer_id),
+                    param,
+                    value,
+                },
+            ),
+        }
+    }
+
+    fn cache_modulation(
+        &mut self,
+        layer: LayerId,
+        route: ModRoute,
+        enabled: bool,
+        source: ModSource,
+        destination: ModDestination,
+        amount: f32,
+    ) {
+        let patch = self.patch.layer_mut(layer);
+        match route {
+            ModRoute::Free(index) => {
+                if let Some(slot) = patch.mod_matrix.free_slots.get_mut(index) {
+                    slot.enabled = enabled;
+                    slot.source = source;
+                    slot.destination = destination;
+                    slot.amount = amount;
+                }
+            }
+            ModRoute::Dedicated(dedicated) => {
+                if let Some(slot) = patch.mod_matrix.dedicated.get_mut(dedicated.index()) {
+                    slot.enabled = enabled;
+                    slot.destination = destination;
+                    slot.amount = amount;
+                }
+            }
+        }
+    }
+
+    fn external_tempo(&self) -> Option<f32> {
+        self.midi_clock
+            .learned_bpm()
+            .filter(|_| self.midi_clock.mode().receives_clock())
+    }
+
+    fn apply_common_tempo(&mut self, bpm: f32) {
+        self.for_each_active_layer(|layer, pool| layer.set_tempo_bpm(pool, bpm));
+    }
+
+    fn apply_effective_tempos(&mut self) {
+        if let Some(external) = self.external_tempo() {
+            self.apply_common_tempo(external);
+            return;
+        }
+        if LAYERS == 1 {
+            let bpm = self.patch.layer(self.applied_edit_layer).bpm;
+            self.layers[0].set_local_tempo_bpm(bpm);
+            self.layers[0].set_tempo_bpm(&mut self.voice_pool, bpm);
+            return;
+        }
+        let mask = self.rendered_mask();
+        for layer_id in [LayerId::A, LayerId::B] {
+            if mask & Self::layer_bit(layer_id) == 0 {
+                continue;
+            }
+            let index = Self::layer_index(layer_id);
+            let bpm = self.patch.layer(layer_id).bpm;
+            self.layers[index].set_local_tempo_bpm(bpm);
+            self.layers[index].set_tempo_bpm(&mut self.voice_pool, bpm);
+        }
+    }
+
+    fn request_topology_change(&mut self) {
+        if self.patch.mode != self.applied_mode
+            || self.patch.split_point != self.applied_split_point
+            || self.edit_layer != self.applied_edit_layer
+        {
+            self.transition.request();
+        }
+    }
+
+    fn commit_topology(&mut self) {
+        for layer in &mut self.layers {
+            layer.clear_note_state();
+        }
+        self.voice_pool.reset();
+        self.output_limiter.reset();
+        self.applied_mode = self.patch.mode;
+        self.applied_split_point = self.patch.split_point;
+        self.applied_edit_layer = self.edit_layer;
+
+        if LAYERS == 1 {
+            self.layers[0].assign_region(VoiceRegion::all::<PACKS>());
+            self.layers[0].apply_patch(
+                &mut self.voice_pool,
+                self.patch.layer(self.applied_edit_layer),
+            );
+        } else if self.applied_mode == LayerMode::Normal {
+            let index = Self::layer_index(self.applied_edit_layer);
+            self.layers[index].assign_region(VoiceRegion::all::<PACKS>());
+            self.layers[index].apply_patch(
+                &mut self.voice_pool,
+                self.patch.layer(self.applied_edit_layer),
+            );
+        } else {
+            let half = PACKS / 2;
+            self.layers[0].assign_region(VoiceRegion::from_packs(0, half));
+            self.layers[1].assign_region(VoiceRegion::from_packs(half, half));
+            self.layers[0].apply_patch(&mut self.voice_pool, &self.patch.layer_a);
+            self.layers[1].apply_patch(&mut self.voice_pool, &self.patch.layer_b);
+        }
+        self.apply_effective_tempos();
+        let oversampling = self.filter_oversampling;
+        self.for_each_active_layer(|layer, pool| {
+            layer.set_filter_oversampling(pool, oversampling)
+        });
+        let filter_type = self.filter_type;
+        self.for_each_active_layer(|layer, pool| layer.set_filter_type(pool, filter_type));
+
+        self.route_mask.fill(0);
+        let held = self.physical_keys.clone();
+        for (note, velocity) in held.iter() {
+            let mask = self.route_for_note(note);
+            self.route_mask[note as usize] = mask;
+            self.send_note_on(mask, note, velocity);
+        }
+        if self.sustain_pressed {
+            self.fan_out_performance(|layer, pool| {
+                layer.handle_control(pool, ControlMessage::SustainPedal { pressed: true })
+            });
+        }
+    }
+
+    fn route_for_note(&self, note: u8) -> u8 {
+        if LAYERS == 1 {
+            return Self::layer_bit(self.applied_edit_layer);
+        }
+        match self.applied_mode {
+            LayerMode::Normal => Self::layer_bit(self.applied_edit_layer),
+            LayerMode::Stack => 0b11,
+            LayerMode::Split => {
+                if note < self.applied_split_point {
+                    Self::layer_bit(LayerId::A)
+                } else {
+                    Self::layer_bit(LayerId::B)
+                }
+            }
+        }
+    }
+
+    fn send_note_on(&mut self, mask: u8, note: u8, velocity: f32) {
+        for layer_id in [LayerId::A, LayerId::B] {
+            if mask & Self::layer_bit(layer_id) == 0 {
+                continue;
+            }
+            if let Some(index) = self.active_engine_index(layer_id) {
+                self.layers[index].handle_control(
+                    &mut self.voice_pool,
+                    ControlMessage::NoteOn { note, velocity },
+                );
+            }
+        }
+    }
+
+    fn send_note_off(&mut self, mask: u8, note: u8) {
+        for layer_id in [LayerId::A, LayerId::B] {
+            if mask & Self::layer_bit(layer_id) == 0 {
+                continue;
+            }
+            if let Some(index) = self.active_engine_index(layer_id) {
+                self.layers[index]
+                    .handle_control(&mut self.voice_pool, ControlMessage::NoteOff { note });
+            }
+        }
+    }
+
+    fn route_note_on(&mut self, note: u8, velocity: f32) {
+        if note >= 128 {
+            return;
+        }
+        if velocity <= 0.0 {
+            self.route_note_off(note);
+            return;
+        }
+        self.physical_keys.press(note, velocity);
+        let mask = self.route_for_note(note);
+        self.route_mask[note as usize] = mask;
+        self.send_note_on(mask, note, velocity.clamp(0.0, 1.0));
+    }
+
+    fn route_note_off(&mut self, note: u8) {
+        if note >= 128 {
+            return;
+        }
+        self.physical_keys.release(note);
+        let mask = core::mem::take(&mut self.route_mask[note as usize]);
+        self.send_note_off(mask, note);
+    }
+
+    fn clear_all_notes(&mut self) {
+        self.for_each_active_layer(|layer, pool| {
+            layer.handle_control(pool, ControlMessage::AllNotesOff)
+        });
+        for layer in &mut self.layers {
+            layer.clear_note_state();
+        }
+        self.physical_keys.clear();
+        self.sustain_pressed = false;
+        self.route_mask.fill(0);
+    }
+
+    pub fn playback_status(&self) -> LayerPlaybackStatus {
+        LayerPlaybackStatus {
+            mode: self.patch.mode,
+            edit_layer: self.edit_layer,
+            rendered_mask: self.rendered_mask(),
+            degraded: LAYERS == 1 && self.patch.mode != LayerMode::Normal,
+        }
+    }
+
+    pub fn layer_active_voice_count(&self, layer: LayerId) -> usize {
+        self.active_engine_index(layer)
+            .map(|index| self.layers[index].active_voice_count(&self.voice_pool))
+            .unwrap_or(0)
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {
@@ -290,51 +826,119 @@ where
         }
     }
 
-    fn next(&mut self, ctx: &mut RenderContext<'_>) -> (f32, f32) {
-        let (left, right) = self.layer.next(&mut self.voice_pool, ctx);
-        let effect_modulation = self.layer.effect_modulation();
-        let lowest_active_note = self.layer.lowest_active_note(&self.voice_pool);
-
+    fn render_layer(
+        layer: &mut LayerEngine<PACKS>,
+        voice_pool: &mut VoicePool<PACKS>,
+        effects_memory: &mut [f32],
+        ctx: &mut RenderContext<'_>,
+    ) -> (f32, f32) {
+        let (left, right) = layer.next(voice_pool, ctx);
+        let effect_modulation = layer.effect_modulation();
+        let lowest_active_note = layer.lowest_active_note(voice_pool);
         crate::profiler_begin!(ctx, RenderStage::Effects);
         let left = left * MIX_BUS_GAIN;
         let right = right * MIX_BUS_GAIN;
-        let (effects, program_volume) = self.layer.effects_and_volume();
+        let (effects, program_volume) = layer.effects_and_volume();
         let (left, right) = effects.next(
             left,
             right,
-            self.effects_memory.as_mut(),
+            effects_memory,
             effect_modulation,
             lowest_active_note,
             ctx,
         );
         crate::profiler_end!(ctx, RenderStage::Effects);
+        (left * program_volume, right * program_volume)
+    }
+
+    fn next(&mut self, ctx: &mut RenderContext<'_>) -> (f32, f32) {
+        let mut mixed_left = 0.0;
+        let mut mixed_right = 0.0;
+        let mask = self.rendered_mask();
+
+        if LAYERS == 1 {
+            let (left, right) = Self::render_layer(
+                &mut self.layers[0],
+                &mut self.voice_pool,
+                self.effects_memory.as_mut(),
+                ctx,
+            );
+            mixed_left = left;
+            mixed_right = right;
+        } else {
+            let half = self.effects_memory.as_ref().len() / 2;
+            let (memory_a, memory_b) = self.effects_memory.as_mut().split_at_mut(half);
+            if mask & Self::layer_bit(LayerId::A) != 0 {
+                let (left, right) =
+                    Self::render_layer(&mut self.layers[0], &mut self.voice_pool, memory_a, ctx);
+                mixed_left += left;
+                mixed_right += right;
+            }
+            if mask & Self::layer_bit(LayerId::B) != 0 {
+                let (left, right) =
+                    Self::render_layer(&mut self.layers[1], &mut self.voice_pool, memory_b, ctx);
+                mixed_left += left;
+                mixed_right += right;
+            }
+        }
 
         crate::profiler_begin!(ctx, RenderStage::MasterOutput);
-        let (left, right) = self
-            .output_limiter
-            .next(left * program_volume, right * program_volume);
-        let output = (left.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0));
+        let (left, right) = self.output_limiter.next(mixed_left, mixed_right);
+        let apply_topology = self.transition.advance();
+        let gain = self.transition.gain;
+        let output = (
+            (left * gain).clamp(-1.0, 1.0),
+            (right * gain).clamp(-1.0, 1.0),
+        );
         crate::profiler_end!(ctx, RenderStage::MasterOutput);
+        if apply_topology {
+            self.commit_topology();
+            self.transition.begin_fade_in();
+        }
         output
     }
 
     pub fn active_notes(&self) -> ActiveNotes<PACKS> {
-        self.layer.active_notes(&self.voice_pool)
+        let mut notes = ActiveNotes::new();
+        if LAYERS == 1 {
+            self.layers[0].for_each_active_note(&self.voice_pool, |note| {
+                notes.push(note);
+            });
+            return notes;
+        }
+        let mask = self.rendered_mask();
+        for index in 0..LAYERS {
+            if mask & (1 << index) != 0 {
+                self.layers[index].for_each_active_note(&self.voice_pool, |note| {
+                    notes.push(note);
+                });
+            }
+        }
+        notes
     }
 
     pub fn active_voice_count(&self) -> usize {
-        self.layer.active_voice_count(&self.voice_pool)
+        if LAYERS == 1 {
+            return self.layers[0].active_voice_count(&self.voice_pool);
+        }
+        let mask = self.rendered_mask();
+        (0..LAYERS)
+            .filter(|index| mask & (1 << index) != 0)
+            .map(|index| self.layers[index].active_voice_count(&self.voice_pool))
+            .sum()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::dsp::FilterOversampling;
+    #[cfg(feature = "filter-all")]
+    use crate::dsp::FilterType;
     use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent, MidiTransportState};
     use crate::{
         ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
-        EffectType, LayerPatch, ModDestination, ModRoute, ModSource, ParamId, SynthEngine,
-        VOICE_PACKS,
+        EffectType, EngineInitError, LayerId, LayerMode, LayerPatch, LayerTarget, ModDestination,
+        ModRoute, ModSource, ParamId, Patch, SynthEngine, SynthEngineWithMemory, VOICE_PACKS,
     };
 
     extern crate std;
@@ -359,12 +963,285 @@ mod tests {
             .collect()
     }
 
+    fn finish_topology_transition<Memory, const PACKS: usize, const LAYERS: usize>(
+        engine: &mut SynthEngineWithMemory<Memory, PACKS, LAYERS>,
+    ) where
+        Memory: AsRef<[f32]> + AsMut<[f32]>,
+    {
+        let mut output = [0.0; super::TOPOLOGY_FADE_SAMPLES * 4];
+        engine.process(&mut output);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn invalid_effects_memory_layouts_are_rejected_before_rendering() {
+        assert!(matches!(
+            SynthEngineWithMemory::<[f32; 8], 2, 3>::new_with_effects_memory(48_000.0, [0.0; 8]),
+            Err(EngineInitError::UnsupportedLayerCount)
+        ));
+        assert!(matches!(
+            SynthEngineWithMemory::<[f32; 0], 2, 2>::new_with_effects_memory(48_000.0, []),
+            Err(EngineInitError::EmptyEffectsMemory)
+        ));
+        assert!(matches!(
+            SynthEngineWithMemory::<[f32; 5], 2, 2>::new_with_effects_memory(48_000.0, [0.0; 5]),
+            Err(EngineInitError::UnevenLayerMemory)
+        ));
+        assert!(matches!(
+            SynthEngineWithMemory::<[f32; 6], 2, 2>::new_with_effects_memory(48_000.0, [0.0; 6]),
+            Err(EngineInitError::InvalidStereoMemory)
+        ));
+        assert!(matches!(
+            SynthEngineWithMemory::<[f32; 8], 3, 2>::new_with_effects_memory(48_000.0, [0.0; 8]),
+            Err(EngineInitError::UnevenVoiceRegions)
+        ));
+    }
+
+    #[test]
+    fn normal_a_and_b_each_own_the_complete_voice_pool() {
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+                .unwrap();
+        for note in 48..64 {
+            engine.note_on(note, 1.0);
+        }
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 16);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 0);
+
+        engine.handle_control(ControlMessage::SetEditLayer(LayerId::B));
+        finish_topology_transition(&mut engine);
+        assert_eq!(engine.playback_status().rendered_mask, 0b10);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 0);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 16);
+    }
+
+    #[test]
+    fn stack_and_split_use_fixed_disjoint_half_pool_regions() {
+        let mut stack_patch = Patch::default();
+        stack_patch.mode = LayerMode::Stack;
+        let mut stack =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+                .unwrap();
+        stack.apply_patch(&stack_patch);
+        for note in 48..56 {
+            stack.note_on(note, 1.0);
+        }
+        assert_eq!(stack.layer_active_voice_count(LayerId::A), 8);
+        assert_eq!(stack.layer_active_voice_count(LayerId::B), 8);
+        assert_eq!(stack.active_voice_count(), 16);
+
+        let mut split_patch = Patch::default();
+        split_patch.mode = LayerMode::Split;
+        split_patch.split_point = 60;
+        let mut split =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+                .unwrap();
+        split.apply_patch(&split_patch);
+        for note in 40..48 {
+            split.note_on(note, 1.0);
+        }
+        for note in 60..68 {
+            split.note_on(note, 1.0);
+        }
+        assert_eq!(split.layer_active_voice_count(LayerId::A), 8);
+        assert_eq!(split.layer_active_voice_count(LayerId::B), 8);
+        let notes_a = split.layers[0].active_notes(&split.voice_pool);
+        let notes_b = split.layers[1].active_notes(&split.voice_pool);
+        assert!(!notes_a.contains(&60));
+        assert!(notes_b.contains(&60), "the split-point note belongs to B");
+    }
+
+    #[test]
+    fn note_off_uses_the_route_recorded_by_note_on() {
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Split;
+        patch.split_point = 60;
+        let mut engine = SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+            48_000.0,
+            [0.0; 64],
+        )
+        .unwrap();
+        engine.apply_patch(&patch);
+        engine.note_on(59, 1.0);
+        assert!(engine.layers[0].has_pressed_key(59));
+
+        engine.handle_control(ControlMessage::SetSplitPoint(50));
+        engine.note_off(59);
+        assert!(!engine.layers[0].has_pressed_key(59));
+        assert!(!engine.layers[1].has_pressed_key(59));
+    }
+
+    #[test]
+    fn layer_effects_memory_regions_are_disjoint() {
+        let mut engine = SynthEngineWithMemory::<[f32; 128], { VOICE_PACKS }, 2>::new_with_effects_memory(
+            48_000.0, [0.0; 128],
+        )
+        .unwrap();
+        engine.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Explicit(LayerId::A),
+            param: ParamId::EffectEnabled,
+            value: 1.0,
+        });
+        engine.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Explicit(LayerId::A),
+            param: ParamId::EffectType,
+            value: EffectType::DelayMono.index() as f32,
+        });
+        engine.effects_memory[64..].fill(37.0);
+        engine.note_on(60, 1.0);
+        let mut output = [0.0; 512];
+        engine.process(&mut output);
+        assert!(
+            engine.effects_memory[64..]
+                .iter()
+                .all(|sample| *sample == 37.0)
+        );
+
+        engine.all_notes_off();
+        engine.handle_control(ControlMessage::SetEditLayer(LayerId::B));
+        finish_topology_transition(&mut engine);
+        engine.effects_memory[..64].fill(19.0);
+        engine.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Explicit(LayerId::B),
+            param: ParamId::EffectEnabled,
+            value: 1.0,
+        });
+        engine.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Explicit(LayerId::B),
+            param: ParamId::EffectType,
+            value: EffectType::DelayMono.index() as f32,
+        });
+        engine.note_on(67, 1.0);
+        engine.process(&mut output);
+        assert!(
+            engine.effects_memory[..64]
+                .iter()
+                .all(|sample| *sample == 19.0)
+        );
+    }
+
+    #[test]
+    fn topology_change_repartitions_and_retriggers_physically_held_notes() {
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+        .unwrap();
+        engine.set_filter_oversampling(FilterOversampling::X2);
+        #[cfg(feature = "filter-all")]
+        engine.set_filter_type(FilterType::GainLimitedTpt);
+        engine.note_on(60, 0.75);
+        engine.sustain_pedal(true);
+        engine.handle_control(ControlMessage::SetLayerMode(LayerMode::Stack));
+        finish_topology_transition(&mut engine);
+        assert_eq!(engine.playback_status().rendered_mask, 0b11);
+        assert_eq!(engine.route_mask[60], 0b11);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 1);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+        assert_eq!(engine.filter_oversampling, FilterOversampling::X2);
+        #[cfg(feature = "filter-all")]
+        assert_eq!(engine.filter_type, FilterType::GainLimitedTpt);
+
+        engine.note_off(60);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 1);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+        engine.sustain_pedal(false);
+        engine.all_notes_off();
+        assert_eq!(engine.route_mask, [0; 128]);
+        assert!(engine.physical_keys.is_empty());
+    }
+
+    #[test]
+    fn targeted_layer_parameters_remain_independent() {
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Stack;
+        patch.layer_a.master_volume = 0.2;
+        patch.layer_b.master_volume = 0.8;
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+                .unwrap();
+        engine.apply_patch(&patch);
+        assert_eq!(engine.layers[0].program_volume(), 0.2);
+        assert_eq!(engine.layers[1].program_volume(), 0.8);
+
+        engine.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Explicit(LayerId::B),
+            param: ParamId::MasterVolume,
+            value: 0.4,
+        });
+        assert_eq!(engine.layers[0].program_volume(), 0.2);
+        assert_eq!(engine.layers[1].program_volume(), 0.4);
+        assert_eq!(engine.patch.layer_a.master_volume, 0.2);
+        assert_eq!(engine.patch.layer_b.master_volume, 0.4);
+
+        engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Explicit(LayerId::B),
+            route: ModRoute::Free(0),
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::FilterCutoff,
+            amount: 0.5,
+        });
+        assert!(!engine.patch.layer_a.mod_matrix.free_slots[0].enabled);
+        assert!(engine.patch.layer_b.mod_matrix.free_slots[0].enabled);
+    }
+
+    #[test]
+    fn layer_unison_and_sustain_state_stays_inside_each_region() {
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Stack;
+        patch.layer_a.unison_enabled = true;
+        patch.layer_a.unison_mode = crate::UnisonMode::V4;
+        patch.layer_b.unison_enabled = false;
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+                .unwrap();
+        engine.apply_patch(&patch);
+        engine.note_on(60, 1.0);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 4);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+
+        engine.sustain_pedal(true);
+        engine.note_off(60);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 4);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+        engine.sustain_pedal(false);
+    }
+
+    #[test]
+    fn external_clock_is_common_but_layer_divisions_remain_independent() {
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Stack;
+        patch.layer_a.bpm = 80.0;
+        patch.layer_b.bpm = 120.0;
+        patch.layer_a.clock_divide = ClockDivision::Quarter;
+        patch.layer_b.clock_divide = ClockDivision::Sixteenth;
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(48_000.0, [0.0; 64])
+                .unwrap();
+        engine.apply_patch(&patch);
+        assert_eq!(engine.layers[0].tempo_bpm(), 80.0);
+        assert_eq!(engine.layers[1].tempo_bpm(), 120.0);
+
+        engine.set_midi_clock_mode(MidiClockMode::Slave);
+        for timestamp in [0, 25_000, 50_000, 75_000, 100_000, 125_000] {
+            engine.handle_midi_realtime(MidiRealtimeEvent::TimingClock {
+                timestamp_micros: timestamp,
+            });
+        }
+        assert!((engine.layers[0].tempo_bpm() - 100.0).abs() < 0.01);
+        assert!((engine.layers[1].tempo_bpm() - 100.0).abs() < 0.01);
+        assert_eq!(engine.patch.layer_a.clock_divide, ClockDivision::Quarter);
+        assert_eq!(engine.patch.layer_b.clock_divide, ClockDivision::Sixteenth);
+    }
+
     #[test]
     fn tempo_control_updates_and_clamps_the_engine_parameter() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
         assert_eq!(engine.tempo_bpm(), DEFAULT_TEMPO_BPM);
 
-        engine.handle_control(ControlMessage::SetTempoBpm { bpm: 98.0 });
+        engine.handle_control(ControlMessage::SetTempoBpm {
+            target: LayerTarget::Edit,
+            bpm: 98.0,
+        });
         assert_eq!(engine.tempo_bpm(), 98.0);
         engine.set_tempo_bpm(500.0);
         assert_eq!(engine.tempo_bpm(), 250.0);
@@ -385,7 +1262,10 @@ mod tests {
         assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
         let mut patch = LayerPatch::default();
         patch.bpm = 60.0;
-        engine.apply_patch(&patch);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
         assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
         assert_eq!(engine.local_tempo_bpm(), 60.0);
         engine.set_midi_clock_mode(MidiClockMode::Off);
@@ -426,7 +1306,10 @@ mod tests {
         let mut patch = LayerPatch::default();
         patch.bpm = 87.0;
         patch.clock_divide = ClockDivision::ThirtySecondTriplet;
-        engine.apply_patch(&patch);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
         assert_eq!(engine.tempo_bpm(), 87.0);
         assert_eq!(engine.clock_division(), ClockDivision::ThirtySecondTriplet);
     }
@@ -465,14 +1348,14 @@ mod tests {
         }
 
         let mut engine = SynthEngine::<{ VOICE_PACKS }, 64>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
-        engine.handle_control(ControlMessage::SetParam(
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 1.0));
+        engine.handle_control(ControlMessage::edit_param(
             ParamId::EffectType,
             EffectType::Reverb.index() as f32,
         ));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 0.5));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-        engine.handle_control(ControlMessage::SetParam(
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 0.5));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+        engine.handle_control(ControlMessage::edit_param(
             ParamId::Lfo1Destination,
             ModDestination::FilterCutoff.index() as f32,
         ));
@@ -526,9 +1409,9 @@ mod tests {
     #[cfg(all(not(feature = "downsampling"), not(feature = "wide-1")))]
     fn default_note_on_renders_oscillator_without_noise() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -544,10 +1427,10 @@ mod tests {
     #[test]
     fn vca_initial_level_drone_produces_audio_without_amp_envelope() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -566,8 +1449,8 @@ mod tests {
     #[test]
     fn note_off_decays_instead_of_cutting_to_silence() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.002));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.05));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.002));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgRelease, 0.05));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -600,7 +1483,7 @@ mod tests {
     fn amp_release_param_controls_release_tail() {
         fn release_rms(release_seconds: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::AmpEgRelease,
                 release_seconds,
             ));
@@ -635,7 +1518,7 @@ mod tests {
     #[test]
     fn amp_delay_param_delays_initial_output() {
         let mut delayed = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        delayed.handle_control(ControlMessage::SetParam(ParamId::AmpEgDelay, 0.05));
+        delayed.handle_control(ControlMessage::edit_param(ParamId::AmpEgDelay, 0.05));
         let delayed_rms = rendered_note_rms(delayed, 60, 1.0, 512);
 
         let immediate = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
@@ -650,13 +1533,13 @@ mod tests {
     #[test]
     fn amp_env_amount_controls_output_level() {
         let mut full = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        full.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        full.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 1.0));
+        full.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+        full.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 1.0));
         let full_rms = rendered_note_rms(full, 60, 1.0, 4096);
 
         let mut reduced = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        reduced.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        reduced.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.25));
+        reduced.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+        reduced.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.25));
         let reduced_rms = rendered_note_rms(reduced, 60, 1.0, 4096);
 
         assert!(
@@ -669,8 +1552,11 @@ mod tests {
     fn amp_velocity_param_controls_velocity_sensitivity() {
         fn render(env_amount: f32, velocity_amount: f32, note_velocity: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, env_amount));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(
+                ParamId::AmpEnvAmount,
+                env_amount,
+            ));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::AmpVelocity,
                 velocity_amount,
             ));
@@ -696,8 +1582,11 @@ mod tests {
     fn amp_velocity_adds_to_envelope_amount_and_clamps_at_full_level() {
         fn render(env_amount: f32, velocity_amount: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, env_amount));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(
+                ParamId::AmpEnvAmount,
+                env_amount,
+            ));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::AmpVelocity,
                 velocity_amount,
             ));
@@ -717,21 +1606,21 @@ mod tests {
     fn filter_envelope_params_shape_filter_modulation() {
         fn filtered_attack_rms(filter_attack_seconds: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 112.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 112.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 1.0));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::FilterEgAttack,
                 filter_attack_seconds,
             ));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgDecay, 5.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgSustain, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgDecay, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgDecay, 5.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgDecay, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
             engine.handle_control(ControlMessage::NoteOn {
                 note: 60,
                 velocity: 1.0,
@@ -755,22 +1644,22 @@ mod tests {
     fn filter_delay_param_delays_filter_envelope_modulation() {
         fn filtered_delay_rms(delay_seconds: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 112.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 112.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 1.0));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::FilterEgDelay,
                 delay_seconds,
             ));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgDecay, 5.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgSustain, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgDecay, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgDecay, 5.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgDecay, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
             rendered_note_rms(engine, 60, 1.0, 2048)
         }
 
@@ -787,20 +1676,20 @@ mod tests {
     fn filter_velocity_param_controls_filter_envelope_depth() {
         fn filtered_velocity_rms(filter_velocity: f32, note_velocity: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 80.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 80.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::FilterVelocity,
                 filter_velocity,
             ));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgDecay, 5.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgDecay, 5.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgSustain, 1.0));
             rendered_note_rms(engine, 60, note_velocity, 4096)
         }
 
@@ -823,17 +1712,17 @@ mod tests {
     fn filter_velocity_offsets_inverted_filter_envelope_depth() {
         fn filtered_velocity_rms(note_velocity: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 1780.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, -1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterVelocity, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgDecay, 5.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 1780.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, -1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterVelocity, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgDecay, 5.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEgSustain, 1.0));
             rendered_note_rms(engine, 60, note_velocity, 4096)
         }
 
@@ -849,12 +1738,12 @@ mod tests {
     #[test]
     fn filter_control_params_remain_wired_and_stable() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgDecay, 0.0005));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgDecay, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
 
         for (param, value) in [
             (ParamId::FilterCutoff, 225.0),
@@ -865,7 +1754,7 @@ mod tests {
             (ParamId::FilterVelocity, 0.5),
             (ParamId::FilterAudioMod, 0.25),
         ] {
-            engine.handle_control(ControlMessage::SetParam(param, value));
+            engine.handle_control(ControlMessage::edit_param(param, value));
         }
 
         engine.handle_control(ControlMessage::NoteOn {
@@ -958,7 +1847,7 @@ mod tests {
     #[test]
     fn multichannel_output_repeats_stereo_pairs() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::PanSpread, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::PanSpread, 1.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1042,10 +1931,10 @@ mod tests {
     #[test]
     fn hard_sync_keeps_osc1_audible_with_osc1_only_mix() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.002));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc2Enabled, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::HardSync, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.002));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1065,8 +1954,8 @@ mod tests {
     #[cfg(all(not(feature = "downsampling"), not(feature = "wide-1")))]
     fn enabling_hard_sync_on_active_note_keeps_osc1_audible() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc2Enabled, 1.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1075,7 +1964,7 @@ mod tests {
         let mut before = std::vec![0.0; 1024 * 2];
         engine.process(&mut before);
 
-        engine.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::HardSync, 1.0));
         let mut after = std::vec![0.0; 4096 * 2];
         engine.process(&mut after);
         let rms = left_rms(&after);
@@ -1089,10 +1978,10 @@ mod tests {
     #[test]
     fn hard_sync_with_osc2_off_does_not_mute_or_reset_osc1() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::HardSync, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.002));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc2Enabled, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::HardSync, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.002));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1112,16 +2001,16 @@ mod tests {
     fn lfo_to_filter_cutoff_opens_filter() {
         fn render_with_lfo(enabled: bool) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 46.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
             if enabled {
-                engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Waveform, 3.0));
-                engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-                engine.handle_control(ControlMessage::SetParam(
+                engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Waveform, 3.0));
+                engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+                engine.handle_control(ControlMessage::edit_param(
                     ParamId::Lfo1Destination,
                     ModDestination::FilterCutoff.index() as f32,
                 ));
@@ -1141,22 +2030,22 @@ mod tests {
     fn aux_envelope_to_filter_cutoff_opens_filter() {
         fn render_with_aux(enabled: bool) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 46.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
             if enabled {
-                engine.handle_control(ControlMessage::SetParam(
+                engine.handle_control(ControlMessage::edit_param(
                     ParamId::AuxEgDestination,
                     ModDestination::FilterCutoff.index() as f32,
                 ));
-                engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
-                engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
-                engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgDecay, 5.0));
-                engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgSustain, 1.0));
+                engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, 1.0));
+                engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgAttack, 0.0005));
+                engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgDecay, 5.0));
+                engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgSustain, 1.0));
             }
             rendered_note_rms(engine, 60, 1.0, 4096)
         }
@@ -1173,21 +2062,21 @@ mod tests {
     fn aux_envelope_amount_can_invert_filter_modulation() {
         fn render_with_aux_amount(amount: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 225.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 225.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::AuxEgDestination,
                 ModDestination::FilterCutoff.index() as f32,
             ));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, amount));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgDecay, 5.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, amount));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgDecay, 5.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgSustain, 1.0));
             rendered_note_rms(engine, 60, 1.0, 4096)
         }
 
@@ -1203,22 +2092,22 @@ mod tests {
     fn aux_velocity_param_controls_modulation_depth() {
         fn render_with_velocity(note_velocity: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 46.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::AuxEgDestination,
                 ModDestination::FilterCutoff.index() as f32,
             ));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAmount, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgVelocity, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgAttack, 0.0005));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgDecay, 5.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AuxEgSustain, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgVelocity, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgAttack, 0.0005));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgDecay, 5.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AuxEgSustain, 1.0));
             rendered_note_rms(engine, 60, note_velocity, 4096)
         }
 
@@ -1234,15 +2123,16 @@ mod tests {
     fn mod_matrix_lfo_to_filter_cutoff_opens_filter() {
         fn render_with_matrix(enabled: bool) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Waveform, 3.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 46.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Waveform, 3.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
             engine.handle_control(ControlMessage::SetModulation {
+                target: LayerTarget::Edit,
                 route: ModRoute::Free(0),
                 enabled,
                 source: ModSource::Lfo1,
@@ -1264,14 +2154,15 @@ mod tests {
     fn dedicated_mod_wheel_to_filter_cutoff_uses_controller_value() {
         fn render_with_wheel(value: f32) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 46.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::FilterEnvAmount, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 46.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::FilterEnvAmount, 0.0));
             engine.handle_control(ControlMessage::SetModulation {
+                target: LayerTarget::Edit,
                 route: ModRoute::Dedicated(DedicatedModSource::ModWheel),
                 enabled: true,
                 source: ModSource::ModWheel,
@@ -1294,9 +2185,10 @@ mod tests {
     fn disabled_mod_matrix_route_has_no_effect() {
         fn render_with_route(enabled: bool) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.25));
-            engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.25));
+            engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
             engine.handle_control(ControlMessage::SetModulation {
+                target: LayerTarget::Edit,
                 route: ModRoute::Free(0),
                 enabled,
                 source: ModSource::Dc,
@@ -1317,11 +2209,11 @@ mod tests {
     #[test]
     fn lfo_to_vca_changes_output_level_over_time() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpVelocity, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Rate, 67.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Lfo1Depth, 1.0));
-        engine.handle_control(ControlMessage::SetParam(
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpVelocity, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Rate, 67.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Lfo1Depth, 1.0));
+        engine.handle_control(ControlMessage::edit_param(
             ParamId::Lfo1Destination,
             ModDestination::Vca.index() as f32,
         ));
@@ -1347,11 +2239,11 @@ mod tests {
     #[test]
     fn filter_oversampling_control_message_can_change_while_rendering() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 2000.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 2000.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 1.0));
         engine.handle_control(ControlMessage::SetFilterOversampling(
             FilterOversampling::Off,
         ));
@@ -1380,13 +2272,13 @@ mod tests {
     fn disabled_effects_preserve_dry_output() {
         fn render(enabled: bool) -> Vec<f32> {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(
+            engine.handle_control(ControlMessage::edit_param(
                 ParamId::EffectEnabled,
                 if enabled { 1.0 } else { 0.0 },
             ));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 11.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectType, 11.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam1, 1.0));
             engine.handle_control(ControlMessage::NoteOn {
                 note: 60,
                 velocity: 1.0,
@@ -1413,12 +2305,12 @@ mod tests {
     #[test]
     fn mono_delay_produces_tail_after_note_release() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 0.03));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 0.55));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgRelease, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectType, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam1, 0.03));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam2, 0.55));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1440,11 +2332,11 @@ mod tests {
     fn high_pass_effect_reduces_low_notes_more_than_high_notes() {
         fn render_note(note: u8) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 12.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 0.65));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectType, 12.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam1, 0.65));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam2, 0.0));
             rendered_note_rms(engine, note, 1.0, 4096)
         }
 
@@ -1459,11 +2351,11 @@ mod tests {
     #[test]
     fn distortion_effect_stays_finite_and_bounded() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 11.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectType, 11.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam1, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam2, 1.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1482,12 +2374,12 @@ mod tests {
     #[test]
     fn reverb_effect_produces_decay_tail() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgRelease, 0.0005));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 9.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 0.8));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam2, 0.5));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgRelease, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectType, 9.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam1, 0.8));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam2, 0.5));
         engine.handle_control(ControlMessage::NoteOn {
             note: 60,
             velocity: 1.0,
@@ -1509,11 +2401,12 @@ mod tests {
     fn modulation_matrix_can_control_fx_mix() {
         fn render_with_fx_mix_mod(enabled: bool) -> f32 {
             let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 1.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectType, 11.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectMix, 0.0));
-            engine.handle_control(ControlMessage::SetParam(ParamId::EffectParam1, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 1.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectType, 11.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectMix, 0.0));
+            engine.handle_control(ControlMessage::edit_param(ParamId::EffectParam1, 1.0));
             engine.handle_control(ControlMessage::SetModulation {
+                target: LayerTarget::Edit,
                 route: ModRoute::Free(0),
                 enabled,
                 source: ModSource::Dc,
@@ -1538,26 +2431,29 @@ mod tests {
         patch.master_volume = 0.25;
         patch.effects.enabled = true;
         patch.effects.mix = 0.75;
-        engine.apply_patch(&patch);
-        assert_eq!(engine.layer.program_volume(), 0.25);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        assert_eq!(engine.layers[0].program_volume(), 0.25);
     }
 
     #[test]
     fn wide_pulse_sustain_settles_to_near_zero_dc() {
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(DEFAULT_SAMPLE_RATE);
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1Waveform, 3.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1ShapeMod, 0.67));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 8_000.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgAttack, 0.0005));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgDecay, 0.0005));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEgSustain, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::MasterVolume, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1Waveform, 3.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1ShapeMod, 0.67));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc2Enabled, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 8_000.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgAttack, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgDecay, 0.0005));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEgSustain, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::MasterVolume, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 0.0));
         engine.handle_control(ControlMessage::NoteOn {
             note: 36,
             velocity: 1.0,
@@ -1588,21 +2484,21 @@ mod tests {
     fn warmed_wide_pulse_does_not_emit_a_note_on_dc_transient() {
         let sample_rate = 48_000.0;
         let mut engine = SynthEngine::<{ VOICE_PACKS }>::new(sample_rate);
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1Waveform, 3.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1Frequency, 57.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1ShapeMod, 0.67));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1KeyboardOn, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc1NoteReset, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::Osc2Enabled, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::OscMix, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::SubOscLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::NoiseLevel, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterCutoff, 8_000.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::FilterResonance, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::VcaInitialLevel, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::AmpEnvAmount, 0.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::MasterVolume, 1.0));
-        engine.handle_control(ControlMessage::SetParam(ParamId::EffectEnabled, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1Waveform, 3.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1Frequency, 57.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1ShapeMod, 0.67));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1KeyboardOn, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc1NoteReset, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::Osc2Enabled, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::OscMix, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::SubOscLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::NoiseLevel, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::FilterCutoff, 8_000.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::FilterResonance, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::VcaInitialLevel, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::AmpEnvAmount, 0.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::MasterVolume, 1.0));
+        engine.handle_control(ControlMessage::edit_param(ParamId::EffectEnabled, 0.0));
 
         let mut warmup = std::vec![0.0; sample_rate as usize];
         engine.process(&mut warmup);

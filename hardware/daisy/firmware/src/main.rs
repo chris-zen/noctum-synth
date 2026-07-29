@@ -67,14 +67,15 @@ async fn main(spawner: embassy_executor::Spawner) {
         EFFECTS_SAMPLES
     );
 
-    let Some(engine) = ENGINE.try_init_with(|| {
-        let mut engine = HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory);
-        engine.set_filter_type(FILTER_TYPE);
-        engine.set_filter_oversampling(FILTER_OVERSAMPLING);
-        engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
-        engine.apply_patch(&initial_patch.layer_a);
-        engine
-    }) else {
+    let mut engine = match HardwareSynth::new_with_effects_memory(SAMPLE_RATE_HZ, effects_memory) {
+        Ok(engine) => engine,
+        Err(_) => fatal("invalid synth effects-memory layout"),
+    };
+    engine.set_filter_type(FILTER_TYPE);
+    engine.set_filter_oversampling(FILTER_OVERSAMPLING);
+    engine.set_midi_clock_mode(FIRMWARE_MIDI_CLOCK_MODE);
+    engine.apply_patch(&initial_patch);
+    let Some(engine) = ENGINE.try_init_with(|| engine) else {
         fatal("synth engine already initialized");
     };
 

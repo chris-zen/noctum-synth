@@ -46,17 +46,18 @@ engine. To load it into a running engine, forward every parameter and
 modulation entry to the same control path used by the host UI:
 
 ```rust,ignore
-use synth_core::{ControlMessage, LayerPatch, SynthEngine};
+use synth_core::{ControlMessage, LayerPatch, LayerTarget, SynthEngine};
 
 fn apply_layer_patch(engine: &mut SynthEngine, patch: &LayerPatch) {
-    patch.for_each_param(|id, value| engine.handle_control(ControlMessage::SetParam(id, value)));
-    patch.for_each_modulation(|route, enabled, source, destination, amount| {
+    patch.for_each_param(|id, value| engine.handle_control(ControlMessage::edit_param(id, value)));
+    patch.for_each_modulation(|route, slot| {
         engine.handle_control(ControlMessage::SetModulation {
+            target: LayerTarget::Edit,
             route,
-            enabled,
-            source,
-            destination,
-            amount,
+            enabled: slot.enabled,
+            source: slot.source,
+            destination: slot.destination,
+            amount: slot.amount,
         });
     });
 }

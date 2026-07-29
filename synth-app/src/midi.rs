@@ -950,7 +950,11 @@ mod tests {
         }
         assert!(matches!(
             audio.control.0.pop(),
-            Ok(ControlMessage::SetParam(ParamId::FilterEnvAmount, 1.0))
+            Ok(ControlMessage::SetParam {
+                target: LayerTarget::Edit,
+                param: ParamId::FilterEnvAmount,
+                value: 1.0,
+            })
         ));
         let mut ui_update = None;
         bridge
@@ -976,7 +980,11 @@ mod tests {
             );
             assert!(matches!(
                 audio.control.0.pop(),
-                Ok(ControlMessage::SetParam(ParamId::FilterResonance, 0.5))
+                Ok(ControlMessage::SetParam {
+                    target: LayerTarget::Edit,
+                    param: ParamId::FilterResonance,
+                    value: 0.5,
+                })
             ));
         }
 
