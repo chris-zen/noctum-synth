@@ -56,7 +56,7 @@ pub fn cutoff_raw_to_hz(raw: u16) -> f32 {
 
 pub fn cutoff_hz_to_raw(hz: f32, raw_max: u16) -> u16 {
     let hz = hz.max(f32::MIN_POSITIVE);
-    let raw = F32(hz / 440.0).ln().as_f32() / core::f32::consts::LN_2 * 12.0 + FILTER_CUTOFF_A4_RAW;
+    let raw = 12.0 * F32(hz / 440.0).accurate_log2().as_f32() + FILTER_CUTOFF_A4_RAW;
     F32(raw.clamp(0.0, f32::from(raw_max))).round().as_f32() as u16
 }
 

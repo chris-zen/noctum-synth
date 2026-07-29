@@ -314,6 +314,16 @@ pub(crate) fn scalar_exp2(value: f32) -> f32 {
     accurate_exp2(value)
 }
 
+#[inline]
+pub(crate) fn scalar_log2(value: f32) -> f32 {
+    accurate_log2(value)
+}
+
+#[inline]
+pub(crate) fn scalar_ln(value: f32) -> f32 {
+    accurate_ln(value)
+}
+
 fn accurate_tan(value: f32) -> f32 {
     const DP1: f32 = 0.785_156_25 * 2.0;
     const DP2: f32 = 2.418_756_5e-4 * 2.0;
@@ -393,6 +403,42 @@ fn power_of_two(exponent: i32) -> f32 {
     } else {
         0.0
     }
+}
+
+fn accurate_log2(value: f32) -> f32 {
+    if value.is_nan() || value < 0.0 {
+        return f32::NAN;
+    }
+    if value == 0.0 {
+        return f32::NEG_INFINITY;
+    }
+    if value == f32::INFINITY {
+        return f32::INFINITY;
+    }
+
+    let mut x = value;
+    let mut exp_adjust = 0i32;
+    if x < f32::from_bits(0x0080_0000) {
+        x *= f32::from_bits(0x4b00_0000);
+        exp_adjust = -23;
+    }
+
+    let bits = x.to_bits();
+    let exponent = ((bits >> 23) as i32) - 127;
+    let mantissa = f32::from_bits((bits & 0x007f_ffff) | 0x3f80_0000);
+    let t = (mantissa - 1.0) / (mantissa + 1.0);
+    let t2 = t * t;
+    let mut series = t2 / 9.0 + 1.0 / 7.0;
+    series = t2 * series + 1.0 / 5.0;
+    series = t2 * series + 1.0 / 3.0;
+    series = t2 * series + 1.0;
+    let log2_mantissa = (2.0 * t * series) * (1.0 / core::f32::consts::LN_2);
+    exponent as f32 + log2_mantissa + exp_adjust as f32
+}
+
+#[inline]
+fn accurate_ln(value: f32) -> f32 {
+    accurate_log2(value) * core::f32::consts::LN_2
 }
 
 #[cfg(test)]
@@ -627,5 +673,29 @@ mod tests {
 
         let xor = (WideI32::splat(0xF0i32) ^ WideI32::splat(0xFFi32)).round_float();
         assert_eq!(xor.to_array(), [0x0F_i32 as f32; WideF32::LANES]);
+    }
+
+    #[test]
+    fn accurate_log2_is_monotonic_and_within_pitch_tolerance() {
+        const SAMPLES: usize = 65_536;
+        let mut maximum_cents = 0.0f32;
+        let mut previous = f32::NEG_INFINITY;
+        for sample in 0..=SAMPLES {
+            let fraction = sample as f32 / SAMPLES as f32;
+            let value = 1.0e-3 * (1.0e6_f32).powf(fraction);
+            let actual = super::accurate_log2(value);
+            let expected = libm::log2f(value);
+            assert!(
+                actual >= previous,
+                "log2 is not monotonic at {value}: {actual} < {previous}"
+            );
+            previous = actual;
+            let cents = 1200.0 * (actual - expected).abs();
+            maximum_cents = maximum_cents.max(cents);
+        }
+        assert!(
+            maximum_cents <= 0.01,
+            "log2 cents error {maximum_cents} exceeds pitch-quality tolerance"
+        );
     }
 }

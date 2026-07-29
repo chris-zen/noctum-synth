@@ -772,11 +772,11 @@ fn oscillator_frequency(
 }
 
 fn frequency_to_semitones(frequency_hz: f32) -> f32 {
-    69.0 + 12.0
-        * F32(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
-            .ln()
-            .as_f32()
-        / F32(2.0).ln().as_f32()
+    69.0
+        + 12.0
+            * F32(frequency_hz.max(f32::MIN_POSITIVE) / 440.0)
+                .accurate_log2()
+                .as_f32()
 }
 
 fn pitch_to_q16(semitones: f32) -> i32 {

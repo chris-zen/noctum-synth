@@ -142,6 +142,30 @@ impl F32 {
     }
 
     #[inline]
+    pub fn accurate_ln(self) -> Self {
+        #[cfg(feature = "fast-math")]
+        {
+            Self(super::micro::scalar_ln(self.0))
+        }
+        #[cfg(not(feature = "fast-math"))]
+        {
+            Self(libm::logf(self.0))
+        }
+    }
+
+    #[inline]
+    pub fn accurate_log2(self) -> Self {
+        #[cfg(feature = "fast-math")]
+        {
+            Self(super::micro::scalar_log2(self.0))
+        }
+        #[cfg(not(feature = "fast-math"))]
+        {
+            Self(libm::log2f(self.0))
+        }
+    }
+
+    #[inline]
     pub fn powf(self, y: Self) -> Self {
         #[cfg(feature = "fast-math")]
         {
@@ -329,6 +353,22 @@ mod tests {
     fn exp2_is_power_of_two() {
         let result = F32(3.0).exp2().0;
         assert!((result - 8.0).abs() < 2e-3);
+    }
+
+    #[test]
+    fn accurate_log2_matches_integer_powers() {
+        assert!((F32(8.0).accurate_log2().0 - 3.0).abs() < 1e-5);
+        assert!((F32(0.25).accurate_log2().0 - (-2.0)).abs() < 1e-5);
+        let c4_ratio = F32(261.62555 / 440.0).accurate_log2().0;
+        assert!((c4_ratio - (-0.75)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn accurate_ln_matches_libm_at_pitch_ratios() {
+        let ratio = 261.62555 / 440.0;
+        let expected = libm::logf(ratio);
+        assert!((F32(ratio).accurate_ln().0 - expected).abs() < 1e-5);
+        assert!((F32(2.0).accurate_ln().0 - libm::logf(2.0)).abs() < 1e-5);
     }
 
     #[test]
