@@ -1,6 +1,6 @@
 //! Shared Prophet Rev2 / '08 parameter conversions.
 //!
-//! Program/NRPN cutoff is converted to Hz at the MIDI frontier; [`Patch`] stores
+//! Program/NRPN cutoff is converted to Hz at the MIDI frontier; [`LayerPatch`] stores
 //! Hz only. Official docs: 0–164 in semitone steps over more than 13 octaves
 //! (Prophet '08 / Prophet 12). That span is ~1 Hz–13.3 kHz with A4 at raw 105
 //! (community self-oscillation calibration). DSI oscillator freq likewise starts

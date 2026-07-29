@@ -23,6 +23,7 @@ pub enum InvalidMidiReason {
     UnsupportedSysExCommand,
     InvalidSysExBank,
     NonSevenBitSysExData,
+    InvalidSysExProgramData,
     SysExOutputTooSmall,
 }
 

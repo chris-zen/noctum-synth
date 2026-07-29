@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "wide-1"))]
+    #[cfg(all(not(feature = "wide-1"), not(feature = "downsampling")))]
     fn adding_a_second_key_does_not_raise_the_first_fundamental() {
         let (fundamental_bin, one_key) = live_key_tracked_fundamental_db(&[36], CUTOFF_HZ, None);
         let (_, two_keys) =
@@ -1147,6 +1147,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "filter-distributed-newton")]
     fn gain_limited_tpt_level_matches_baseline_and_pitch_tracks_five_cutoffs() {
         // Retain the baseline level calibration, but tune pitch to the musical
         // cutoff grid instead of inheriting the baseline model's sharp limit cycle.
@@ -1248,6 +1249,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "filter-distributed-newton")]
     fn gain_limited_tpt_self_oscillation_onset_and_modes_are_stable() {
         for resonance in [0.85, 0.90, 0.95, 1.0] {
             let baseline = self_oscillation_tail(

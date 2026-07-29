@@ -1,6 +1,6 @@
 //! Compact QSPI-backed MIDI program catalog and sector-safe slot updates.
 
-use synth_core::{Patch, PatchRecord, PatchRecordError, PATCH_RECORD_SIZE};
+use synth_core::{LayerPatch, LayerPatchRecord, LayerPatchRecordError, LAYER_PATCH_RECORD_SIZE};
 
 pub trait ProgramFlash {
     type Error;
@@ -30,7 +30,7 @@ impl ProgramFlash for embassy_daisy::qspi::QspiFlash {
 pub const BANK_COUNT: u8 = 8;
 pub const PROGRAMS_PER_BANK: u8 = 128;
 pub const SLOT_COUNT: usize = BANK_COUNT as usize * PROGRAMS_PER_BANK as usize;
-pub const SLOT_STRIDE: usize = PATCH_RECORD_SIZE;
+pub const SLOT_STRIDE: usize = LAYER_PATCH_RECORD_SIZE;
 pub const SECTOR_SIZE: usize = 4096;
 pub const CATALOG_A_ADDRESS: u32 = 0x000c_0000;
 pub const PROGRAMS_ADDRESS: u32 = CATALOG_A_ADDRESS + SECTOR_SIZE as u32;
@@ -62,12 +62,12 @@ pub enum InitStatus {
 pub enum ProgramStoreError<E> {
     Flash(E),
     InvalidAddress,
-    Record(PatchRecordError),
+    Record(LayerPatchRecordError),
     VerifyFailed,
 }
 
-impl<E> From<PatchRecordError> for ProgramStoreError<E> {
-    fn from(error: PatchRecordError) -> Self {
+impl<E> From<LayerPatchRecordError> for ProgramStoreError<E> {
+    fn from(error: LayerPatchRecordError) -> Self {
         Self::Record(error)
     }
 }
@@ -158,20 +158,20 @@ impl<F: ProgramFlash> ProgramStore<F> {
         (self.last_bank, self.last_program)
     }
 
-    pub fn load(&mut self, bank: u8, program: u8) -> Result<Patch, ProgramStoreError<F::Error>> {
+    pub fn load(&mut self, bank: u8, program: u8) -> Result<LayerPatch, ProgramStoreError<F::Error>> {
         let address = slot_address(bank, program)?;
-        let mut record = [0; PATCH_RECORD_SIZE];
+        let mut record = [0; LAYER_PATCH_RECORD_SIZE];
         self.flash
             .read(address, &mut record)
             .map_err(ProgramStoreError::Flash)?;
-        PatchRecord::decode(&record).map_err(ProgramStoreError::Record)
+        LayerPatchRecord::decode(&record).map_err(ProgramStoreError::Record)
     }
 
     pub fn save(
         &mut self,
         bank: u8,
         program: u8,
-        patch: &Patch,
+        patch: &LayerPatch,
     ) -> Result<(), ProgramStoreError<F::Error>> {
         let address = slot_address(bank, program)?;
         let sector_address = address - address % SECTOR_SIZE as u32;
@@ -181,9 +181,9 @@ impl<F: ProgramFlash> ProgramStore<F> {
         self.flash
             .read(sector_address, sector)
             .map_err(ProgramStoreError::Flash)?;
-        let mut record = [0xff; PATCH_RECORD_SIZE];
-        PatchRecord::encode(patch, &mut record)?;
-        sector[offset..offset + PATCH_RECORD_SIZE].copy_from_slice(&record);
+        let mut record = [0xff; LAYER_PATCH_RECORD_SIZE];
+        LayerPatchRecord::encode(patch, &mut record)?;
+        sector[offset..offset + LAYER_PATCH_RECORD_SIZE].copy_from_slice(&record);
 
         self.flash
             .erase_sector(sector_address)
@@ -191,7 +191,7 @@ impl<F: ProgramFlash> ProgramStore<F> {
         self.flash
             .program(sector_address, sector)
             .map_err(ProgramStoreError::Flash)?;
-        let mut verify = [0; PATCH_RECORD_SIZE];
+        let mut verify = [0; LAYER_PATCH_RECORD_SIZE];
         self.flash
             .read(address, &mut verify)
             .map_err(ProgramStoreError::Flash)?;
@@ -494,8 +494,8 @@ mod tests {
         }
     }
 
-    fn named_patch(name: &str, cutoff: f32) -> Patch {
-        let mut patch = Patch::default();
+    fn named_patch(name: &str, cutoff: f32) -> LayerPatch {
+        let mut patch = LayerPatch::default();
         patch.name.push_str(name).unwrap();
         patch.filter.cutoff = cutoff;
         patch
@@ -623,7 +623,7 @@ mod tests {
         assert!(matches!(
             store.load(1, 9),
             Err(ProgramStoreError::Record(
-                PatchRecordError::ChecksumMismatch
+                LayerPatchRecordError::ChecksumMismatch
             ))
         ));
     }
@@ -636,7 +636,7 @@ mod tests {
             Err(ProgramStoreError::InvalidAddress)
         ));
         assert!(matches!(
-            store.save(0, 128, &Patch::default()),
+            store.save(0, 128, &LayerPatch::default()),
             Err(ProgramStoreError::InvalidAddress)
         ));
     }

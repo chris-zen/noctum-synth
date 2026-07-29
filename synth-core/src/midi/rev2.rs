@@ -13,20 +13,69 @@ use super::prophet::{
 };
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
-use crate::patch::decode_patch_name;
 use crate::midi::clock::MidiClockMode;
+use crate::patch::decode_patch_name;
 use crate::{
-    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId, Patch,
+    DedicatedModSource, LayerMode, LfoSyncDivision, ModDestination, ModRoute, ModSource,
+    ModulationParam, ParamId, LayerPatch, Patch,
 };
 
-const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
+/// Layer A begins here in the program image described by the official [Rev2
+/// SysEx format] and verified against Sequential's factory bank.
+///
+/// [Rev2 SysEx format]: https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf
+pub const LAYER_A_DATA_OFFSET: usize = 0;
+
+/// Layer B begins here in the program image described by the official [Rev2
+/// SysEx format] and verified against Sequential's factory bank.
+///
+/// [Rev2 SysEx format]: https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf
+pub const LAYER_B_DATA_OFFSET: usize = 1024;
+
+/// Layer A's name range, verified against Sequential's official [Rev2 factory bank].
+///
+/// [Rev2 factory bank]: https://sequential.com/support/download/prophet-rev2-sounds/
+pub const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 235..255;
+
+/// Layer B's name range, verified against Sequential's official [Rev2 factory bank].
+///
+/// [Rev2 factory bank]: https://sequential.com/support/download/prophet-rev2-sounds/
+pub const LAYER_B_NAME_RANGE: core::ops::Range<usize> = 1259..1279;
+
+/// Layer A uses the base NRPNs in the official [Rev2 MIDI implementation].
+///
+/// [Rev2 MIDI implementation]: https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf
+pub const LAYER_A_NRPN_OFFSET: u16 = 0;
+
+/// Layer B adds 2048 to the base NRPNs in the official [Rev2 MIDI implementation].
+///
+/// [Rev2 MIDI implementation]: https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf
+pub const LAYER_B_NRPN_OFFSET: u16 = 2048;
+
+/// Raw program-mode values follow the official [Prophet '08 manual], [Edisyn],
+/// a working [Electra One implementation], and Sequential's official Rev2 factory bank.
+///
+/// [Prophet '08 manual]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+/// [Edisyn]: https://github.com/eclab/edisyn
+/// [Electra One implementation]: https://forum.electra.one/t/dsi-sequential-prophet-rev-2/130
+const LAYER_MODES_BY_RAW_VALUE: [LayerMode; 3] =
+    [LayerMode::Normal, LayerMode::Stack, LayerMode::Split];
 
 pub const PROGRAM_DATA_LEN: usize = 2046;
 pub const PROGRAM_PACKED_LEN: usize = 2339;
 pub const PROGRAM_DATA_SYSEX_LEN: usize = 2346;
 pub const PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
 const LAYER_DATA_LEN: usize = 1024;
+
+/// Program-mode byte offset, verified against Sequential's official [Rev2 factory bank].
+///
+/// [Rev2 factory bank]: https://sequential.com/support/download/prophet-rev2-sounds/
+const LAYER_MODE_OFFSET: usize = 231;
+
+/// Split-point byte offset for the range documented in the official [Rev2 User's Guide].
+///
+/// [Rev2 User's Guide]: https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf
+const SPLIT_POINT_OFFSET: usize = 232;
 const SYSEX_HEADER: [u8; 4] = [0xf0, 0x01, 0x2f, 0x03];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +87,7 @@ pub enum SysexError {
     UnsupportedCommand,
     InvalidBank,
     NonSevenBitData,
+    InvalidProgramData,
     OutputTooSmall,
 }
 
@@ -108,7 +158,7 @@ impl MidiDecoder {
         if program & 0x80 != 0 {
             return Err(SysexError::NonSevenBitData);
         }
-        let patch = decode_patch_payload(&message[6..6 + PROGRAM_PACKED_LEN])?;
+        let patch = decode_program_payload(&message[6..6 + PROGRAM_PACKED_LEN])?;
         Ok(ProgramData {
             bank,
             program,
@@ -116,10 +166,10 @@ impl MidiDecoder {
         })
     }
 
-    /// Decode a Prophet Rev2 Program Edit Buffer data dump into Layer A of a patch.
+    /// Decode a Prophet Rev2 Program Edit Buffer data dump.
     pub fn program_edit_buffer(message: &[u8]) -> Result<Patch, SysexError> {
         validate_header(message, PROGRAM_EDIT_BUFFER_SYSEX_LEN, 0x03)?;
-        decode_patch_payload(&message[4..4 + PROGRAM_PACKED_LEN])
+        decode_program_payload(&message[4..4 + PROGRAM_PACKED_LEN])
     }
 }
 
@@ -146,14 +196,14 @@ fn validate_header(
     Ok(())
 }
 
-fn decode_patch_payload(packed: &[u8]) -> Result<Patch, SysexError> {
+fn decode_program_payload(packed: &[u8]) -> Result<Patch, SysexError> {
     if packed.iter().any(|byte| byte & 0x80 != 0) {
         return Err(SysexError::NonSevenBitData);
     }
 
     let mut raw = [0_u8; PROGRAM_DATA_LEN];
     unpack_program_data(packed, &mut raw);
-    let mut patch = Patch::default();
+    let mut patch = LayerPatch::default();
     let mut state = NrpnChannelState::default();
     for number in 0..=179 {
         if let Some(value) = program_nrpn_value(&raw, number, 0) {
@@ -168,7 +218,24 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, SysexError> {
     }
     patch.name = decode_patch_name(&raw[LAYER_A_NAME_RANGE]);
     patch.set_param(ParamId::VcaInitialLevel, unit(u16::from(raw[27]), 127));
-    Ok(patch)
+    let mode = layer_mode_from_raw(raw[LAYER_MODE_OFFSET]).ok_or(SysexError::InvalidProgramData)?;
+    Ok(Patch::new(
+        patch,
+        LayerPatch::default(),
+        mode,
+        raw[SPLIT_POINT_OFFSET],
+    ))
+}
+
+fn layer_mode_from_raw(raw: u8) -> Option<LayerMode> {
+    LAYER_MODES_BY_RAW_VALUE.get(usize::from(raw)).copied()
+}
+
+fn layer_mode_raw(mode: LayerMode) -> u8 {
+    LAYER_MODES_BY_RAW_VALUE
+        .iter()
+        .position(|candidate| *candidate == mode)
+        .unwrap_or(0) as u8
 }
 
 impl MidiDecoder {
@@ -261,7 +328,7 @@ impl Default for MidiEncoder {
 }
 
 impl MidiEncoder {
-    /// Encode a patch as a stored Prophet Rev2 Program Data dump.
+    /// Encode a synthesizer program as a stored Prophet Rev2 Program Data dump.
     pub fn program_data(
         bank: u8,
         program: u8,
@@ -286,8 +353,11 @@ impl MidiEncoder {
         Ok(PROGRAM_DATA_SYSEX_LEN)
     }
 
-    /// Encode a patch as a Prophet Rev2 Program Edit Buffer data dump.
-    pub fn program_edit_buffer(patch: &Patch, output: &mut [u8]) -> Result<usize, SysexError> {
+    /// Encode a synthesizer program as a Prophet Rev2 Program Edit Buffer data dump.
+    pub fn program_edit_buffer(
+        patch: &Patch,
+        output: &mut [u8],
+    ) -> Result<usize, SysexError> {
         if output.len() < PROGRAM_EDIT_BUFFER_SYSEX_LEN {
             return Err(SysexError::OutputTooSmall);
         }
@@ -524,12 +594,14 @@ impl MidiEncoder {
     }
 }
 
-fn encode_program_layers(patch: &Patch, raw: &mut [u8; PROGRAM_DATA_LEN]) {
-    encode_patch_layer(patch, &mut raw[..LAYER_DATA_LEN]);
-    encode_patch_layer(&Patch::default(), &mut raw[LAYER_DATA_LEN..]);
+fn encode_program_layers(program: &Patch, raw: &mut [u8; PROGRAM_DATA_LEN]) {
+    encode_patch_layer(&program.layer_a, &mut raw[..LAYER_DATA_LEN]);
+    encode_patch_layer(&LayerPatch::default(), &mut raw[LAYER_DATA_LEN..]);
+    raw[LAYER_MODE_OFFSET] = layer_mode_raw(program.mode);
+    raw[SPLIT_POINT_OFFSET] = program.split_point.min(crate::MAX_SPLIT_POINT);
 }
 
-fn encode_patch_layer(patch: &Patch, raw: &mut [u8]) {
+fn encode_patch_layer(patch: &LayerPatch, raw: &mut [u8]) {
     let mut encoder = MidiEncoder::default();
     patch.for_each_param(|param, value| {
         let inactive_lfo_rate = match param {
@@ -1175,9 +1247,16 @@ fn nrpn_max(number: u16) -> Option<u16> {
 mod tests {
     use super::*;
 
-    fn program_data_message(bank: u8, program: u8, patch: &Patch) -> [u8; PROGRAM_DATA_SYSEX_LEN] {
+    fn program_with_layer_a(layer_a: LayerPatch) -> Patch {
+        Patch {
+            layer_a,
+            ..Patch::default()
+        }
+    }
+
+    fn program_data_message(bank: u8, program: u8, patch: &LayerPatch) -> [u8; PROGRAM_DATA_SYSEX_LEN] {
         let mut edit = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        MidiEncoder::program_edit_buffer(patch, &mut edit).unwrap();
+        MidiEncoder::program_edit_buffer(&program_with_layer_a(patch.clone()), &mut edit).unwrap();
         let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
         message[..4].copy_from_slice(&[0xf0, 0x01, 0x2f, 0x02]);
         message[4] = bank;
@@ -1226,7 +1305,7 @@ mod tests {
         let mut packed = [0_u8; PROGRAM_PACKED_LEN];
         pack_program_data(&raw, &mut packed);
 
-        let patch = decode_patch_payload(&packed).unwrap();
+        let patch = decode_program_payload(&packed).unwrap().layer_a;
 
         assert_eq!(patch.name.as_str(), "LosVangelis2041");
         assert!((patch.amplifier.eg_attack - 0.135).abs() < 1.0e-6);
@@ -1364,13 +1443,13 @@ mod tests {
     #[test]
     fn synced_lfo_program_round_trips_active_division() {
         for division in LfoSyncDivision::ALL {
-            let mut source = Patch::default();
+            let mut source = LayerPatch::default();
             source.lfos[1].rate_hz = 7.25;
             source.lfos[1].clock_sync = true;
             source.lfos[1].sync_division = division;
             let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-            MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
-            let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
+            MidiEncoder::program_edit_buffer(&program_with_layer_a(source), &mut message).unwrap();
+            let decoded = MidiDecoder::program_edit_buffer(&message).unwrap().layer_a;
             assert!(decoded.lfos[1].clock_sync);
             assert_eq!(decoded.lfos[1].sync_division, division);
         }
@@ -1409,13 +1488,16 @@ mod tests {
 
     #[test]
     fn program_data_round_trips_documented_unison_fields() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.unison_enabled = true;
         patch.unison_mode = crate::UnisonMode::Chord;
         patch.unison_detune = 12.0;
         patch.key_mode = crate::KeyMode::LastRetrigger;
         let message = program_data_message(0, 0, &patch);
-        let decoded = MidiDecoder::program_data(&message).unwrap().patch;
+        let decoded = MidiDecoder::program_data(&message)
+            .unwrap()
+            .patch
+            .layer_a;
         assert!(decoded.unison_enabled);
         assert_eq!(decoded.unison_mode, crate::UnisonMode::Chord);
         assert_eq!(decoded.unison_detune, 12.0);
@@ -1425,34 +1507,52 @@ mod tests {
 
     #[test]
     fn program_data_encoder_round_trips_address_and_patch() {
-        let mut source = Patch::default();
+        let mut source = LayerPatch::default();
         source.name.push_str("Stored Program").unwrap();
         source.filter.resonance = 0.75;
         let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
 
-        let len = MidiEncoder::program_data(7, 127, &source, &mut message).unwrap();
+        let len =
+            MidiEncoder::program_data(7, 127, &program_with_layer_a(source.clone()), &mut message)
+                .unwrap();
         let decoded = MidiDecoder::program_data(&message).unwrap();
 
         assert_eq!(len, PROGRAM_DATA_SYSEX_LEN);
         assert_eq!((decoded.bank, decoded.program), (7, 127));
-        assert_eq!(decoded.patch.name, source.name);
-        assert!((decoded.patch.filter.resonance - source.filter.resonance).abs() < 0.01);
+        assert_eq!(decoded.patch.layer_a.name, source.name);
+        assert!(
+            (decoded.patch.layer_a.filter.resonance - source.filter.resonance).abs() < 0.01
+        );
+    }
+
+    #[test]
+    fn program_edit_buffer_round_trips_mode_and_split_point() {
+        let mut source = Patch::default();
+        source.mode = LayerMode::Stack;
+        source.set_split_point(72);
+        let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+
+        MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
+
+        assert_eq!(decoded.mode, LayerMode::Stack);
+        assert_eq!(decoded.split_point, 72);
     }
 
     #[test]
     fn program_data_encoder_validates_address_and_capacity() {
-        let patch = Patch::default();
+        let program = Patch::default();
         let mut message = [0_u8; PROGRAM_DATA_SYSEX_LEN];
         assert_eq!(
-            MidiEncoder::program_data(8, 0, &patch, &mut message),
+            MidiEncoder::program_data(8, 0, &program, &mut message),
             Err(SysexError::InvalidBank)
         );
         assert_eq!(
-            MidiEncoder::program_data(0, 128, &patch, &mut message),
+            MidiEncoder::program_data(0, 128, &program, &mut message),
             Err(SysexError::NonSevenBitData)
         );
         assert_eq!(
-            MidiEncoder::program_data(0, 0, &patch, &mut message[..10]),
+            MidiEncoder::program_data(0, 0, &program, &mut message[..10]),
             Err(SysexError::OutputTooSmall)
         );
     }
@@ -1551,24 +1651,25 @@ mod tests {
     }
 
     #[test]
-    fn decode_patch_payload_reads_layer_a_name() {
+    fn decode_program_payload_reads_layer_a_name() {
         let mut raw = [0_u8; PROGRAM_DATA_LEN];
         raw[super::LAYER_A_NAME_RANGE].copy_from_slice(b"LosVangelis2041     ");
         let mut packed = [0_u8; PROGRAM_PACKED_LEN];
         pack_program_data(&raw, &mut packed);
-        let patch = decode_patch_payload(&packed).unwrap();
+        let patch = decode_program_payload(&packed).unwrap().layer_a;
         assert_eq!(patch.name.as_str(), "LosVangelis2041");
     }
 
     #[test]
     fn program_edit_buffer_round_trips_vca_initial_level() {
-        let mut source = Patch::default();
+        let mut source = LayerPatch::default();
         source.amplifier.initial_level = 103.0 / 127.0;
 
         let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        MidiEncoder::program_edit_buffer(&program_with_layer_a(source.clone()), &mut message)
+            .unwrap();
 
-        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap().layer_a;
         assert!(
             (decoded.amplifier.initial_level - source.amplifier.initial_level).abs() < 0.01,
             "decoded {} expected {}",
@@ -1579,7 +1680,7 @@ mod tests {
 
     #[test]
     fn program_edit_buffer_round_trips_supported_patch_fields() {
-        let mut source = Patch::default();
+        let mut source = LayerPatch::default();
         source.osc1.waveform = 3;
         source.osc1.enabled = true;
         source.osc2.waveform = 2;
@@ -1603,12 +1704,14 @@ mod tests {
         };
 
         let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        let len = MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        let len =
+            MidiEncoder::program_edit_buffer(&program_with_layer_a(source.clone()), &mut message)
+                .unwrap();
         assert_eq!(len, PROGRAM_EDIT_BUFFER_SYSEX_LEN);
         assert_eq!(&message[..4], &[0xf0, 0x01, 0x2f, 0x03]);
         assert_eq!(message[len - 1], 0xf7);
 
-        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap().layer_a;
         assert_eq!(decoded.osc1.waveform, 3);
         assert!(decoded.osc1.enabled);
         assert_eq!(decoded.osc2.waveform, 2);
@@ -1654,11 +1757,12 @@ mod tests {
 
     #[test]
     fn program_edit_buffer_uses_default_layer_b_and_decodes_only_layer_a() {
-        let mut source = Patch::default();
+        let mut source = LayerPatch::default();
         source.filter.resonance = 0.25;
         source.osc1.waveform = 3;
         let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        MidiEncoder::program_edit_buffer(&source, &mut message).unwrap();
+        MidiEncoder::program_edit_buffer(&program_with_layer_a(source.clone()), &mut message)
+            .unwrap();
 
         let mut raw = [0_u8; PROGRAM_DATA_LEN];
         unpack_program_data(&message[4..4 + PROGRAM_PACKED_LEN], &mut raw);
@@ -1667,7 +1771,7 @@ mod tests {
         raw[LAYER_DATA_LEN + 23] = 127;
         pack_program_data(&raw, &mut message[4..4 + PROGRAM_PACKED_LEN]);
 
-        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap();
+        let decoded = MidiDecoder::program_edit_buffer(&message).unwrap().layer_a;
         assert!((decoded.filter.resonance - source.filter.resonance).abs() < 0.01);
     }
 
@@ -1682,18 +1786,18 @@ mod tests {
 
     #[test]
     fn stored_program_data_decodes_metadata_and_patch() {
-        let mut source = Patch::default();
+        let mut source = LayerPatch::default();
         source.filter.resonance = 1.0;
         let message = program_data_message(7, 127, &source);
         let decoded = MidiDecoder::program_data(&message).unwrap();
         assert_eq!(decoded.bank, 7);
         assert_eq!(decoded.program, 127);
-        assert_eq!(decoded.patch.filter.resonance, 1.0);
+        assert_eq!(decoded.patch.layer_a.filter.resonance, 1.0);
     }
 
     #[test]
     fn stored_program_data_rejects_invalid_metadata_and_payload() {
-        let mut message = program_data_message(0, 0, &Patch::default());
+        let mut message = program_data_message(0, 0, &LayerPatch::default());
         message[4] = 8;
         assert!(matches!(
             MidiDecoder::program_data(&message),
@@ -1721,11 +1825,36 @@ mod tests {
         include_bytes!("../../../Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx");
 
     #[test]
+    fn layer_mode_raw_values_follow_the_reference_contract() {
+        assert_eq!(layer_mode_from_raw(0), Some(LayerMode::Normal));
+        assert_eq!(layer_mode_from_raw(1), Some(LayerMode::Stack));
+        assert_eq!(layer_mode_from_raw(2), Some(LayerMode::Split));
+        assert_eq!(layer_mode_from_raw(3), None);
+
+        assert_eq!(layer_mode_raw(LayerMode::Normal), 0);
+        assert_eq!(layer_mode_raw(LayerMode::Stack), 1);
+        assert_eq!(layer_mode_raw(LayerMode::Split), 2);
+    }
+
+    #[test]
+    fn official_factory_bank_has_the_verified_layer_mode_distribution() {
+        let mut counts = [0_usize; 3];
+
+        for message in FACTORY_SYSEX.chunks_exact(PROGRAM_DATA_SYSEX_LEN) {
+            let decoded = MidiDecoder::program_data(message).unwrap();
+            let index = usize::from(layer_mode_raw(decoded.patch.mode));
+            counts[index] += 1;
+        }
+
+        assert_eq!(counts, [174, 266, 72]);
+    }
+
+    #[test]
     fn factory_program_decodes_mod_destination_indices() {
         let message = &FACTORY_SYSEX[..PROGRAM_DATA_SYSEX_LEN];
         let decoded = MidiDecoder::program_data(message).unwrap();
         assert_eq!(
-            decoded.patch.lfos[2].destination,
+            decoded.patch.layer_a.lfos[2].destination,
             ModDestination::Osc1ShapeMod
         );
 

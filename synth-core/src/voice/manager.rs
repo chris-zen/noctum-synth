@@ -17,7 +17,7 @@ use crate::voice::{
     IdleAdvance, NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
 };
 use crate::{
-    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, ModDestination, ParamId, Patch,
+    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, ModDestination, ParamId, LayerPatch,
     UnisonMode, VOICE_PACKS,
 };
 
@@ -53,7 +53,7 @@ pub struct VoiceManager<const PACKS: usize = VOICE_PACKS> {
 
 impl<const PACKS: usize> VoiceManager<PACKS> {
     pub fn new(sample_rate: f32) -> Self {
-        let patch = Patch::default();
+        let patch = LayerPatch::default();
         let mut modulation = PatchModulation::default();
         modulation.apply_from_patch(&patch);
         let mut blocks = core::array::from_fn(|block_index| {
@@ -88,7 +88,7 @@ impl<const PACKS: usize> VoiceManager<PACKS> {
         }
     }
 
-    pub(crate) fn apply_patch(&mut self, patch: &Patch) {
+    pub(crate) fn apply_patch(&mut self, patch: &LayerPatch) {
         self.modulation.apply_from_patch(patch);
         for block in &mut self.blocks {
             block.set_tempo_bpm(patch.bpm);
@@ -1351,7 +1351,7 @@ mod tests {
     fn unison_last_retrigger_legato_does_not_click_from_dsp_reset() {
         let sample_rate = 44_100.0;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.waveform = 3;
         patch.osc1.enabled = true;
         patch.osc1.note_reset = false;
@@ -1427,7 +1427,7 @@ mod tests {
     fn legato_velocity_change_does_not_click_amp_gain() {
         let sample_rate = 44_100.0;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(sample_rate);
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.waveform = 3;
         patch.osc1.enabled = true;
         patch.osc1.note_reset = false;

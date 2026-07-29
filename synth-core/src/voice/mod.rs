@@ -20,7 +20,7 @@ use crate::effects::EffectModulation;
 use crate::math::{F32, WideF32};
 #[cfg(test)]
 use crate::patch::DedicatedModSource;
-use crate::patch::{ClockDivision, LFO_COUNT, LfoSyncDivision, ModDestination, PanModMode, Patch};
+use crate::patch::{ClockDivision, LFO_COUNT, LfoSyncDivision, ModDestination, PanModMode, LayerPatch};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::{DEFAULT_TEMPO_BPM, GlideMode, ModSource, ParamId, VOICE_COUNT};
 use amplifier::Amplifier;
@@ -972,7 +972,7 @@ impl VoiceBlock {
         }
     }
 
-    pub(crate) fn apply_voice_patch(&mut self, patch: &Patch) {
+    pub(crate) fn apply_voice_patch(&mut self, patch: &LayerPatch) {
         self.oscillators.apply_params(patch);
         self.filter.apply_params(&patch.filter);
         self.amplifier.apply_params(&patch.amplifier);
@@ -1432,7 +1432,7 @@ mod tests {
     use crate::voice::VoiceManager;
     use crate::{ControlMessage, ParamId};
 
-    fn test_block(sample_rate: f32, patch: &Patch) -> (VoiceBlock, PatchModulation) {
+    fn test_block(sample_rate: f32, patch: &LayerPatch) -> (VoiceBlock, PatchModulation) {
         let mut modulation = PatchModulation::default();
         modulation.apply_from_patch(patch);
         let mut block = VoiceBlock::new(sample_rate);
@@ -1470,7 +1470,7 @@ mod tests {
 
     #[test]
     fn synchronized_lfo_rate_tracks_bpm_and_clock_division() {
-        let (mut block, _) = test_block(1_000.0, &Patch::default());
+        let (mut block, _) = test_block(1_000.0, &LayerPatch::default());
         block.set_lfo_sync_division(0, LfoSyncDivision::Step1);
         block.set_lfo_clock_sync(0, true);
         assert_eq!(block.effective_lfo_rate_hz(0), 2.0);
@@ -1493,7 +1493,7 @@ mod tests {
 
     #[test]
     fn master_clock_changes_do_not_reset_lfo_phase() {
-        let (mut block, mut modulation) = test_block(1_000.0, &Patch::default());
+        let (mut block, mut modulation) = test_block(1_000.0, &LayerPatch::default());
         block.set_lfo_depth(0, 1.0);
         modulation.set_lfo_depth(0, 1.0);
         block.set_lfo_clock_sync(0, true);
@@ -1511,7 +1511,7 @@ mod tests {
 
     #[test]
     fn direct_patch_application_sets_the_master_clock() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.bpm = 90.0;
         patch.clock_divide = ClockDivision::EighthTriplet;
         patch.lfos[0].clock_sync = true;
@@ -1523,7 +1523,7 @@ mod tests {
 
     #[test]
     fn free_lfo_rate_is_independent_of_master_clock() {
-        let (mut block, _) = test_block(1_000.0, &Patch::default());
+        let (mut block, _) = test_block(1_000.0, &LayerPatch::default());
         block.set_lfo_rate_hz(0, 3.25);
         block.set_tempo_bpm(250.0);
         block.set_clock_division(ClockDivision::SixtyFourthTriplet);
@@ -1532,7 +1532,7 @@ mod tests {
 
     #[test]
     fn synchronized_lfo_ignores_rate_modulation() {
-        let (mut block, mut modulation) = test_block(1_000.0, &Patch::default());
+        let (mut block, mut modulation) = test_block(1_000.0, &LayerPatch::default());
         block.set_lfo_depth(0, 1.0);
         block.set_lfo_sync_division(0, LfoSyncDivision::Step1);
         block.set_lfo_clock_sync(0, true);
@@ -1548,7 +1548,7 @@ mod tests {
         let modulated_output = block.lfos()[0].output();
 
         // Reset a fresh block and advance once WITHOUT rate modulation
-        let (mut block2, mut modulation2) = test_block(1_000.0, &Patch::default());
+        let (mut block2, mut modulation2) = test_block(1_000.0, &LayerPatch::default());
         block2.set_lfo_depth(0, 1.0);
         block2.set_lfo_sync_division(0, LfoSyncDivision::Step1);
         block2.set_lfo_clock_sync(0, true);
@@ -1708,8 +1708,8 @@ mod tests {
 
     #[test]
     fn compiled_modulation_matches_two_pass_reference_for_4096_samples() {
-        let (mut compiled, mut compiled_modulation) = test_block(48_000.0, &Patch::default());
-        let (mut reference, mut reference_modulation) = test_block(48_000.0, &Patch::default());
+        let (mut compiled, mut compiled_modulation) = test_block(48_000.0, &LayerPatch::default());
+        let (mut reference, mut reference_modulation) = test_block(48_000.0, &LayerPatch::default());
         configure_compiled_reference_case(&mut compiled, &mut compiled_modulation);
         configure_compiled_reference_case(&mut reference, &mut reference_modulation);
 
@@ -1730,8 +1730,8 @@ mod tests {
 
     #[test]
     fn compiled_route_changes_apply_on_next_sample_and_preserve_sample_hold_phase() {
-        let (mut compiled, mut compiled_modulation) = test_block(100.0, &Patch::default());
-        let (mut reference, mut reference_modulation) = test_block(100.0, &Patch::default());
+        let (mut compiled, mut compiled_modulation) = test_block(100.0, &LayerPatch::default());
+        let (mut reference, mut reference_modulation) = test_block(100.0, &LayerPatch::default());
         for block in [&mut compiled, &mut reference] {
             block.set_lfo_rate_hz(0, 10.0);
             block.set_lfo_depth(0, 1.0);
@@ -1769,7 +1769,7 @@ mod tests {
 
     #[test]
     fn single_pwm_fast_path_requires_exactly_one_lfo_to_osc1_shape_route() {
-        let (mut block, mut patch_modulation) = test_block(48_000.0, &Patch::default());
+        let (mut block, mut patch_modulation) = test_block(48_000.0, &LayerPatch::default());
         block.set_lfo_depth(0, 1.0);
         patch_modulation.set_lfo_depth(0, 1.0);
         patch_modulation.set_mod_route(
@@ -1875,7 +1875,7 @@ mod tests {
     #[test]
     fn matrix_route_can_modulate_lfo_frequency_before_lfo_outputs_are_used() {
         fn lfo2_peak(matrix_enabled: bool) -> f32 {
-            let (mut block, mut patch_modulation) = test_block(100.0, &Patch::default());
+            let (mut block, mut patch_modulation) = test_block(100.0, &LayerPatch::default());
             block.set_lfo_rate_hz(0, 1.0);
             block.set_lfo_depth(0, 1.0);
             block.set_lfo_waveform(0, LfoWaveform::Square);
@@ -1914,7 +1914,7 @@ mod tests {
     #[cfg(feature = "wide-4")]
     fn aux_envelope_route_can_modulate_lfo_frequency_as_internal_route() {
         fn lfo2_peak(aux_enabled: bool) -> f32 {
-            let (mut block, mut patch_modulation) = test_block(100.0, &Patch::default());
+            let (mut block, mut patch_modulation) = test_block(100.0, &LayerPatch::default());
             block.set_lfo_rate_hz(1, 0.1);
             block.set_lfo_depth(1, 1.0);
             block.set_lfo_waveform(1, LfoWaveform::Saw);
@@ -2354,7 +2354,7 @@ mod tests {
 
     #[test]
     fn voice_reuse_fades_vca_bias_out_and_back_in() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.amplifier.initial_level = 1.0;
         patch.amplifier.env_amount = 0.0;
         let (mut block, modulation) = test_block(44_100.0, &patch);
@@ -2388,7 +2388,7 @@ mod tests {
     #[test]
     fn lifecycle_fade_on_wide_pulse_does_not_create_dc_click() {
         let sample_rate = 44_100.0;
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.waveform = 3;
         patch.osc1.enabled = true;
         patch.osc1.shape_mod = 0.67;
@@ -2425,7 +2425,7 @@ mod tests {
     #[test]
     fn amp_gain_step_on_wide_pulse_does_not_create_dc_click() {
         let sample_rate = 44_100.0;
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.waveform = 3;
         patch.osc1.enabled = true;
         patch.osc1.shape_mod = 0.67;
@@ -2464,7 +2464,7 @@ mod tests {
     #[test]
     fn live_amp_env_amount_step_ramps_gain_instead_of_jumping() {
         let sample_rate = 44_100.0;
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.enabled = true;
         patch.osc2.enabled = false;
         patch.amplifier.env_amount = 0.0;
@@ -2492,7 +2492,7 @@ mod tests {
     #[test]
     fn patch_load_snaps_amp_env_amount_without_ramp() {
         let sample_rate = 44_100.0;
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.enabled = true;
         patch.osc2.enabled = false;
         patch.amplifier.env_amount = 0.0;

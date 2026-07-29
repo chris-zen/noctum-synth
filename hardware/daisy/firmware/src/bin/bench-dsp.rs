@@ -14,7 +14,7 @@ use noctum_micro::profiling::{AudioProfiler, Snapshot};
 use synth_core::dsp::{FilterOversampling, Waveform};
 use synth_core::{
     profiling::RenderStage, ControlMessage, DedicatedModSource, EffectType, GlideMode,
-    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SynthEngineWithMemory,
+    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, LayerPatch, SynthEngineWithMemory,
 };
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
@@ -308,8 +308,8 @@ fn configure_benchmark_defaults(engine: &mut HardwareSynth) {
 ///
 /// Values are decoded from bank 0/program 0 of Rev2_Programs_v1.0.syx so the
 /// embedded benchmark does not need to carry the 1.2 MB factory bank.
-fn u1_001_patch() -> Patch {
-    let mut patch = Patch::default();
+fn u1_001_patch() -> LayerPatch {
+    let mut patch = LayerPatch::default();
 
     patch.osc1.waveform = 0;
     patch.osc1.enabled = true;

@@ -92,7 +92,7 @@ fn main() -> ! {
         let mut adaptive_budget = AdaptiveControlBudget::new();
         let transition = measure_transition(
             &mut engine,
-            &program.patch,
+            &program.patch.layer_a,
             &mut output,
             &mut dma_output,
             &controls,
@@ -145,11 +145,11 @@ fn main() -> ! {
         );
         report_raw(program.bank, program.program, Scenario::Steady, steady);
         summary.observe(program.bank, program.program, Scenario::Steady, steady);
-        summary.observe_features(&program.patch, steady);
+        summary.observe_features(&program.patch.layer_a, steady);
 
         let control_stress = measure_control_stress(
             &mut engine,
-            &program.patch,
+            &program.patch.layer_a,
             &mut output,
             &mut dma_output,
             &controls,
@@ -173,14 +173,14 @@ fn main() -> ! {
             .iter()
             .any(|timing| timing.maximum >= PROFILE_TRIGGER_CYCLES)
         {
-            engine.apply_patch(&program.patch);
+            engine.apply_patch(&program.patch.layer_a);
             let snapshot = measure_profiled(&mut engine, &mut output);
             report_profile(program.bank, program.program, snapshot);
         }
 
         drop(engine);
         adaptive_summary.measure(
-            &program.patch,
+            &program.patch.layer_a,
             &mut *effects_memory,
             program.bank,
             program.program,
@@ -284,7 +284,7 @@ fn measure_raw(
 
 fn measure_transition(
     engine: &mut HardwareSynth<'_>,
-    patch: &synth_core::Patch,
+    patch: &synth_core::LayerPatch,
     output: &mut [f32; BLOCK_LENGTH * 2],
     dma_output: &mut [(f32, f32); BLOCK_LENGTH],
     controls: &ControlQueue,
@@ -315,7 +315,7 @@ fn measure_transition(
 
 fn measure_control_stress(
     engine: &mut HardwareSynth<'_>,
-    patch: &synth_core::Patch,
+    patch: &synth_core::LayerPatch,
     output: &mut [f32; BLOCK_LENGTH * 2],
     dma_output: &mut [(f32, f32); BLOCK_LENGTH],
     controls: &ControlQueue,
@@ -427,7 +427,7 @@ impl AdaptiveBudgetSummary {
 
     fn measure(
         &mut self,
-        patch: &synth_core::Patch,
+        patch: &synth_core::LayerPatch,
         effects_memory: &mut [f32],
         bank: u8,
         program: u8,
@@ -774,7 +774,7 @@ impl Summary {
         };
     }
 
-    fn observe_features(&mut self, patch: &synth_core::Patch, raw: RawTiming) {
+    fn observe_features(&mut self, patch: &synth_core::LayerPatch, raw: RawTiming) {
         self.waveform_groups[usize::from(patch.osc1.waveform.min(3))].observe(raw);
         self.dual_oscillator_groups[usize::from(patch.osc2.enabled)].observe(raw);
         self.pole_groups[usize::from(patch.filter.poles > 2)].observe(raw);

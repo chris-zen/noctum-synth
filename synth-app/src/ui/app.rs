@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use synth_core::dsp::FilterType;
-use synth_core::{ParamId, Patch};
+use synth_core::{ParamId, LayerPatch};
 
 use crate::audio::AudioManager;
 use crate::config::Config;
@@ -110,7 +110,7 @@ impl App {
         let muted = config.muted;
         engine
             .control
-            .load_patch_respecting_mute(&Patch::from(&ui_state), muted);
+            .load_patch_respecting_mute(&LayerPatch::from(&ui_state), muted);
 
         Self {
             engine,
@@ -150,7 +150,7 @@ impl App {
         if applied.error.is_none() {
             self.config.settings.sample_rate = applied.sample_rate_setting;
             self.audio_baseline = AudioBaseline::from_settings(&self.config.settings);
-            let patch = Patch::from(&self.ui_state);
+            let patch = LayerPatch::from(&self.ui_state);
             self.engine.control.all_notes_off();
             self.engine
                 .control
@@ -177,7 +177,7 @@ impl App {
         self.config.muted = self.muted;
         self.config.input_enabled = self.engine.control.input_enabled();
         self.config.save();
-        self.patch_mgr.save_autosave(&Patch::from(&self.ui_state));
+        self.patch_mgr.save_autosave(&LayerPatch::from(&self.ui_state));
     }
 }
 
@@ -295,7 +295,7 @@ impl eframe::App for App {
                 );
             }
             Tab::Settings => {
-                let current_patch = Patch::from(&self.ui_state);
+                let current_patch = LayerPatch::from(&self.ui_state);
                 let applied = self.audio_manager.applied();
                 let filter_type = *self.filter_type.lock();
                 settings_view::show(

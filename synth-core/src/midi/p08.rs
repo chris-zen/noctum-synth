@@ -23,10 +23,28 @@ use crate::midi::rev2::SysexError;
 use crate::patch::decode_patch_name;
 use crate::{
     DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId, Patch,
+    ParamId, LayerPatch, Patch,
 };
 
-const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
+/// Layer A begins here in the official [Prophet '08 program image].
+///
+/// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+pub const LAYER_A_DATA_OFFSET: usize = 0;
+
+/// Layer B begins here in the official [Prophet '08 program image].
+///
+/// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+pub const LAYER_B_DATA_OFFSET: usize = 200;
+
+/// Layer A's name range in the official [Prophet '08 program image].
+///
+/// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+pub const LAYER_A_NAME_RANGE: core::ops::Range<usize> = 184..200;
+
+/// Layer B's name range in the official [Prophet '08 program image].
+///
+/// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+pub const LAYER_B_NAME_RANGE: core::ops::Range<usize> = 368..384;
 
 pub const PROGRAM_DATA_LEN: usize = 384;
 pub const PROGRAM_PACKED_LEN: usize = 439;
@@ -61,7 +79,7 @@ impl MidiDecoder {
         if program & 0x80 != 0 {
             return Err(SysexError::NonSevenBitData);
         }
-        let patch = decode_patch_payload(&message[6..6 + PROGRAM_PACKED_LEN])?;
+        let patch = decode_program_payload(&message[6..6 + PROGRAM_PACKED_LEN])?;
         Ok(ProgramData {
             bank,
             program,
@@ -71,7 +89,7 @@ impl MidiDecoder {
 
     pub fn program_edit_buffer(message: &[u8]) -> Result<Patch, SysexError> {
         validate_header(message, PROGRAM_EDIT_BUFFER_SYSEX_LEN, 0x03)?;
-        decode_patch_payload(&message[4..4 + PROGRAM_PACKED_LEN])
+        decode_program_payload(&message[4..4 + PROGRAM_PACKED_LEN])
     }
 }
 
@@ -98,14 +116,14 @@ fn validate_header(
     Ok(())
 }
 
-fn decode_patch_payload(packed: &[u8]) -> Result<Patch, SysexError> {
+fn decode_program_payload(packed: &[u8]) -> Result<Patch, SysexError> {
     if packed.iter().any(|byte| byte & 0x80 != 0) {
         return Err(SysexError::NonSevenBitData);
     }
 
     let mut raw = [0_u8; PROGRAM_DATA_LEN];
     unpack_program_data(packed, &mut raw);
-    let mut patch = Patch::default();
+    let mut patch = LayerPatch::default();
     for number in 0..=119 {
         if let Some(value) = program_nrpn_value(&raw, number) {
             map_nrpn(number, value, &mut |update| match update {
@@ -118,7 +136,12 @@ fn decode_patch_payload(packed: &[u8]) -> Result<Patch, SysexError> {
     }
     patch.glide_enabled = patch.osc1.glide > 0.0 || patch.osc2.glide > 0.0;
     patch.name = decode_patch_name(&raw[LAYER_A_NAME_RANGE]);
-    Ok(patch)
+    Ok(Patch::new(
+        patch,
+        LayerPatch::default(),
+        crate::LayerMode::Normal,
+        crate::DEFAULT_SPLIT_POINT,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -594,22 +617,34 @@ mod tests {
     #[test]
     fn decode_patch_payload_reads_layer_a_name() {
         let decoded = MidiDecoder::program_data(factory_message(0, 0)).unwrap();
-        assert_eq!(decoded.patch.name.as_str(), "Wagnerian");
+        assert_eq!(decoded.patch.layer_a.name.as_str(), "Wagnerian");
 
         let decoded = MidiDecoder::program_data(factory_message(0, 1)).unwrap();
-        assert_eq!(decoded.patch.name.as_str(), "Tom Sawyer");
-        assert!(decoded.patch.unison_enabled);
-        assert_eq!(decoded.patch.unison_mode, crate::UnisonMode::V8);
-        assert_eq!(decoded.patch.key_mode, crate::KeyMode::HighRetrigger);
-        assert!(decoded.patch.glide_enabled);
-        assert_eq!(decoded.patch.glide_mode, crate::GlideMode::FixedRate);
+        assert_eq!(decoded.patch.layer_a.name.as_str(), "Tom Sawyer");
+        assert!(decoded.patch.layer_a.unison_enabled);
+        assert_eq!(
+            decoded.patch.layer_a.unison_mode,
+            crate::UnisonMode::V8
+        );
+        assert_eq!(
+            decoded.patch.layer_a.key_mode,
+            crate::KeyMode::HighRetrigger
+        );
+        assert!(decoded.patch.layer_a.glide_enabled);
+        assert_eq!(
+            decoded.patch.layer_a.glide_mode,
+            crate::GlideMode::FixedRate
+        );
         let mut raw = [0_u8; PROGRAM_DATA_LEN];
         unpack_program_data(&factory_message(0, 1)[6..6 + PROGRAM_PACKED_LEN], &mut raw);
         assert_eq!(program_nrpn_value(&raw, 36), Some(118));
-        assert!((decoded.patch.amplifier.eg_release - 21.415_247).abs() < 0.001);
+        assert!((decoded.patch.layer_a.amplifier.eg_release - 21.415_247).abs() < 0.001);
 
         let decoded = MidiDecoder::program_data(factory_message(1, 0)).unwrap();
-        assert_eq!(decoded.patch.name.as_str(), "AnalogWurlyRoids");
+        assert_eq!(
+            decoded.patch.layer_a.name.as_str(),
+            "AnalogWurlyRoids"
+        );
     }
 
     #[test]
@@ -650,7 +685,8 @@ mod tests {
     fn tom_sawyer_unison_glide_releases_every_ordered_note_sequence() {
         let patch = MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
-            .patch;
+            .patch
+            .layer_a;
         assert_eq!(patch.name.as_str(), "Tom Sawyer");
         assert!(patch.unison_enabled && patch.glide_enabled);
         assert_eq!(patch.unison_mode, crate::UnisonMode::V8);
@@ -692,7 +728,8 @@ mod tests {
     fn tom_sawyer_patch_rebuild_cannot_resurrect_released_pending_notes() {
         let patch = MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
-            .patch;
+            .patch
+            .layer_a;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
 
         voices.handle_control(ControlMessage::NoteOn {
@@ -719,7 +756,8 @@ mod tests {
     fn tom_sawyer_last_retrigger_glides_in_place_without_pending_voices() {
         let mut patch = MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
-            .patch;
+            .patch
+            .layer_a;
         patch.key_mode = crate::KeyMode::LastRetrigger;
         let mut voices = VoiceManager::<{ crate::VOICE_PACKS }>::new(48_000.0);
         voices.apply_patch(&patch);
@@ -770,7 +808,8 @@ mod tests {
     fn tom_sawyer_final_release_reaches_idle() {
         let patch = MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
-            .patch;
+            .patch
+            .layer_a;
         const SAMPLE_RATE: f32 = 1_000.0;
         let mut voices = VoiceManager::<2>::new(SAMPLE_RATE);
         voices.apply_patch(&patch);
@@ -804,7 +843,8 @@ mod tests {
     fn tom_sawyer_unison_glide_matches_pressed_key_model_under_adversarial_ordering() {
         let base_patch = MidiDecoder::program_data(factory_message(0, 1))
             .unwrap()
-            .patch;
+            .patch
+            .layer_a;
         for key_mode in crate::KeyMode::ALL {
             for glide_mode in crate::GlideMode::ALL {
                 let mut patch = base_patch.clone();
@@ -878,7 +918,7 @@ mod tests {
         let decoded = MidiDecoder::program_data(factory_message(0, 0)).unwrap();
         assert_eq!(decoded.bank, 0);
         assert_eq!(decoded.program, 0);
-        assert!(decoded.patch.osc1.enabled);
+        assert!(decoded.patch.layer_a.osc1.enabled);
 
         let decoded = MidiDecoder::program_data(factory_message(1, 0)).unwrap();
         assert_eq!(decoded.bank, 1);
@@ -889,9 +929,9 @@ mod tests {
     fn factory_program_decodes_vca_initial_level() {
         let decoded = MidiDecoder::program_data(factory_message(0, 54)).unwrap();
         assert!(
-            (decoded.patch.amplifier.initial_level - 103.0 / 127.0).abs() < 0.01,
+            (decoded.patch.layer_a.amplifier.initial_level - 103.0 / 127.0).abs() < 0.01,
             "decoded {}",
-            decoded.patch.amplifier.initial_level
+            decoded.patch.layer_a.amplifier.initial_level
         );
     }
 
@@ -905,11 +945,11 @@ mod tests {
         assert_eq!(raw[28], 0, "factory fixture layer A Pan Spread changed");
         assert_eq!(raw[228], 49, "factory fixture layer B Pan Spread changed");
         assert_eq!(
-            decoded.patch.amplifier.pan_spread,
+            decoded.patch.layer_a.amplifier.pan_spread,
             f32::from(raw[28]) / 127.0
         );
         assert_eq!(
-            decoded.patch.amplifier.pan_mod_mode,
+            decoded.patch.layer_a.amplifier.pan_mod_mode,
             crate::PanModMode::Alternate
         );
     }
@@ -996,9 +1036,12 @@ mod tests {
             .map(|program| {
                 MidiDecoder::program_data(factory_message(program / 128, program % 128)).unwrap()
             })
-            .find(|program| program.patch.osc1.glide > 0.0 || program.patch.osc2.glide > 0.0)
+            .find(|program| {
+                program.patch.layer_a.osc1.glide > 0.0
+                    || program.patch.layer_a.osc2.glide > 0.0
+            })
             .expect("factory bank should contain a glide program");
-        assert!(decoded.patch.glide_enabled);
+        assert!(decoded.patch.layer_a.glide_enabled);
     }
 
     #[test]

@@ -416,7 +416,7 @@ impl MidiOutputHandle {
     pub fn send_param(&self, param: ParamId, value: f32) {
         let mut state = self.state.lock();
         if let Some(patch) = state.desired_patch.as_mut() {
-            patch.set_param(param, value);
+            patch.layer_a.set_param(param, value);
         }
         if state.connection.is_none() {
             return;
@@ -442,9 +442,10 @@ impl MidiOutputHandle {
     ) {
         let mut state = self.state.lock();
         if let Some(patch) = state.desired_patch.as_mut() {
+            let layer_patch = &mut patch.layer_a;
             match route {
                 ModRoute::Free(index) => {
-                    if let Some(slot) = patch.mod_matrix.free_slots.get_mut(index) {
+                    if let Some(slot) = layer_patch.mod_matrix.free_slots.get_mut(index) {
                         slot.enabled = enabled;
                         slot.source = source;
                         slot.destination = destination;
@@ -452,7 +453,7 @@ impl MidiOutputHandle {
                     }
                 }
                 ModRoute::Dedicated(dedicated) => {
-                    if let Some(slot) = patch.mod_matrix.dedicated.get_mut(dedicated.index()) {
+                    if let Some(slot) = layer_patch.mod_matrix.dedicated.get_mut(dedicated.index()) {
                         slot.enabled = enabled;
                         slot.destination = destination;
                         slot.amount = amount;
@@ -688,7 +689,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
             ),
         },
         (0x2f, 0x03) => match rev2::MidiDecoder::program_edit_buffer(message) {
-            Ok(patch) => control.load_midi_patch(&patch),
+            Ok(program) => control.load_midi_patch(&program.layer_a),
             Err(err) => eprintln!(
                 "Invalid Rev2 Program Edit Buffer message: {err:?} ({} bytes)",
                 message.len()
@@ -706,7 +707,7 @@ fn handle_midi_sysex_message(message: &[u8], control: &SynthEngineControl) {
             ),
         },
         (0x23, 0x03) => match p08::MidiDecoder::program_edit_buffer(message) {
-            Ok(patch) => control.load_midi_patch(&patch),
+            Ok(patch) => control.load_midi_patch(&patch.layer_a),
             Err(err) => eprintln!(
                 "Invalid Prophet '08 Program Edit Buffer message: {err:?} ({} bytes)",
                 message.len()
@@ -863,7 +864,7 @@ fn send_changed_nrpn_messages(
 mod tests {
     use super::*;
     use crate::engine::{MidiUiUpdate, create_synth_engine_bridge};
-    use synth_core::ControlMessage;
+    use synth_core::{ControlMessage, LayerPatch};
 
     fn handle_midi(message: &[u8], control: &SynthEngineControl, decoder: &mut rev2::MidiDecoder) {
         if message.first() == Some(&0xf0) {
@@ -953,7 +954,7 @@ mod tests {
         assert!(output.set_output_clock_mode(MidiClockMode::SlaveNoStartStop));
 
         let state = output.state.lock();
-        assert_eq!(state.desired_patch.as_ref().unwrap().bpm, 137.0);
+        assert_eq!(state.desired_patch.as_ref().unwrap().layer_a.bpm, 137.0);
         assert_eq!(state.output_clock_mode, MidiClockMode::SlaveNoStartStop);
     }
 
@@ -1135,10 +1136,14 @@ mod tests {
     #[test]
     fn inbound_edit_buffer_updates_engine_and_ui_path() {
         let (_audio, bridge) = create_synth_engine_bridge(16);
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.filter.resonance = 1.0;
+        let program = Patch {
+            layer_a: patch,
+            ..Patch::default()
+        };
         let mut message = [0_u8; rev2::PROGRAM_EDIT_BUFFER_SYSEX_LEN];
-        rev2::MidiEncoder::program_edit_buffer(&patch, &mut message).unwrap();
+        rev2::MidiEncoder::program_edit_buffer(&program, &mut message).unwrap();
         let mut decoder = rev2::MidiDecoder::default();
         handle_midi(&message, &bridge.control, &mut decoder);
 

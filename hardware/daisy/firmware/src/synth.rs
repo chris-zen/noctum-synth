@@ -4,7 +4,7 @@ use wmidi::MidiMessage;
 
 use synth_core::midi::{p08, rev2};
 use synth_core::midi::clock::MidiRealtimeEvent;
-use synth_core::{ControlMessage, Patch};
+use synth_core::{ControlMessage, LayerPatch};
 
 use crate::program::{ProgramSelection, ProgramStorageQueue, ProgramStorageRequest};
 
@@ -97,7 +97,7 @@ pub struct SynthMidiHandler<'a, const PATCH_CAPACITY: usize> {
     patches: embassy_sync::channel::Sender<
         'a,
         embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-        Patch,
+        LayerPatch,
         PATCH_CAPACITY,
     >,
     indicator: crate::indicator::Sender<'a>,
@@ -116,7 +116,7 @@ impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
         patches: embassy_sync::channel::Sender<
             'a,
             embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-            Patch,
+            LayerPatch,
             PATCH_CAPACITY,
         >,
         indicator: crate::indicator::Sender<'a>,
@@ -261,7 +261,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                     if !self.enqueue_storage(ProgramStorageRequest::Save {
                         bank,
                         program: program_number,
-                        patch: program.patch,
+                        patch: program.patch.layer_a,
                     }) {
                         crate::diagnostics::emit(
                             crate::diagnostics::Event::ProgramStorageQueueFull,
@@ -273,7 +273,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
             (0x2f, 0x03) => match rev2::MidiDecoder::program_edit_buffer(message) {
                 Ok(patch) => {
                     crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
-                    if self.patches.try_send(patch).is_err() {
+                    if self.patches.try_send(patch.layer_a).is_err() {
                         crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
                     }
                 }
@@ -286,7 +286,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
                     if !self.enqueue_storage(ProgramStorageRequest::Save {
                         bank,
                         program: program_number,
-                        patch: program.patch,
+                        patch: program.patch.layer_a,
                     }) {
                         crate::diagnostics::emit(
                             crate::diagnostics::Event::ProgramStorageQueueFull,
@@ -298,7 +298,7 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
             (0x23, 0x03) => match p08::MidiDecoder::program_edit_buffer(message) {
                 Ok(patch) => {
                     crate::diagnostics::emit(crate::diagnostics::Event::ProgramEditBufferReceived);
-                    if self.patches.try_send(patch).is_err() {
+                    if self.patches.try_send(patch.layer_a).is_err() {
                         crate::diagnostics::emit(crate::diagnostics::Event::PatchQueueFull);
                     }
                 }
@@ -322,6 +322,7 @@ fn emit_sysex_error(cable: u8, length: usize, error: rev2::SysexError) {
         rev2::SysexError::UnsupportedCommand => InvalidMidiReason::UnsupportedSysExCommand,
         rev2::SysexError::InvalidBank => InvalidMidiReason::InvalidSysExBank,
         rev2::SysexError::NonSevenBitData => InvalidMidiReason::NonSevenBitSysExData,
+        rev2::SysexError::InvalidProgramData => InvalidMidiReason::InvalidSysExProgramData,
         rev2::SysexError::OutputTooSmall => InvalidMidiReason::SysExOutputTooSmall,
     };
     crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
@@ -425,7 +426,7 @@ impl NrpnMonitor {
 #[cfg(test)]
 mod tests {
     use wmidi::MidiMessage;
-    
+
     use crate::synth::{message_to_control, message_to_controls, realtime_to_control};
     #[cfg(feature = "diagnostics")]
     use crate::synth::{CompletedNrpn, NrpnMonitor};

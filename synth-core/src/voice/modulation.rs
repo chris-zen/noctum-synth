@@ -1,7 +1,7 @@
 use crate::math::WideF32;
 use crate::patch::{
     AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LfoParams,
-    MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, Patch,
+    MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute, LayerPatch,
 };
 use crate::{ModSource, ModulationParam};
 
@@ -63,7 +63,7 @@ impl PatchModulation {
         self.rebuild();
     }
 
-    pub fn apply_from_patch(&mut self, patch: &Patch) {
+    pub fn apply_from_patch(&mut self, patch: &LayerPatch) {
         self.begin_patch_update();
         self.matrix = patch.mod_matrix.clone();
         self.lfo_patch = patch.lfos;

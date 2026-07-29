@@ -3,7 +3,7 @@
 use crate::dsp::analog_oscillator::EngineOscillator;
 use crate::dsp::{AnalogSubOscillator, Waveform, WhiteNoise};
 use crate::math::{F32, WideF32};
-use crate::patch::{OscillatorPatch, Patch};
+use crate::patch::{OscillatorPatch, LayerPatch};
 use crate::profiling::{RenderContext, RenderStage};
 use crate::{GlideMode, ParamId};
 
@@ -116,7 +116,7 @@ impl Oscillators {
         WideF32::new(self.glide[0].current)
     }
 
-    pub fn apply_params(&mut self, patch: &Patch) {
+    pub fn apply_params(&mut self, patch: &LayerPatch) {
         self.apply_oscillator_patch(0, &patch.osc1);
         self.apply_oscillator_patch(1, &patch.osc2);
         if patch.osc1.level <= 0.0 {
@@ -689,7 +689,7 @@ pub struct OscillatorsOutput {
     pub audio_source_active: bool,
 }
 
-/// Patch-level settings for the full oscillator section.
+/// LayerPatch-level settings for the full oscillator section.
 #[derive(Debug, Clone)]
 pub struct OscillatorsParams {
     pub osc1: OscillatorParams,

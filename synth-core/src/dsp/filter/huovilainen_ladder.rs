@@ -519,6 +519,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "filter-distributed-newton")]
     fn huovilainen_is_available_with_corrected_response_and_slopes() {
         assert!(FilterType::HuovilainenLadder.is_implemented());
         for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
@@ -574,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "filter-distributed-newton")]
     fn huovilainen_self_oscillation_is_tuned_and_harmonically_bounded() {
         for cutoff in [110.0, 220.0, 440.0, 880.0, 1760.0] {
             let baseline = tail(

@@ -22,10 +22,10 @@ transport. `synth-app` demonstrates that pattern with `rtrb`.
 | `SetMidiClockMode` | Select the device-global Rev2 clock policy. The core receives Slave/Slave No S/S clock; a host such as `synth-app` may implement Master output. Slave Thru remains inactive. |
 | `MidiRealtime` | Deliver timestamped Timing Clock, Start, or Stop input. |
 
-Convenience methods on `SynthEngine` exist for applying a complete `Patch`,
+Convenience methods on `SynthEngine` exist for applying a complete `LayerPatch`,
 parameter updates, notes, all notes off, pitch bend, mod wheel, pressure,
 sustain pedal, and generic control changes. They forward to the same message
-handling path. The engine consumes only the generic patch representation and
+handling path. The engine consumes only the generic layer-patch representation and
 has no dependency on MIDI or device-specific protocols.
 
 `MidiClockStatus` reports configured and effective modes, live state, learned
@@ -38,7 +38,7 @@ so it remains `no_std` and independent of a platform timer.
 
 `ParamId` is intentionally a compact host address space rather than a UI
 description. Hosts should present user-friendly labels, units, ranges, and
-enums themselves. The `Patch` conversion helpers are the authoritative mapping
+enums themselves. The `LayerPatch` conversion helpers are the authoritative mapping
 from stored typed values to message values.
 
 The shared `midi::rev2` module translates Sequential Rev2 CC and NRPN messages
@@ -58,8 +58,8 @@ For example, cutoff is expressed in hertz, while `EffectMix` and other blend
 amounts are normalized. Boolean fields are interpreted using a `0.5` threshold
 where applicable. Indexed fields such as effect and waveform selection use the
 corresponding enum index. Avoid inventing a second parameter state model in the
-host; retain a `Patch` or a comparable host state and apply it through the
-engine's message API.
+host; retain a `LayerPatch` or a comparable host state and apply it through
+the engine's message API.
 
 ## Audio callback example
 

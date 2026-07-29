@@ -1,4 +1,4 @@
-//! Patch parameter bundles and modulation routing targets.
+//! Per-layer patch parameters and modulation routing targets.
 
 use crate::ParamId;
 use crate::dsp::{
@@ -1263,10 +1263,10 @@ impl Default for ArpParams {
     }
 }
 
-/// Complete synthesizer patch capturing every parameter in one serializable snapshot.
+/// One layer's complete sound parameters in a fixed-size serializable snapshot.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
-pub struct Patch {
+pub struct LayerPatch {
     pub osc1: OscillatorPatch,
     pub osc2: OscillatorPatch,
     pub osc_mix: f32,
@@ -1297,7 +1297,7 @@ pub struct Patch {
     pub name: PatchName,
 }
 
-impl Default for Patch {
+impl Default for LayerPatch {
     fn default() -> Self {
         Self {
             osc1: OscillatorPatch {
@@ -1336,7 +1336,7 @@ impl Default for Patch {
     }
 }
 
-impl Patch {
+impl LayerPatch {
     fn bool_f32(b: bool) -> f32 {
         if b { 1.0 } else { 0.0 }
     }
@@ -1718,22 +1718,22 @@ mod tests {
 
     #[test]
     fn patch_name_round_trips_through_serde() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.name.push_str("LosVangelis2041").unwrap();
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.name.as_str(), "LosVangelis2041");
     }
 
     #[test]
     fn obsolete_glide_time_field_is_ignored_when_loading_old_patches() {
-        let mut encoded = serde_json::to_value(Patch::default()).unwrap();
+        let mut encoded = serde_json::to_value(LayerPatch::default()).unwrap();
         encoded
             .as_object_mut()
             .unwrap()
             .insert("glide_time".into(), serde_json::json!(8.0));
 
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
 
         assert_eq!(decoded.osc1.glide, 0.0);
         assert_eq!(decoded.osc2.glide, 0.0);
@@ -1790,12 +1790,12 @@ mod tests {
 
     #[test]
     fn typed_clock_fields_round_trip_through_serde() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.clock_divide = ClockDivision::SixteenthTriplet;
         patch.lfos[2].clock_sync = true;
         patch.lfos[2].sync_division = LfoSyncDivision::StepTwoThirds;
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.clock_divide, ClockDivision::SixteenthTriplet);
         assert_eq!(
             decoded.lfos[2].sync_division,
@@ -1812,40 +1812,40 @@ mod tests {
 
     #[test]
     fn vca_initial_level_round_trips_through_serde() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.amplifier.initial_level = 0.5;
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.amplifier.initial_level, 0.5);
     }
 
     #[test]
     fn pan_mod_mode_round_trips_through_serde() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.amplifier.pan_mod_mode = PanModMode::Fixed;
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.amplifier.pan_mod_mode, PanModMode::Fixed);
     }
 
     #[test]
     fn chord_memory_preserves_voicing_and_round_trips() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.unison_mode = UnisonMode::Chord;
         patch.unison_chord = ChordMemory::from_notes([64, 67, 72]);
         assert_eq!(patch.unison_chord.intervals(), &[0, 3, 8]);
         let encoded = serde_json::to_value(&patch).unwrap();
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.unison_mode, UnisonMode::Chord);
         assert_eq!(decoded.unison_chord, patch.unison_chord);
     }
 
     #[test]
     fn old_patch_without_chord_memory_gets_an_empty_default() {
-        let patch = Patch::default();
+        let patch = LayerPatch::default();
         let mut encoded = serde_json::to_value(&patch).unwrap();
         encoded.as_object_mut().unwrap().remove("unison_chord");
-        let decoded: Patch = serde_json::from_value(encoded).unwrap();
+        let decoded: LayerPatch = serde_json::from_value(encoded).unwrap();
         assert!(decoded.unison_chord.is_empty());
     }
 }

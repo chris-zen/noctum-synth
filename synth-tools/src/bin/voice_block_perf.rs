@@ -2,7 +2,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use synth_core::voice::PatchModulation;
-use synth_core::{ModDestination, Patch, PerformanceModulation, VoiceBlock};
+use synth_core::{ModDestination, LayerPatch, PerformanceModulation, VoiceBlock};
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 200_000;
@@ -54,7 +54,7 @@ fn time_case(make_block: fn() -> BenchVoice) -> Duration {
 }
 
 fn configured_block() -> BenchVoice {
-    let patch = Patch::default();
+    let patch = LayerPatch::default();
     let mut modulation = PatchModulation::default();
     modulation.apply_from_patch(&patch);
     let mut block = VoiceBlock::new(SAMPLE_RATE);

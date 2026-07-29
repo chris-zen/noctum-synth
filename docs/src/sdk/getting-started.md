@@ -34,20 +34,21 @@ whose length is a whole number of frames; any incomplete tail is ignored.
 | `SynthEngine` | Owns voices, effects, master volume, and rendering. |
 | `ControlMessage` | Host-to-engine protocol for notes, parameters, modulation, performance data, and filter quality. |
 | `ParamId` | Address of one continuous or indexed synth setting. |
-| `Patch` | Complete serializable patch snapshot, including modulation and effects. |
+| `LayerPatch` | One layer's serializable sound parameters, including modulation and effects. |
+| `Patch` | Complete two-layer patch, including mode and split point. |
 | `ModRoute`, `ModSource`, `ModDestination` | Modulation routing model. |
 | `FilterOversampling` | Nonlinear-filter quality policy. |
 
-## Applying a patch
+## Applying a layer patch
 
-`Patch` represents the full stored patch surface. To load it into a running
-engine, forward every parameter and modulation entry to the same control path
-used by the host UI:
+`LayerPatch` represents the sound surface currently consumed by one layer
+engine. To load it into a running engine, forward every parameter and
+modulation entry to the same control path used by the host UI:
 
 ```rust,ignore
-use synth_core::{ControlMessage, Patch, SynthEngine};
+use synth_core::{ControlMessage, LayerPatch, SynthEngine};
 
-fn apply_patch(engine: &mut SynthEngine, patch: &Patch) {
+fn apply_layer_patch(engine: &mut SynthEngine, patch: &LayerPatch) {
     patch.for_each_param(|id, value| engine.handle_control(ControlMessage::SetParam(id, value)));
     patch.for_each_modulation(|route, enabled, source, destination, amount| {
         engine.handle_control(ControlMessage::SetModulation {
@@ -61,6 +62,7 @@ fn apply_patch(engine: &mut SynthEngine, patch: &Patch) {
 }
 ```
 
-When the optional `serde` feature is enabled, `Patch` can participate in a
-host's chosen serialization workflow. The SDK does not prescribe a filesystem,
-configuration format, UI toolkit, audio library, or MIDI library.
+When the optional `serde` feature is enabled, both `LayerPatch` and `Patch` can
+participate in a host's chosen serialization workflow. The SDK does not
+prescribe a filesystem, configuration format, UI toolkit, audio library, or
+MIDI library.

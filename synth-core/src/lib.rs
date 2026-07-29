@@ -62,6 +62,7 @@ pub mod patch;
 pub mod patch_storage;
 pub(crate) mod pressed_keys;
 pub mod profiling;
+pub mod program;
 mod rate_adapter;
 pub mod tuning;
 pub mod voice;
@@ -75,10 +76,13 @@ pub use patch::{
     ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterParams,
     GlideMode, KeyMode, LFO_COUNT, LfoParams, LfoSyncDivision, MOD_MATRIX_FREE_SLOT_COUNT,
     ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource, OscillatorPatch, PanModMode,
-    Patch, PatchName, UnisonMode,
+    LayerPatch, PatchName, UnisonMode,
 };
-pub use patch_storage::{PATCH_RECORD_SIZE, PatchRecord, PatchRecordError};
+pub use patch_storage::{LAYER_PATCH_RECORD_SIZE, LayerPatchRecord, LayerPatchRecordError};
 pub use profiling::{RenderContext, RenderProfiler, RenderStage};
+pub use program::{
+    DEFAULT_SPLIT_POINT, LayerId, LayerMode, MAX_SPLIT_POINT, MIN_SPLIT_POINT, Patch,
+};
 pub use tuning::midi_to_hz;
 pub use voice::{
     ActiveNotes, OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput,

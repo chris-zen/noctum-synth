@@ -11,7 +11,7 @@ use crate::profiling::{RenderContext, RenderStage};
 use crate::rate_adapter::RateAdapter;
 use crate::voice::VoiceManager;
 use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, ParamId, Patch, VOICE_PACKS,
+    ActiveNotes, ClockDivision, ControlMessage, DEFAULT_TEMPO_BPM, ParamId, LayerPatch, VOICE_PACKS,
 };
 use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
 
@@ -129,7 +129,7 @@ where
     }
 
     /// Applies every parameter and modulation route in a patch.
-    pub fn apply_patch(&mut self, patch: &Patch) {
+    pub fn apply_patch(&mut self, patch: &LayerPatch) {
         self.set_tempo_bpm(patch.bpm);
         let effective_tempo_bpm = self
             .midi_clock
@@ -328,7 +328,7 @@ mod tests {
     use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent, MidiTransportState};
     use crate::{
         ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
-        EffectType, ModDestination, ModRoute, ModSource, ParamId, Patch, SynthEngine, VOICE_PACKS,
+        EffectType, ModDestination, ModRoute, ModSource, ParamId, LayerPatch, SynthEngine, VOICE_PACKS,
     };
 
     extern crate std;
@@ -377,7 +377,7 @@ mod tests {
         assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
         engine.set_tempo_bpm(72.0);
         assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.bpm = 60.0;
         engine.apply_patch(&patch);
         assert!((engine.tempo_bpm() - 100.0).abs() < 0.01);
@@ -417,7 +417,7 @@ mod tests {
         );
         assert_eq!(engine.clock_division(), ClockDivision::EighthTriplet);
 
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.bpm = 87.0;
         patch.clock_divide = ClockDivision::ThirtySecondTriplet;
         engine.apply_patch(&patch);
@@ -1528,7 +1528,7 @@ mod tests {
     #[test]
     fn apply_patch_updates_engine_owned_parameters() {
         let mut engine = SynthEngine::<1, 64>::new(48_000.0);
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.master_volume = 0.25;
         patch.effects.enabled = true;
         patch.effects.mix = 0.75;

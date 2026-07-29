@@ -11,7 +11,7 @@ use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
     EffectParams, EffectType, GlideMode, KeyMode, LfoSyncDivision, ModDestination, ModMatrix,
     ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
-    Patch, UnisonMode, glide_seconds,
+    LayerPatch, Patch, UnisonMode, glide_seconds,
 };
 
 use crate::config::APP_NAME_FOLDER;
@@ -281,7 +281,7 @@ impl Default for UiState {
 }
 
 impl UiState {
-    pub fn apply_from_patch(&mut self, patch: &Patch) {
+    pub fn apply_from_patch(&mut self, patch: &LayerPatch) {
         self.osc1_enabled = patch.osc1.enabled;
         self.osc2_enabled = patch.osc2.enabled;
         self.osc1_waveform = patch.osc1.waveform as usize;
@@ -592,7 +592,7 @@ fn lfo_waveform_usize(w: synth_core::dsp::LfoWaveform) -> usize {
     }
 }
 
-impl From<&UiState> for Patch {
+impl From<&UiState> for LayerPatch {
     fn from(state: &UiState) -> Self {
         use synth_core::dsp::LfoWaveform;
         let lfo_wf = |idx: usize| -> LfoWaveform {
@@ -604,7 +604,7 @@ impl From<&UiState> for Patch {
                 _ => LfoWaveform::SampleAndHold,
             }
         };
-        Patch {
+        LayerPatch {
             osc1: OscillatorPatch {
                 waveform: state.osc1_waveform as u8,
                 enabled: state.osc1_enabled,
@@ -936,7 +936,7 @@ fn load_patch_by_name(
     if let Some(patch) = patch_mgr.load_patch(name) {
         state.apply_from_patch(&patch);
         control.load_patch_respecting_mute(&patch, muted);
-        patch_mgr.set_loaded_patch(name, &Patch::from(&*state));
+        patch_mgr.set_loaded_patch(name, &LayerPatch::from(&*state));
     }
 }
 
@@ -981,7 +981,7 @@ fn command_row(
     ui.horizontal(|ui| {
         let left = ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                ui.label("Patch:");
+                ui.label("LayerPatch:");
                 let has_patches = !patch_mgr.patch_names.is_empty();
                 let prev = ui.add_enabled(has_patches, egui::Button::new("◀"));
                 if prev.clicked() {
@@ -991,7 +991,7 @@ fn command_row(
                     }
                 }
                 prev.on_hover_text("Previous patch");
-                let modified = patch_mgr.is_modified(&Patch::from(&*state));
+                let modified = patch_mgr.is_modified(&LayerPatch::from(&*state));
                 egui::Frame::NONE
                     .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                     .inner_margin(egui::Margin::symmetric(4, 2))
@@ -1104,7 +1104,7 @@ fn command_row(
                                                 .selectable_label(false, PATCH_RESET_LABEL)
                                                 .clicked()
                                             {
-                                                let default_patch = Patch::default();
+                                                let default_patch = LayerPatch::default();
                                                 state.apply_from_patch(&default_patch);
                                                 control.load_patch_respecting_mute(
                                                     &default_patch,
@@ -1112,7 +1112,7 @@ fn command_row(
                                                 );
                                                 patch_mgr.set_loaded_patch(
                                                     "",
-                                                    &Patch::from(&*state),
+                                                    &LayerPatch::from(&*state),
                                                 );
                                                 ui.close();
                                             }
@@ -1173,7 +1173,7 @@ fn command_row(
                 if ui.button("Save").clicked() {
                     let name = patch_mgr.canonical_save_name();
                     if !name.is_empty() {
-                        let patch = Patch::from(&*state);
+                        let patch = LayerPatch::from(&*state);
                         match patch_mgr.save_patch(&name, &patch) {
                             Ok(()) => patch_mgr.refresh(),
                             Err(err) => eprintln!("Failed to save patch {name}: {err}"),
@@ -1182,10 +1182,14 @@ fn command_row(
                 }
                 let send = ui.add_enabled(midi_output_port.is_some(), egui::Button::new("Send"));
                 if send.clicked() {
-                    let patch = Patch::from(&*state);
-                    let sent = control.send_midi_patch(&patch)
+                    let patch = LayerPatch::from(&*state);
+                    let program = Patch {
+                        layer_a: patch,
+                        ..Patch::default()
+                    };
+                    let sent = control.send_midi_program(&program)
                         || (control.set_midi_output_port(midi_output_port)
-                            && control.send_midi_patch(&patch));
+                            && control.send_midi_program(&program));
                     if !sent {
                         eprintln!("Failed to send Rev2 Program Edit Buffer");
                     }
@@ -3274,11 +3278,11 @@ fn lfo_key_sync_param(index: usize) -> ParamId {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AutosaveFile {
-    patch: Patch,
+    patch: LayerPatch,
     #[serde(default)]
     loaded_name: String,
     #[serde(default)]
-    baseline: Option<Patch>,
+    baseline: Option<LayerPatch>,
     #[serde(default)]
     save_name: String,
 }
@@ -3286,7 +3290,7 @@ struct AutosaveFile {
 pub struct PatchManager {
     pub save_name: String,
     loaded_name: String,
-    baseline: Option<Patch>,
+    baseline: Option<LayerPatch>,
     pub patch_names: Vec<String>,
     config_dir: PathBuf,
     patches_dir: PathBuf,
@@ -3313,9 +3317,9 @@ impl PatchManager {
     pub fn restore_autosave_metadata(
         &mut self,
         loaded_name: String,
-        baseline: Option<Patch>,
+        baseline: Option<LayerPatch>,
         save_name: String,
-        restored_patch: &Patch,
+        restored_patch: &LayerPatch,
     ) {
         self.loaded_name = loaded_name;
         self.baseline =
@@ -3330,13 +3334,13 @@ impl PatchManager {
         self.save_name = strip_modified_suffix(restored_name.trim()).to_string();
     }
 
-    pub fn set_loaded_patch(&mut self, name: &str, patch: &Patch) {
+    pub fn set_loaded_patch(&mut self, name: &str, patch: &LayerPatch) {
         self.loaded_name = name.to_string();
         self.save_name = name.to_string();
         self.baseline = Some(patch.clone());
     }
 
-    pub fn is_modified(&self, current: &Patch) -> bool {
+    pub fn is_modified(&self, current: &LayerPatch) -> bool {
         !self.loaded_name.is_empty()
             && self
                 .baseline
@@ -3348,7 +3352,7 @@ impl PatchManager {
         strip_modified_suffix(self.save_name.trim()).to_string()
     }
 
-    pub fn save_patch(&mut self, name: &str, patch: &Patch) -> std::io::Result<()> {
+    pub fn save_patch(&mut self, name: &str, patch: &LayerPatch) -> std::io::Result<()> {
         let path = self.patches_dir.join(format!("{name}.json"));
         let json = serde_json::to_string_pretty(patch).map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
@@ -3361,12 +3365,16 @@ impl PatchManager {
         program: &synth_core::midi::program::MidiProgramImport,
     ) -> std::io::Result<PathBuf> {
         let name = match program {
-            synth_core::midi::program::MidiProgramImport::Rev2(program) => {
-                rev2_program_filename(program.bank, program.program, program.patch.name.as_str())
-            }
-            synth_core::midi::program::MidiProgramImport::P08(program) => {
-                p08_program_filename(program.bank, program.program, program.patch.name.as_str())
-            }
+            synth_core::midi::program::MidiProgramImport::Rev2(program) => rev2_program_filename(
+                program.bank,
+                program.program,
+                program.patch.layer_a.name.as_str(),
+            ),
+            synth_core::midi::program::MidiProgramImport::P08(program) => p08_program_filename(
+                program.bank,
+                program.program,
+                program.patch.layer_a.name.as_str(),
+            ),
         }
         .ok_or_else(|| {
             std::io::Error::new(
@@ -3375,12 +3383,13 @@ impl PatchManager {
             )
         })?;
         let path = self.patches_dir.join(format!("{name}.json"));
-        let json = serde_json::to_string_pretty(program.patch()).map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(&program.patch().layer_a)
+            .map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
         Ok(path)
     }
 
-    pub fn save_autosave(&self, patch: &Patch) {
+    pub fn save_autosave(&self, patch: &LayerPatch) {
         let path = self.config_dir.join("patch.json");
         let file = AutosaveFile {
             patch: patch.clone(),
@@ -3393,7 +3402,7 @@ impl PatchManager {
         }
     }
 
-    pub fn load_autosave(&self) -> Option<(Patch, String, Option<Patch>, String)> {
+    pub fn load_autosave(&self) -> Option<(LayerPatch, String, Option<LayerPatch>, String)> {
         let path = self.config_dir.join("patch.json");
         let contents = std::fs::read_to_string(&path).ok()?;
         if let Ok(file) = serde_json::from_str::<AutosaveFile>(&contents) {
@@ -3403,7 +3412,7 @@ impl PatchManager {
         Some((patch, String::new(), None, String::new()))
     }
 
-    pub fn load_patch(&self, name: &str) -> Option<Patch> {
+    pub fn load_patch(&self, name: &str) -> Option<LayerPatch> {
         let path = self.patches_dir.join(format!("{name}.json"));
         std::fs::read_to_string(&path)
             .ok()
@@ -3456,7 +3465,7 @@ fn p08_program_filename(bank: u8, program: u8, patch_name: &str) -> Option<Strin
 
 fn midi_import_filename(patch_name: &str) -> String {
     if patch_name.is_empty() {
-        "Patch".to_string()
+        "LayerPatch".to_string()
     } else {
         sanitize_filename(patch_name)
     }
@@ -3484,7 +3493,7 @@ fn strip_modified_suffix(name: &str) -> &str {
     name.strip_suffix(MODIFIED_SUFFIX).unwrap_or(name)
 }
 
-fn patches_equal(a: &Patch, b: &Patch) -> bool {
+fn patches_equal(a: &LayerPatch, b: &LayerPatch) -> bool {
     serde_json::to_string(a).ok() == serde_json::to_string(b).ok()
 }
 
@@ -3526,7 +3535,7 @@ mod tests {
 
     #[test]
     fn clock_and_lfo_rate_modes_round_trip_between_patch_and_ui() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.bpm = 93.0;
         patch.clock_divide = ClockDivision::EighthTriplet;
         patch.lfos[0].rate_hz = 4.5;
@@ -3534,7 +3543,7 @@ mod tests {
         patch.lfos[0].sync_division = LfoSyncDivision::StepOneThird;
         let mut state = UiState::default();
         state.apply_from_patch(&patch);
-        let decoded = Patch::from(&state);
+        let decoded = LayerPatch::from(&state);
         assert_eq!(decoded.bpm, 93.0);
         assert_eq!(decoded.clock_divide, ClockDivision::EighthTriplet);
         assert_eq!(decoded.lfos[0].rate_hz, 4.5);
@@ -3544,14 +3553,14 @@ mod tests {
 
     #[test]
     fn unison_chord_round_trips_between_patch_and_ui_state() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.unison_enabled = true;
         patch.unison_mode = UnisonMode::Chord;
         patch.unison_detune = 9.0;
         patch.unison_chord = ChordMemory::from_notes([60, 63, 67]);
         let mut state = UiState::default();
         state.apply_from_patch(&patch);
-        let round_trip = Patch::from(&state);
+        let round_trip = LayerPatch::from(&state);
         assert!(round_trip.unison_enabled);
         assert_eq!(round_trip.unison_mode, UnisonMode::Chord);
         assert_eq!(round_trip.unison_detune, 9.0);
@@ -3560,7 +3569,7 @@ mod tests {
 
     #[test]
     fn performance_parameters_load_into_ui_state() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.osc1.glide = 0.25;
         patch.osc2.glide = 0.75;
         patch.pitch_bend_range = 7.0;
@@ -3650,12 +3659,12 @@ mod tests {
     fn patch_modified_state_is_derived_from_loaded_baseline() {
         let mut mgr = test_patch_manager(&["a"], "a");
         let mut state = UiState::default();
-        mgr.set_loaded_patch("a", &Patch::from(&state));
-        assert!(!mgr.is_modified(&Patch::from(&state)));
+        mgr.set_loaded_patch("a", &LayerPatch::from(&state));
+        assert!(!mgr.is_modified(&LayerPatch::from(&state)));
         assert_eq!(mgr.save_name, "a");
 
         state.filter_cutoff = 5_000.0;
-        assert!(mgr.is_modified(&Patch::from(&state)));
+        assert!(mgr.is_modified(&LayerPatch::from(&state)));
         assert_eq!(mgr.save_name, "a");
     }
 
@@ -3663,39 +3672,39 @@ mod tests {
     fn patch_modified_state_clears_when_patch_matches_baseline() {
         let mut mgr = test_patch_manager(&["a"], "a");
         let mut state = UiState::default();
-        mgr.set_loaded_patch("a", &Patch::from(&state));
+        mgr.set_loaded_patch("a", &LayerPatch::from(&state));
 
         state.filter_cutoff = 5_000.0;
-        assert!(mgr.is_modified(&Patch::from(&state)));
+        assert!(mgr.is_modified(&LayerPatch::from(&state)));
 
         state.filter_cutoff = filter_cutoff_max_hz();
-        assert!(!mgr.is_modified(&Patch::from(&state)));
+        assert!(!mgr.is_modified(&LayerPatch::from(&state)));
     }
 
     #[test]
     fn loaded_patch_baseline_survives_effect_ui_normalization() {
         let mut state = UiState::default();
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.effects.enabled = true;
         patch.effects.effect_type = EffectType::Chorus;
         patch.effects.clock_sync = true;
         state.apply_from_patch(&patch);
 
         let mut mgr = test_patch_manager(&["a"], "a");
-        mgr.set_loaded_patch("a", &Patch::from(&state));
-        assert!(!mgr.is_modified(&Patch::from(&state)));
+        mgr.set_loaded_patch("a", &LayerPatch::from(&state));
+        assert!(!mgr.is_modified(&LayerPatch::from(&state)));
     }
 
     #[test]
     fn canonical_save_name_strips_modified_suffix() {
-        let mgr = test_patch_manager(&[], "My Patch *");
-        assert_eq!(mgr.canonical_save_name(), "My Patch");
+        let mgr = test_patch_manager(&[], "My LayerPatch *");
+        assert_eq!(mgr.canonical_save_name(), "My LayerPatch");
     }
 
     #[test]
     fn loaded_patch_is_not_modified_after_capture() {
         let mut state = UiState::default();
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.filter.cutoff = 4_500.0;
         patch.effects.enabled = true;
         patch.effects.effect_type = EffectType::Chorus;
@@ -3703,13 +3712,13 @@ mod tests {
         state.apply_from_patch(&patch);
 
         let mut mgr = test_patch_manager(&["a"], "a");
-        mgr.set_loaded_patch("a", &Patch::from(&state));
-        assert!(!mgr.is_modified(&Patch::from(&state)));
+        mgr.set_loaded_patch("a", &LayerPatch::from(&state));
+        assert!(!mgr.is_modified(&LayerPatch::from(&state)));
     }
 
     #[test]
     fn rendering_idle_parameters_ui_does_not_change_loaded_patch() {
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.filter.cutoff = 381.52045;
         patch.filter.eg_decay = 2.9529605;
         patch.amplifier.eg_release = 5.984453;
@@ -3719,7 +3728,7 @@ mod tests {
         patch.master_volume = 0.9448819;
         let mut state = UiState::default();
         state.apply_from_patch(&patch);
-        let loaded = Patch::from(&state);
+        let loaded = LayerPatch::from(&state);
         let mut manager = test_patch_manager(&["preset"], "preset");
         manager.set_loaded_patch("preset", &loaded);
         let (_audio, bridge) = crate::engine::create_synth_engine_bridge(1);
@@ -3741,7 +3750,7 @@ mod tests {
             );
         });
 
-        let rendered = Patch::from(&state);
+        let rendered = LayerPatch::from(&state);
         assert!(patches_equal(&loaded, &rendered));
         assert!(!manager.is_modified(&rendered));
     }
@@ -3749,10 +3758,10 @@ mod tests {
     #[test]
     fn restore_unmodified_autosave_preserves_baseline() {
         let mut state = UiState::default();
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.filter.cutoff = 4_500.0;
         state.apply_from_patch(&patch);
-        let snapshot = Patch::from(&state);
+        let snapshot = LayerPatch::from(&state);
 
         let mut mgr = test_patch_manager(&["a"], "a");
         mgr.restore_autosave_metadata(
@@ -3761,13 +3770,13 @@ mod tests {
             "a".to_string(),
             &snapshot,
         );
-        assert!(!mgr.is_modified(&Patch::from(&state)));
+        assert!(!mgr.is_modified(&LayerPatch::from(&state)));
         assert_eq!(mgr.save_name, "a");
     }
 
     #[test]
     fn restore_autosave_derives_modified_state_and_preserves_draft_name() {
-        let baseline = Patch::default();
+        let baseline = LayerPatch::default();
         let mut restored = baseline.clone();
         restored.master_volume = 0.25;
         let mut mgr = test_patch_manager(&["preset"], "preset");
@@ -3790,12 +3799,12 @@ mod tests {
         let mut manager = PatchManager {
             save_name: "renamed".to_string(),
             loaded_name: "original".to_string(),
-            baseline: Some(Patch::default()),
+            baseline: Some(LayerPatch::default()),
             patch_names: Vec::new(),
             config_dir: root.clone(),
             patches_dir,
         };
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.master_volume = 0.25;
 
         manager.save_patch("renamed", &patch).unwrap();
@@ -3812,7 +3821,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("noctum-patch-save-failure-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
-        let baseline = Patch::default();
+        let baseline = LayerPatch::default();
         let mut manager = PatchManager {
             save_name: "renamed".to_string(),
             loaded_name: "original".to_string(),
@@ -3837,12 +3846,12 @@ mod tests {
         let manager = PatchManager {
             save_name: "preset *".to_string(),
             loaded_name: "preset".to_string(),
-            baseline: Some(Patch::default()),
+            baseline: Some(LayerPatch::default()),
             patch_names: Vec::new(),
             config_dir: root.clone(),
             patches_dir: root.join("patches"),
         };
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.master_volume = 0.25;
         manager.save_autosave(&patch);
         let (loaded_patch, loaded_name, baseline, save_name) = manager.load_autosave().unwrap();
@@ -3866,26 +3875,30 @@ mod tests {
             config_dir: root.clone(),
             patches_dir,
         };
-        let mut program =
-            synth_core::midi::program::MidiProgramImport::Rev2(synth_core::midi::rev2::ProgramData {
+        let mut program = synth_core::midi::program::MidiProgramImport::Rev2(
+            synth_core::midi::rev2::ProgramData {
                 bank: 4,
                 program: 0,
-                patch: {
-                    let mut patch = Patch::default();
-                    patch.name.push_str("LosVangelis2041").unwrap();
-                    patch
+                patch: Patch {
+                    layer_a: {
+                        let mut patch = LayerPatch::default();
+                        patch.name.push_str("LosVangelis2041").unwrap();
+                        patch
+                    },
+                    ..Patch::default()
                 },
-            });
+            },
+        );
         let path = manager.save_midi_program(&program).unwrap();
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
             Some("U1-001-LosVangelis2041.json")
         );
         if let synth_core::midi::program::MidiProgramImport::Rev2(program) = &mut program {
-            program.patch.master_volume = 0.25;
+            program.patch.layer_a.master_volume = 0.25;
         }
         manager.save_midi_program(&program).unwrap();
-        let decoded: Patch =
+        let decoded: LayerPatch =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(decoded.master_volume, 0.25);
         std::fs::remove_dir_all(root).unwrap();
@@ -3904,15 +3917,19 @@ mod tests {
             config_dir: root.clone(),
             patches_dir,
         };
-        let program = synth_core::midi::program::MidiProgramImport::P08(synth_core::midi::p08::ProgramData {
-            bank: 0,
-            program: 0,
-            patch: {
-                let mut patch = Patch::default();
-                patch.name.push_str("Wagnerian").unwrap();
-                patch
-            },
-        });
+        let program =
+            synth_core::midi::program::MidiProgramImport::P08(synth_core::midi::p08::ProgramData {
+                bank: 0,
+                program: 0,
+                patch: Patch {
+                    layer_a: {
+                        let mut patch = LayerPatch::default();
+                        patch.name.push_str("Wagnerian").unwrap();
+                        patch
+                    },
+                    ..Patch::default()
+                },
+            });
         let path = manager.save_midi_program(&program).unwrap();
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),

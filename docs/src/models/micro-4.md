@@ -75,6 +75,7 @@ An onboard user LED indicates MIDI activity (dim pulse) and audio overruns
 
 ## Compatibility
 
-Patches are interchangeable with the desktop application and all other Noctum
-models. The Micro 4 uses the same `synth-core` engine, the same `Patch` format,
-and the same Rev2 MIDI codec.
+Layer patches are interchangeable with the desktop application and all other
+Noctum models. The Micro 4 uses the same `synth-core` engine, the same
+`LayerPatch` render format, and the same Rev2 MIDI codec. Complete `Patch`
+storage arrives in the multi-layer persistence phase.

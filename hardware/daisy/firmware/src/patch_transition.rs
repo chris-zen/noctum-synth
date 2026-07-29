@@ -1,6 +1,6 @@
 //! Bounded patch changes for the real-time audio task.
 
-use synth_core::Patch;
+use synth_core::LayerPatch;
 
 const FADE_BLOCKS: u8 = 3;
 
@@ -13,13 +13,13 @@ enum State {
 }
 
 pub struct PatchTransition {
-    pending: Option<Patch>,
+    pending: Option<LayerPatch>,
     state: State,
     gain: f32,
 }
 
 pub struct BlockAction {
-    pub patch: Option<Patch>,
+    pub patch: Option<LayerPatch>,
     pub render: bool,
 }
 
@@ -36,7 +36,7 @@ impl Default for PatchTransition {
 impl PatchTransition {
     /// Queues the newest complete patch. Repeated updates replace the pending
     /// snapshot without allocating or lengthening an active fade-out.
-    pub fn enqueue(&mut self, patch: Patch) {
+    pub fn enqueue(&mut self, patch: LayerPatch) {
         self.pending = Some(patch);
         match self.state {
             State::Idle | State::FadeIn { .. } => {
@@ -48,7 +48,7 @@ impl PatchTransition {
         }
     }
 
-    /// Chooses the work for one audio block. Patch mutation receives a whole
+    /// Chooses the work for one audio block. LayerPatch mutation receives a whole
     /// silent block and is never combined with DSP rendering.
     pub fn begin_block(&mut self) -> BlockAction {
         if self.state != State::Apply {

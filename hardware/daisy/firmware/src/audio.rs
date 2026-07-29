@@ -12,7 +12,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use heapless::Deque;
-use synth_core::{ControlMessage, Patch, SynthEngineWithMemory};
+use synth_core::{ControlMessage, LayerPatch, SynthEngineWithMemory};
 
 use crate::pending_releases::PendingReleases;
 #[cfg(feature = "audio-profiling")]
@@ -36,7 +36,7 @@ static OVERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 static UNDERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub type HardwareSynth = SynthEngineWithMemory<1, &'static mut [f32]>;
-pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
+pub type PatchQueue = Channel<CriticalSectionRawMutex, LayerPatch, PATCH_QUEUE_CAPACITY>;
 
 pub struct ControlQueue {
     queue: Mutex<CriticalSectionRawMutex, RefCell<Deque<ControlMessage, CONTROL_QUEUE_CAPACITY>>>,

@@ -11,7 +11,7 @@ use synth_core::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent}
 use synth_core::midi::program::MidiProgramImport;
 use synth_core::{
     ChordMemory, ControlMessage, ModDestination, ModRoute, ModSource, ModulationParam, ParamId,
-    Patch,
+    LayerPatch, Patch,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -328,7 +328,7 @@ impl SynthEngineControl {
         self.input_enabled.store(enabled, Ordering::Relaxed);
     }
 
-    pub fn load_patch(&self, patch: &Patch) {
+    pub fn load_patch(&self, patch: &LayerPatch) {
         self.midi_output.set_master_bpm(patch.bpm);
         self.set_unison_chord(patch.unison_chord);
         patch.for_each_param(|id, value| self.send(ControlMessage::SetParam(id, value)));
@@ -341,23 +341,26 @@ impl SynthEngineControl {
                 amount: slot.amount,
             });
         });
-        let _ = self.midi_output.send_patch(patch);
+        let _ = self.midi_output.send_patch(&Patch {
+            layer_a: patch.clone(),
+            ..Patch::default()
+        });
     }
 
-    pub fn load_patch_respecting_mute(&self, patch: &Patch, muted: bool) {
+    pub fn load_patch_respecting_mute(&self, patch: &LayerPatch, muted: bool) {
         self.load_patch(patch);
         if muted {
             self.set_param_audio_only(ParamId::MasterVolume, 0.0);
         }
     }
 
-    /// Sends a complete patch to the selected MIDI output without changing local state.
-    pub fn send_midi_patch(&self, patch: &Patch) -> bool {
-        self.midi_output.send_patch(patch)
+    /// Sends a complete program to the selected MIDI output without changing local state.
+    pub fn send_midi_program(&self, program: &Patch) -> bool {
+        self.midi_output.send_patch(program)
     }
 
     /// Applies a complete MIDI-originated patch without echoing it to MIDI output.
-    pub fn load_midi_patch(&self, patch: &Patch) {
+    pub fn load_midi_patch(&self, patch: &LayerPatch) {
         self.midi_output.set_master_bpm(patch.bpm);
         self.set_unison_chord(patch.unison_chord);
         patch.for_each_param(|id, value| self.set_midi_param(id, value));
@@ -542,7 +545,7 @@ mod tests {
     #[test]
     fn patch_load_queues_chord_memory_before_parameter_updates() {
         let (mut audio, bridge) = create_synth_engine_bridge(16);
-        let mut patch = Patch::default();
+        let mut patch = LayerPatch::default();
         patch.unison_chord = ChordMemory::from_notes([60, 64, 67]);
         bridge.control.load_patch(&patch);
         let mut first = None;
@@ -588,7 +591,7 @@ mod tests {
     #[test]
     fn local_patch_load_does_not_generate_midi_ui_updates() {
         let (_audio, bridge) = create_synth_engine_bridge(16);
-        bridge.control.load_patch(&Patch::default());
+        bridge.control.load_patch(&LayerPatch::default());
         let mut updates = 0;
         bridge.view.drain_midi_ui_updates(|_| updates += 1);
         assert_eq!(updates, 0);

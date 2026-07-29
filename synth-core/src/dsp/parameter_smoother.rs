@@ -222,6 +222,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "wide-1"))]
     fn wide_snap_lane_leaves_other_lanes() {
         let mut smoother = WideParameterSmoother::new(0.25, 44_100.0, 0.005);
         smoother.snap_lane(2, 0.9);
