@@ -18,6 +18,11 @@ envelope amount, velocity, audio-rate mod from oscillator 1).
 MIDI protocol, program storage, USB audio capture, and physical I/O are shared
 with the [Micro 4](micro-4.md).
 
+Like Micro 4, it preserves complete two-layer programs while compiling exactly
+one physical voice and one effects region. Recall selects Layer A; NRPN 4190
+selects B. Stored Stack/Split programs remain intact and report degraded status
+because only the selected component is rendered.
+
 ## Build
 
 ```sh

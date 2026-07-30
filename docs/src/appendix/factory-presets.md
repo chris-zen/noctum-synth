@@ -28,11 +28,12 @@ hardware bank 5.
 
 1. Connect the synthesizer so its MIDI input is available to the host.
 2. Open a SysEx utility and set the destination to that MIDI port.
-3. Send the `.syx` file. Each Program Data message saves Layer A into the
-   bank and program encoded in the message (Rev2: banks 0–7, P08: banks 0–1 →
-   hardware banks 4–5, programs 0–127). Firmware applies USB backpressure while
-   flash writes complete, so a full 512-program dump can take on the order of a
-   minute; wait for the transfer to finish before recalling.
+3. Send the `.syx` file. Each Program Data message saves the complete two-layer
+   program, including mode and split point, into the encoded bank and program
+   (Rev2: banks 0–7, P08: banks 0–1 → hardware banks 4–5, programs 0–127).
+   Firmware applies USB backpressure while flash writes complete, so a full
+   512-program dump can take on the order of a minute; wait for the transfer to
+   finish before recalling.
 4. Recall with Bank Select (CC0 or CC32, value 0–7) followed by Program Change.
 
 Program Edit Buffer messages (`F0 01 2F 03 … F7` or `F0 01 23 03 … F7`) load
@@ -79,9 +80,13 @@ List ports with `amidi -l`.
 
 ## What Gets Stored
 
-- Only **Layer A** is stored. Layer B, sequencer, arpeggiator, and global
-  settings are ignored. Glide settings are imported from both Rev2 and P08
-  images.
+- Both layers, their names and supported parameters, Normal/Stack/Split mode,
+  split point, arpeggiator, effects, and modulation are stored. Sequencer and
+  global settings remain unsupported.
+- Micro 1 and Micro 4 keep the complete program but render one selected layer
+  through their single voice/effects pipeline. Recall selects A. NRPN 4190 can
+  select B; Stack/Split status is reported as degraded because simultaneous
+  two-layer playback is intentionally not attempted on Micro hardware.
 - There is no factory/user bank split on the device: banks 0–7 are ordinary
   persistent slots. Rev2 factory files typically use banks 0–3 (F1–F4) and
   4–7 (U1–U4). P08 programs map to banks 4 (P08 bank 0) and 5 (P08 bank 1).

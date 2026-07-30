@@ -11,9 +11,11 @@ pub const PROGRAM_PACKED_LEN: usize = packed_program_len(PROGRAM_DATA_LEN);
 pub const PROGRAM_DATA_SYSEX_LEN: usize = 446;
 pub const PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 444;
 
-/// Program-level split point in the official Prophet '08 program image.
+/// Program-level split point in the official
+/// [Prophet '08 program image](https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf).
 pub(super) const SPLIT_POINT_OFFSET: usize = 118;
-/// Program-level keyboard mode in the official Prophet '08 program image.
+/// Program-level keyboard mode in the official
+/// [Prophet '08 program image](https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf).
 pub(super) const LAYER_MODE_OFFSET: usize = 119;
 
 #[derive(Debug, Clone)]

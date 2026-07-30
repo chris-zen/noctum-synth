@@ -143,11 +143,11 @@ app's existing units, such as hertz and seconds.
 NRPN selection and Data Entry state is tracked independently for each MIDI
 channel. Data Increment, Data Decrement, and the null RPN reset are supported.
 Program Edit Buffer SysEx dumps are decoded into the shared `Patch` type. The
-app imports Layer A, including key mode, unison, and Glide enable, mode, and
-per-oscillator rates. Layer B, sequencer, arpeggiator, and global settings are
-ignored because the app does not currently implement those Rev2 systems. Rev2
-chord voicings cannot be imported because their program-image
-bytes are not documented; native patches preserve chord memory.
+app imports both layers independently, including names, key mode, unison,
+arpeggiator, Glide, effects, modulation, mode, split point, and per-oscillator
+rates. Sequencer and global settings remain unsupported. Rev2 chord voicings
+cannot be imported because their program-image bytes are not documented;
+native patches preserve chord memory.
 
 ### Importing factory presets
 
@@ -190,14 +190,16 @@ Send SysEx at a reasonable speed. Hardware program memory accepts both Rev2 and
 Prophet '08 Program Data; see [Factory Presets](appendix/factory-presets.md).
 
 Whole patch loads and initial device synchronization use one Rev2 Program Edit
-Buffer SysEx message. The current UI edits and renders Layer A while native
-persistence preserves Layer B, mode, and split point for the layered engine
-phases. Unsupported raw fields are zero. Live UI edits remain
-Rev2 NRPN messages on channel 1. Repeated values that quantize to the same Rev2
-value are suppressed. Parameter changes and patches received from MIDI update
-the local engine and UI without being copied to MIDI output, preventing
-feedback loops. The desktop and Daisy firmware use the same codec, so their
-parameter numbers and value scaling remain identical.
+Buffer SysEx message. The layer bar selects Normal, Stack, or Split playback,
+the split point, and which layer the controls edit. Normal gives the selected
+layer all 16 voices; Stack and Split render both layers with eight voices each.
+Unsupported raw fields are zero. Live UI edits use Layer A NRPNs or the
+documented `+2048` Layer B numbers on channel 1, with NRPN 4190 selecting the
+edit layer. Repeated values that quantize to the same Rev2 value are suppressed.
+Parameter changes and patches received from MIDI update the local engine and UI
+without being copied to MIDI output, preventing feedback loops. The desktop and
+Daisy firmware use the same codec, so their parameter numbers and value scaling
+remain identical.
 
 The **Send** button beside the program **Save** button retransmits the current UI patch as a full
 Program Edit Buffer without changing local state. Use it to resynchronize after

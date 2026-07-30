@@ -12,20 +12,20 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use heapless::Deque;
-use synth_core::{ControlMessage, LayerPatch, Patch, SynthEngineWithMemory};
+
+use synth_core::{ControlMessage, LayerId, LayerMode, Patch, SynthEngineWithMemory};
+#[cfg(feature = "audio-profiling")]
+use synth_core::{RenderProfiler, RenderStage};
 
 use crate::pending_releases::PendingReleases;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
 use crate::usb_audio::UsbAudioBuffer;
 use crate::{diagnostics, indicator};
-#[cfg(feature = "audio-profiling")]
-use synth_core::{RenderProfiler, RenderStage};
 
 // Parameter traffic is isolated from performance events and coalesced by key.
-// Keep this small so the bounded in-place scan spends negligible time in its
-// critical section even under an NRPN flood.
-pub const CONTROL_QUEUE_CAPACITY: usize = 32;
+pub use crate::control_queue::{CONTROL_QUEUE_CAPACITY, ControlQueue};
+
 pub const PERFORMANCE_QUEUE_CAPACITY: usize = 32;
 pub const PATCH_QUEUE_CAPACITY: usize = 2;
 pub const BLOCK_CYCLE_BUDGET: u32 =
@@ -36,84 +36,7 @@ static OVERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 static UNDERRUNS_COUNT: AtomicU32 = AtomicU32::new(0);
 
 pub type HardwareSynth = SynthEngineWithMemory<&'static mut [f32], 1>;
-pub type PatchQueue = Channel<CriticalSectionRawMutex, LayerPatch, PATCH_QUEUE_CAPACITY>;
-
-pub struct ControlQueue {
-    queue: Mutex<CriticalSectionRawMutex, RefCell<Deque<ControlMessage, CONTROL_QUEUE_CAPACITY>>>,
-}
-
-impl ControlQueue {
-    pub const fn new() -> Self {
-        Self {
-            queue: Mutex::new(RefCell::new(Deque::new())),
-        }
-    }
-
-    /// Enqueue a control, replacing an older queued update to the same
-    /// parameter or modulation-route field when possible.
-    pub fn try_send(
-        &self,
-        command: ControlMessage,
-    ) -> Result<(), embassy_sync::channel::TrySendError<ControlMessage>> {
-        self.queue.lock(|queue| {
-            let mut queue = queue.borrow_mut();
-            if let Some(existing) = queue
-                .iter_mut()
-                .find(|existing| replaceable_same_field(existing, &command))
-            {
-                *existing = command;
-                return Ok(());
-            }
-            queue
-                .push_back(command)
-                .map_err(embassy_sync::channel::TrySendError::Full)
-        })
-    }
-
-    pub fn try_receive(&self) -> Result<ControlMessage, embassy_sync::channel::TryReceiveError> {
-        self.queue.lock(|queue| {
-            queue
-                .borrow_mut()
-                .pop_front()
-                .ok_or(embassy_sync::channel::TryReceiveError::Empty)
-        })
-    }
-}
-
-fn replaceable_same_field(existing: &ControlMessage, incoming: &ControlMessage) -> bool {
-    match (existing, incoming) {
-        (
-            ControlMessage::SetParam {
-                target: left_target,
-                param: left,
-                ..
-            },
-            ControlMessage::SetParam {
-                target: right_target,
-                param: right,
-                ..
-            },
-        ) => left_target == right_target && left == right,
-        (
-            ControlMessage::SetModulationParam {
-                target: left_target,
-                route: left_route,
-                parameter: left_parameter,
-            },
-            ControlMessage::SetModulationParam {
-                target: right_target,
-                route: right_route,
-                parameter: right_parameter,
-            },
-        ) => {
-            left_target == right_target
-                && left_route == right_route
-                && core::mem::discriminant(left_parameter)
-                    == core::mem::discriminant(right_parameter)
-        }
-        _ => false,
-    }
-}
+pub type PatchQueue = Channel<CriticalSectionRawMutex, Patch, PATCH_QUEUE_CAPACITY>;
 
 pub struct PerformanceQueue {
     queue:
@@ -296,30 +219,44 @@ pub async fn run_task(
             profiler.begin(RenderStage::ControlDrain);
         }
         if let Ok(patch) = patches.try_receive() {
-            engine.apply_patch(&Patch {
-                layer_a: patch,
-                ..Patch::default()
-            });
+            engine.apply_patch(&patch);
+            emit_playback_status(engine);
             adaptive_control_budget.reset();
         }
         apply_pending_releases(engine, pending_releases);
 
         if let Ok(command) = performance.try_receive() {
+            let topology = is_topology_control(&command);
             engine.handle_control(command);
+            if topology {
+                emit_playback_status(engine);
+            }
         } else if let Ok(command) = controls.try_receive() {
             emit_control_diagnostics(&command);
+            let topology = is_topology_control(&command);
             engine.handle_control(command);
+            if topology {
+                emit_playback_status(engine);
+            }
         }
         let extras_started = DWT::cycle_count();
         let effective_budget = adaptive_control_budget.effective_budget();
         while DWT::cycle_count().wrapping_sub(extras_started) < effective_budget {
             if let Ok(command) = performance.try_receive() {
+                let topology = is_topology_control(&command);
                 engine.handle_control(command);
+                if topology {
+                    emit_playback_status(engine);
+                }
                 continue;
             }
             if let Ok(command) = controls.try_receive() {
                 emit_control_diagnostics(&command);
+                let topology = is_topology_control(&command);
                 engine.handle_control(command);
+                if topology {
+                    emit_playback_status(engine);
+                }
                 continue;
             }
             break;
@@ -353,6 +290,32 @@ pub async fn run_task(
             diagnostics::emit(event);
         }
     }
+}
+
+fn is_topology_control(command: &ControlMessage) -> bool {
+    matches!(
+        command,
+        ControlMessage::SetLayerMode(_)
+            | ControlMessage::SetSplitPoint(_)
+            | ControlMessage::SetEditLayer(_)
+    )
+}
+
+fn emit_playback_status(engine: &HardwareSynth) {
+    let status = engine.playback_status();
+    diagnostics::emit(diagnostics::Event::LayerPlayback {
+        mode: match status.mode {
+            LayerMode::Normal => 0,
+            LayerMode::Stack => 1,
+            LayerMode::Split => 2,
+        },
+        edit_layer: match status.edit_layer {
+            LayerId::A => 0,
+            LayerId::B => 1,
+        },
+        rendered_mask: status.rendered_mask,
+        degraded: status.degraded,
+    });
 }
 
 #[inline]

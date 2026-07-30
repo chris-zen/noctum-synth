@@ -26,6 +26,8 @@ pub(super) enum MidiUpdate {
     },
 }
 
+/// Program-field and borrowed-MSB offsets from the
+/// [Prophet '08 User's Guide, Program Parameter Data](https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf).
 pub(super) fn program_field(number: u16, layer_offset: usize) -> Option<ProgramField> {
     if number > 119 && number != 100 {
         return None;
@@ -86,6 +88,8 @@ pub(super) fn logarithmic(raw: u16, raw_max: u16, min: f32, max: f32) -> f32 {
     min * F32(max / min).powf(F32(unit(raw, raw_max))).as_f32()
 }
 
+/// Raw destination order from the
+/// [Prophet '08 User's Guide, Modulation Destinations](https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf).
 const MOD_DESTINATIONS: [ModDestination; 44] = [
     ModDestination::Off,
     ModDestination::Osc1Frequency,

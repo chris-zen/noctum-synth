@@ -9,8 +9,14 @@
 
 use crate::math::F32;
 
+/// Prophet cutoff raw maximum from the
+/// [Rev2 User's Guide, Appendix E](https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf).
 pub const FILTER_CUTOFF_RAW_MAX: u16 = 164;
+/// A4 anchor verified against the official
+/// [Rev2 factory programs](https://sequential.com/support/download/prophet-rev2-sounds/).
 pub const FILTER_CUTOFF_A4_RAW: f32 = 105.0;
+/// Unity and maximum keyboard tracking values from the
+/// [Rev2 User's Guide, Appendix E](https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf).
 pub const FILTER_KEY_TRACK_UNITY_RAW: u16 = 64;
 pub const FILTER_KEY_TRACK_RAW_MAX: u16 = 127;
 pub const FILTER_KEY_TRACK_MAX: f32 =

@@ -37,6 +37,11 @@ pub enum EngineInitError {
     UnevenVoiceRegions,
 }
 
+/// Host-visible layered playback state.
+///
+/// `degraded` is true when a one-layer engine preserves a Stack/Split program
+/// but can render only the selected component. `rendered_mask` uses bit 0 for A
+/// and bit 1 for B.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerPlaybackStatus {
     pub mode: LayerMode,
@@ -645,10 +650,14 @@ where
     }
 
     fn request_topology_change(&mut self) {
-        if self.patch.mode != self.applied_mode
-            || self.patch.split_point != self.applied_split_point
-            || self.edit_layer != self.applied_edit_layer
-        {
+        let topology_changed = if LAYERS == 1 {
+            self.edit_layer != self.applied_edit_layer
+        } else {
+            self.patch.mode != self.applied_mode
+                || self.patch.split_point != self.applied_split_point
+                || self.edit_layer != self.applied_edit_layer
+        };
+        if topology_changed {
             self.transition.request();
         } else {
             self.transition.cancel();
@@ -791,6 +800,12 @@ where
             rendered_mask: self.rendered_mask(),
             degraded: LAYERS == 1 && self.patch.mode != LayerMode::Normal,
         }
+    }
+
+    /// Whether the final linked output limiter is currently reducing gain or
+    /// holding a recent over-ceiling peak.
+    pub fn output_limiter_engaged(&self) -> bool {
+        self.output_limiter.is_engaged()
     }
 
     pub fn layer_active_voice_count(&self, layer: LayerId) -> usize {
@@ -1082,6 +1097,127 @@ mod tests {
         assert_eq!(engine.playback_status().rendered_mask, 0b10);
         assert_eq!(engine.layer_active_voice_count(LayerId::A), 0);
         assert_eq!(engine.layer_active_voice_count(LayerId::B), 16);
+    }
+
+    #[test]
+    fn constrained_engine_preserves_both_layers_and_auditions_the_selection() {
+        let mut patch = Patch {
+            mode: LayerMode::Stack,
+            ..Patch::default()
+        };
+        patch.layer_a.program_volume = 0.2;
+        patch.layer_b.program_volume = 0.8;
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 1>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        engine.apply_patch(&patch);
+
+        let status = engine.playback_status();
+        assert!(status.degraded);
+        assert_eq!(status.edit_layer, LayerId::A);
+        assert_eq!(status.rendered_mask, 0b01);
+        assert_eq!(engine.layers[0].program_volume(), 0.2);
+        assert_eq!(engine.patch.layer_b.program_volume, 0.8);
+
+        engine.note_on(60, 1.0);
+        engine.process(&mut [0.0; 2]);
+        engine.handle_control(ControlMessage::SetEditLayer(LayerId::B));
+        finish_topology_transition(&mut engine);
+
+        let status = engine.playback_status();
+        assert!(status.degraded);
+        assert_eq!(status.edit_layer, LayerId::B);
+        assert_eq!(status.rendered_mask, 0b10);
+        assert_eq!(engine.layers[0].program_volume(), 0.8);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 0);
+        assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+
+        engine.handle_control(ControlMessage::SetParam {
+            target: LayerTarget::Explicit(LayerId::A),
+            param: ParamId::ProgramVolume,
+            value: 0.4,
+        });
+        assert_eq!(engine.patch.layer_a.program_volume, 0.4);
+        assert_eq!(engine.layers[0].program_volume(), 0.8);
+
+        engine.apply_patch(&patch);
+        finish_topology_transition(&mut engine);
+        assert_eq!(engine.playback_status().edit_layer, LayerId::A);
+        assert_eq!(engine.layers[0].program_volume(), 0.2);
+    }
+
+    #[test]
+    fn constrained_mode_metadata_change_does_not_reset_running_audio() {
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 1>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        engine.note_on(60, 1.0);
+        engine.process(&mut [0.0; 512]);
+        let voice_count = engine.active_voice_count();
+
+        engine.handle_control(ControlMessage::SetLayerMode(LayerMode::Split));
+        engine.handle_control(ControlMessage::SetSplitPoint(72));
+
+        assert!(engine.transition.is_idle());
+        assert_eq!(engine.active_voice_count(), voice_count);
+        assert!(engine.playback_status().degraded);
+        assert_eq!(engine.playback_status().mode, LayerMode::Split);
+    }
+
+    #[test]
+    fn constrained_program_and_midi_control_soak_clears_all_held_state() {
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 1>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        let mut output = [0.0; 192];
+
+        for index in 0..64 {
+            let mut patch = Patch {
+                mode: match index % 3 {
+                    0 => LayerMode::Normal,
+                    1 => LayerMode::Stack,
+                    _ => LayerMode::Split,
+                },
+                split_point: 48 + (index % 25) as u8,
+                ..Patch::default()
+            };
+            patch.layer_a.filter.cutoff = 400.0 + index as f32 * 20.0;
+            patch.layer_b.filter.cutoff = 4_000.0 - index as f32 * 20.0;
+            engine.apply_patch(&patch);
+            engine.handle_control(ControlMessage::NoteOn {
+                note: 48 + (index % 24) as u8,
+                velocity: 0.8,
+            });
+            engine.handle_control(ControlMessage::SustainPedal { pressed: true });
+            engine.handle_control(ControlMessage::SetParam {
+                target: LayerTarget::Explicit(LayerId::B),
+                param: ParamId::FilterResonance,
+                value: (index as f32 / 63.0).clamp(0.0, 1.0),
+            });
+            engine.handle_control(ControlMessage::SetEditLayer(if index & 1 == 0 {
+                LayerId::A
+            } else {
+                LayerId::B
+            }));
+            engine.process(&mut output);
+            assert!(output.iter().all(|sample| sample.is_finite()));
+            engine.handle_control(ControlMessage::SustainPedal { pressed: false });
+            engine.handle_control(ControlMessage::AllNotesOff);
+        }
+
+        let mut settle = [0.0; 2_048];
+        engine.process(&mut settle);
+        assert!(settle.iter().all(|sample| sample.is_finite()));
+
+        assert!(engine.physical_keys.is_empty());
+        assert!(!engine.sustain_pressed);
+        assert_eq!(engine.route_mask, [0; 128]);
     }
 
     #[test]

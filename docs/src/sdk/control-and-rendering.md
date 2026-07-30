@@ -11,10 +11,11 @@ transport. `synth-app` demonstrates that pattern with `rtrb`.
 
 | Message | Host responsibility |
 | --- | --- |
-| `SetParam(ParamId, f32)` | Update one parameter. Boolean controls use `0.0`/`1.0`; enum-like controls use their documented index. |
+| `SetParam { target, param, value }` | Update one layer parameter. `LayerTarget::Edit` resolves against engine-owned edit state; `Explicit(A/B)` does not depend on decoder state. |
 | `SetModulation { ... }` | Configure a free or dedicated modulation route. |
 | `SetModulationParam { ... }` | Update one source, destination, or amount field of a modulation route. This supports incremental control protocols such as NRPN. |
 | `SetFilterOversampling` | Change nonlinear-filter oversampling without rebuilding the stream. |
+| `SetLayerMode`, `SetSplitPoint`, `SetEditLayer` | Update stored topology or edit/audition selection. |
 | `NoteOn` / `NoteOff` / `AllNotesOff` | Send MIDI-style note lifecycle events. Velocity zero is treated as note-off. |
 | `PitchBend`, `ModWheel`, `Pressure` | Send normalized performance-source values. |
 | `SustainPedal` | Hold released notes while pressed. |
@@ -22,10 +23,10 @@ transport. `synth-app` demonstrates that pattern with `rtrb`.
 | `SetMidiClockMode` | Select the device-global Rev2 clock policy. The core receives Slave/Slave No S/S clock; a host such as `synth-app` may implement Master output. Slave Thru remains inactive. |
 | `MidiRealtime` | Deliver timestamped Timing Clock, Start, or Stop input. |
 
-Convenience methods on `SynthEngine` exist for applying a complete `LayerPatch`,
+Convenience methods on `SynthEngine` exist for applying a complete `Patch`,
 parameter updates, notes, all notes off, pitch bend, mod wheel, pressure,
 sustain pedal, and generic control changes. They forward to the same message
-handling path. The engine consumes only the generic layer-patch representation and
+handling path. The engine consumes only the generic program representation and
 has no dependency on MIDI or device-specific protocols.
 
 `MidiClockStatus` reports configured and effective modes, live state, learned
@@ -44,8 +45,8 @@ from stored typed values to message values.
 The shared `midi::rev2` module translates Sequential Rev2 CC and NRPN messages
 to this host address space, encodes parameter changes back to NRPN sequences,
 maps global clock mode NRPN 4099, and converts Program Edit Buffer SysEx
-messages to and from `Patch`. SysEx
-packing and device-specific Layer A/Layer B policy remain at this boundary.
+messages to and from `Patch`. SysEx packing and layer-address conversion remain
+at this boundary; the decoder does not own edit-layer state.
 The unpacked 2,046-byte Rev2 program image is not indexed by NRPN number: the
 codec uses the program-image offset table and reconstructs bipolar or extended
 values whose high bit is stored in another parameter byte.
@@ -58,8 +59,8 @@ For example, cutoff is expressed in hertz, while `EffectMix` and other blend
 amounts are normalized. Boolean fields are interpreted using a `0.5` threshold
 where applicable. Indexed fields such as effect and waveform selection use the
 corresponding enum index. Avoid inventing a second parameter state model in the
-host; retain a `LayerPatch` or a comparable host state and apply it through
-the engine's message API.
+host; retain a complete `Patch` and apply it through the engine's message API
+so Layer B, mode, and split point are not lost.
 
 ## Audio callback example
 

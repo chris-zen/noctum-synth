@@ -37,7 +37,8 @@ pub(super) struct ProgramField {
 pub(super) fn program_field(number: u16, layer_offset: usize) -> Option<ProgramField> {
     // Appendix E documents the transport packing but not the internal program
     // image. These offsets are the Rev2 program-image layout, verified against
-    // Sequential's v1.0 factory bank. They are intentionally not NRPN indexes.
+    // Sequential's [v1.0 factory bank](https://sequential.com/support/download/prophet-rev2-sounds/).
+    // They are intentionally not NRPN indexes.
     const OFFSETS_0_TO_26: [usize; 27] = [
         0, 2, 4, 8, 10, 1, 3, 5, 9, 11, 17, 18, 21, 14, 16, 22, 23, 24, 25, 26, 32, 35, 38, 41, 44,
         47, 50,

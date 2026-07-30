@@ -7,7 +7,10 @@ musical terms.
 `SynthEngine` owns the physical `VoicePool`, effects memory, MIDI clock, rate
 adapter, and output limiter. A `LayerEngine` owns logical allocation, held-note,
 patch modulation, arpeggiator, effect state, tempo, division, and program-volume
-state. The one-layer engine assigns the complete pool to that layer.
+state. A two-layer desktop engine partitions one physical pool between logical
+layers in Stack/Split and assigns the whole pool to the selected layer in
+Normal. A constrained Micro engine stores both layers but assigns its one pool
+and one effects region to only the selected layer.
 
 ```mermaid
 flowchart TD

@@ -22,7 +22,7 @@ pub async fn run_task(
                 let program = *program;
                 match store.load(bank, program) {
                     Ok(patch) => {
-                        if patches.try_send(patch.layer_a).is_err() {
+                        if patches.try_send(patch).is_err() {
                             diagnostics::emit(diagnostics::Event::PatchQueueFull);
                         } else {
                             diagnostics::emit(diagnostics::Event::ProgramLoaded {

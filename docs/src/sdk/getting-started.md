@@ -39,26 +39,20 @@ whose length is a whole number of frames; any incomplete tail is ignored.
 | `ModRoute`, `ModSource`, `ModDestination` | Modulation routing model. |
 | `FilterOversampling` | Nonlinear-filter quality policy. |
 
-## Applying a layer patch
+## Applying a program
 
-`LayerPatch` represents the sound surface currently consumed by one layer
-engine. To load it into a running engine, forward every parameter and
-modulation entry to the same control path used by the host UI:
+`Patch` is the complete load/save and SysEx boundary. Apply it atomically, then
+use targeted control messages for live edits:
 
 ```rust,ignore
-use synth_core::{ControlMessage, LayerPatch, LayerTarget, SynthEngine};
+use synth_core::{ControlMessage, LayerId, LayerTarget, ParamId, Patch, SynthEngine};
 
-fn apply_layer_patch(engine: &mut SynthEngine, patch: &LayerPatch) {
-    patch.for_each_param(|id, value| engine.handle_control(ControlMessage::edit_param(id, value)));
-    patch.for_each_modulation(|route, slot| {
-        engine.handle_control(ControlMessage::SetModulation {
-            target: LayerTarget::Edit,
-            route,
-            enabled: slot.enabled,
-            source: slot.source,
-            destination: slot.destination,
-            amount: slot.amount,
-        });
+fn load_and_edit(engine: &mut SynthEngine, patch: &Patch) {
+    engine.apply_patch(patch);
+    engine.handle_control(ControlMessage::SetParam {
+        target: LayerTarget::Explicit(LayerId::B),
+        param: ParamId::FilterCutoff,
+        value: 2_000.0,
     });
 }
 ```

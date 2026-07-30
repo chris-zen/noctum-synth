@@ -5,19 +5,21 @@ extern crate std;
 
 #[cfg(target_arch = "arm")]
 pub mod audio;
+pub mod control_queue;
 #[cfg(target_arch = "arm")]
 pub mod diagnostics;
 #[cfg(target_arch = "arm")]
 pub mod indicator;
 #[cfg(target_arch = "arm")]
 pub mod midi;
+pub mod midi_control;
+pub mod model;
 #[cfg(target_arch = "arm")]
 pub mod patch_transition;
 #[cfg(target_arch = "arm")]
 pub mod pending_releases;
 #[cfg(all(target_arch = "arm", feature = "audio-profiling"))]
 pub mod profiling;
-pub mod model;
 pub mod program;
 #[cfg(target_arch = "arm")]
 pub mod synth;

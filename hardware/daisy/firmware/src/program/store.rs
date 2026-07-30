@@ -575,6 +575,8 @@ mod tests {
         patch.layer_a.filter.cutoff = cutoff;
         patch.layer_b.name.push_str("layer b").unwrap();
         patch.layer_b.filter.cutoff = cutoff * 0.5;
+        patch.mode = synth_core::LayerMode::Stack;
+        patch.split_point = 73;
         patch
     }
 
@@ -721,6 +723,9 @@ mod tests {
         assert_eq!(loaded_neighbor.layer_a.name.as_str(), "neighbor");
         assert!((loaded_neighbor.layer_a.filter.cutoff - 2222.0).abs() < 2.0);
         assert_eq!(loaded_neighbor.layer_b.name.as_str(), "layer b");
+        assert!((loaded_neighbor.layer_b.filter.cutoff - 1111.0).abs() < 2.0);
+        assert_eq!(loaded_neighbor.mode, synth_core::LayerMode::Stack);
+        assert_eq!(loaded_neighbor.split_point, 73);
     }
 
     #[test]

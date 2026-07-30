@@ -210,7 +210,10 @@ fn master_volume_cc7_is_global_and_nrpn_29_is_program_volume() {
     assert!(decoder.control_change(0, 7, 64, |update| {
         let _ = updates.push(update);
     }));
-    assert_eq!(updates.as_slice(), &[MidiUpdate::MasterVolume(64.0 / 127.0)]);
+    assert_eq!(
+        updates.as_slice(),
+        &[MidiUpdate::MasterVolume(64.0 / 127.0)]
+    );
 
     updates.clear();
     let mut encoder = ControllerEncoder::default();
@@ -220,14 +223,23 @@ fn master_volume_cc7_is_global_and_nrpn_29_is_program_volume() {
             let _ = updates.push(update);
         });
     });
-    assert_eq!(updates.as_slice(), &[MidiUpdate::MasterVolume(64.0 / 127.0)]);
+    assert_eq!(
+        updates.as_slice(),
+        &[MidiUpdate::MasterVolume(64.0 / 127.0)]
+    );
 
     updates.clear();
-    assert!(encoder.param_for_layer(0, LayerId::A, ParamId::ProgramVolume, 64.0 / 127.0, |message| {
-        decoder.control_change(0, message[1], message[2], |update| {
-            let _ = updates.push(update);
-        });
-    }));
+    assert!(encoder.param_for_layer(
+        0,
+        LayerId::A,
+        ParamId::ProgramVolume,
+        64.0 / 127.0,
+        |message| {
+            decoder.control_change(0, message[1], message[2], |update| {
+                let _ = updates.push(update);
+            });
+        }
+    ));
     assert_eq!(
         updates.as_slice(),
         &[param_update(

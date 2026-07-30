@@ -1,6 +1,6 @@
 //! Bounded patch changes for the real-time audio task.
 
-use synth_core::LayerPatch;
+use synth_core::Patch;
 
 const FADE_BLOCKS: u8 = 3;
 
@@ -13,13 +13,13 @@ enum State {
 }
 
 pub struct PatchTransition {
-    pending: Option<LayerPatch>,
+    pending: Option<Patch>,
     state: State,
     gain: f32,
 }
 
 pub struct BlockAction {
-    pub patch: Option<LayerPatch>,
+    pub patch: Option<Patch>,
     pub render: bool,
 }
 
@@ -36,7 +36,7 @@ impl Default for PatchTransition {
 impl PatchTransition {
     /// Queues the newest complete patch. Repeated updates replace the pending
     /// snapshot without allocating or lengthening an active fade-out.
-    pub fn enqueue(&mut self, patch: LayerPatch) {
+    pub fn enqueue(&mut self, patch: Patch) {
         self.pending = Some(patch);
         match self.state {
             State::Idle | State::FadeIn { .. } => {
@@ -48,7 +48,7 @@ impl PatchTransition {
         }
     }
 
-    /// Chooses the work for one audio block. LayerPatch mutation receives a whole
+    /// Chooses the work for one audio block. Program mutation receives a whole
     /// silent block and is never combined with DSP rendering.
     pub fn begin_block(&mut self) -> BlockAction {
         if self.state != State::Apply {
@@ -119,5 +119,39 @@ impl PatchTransition {
 
     pub const fn is_idle(&self) -> bool {
         matches!(self.state, State::Idle) && self.pending.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use synth_core::{LayerMode, Patch};
+
+    use super::PatchTransition;
+
+    #[test]
+    fn transition_delivers_the_complete_two_layer_program() {
+        let mut program = Patch {
+            mode: LayerMode::Split,
+            split_point: 71,
+            ..Patch::default()
+        };
+        program.layer_a.filter.cutoff = 1_000.0;
+        program.layer_b.filter.cutoff = 4_000.0;
+        let mut transition = PatchTransition::default();
+        transition.enqueue(program);
+        let mut output = [1.0; 96];
+
+        let delivered = loop {
+            let action = transition.begin_block();
+            if let Some(program) = action.patch {
+                break program;
+            }
+            transition.finish_block(&mut output, action.render);
+        };
+
+        assert_eq!(delivered.layer_a.filter.cutoff, 1_000.0);
+        assert_eq!(delivered.layer_b.filter.cutoff, 4_000.0);
+        assert_eq!(delivered.mode, LayerMode::Split);
+        assert_eq!(delivered.split_point, 71);
     }
 }

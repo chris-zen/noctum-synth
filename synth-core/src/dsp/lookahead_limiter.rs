@@ -52,6 +52,10 @@ impl LookaheadLimiter {
         self.hold_samples = 0;
     }
 
+    pub(crate) fn is_engaged(&self) -> bool {
+        self.gain < 1.0 || self.attack_target < 1.0 || self.hold_samples > 0
+    }
+
     #[inline(always)]
     pub(crate) fn next(&mut self, left: f32, right: f32) -> (f32, f32) {
         let delayed_left = self.left_delay[self.write_index];

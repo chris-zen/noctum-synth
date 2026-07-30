@@ -51,10 +51,10 @@ pub enum StorageFailureReason {
 }
 
 #[cfg(feature = "diagnostics")]
-pub use enabled::{emit, emit_xrun, init, run_task, PerfMonitor};
+pub use enabled::{PerfMonitor, emit, emit_xrun, init, run_task};
 
 #[cfg(not(feature = "diagnostics"))]
-pub use disabled::{emit, emit_xrun, init, PerfMonitor};
+pub use disabled::{PerfMonitor, emit, emit_xrun, init};
 
 #[derive(Clone, Copy)]
 pub enum Event {
@@ -101,6 +101,12 @@ pub enum Event {
     },
     ControlQueueFull,
     PatchQueueFull,
+    LayerPlayback {
+        mode: u8,
+        edit_layer: u8,
+        rendered_mask: u8,
+        degraded: bool,
+    },
     ProgramStorageQueueFull,
     ProgramEditBufferReceived,
     ProgramDataReceived {
@@ -424,22 +430,30 @@ mod enabled {
                 Event::PatchQueueFull => {
                     defmt::warn!("synth patch queue full; dropping newest patch")
                 }
+                Event::LayerPlayback {
+                    mode,
+                    edit_layer,
+                    rendered_mask,
+                    degraded,
+                } => defmt::info!(
+                    "layer playback mode={} edit={} rendered_mask={:#04b} degraded={}",
+                    mode,
+                    edit_layer,
+                    rendered_mask,
+                    degraded
+                ),
                 Event::ProgramStorageQueueFull => {
                     defmt::warn!("program storage overflow full; dropping newest request")
                 }
                 Event::ProgramEditBufferReceived => {
                     defmt::info!("received Rev2 Program Edit Buffer")
                 }
-                Event::ProgramDataReceived { bank, program } => defmt::info!(
-                    "saving Rev2 Program Data bank={} program={}",
-                    bank,
-                    program
-                ),
-                Event::ProgramChangeReceived { bank, program } => defmt::info!(
-                    "program change bank={} program={}",
-                    bank,
-                    program
-                ),
+                Event::ProgramDataReceived { bank, program } => {
+                    defmt::info!("saving Rev2 Program Data bank={} program={}", bank, program)
+                }
+                Event::ProgramChangeReceived { bank, program } => {
+                    defmt::info!("program change bank={} program={}", bank, program)
+                }
                 Event::ProgramLoaded {
                     bank,
                     program,
@@ -581,7 +595,7 @@ mod disabled {
 
 #[cfg(all(test, feature = "diagnostics"))]
 mod tests {
-    use super::{enabled::PERF_REPORT_INTERVAL_BLOCKS, Event, PerfMonitor};
+    use super::{Event, PerfMonitor, enabled::PERF_REPORT_INTERVAL_BLOCKS};
 
     #[test]
     fn performance_monitor_reports_only_near_the_budget() {

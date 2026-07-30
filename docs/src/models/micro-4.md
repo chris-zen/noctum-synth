@@ -58,6 +58,13 @@ Programs are stored in the Daisy's 8 MiB QSPI flash: **8 banks × 128 programs**
 Program Data SysEx messages save patches to their addressed slot. The last
 loaded program is restored on power-up.
 
+Every slot preserves both layers, their names and supported parameters,
+Normal/Stack/Split mode, and split point. Micro 4 deliberately retains one
+four-voice `VoiceBlock` and one effects-memory region: program recall selects
+Layer A, and Rev2 edit-layer NRPN 4190 can select Layer B. In Stack or Split the
+selected component is auditioned alone and diagnostics report degraded playback;
+the stored program is never rewritten to Normal and Layer B is never discarded.
+
 MIDI clock modes: Off (patch BPM), Slave (follow external Timing Clock), and
 Slave No S/S (follow clock, ignore Start/Stop). Continue, Master, and Slave Thru
 are not implemented on this model.
@@ -75,7 +82,6 @@ An onboard user LED indicates MIDI activity (dim pulse) and audio overruns
 
 ## Compatibility
 
-Layer patches are interchangeable with the desktop application and all other
-Noctum models. The Micro 4 uses the same `synth-core` engine, the same
-`LayerPatch` render format, and the same Rev2 MIDI codec. Complete `Patch`
-storage arrives in the multi-layer persistence phase.
+Complete programs are interchangeable with the desktop application and all
+other Noctum models. The Micro 4 uses the same `synth-core` program model and
+Rev2/P08 codecs while constraining playback to one selected layer.

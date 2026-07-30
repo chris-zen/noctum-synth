@@ -11,9 +11,8 @@ published on the Sequential forum:
 
 The synth also accepts **Prophet '08** Program Data and Program Edit Buffer
 SysEx messages. P08 programs are decoded into the same complete two-layer
-internal patch format as Rev2 programs. Until native two-layer persistence is
-introduced, the hardware stores the decoded Layer A in banks 4–5 (mapped from
-P08 banks 0–1). See [Prophet '08
+internal patch format as Rev2 programs. Hardware stores both decoded layers in
+banks 4–5 (mapped from P08 banks 0–1). See [Prophet '08
 Compatibility](#prophet-08-compatibility) below.
 
 See [Factory Presets](factory-presets.md) for instructions on loading the
@@ -110,7 +109,10 @@ the decoded patch to its included bank/program address. Rev2 Program Data
 saves to the bank encoded in the message (0–7). P08 Program Data saves to
 hardware bank +4 (P08 bank 0 → hardware bank 4, P08 bank 1 → hardware bank 5).
 Sending a Program Edit Buffer only loads the live patch and does not write
-program memory.
+program memory. Program recall selects Layer A. Desktop renders stored
+Normal/Stack/Split topology directly; Micro hardware preserves the same program
+but uses its one render pipeline for the selected layer and reports degraded
+status for Stack/Split.
 
 ## Performance Messages
 
@@ -581,7 +583,7 @@ name. Live Layer B NRPNs use the documented Layer A number plus 2048.
 
 The following Prophet Rev2 systems are not implemented by this synth:
 
-- Sequencer and arpeggiator
+- Sequencer
 - Rev2 SysEx import/export of the undocumented chord-memory voicing bytes
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)
