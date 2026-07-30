@@ -18,6 +18,7 @@ cargo run --release -p synth-tools --bin <name> [-- args...]
 | [`sample_rate_quality`](src/bin/sample_rate_quality.rs) | Offline spectral CSV for candidate sample rates (oscillator / filter / effects) |
 | [`generate_wavetable_bank`](src/bin/generate_wavetable_bank.rs) | Write retained f32 (and Q15 comparison) wavetable bank files |
 | [`wavetable_listening_samples`](src/bin/wavetable_listening_samples.rs) | Short WAV listening samples for the wavetable prototype report |
+| [`factory_corpus_acceptance`](src/bin/factory_corpus_acceptance.rs) | Full 512-program, two-layer topology/filter acceptance with per-program CSV |
 
 ### `filter_perf`
 
@@ -64,3 +65,17 @@ cargo run --release -p synth-tools --bin wavetable_listening_samples
 ```
 
 Writes WAVs under `plans/wavetable-listening/`.
+
+### `factory_corpus_acceptance`
+
+```bash
+cargo run --release -p synth-tools --bin factory_corpus_acceptance -- \
+  Prophet-Rev2-Factory-Programs/Rev2_Programs_v1.0.syx \
+  target/factory-corpus.csv
+```
+
+Runs constrained Layer A/B and stored Normal/Stack/Split scenarios through the
+Gain-Limited TPT and Huovilainen filters. It validates the official mode
+distribution and four documented factory regressions, then writes peak/RMS,
+active-layer voices, non-finite count, limiter engagement, names, and host
+callback timing for every program.

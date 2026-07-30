@@ -5,20 +5,20 @@ use core::hint::black_box;
 use cortex_m::peripheral::DWT;
 use {defmt_rtt as _, panic_probe as _};
 
+use embassy_daisy::Board;
 use embassy_daisy::audio::BLOCK_LENGTH;
 use embassy_daisy::qspi::QspiFlash;
-use embassy_daisy::Board;
-use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, PatchQueue, BLOCK_CYCLE_BUDGET};
+use noctum_micro::audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue, PatchQueue};
 use noctum_micro::patch_transition::PatchTransition;
 use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use synth_core::midi::rev2::{decode, PROGRAM_DATA_SYSEX_LEN};
+use synth_core::midi::rev2::{PROGRAM_DATA_SYSEX_LEN, decode};
 use synth_core::{
-    profiling::RenderStage, ControlMessage, LayerPatch, ModDestination, ParamId, Patch,
-    SynthEngineWithMemory,
+    ControlMessage, LayerId, LayerMode, ModDestination, ParamId, Patch, SynthEngineWithMemory,
+    profiling::RenderStage,
 };
 
-use tools_micro::{self as factory_banks, Crc32};
 use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
+use tools_micro::{self as factory_banks, Crc32};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;
 const EFFECTS_SAMPLES: usize = 48_000 * 2;
@@ -33,17 +33,11 @@ const ATTACK_BLOCKS: usize = 128;
 const RAW_BLOCKS: usize = 512;
 const CONTROL_STRESS_BLOCKS: usize = 128;
 const PROFILED_BLOCKS: usize = 256;
+const TOPOLOGY_TRANSITION_BLOCKS: usize = 24;
 const PROFILE_THRESHOLD_CYCLES: u32 = 272_000;
 const PROFILE_TRIGGER_CYCLES: u32 = PROFILE_THRESHOLD_CYCLES;
 
 type HardwareSynth<'a> = SynthEngineWithMemory<&'a mut [f32], 1>;
-
-fn apply_layer_patch(engine: &mut HardwareSynth<'_>, layer_a: &LayerPatch) {
-    engine.apply_patch(&Patch {
-        layer_a: layer_a.clone(),
-        ..Patch::default()
-    });
-}
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -101,7 +95,7 @@ fn main() -> ! {
         let mut adaptive_budget = AdaptiveControlBudget::new();
         let transition = measure_transition(
             &mut engine,
-            &program.patch.layer_a,
+            &program.patch,
             &mut output,
             &mut dma_output,
             &controls,
@@ -120,17 +114,26 @@ fn main() -> ! {
             Scenario::PatchTransition,
             transition,
         );
+        let initial_status = engine.playback_status();
+        assert_eq!(initial_status.edit_layer, LayerId::A);
+        assert_eq!(initial_status.rendered_mask, 0b01);
+        assert_eq!(
+            initial_status.degraded,
+            program.patch.mode != LayerMode::Normal
+        );
 
         engine.all_notes_off();
         for note in [60, 64, 67, 72] {
-            assert!(controls
-                .try_send(ControlMessage::NoteOn {
-                    note,
-                    velocity: 1.0,
-                })
-                .is_ok());
+            assert!(
+                controls
+                    .try_send(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    })
+                    .is_ok()
+            );
         }
-        let attack = measure_raw(
+        let attack_a = measure_raw(
             &mut engine,
             &mut output,
             &mut dma_output,
@@ -139,11 +142,21 @@ fn main() -> ! {
             &patches,
             &mut adaptive_budget,
         );
-        report_raw(program.bank, program.program, Scenario::Attack, attack);
-        summary.observe(program.bank, program.program, Scenario::Attack, attack);
+        report_raw(
+            program.bank,
+            program.program,
+            Scenario::LayerAAttack,
+            attack_a,
+        );
+        summary.observe(
+            program.bank,
+            program.program,
+            Scenario::LayerAAttack,
+            attack_a,
+        );
 
         warm_up(&mut engine, &mut output);
-        let steady = measure_raw(
+        let steady_a = measure_raw(
             &mut engine,
             &mut output,
             &mut dma_output,
@@ -152,11 +165,21 @@ fn main() -> ! {
             &patches,
             &mut adaptive_budget,
         );
-        report_raw(program.bank, program.program, Scenario::Steady, steady);
-        summary.observe(program.bank, program.program, Scenario::Steady, steady);
-        summary.observe_features(&program.patch.layer_a, steady);
+        report_raw(
+            program.bank,
+            program.program,
+            Scenario::LayerASteady,
+            steady_a,
+        );
+        summary.observe(
+            program.bank,
+            program.program,
+            Scenario::LayerASteady,
+            steady_a,
+        );
+        summary.observe_features(&program.patch.layer_a, steady_a);
 
-        let control_stress = measure_control_stress(
+        let control_stress_a = measure_control_stress(
             &mut engine,
             &program.patch.layer_a,
             &mut output,
@@ -168,19 +191,146 @@ fn main() -> ! {
         report_raw(
             program.bank,
             program.program,
-            Scenario::ControlStress,
-            control_stress,
+            Scenario::ControlStressA,
+            control_stress_a,
         );
         summary.observe(
             program.bank,
             program.program,
-            Scenario::ControlStress,
-            control_stress,
+            Scenario::ControlStressA,
+            control_stress_a,
         );
 
-        if [transition, attack, steady, control_stress]
-            .iter()
-            .any(|timing| timing.maximum >= PROFILE_TRIGGER_CYCLES)
+        assert!(
+            controls
+                .try_send(ControlMessage::SetEditLayer(LayerId::B))
+                .is_ok()
+        );
+        let edit_transition = measure_raw(
+            &mut engine,
+            &mut output,
+            &mut dma_output,
+            TOPOLOGY_TRANSITION_BLOCKS,
+            &controls,
+            &patches,
+            &mut adaptive_budget,
+        );
+        report_raw(
+            program.bank,
+            program.program,
+            Scenario::EditTransition,
+            edit_transition,
+        );
+        summary.observe(
+            program.bank,
+            program.program,
+            Scenario::EditTransition,
+            edit_transition,
+        );
+        let selected_status = engine.playback_status();
+        assert_eq!(selected_status.edit_layer, LayerId::B);
+        assert_eq!(selected_status.rendered_mask, 0b10);
+
+        engine.all_notes_off();
+        for note in [60, 64, 67, 72] {
+            assert!(
+                controls
+                    .try_send(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    })
+                    .is_ok()
+            );
+        }
+        let _ = measure_raw(
+            &mut engine,
+            &mut output,
+            &mut dma_output,
+            WARMUP_BLOCKS,
+            &controls,
+            &patches,
+            &mut adaptive_budget,
+        );
+        assert!(engine.layer_active_voice_count(LayerId::B) > 0);
+        assert_eq!(engine.layer_active_voice_count(LayerId::A), 0);
+        let steady_b = measure_raw(
+            &mut engine,
+            &mut output,
+            &mut dma_output,
+            RAW_BLOCKS,
+            &controls,
+            &patches,
+            &mut adaptive_budget,
+        );
+        report_raw(
+            program.bank,
+            program.program,
+            Scenario::LayerBSteady,
+            steady_b,
+        );
+        summary.observe(
+            program.bank,
+            program.program,
+            Scenario::LayerBSteady,
+            steady_b,
+        );
+        summary.observe_features(&program.patch.layer_b, steady_b);
+
+        let control_stress_b = measure_control_stress(
+            &mut engine,
+            &program.patch.layer_b,
+            &mut output,
+            &mut dma_output,
+            &controls,
+            &patches,
+            &mut adaptive_budget,
+        );
+        report_raw(
+            program.bank,
+            program.program,
+            Scenario::ControlStressB,
+            control_stress_b,
+        );
+        summary.observe(
+            program.bank,
+            program.program,
+            Scenario::ControlStressB,
+            control_stress_b,
+        );
+
+        let mode_transition = measure_mode_transitions(
+            &mut engine,
+            &mut output,
+            &mut dma_output,
+            &controls,
+            &patches,
+            &mut adaptive_budget,
+        );
+        report_raw(
+            program.bank,
+            program.program,
+            Scenario::ModeTransition,
+            mode_transition,
+        );
+        summary.observe(
+            program.bank,
+            program.program,
+            Scenario::ModeTransition,
+            mode_transition,
+        );
+
+        if [
+            transition,
+            attack_a,
+            steady_a,
+            control_stress_a,
+            edit_transition,
+            steady_b,
+            control_stress_b,
+            mode_transition,
+        ]
+        .iter()
+        .any(|timing| timing.maximum >= PROFILE_TRIGGER_CYCLES)
         {
             engine.apply_patch(&program.patch);
             let snapshot = measure_profiled(&mut engine, &mut output);
@@ -190,6 +340,12 @@ fn main() -> ! {
         drop(engine);
         adaptive_summary.measure(
             &program.patch.layer_a,
+            &mut *effects_memory,
+            program.bank,
+            program.program,
+        );
+        adaptive_summary.measure(
+            &program.patch.layer_b,
             &mut *effects_memory,
             program.bank,
             program.program,
@@ -293,7 +449,7 @@ fn measure_raw(
 
 fn measure_transition(
     engine: &mut HardwareSynth<'_>,
-    patch: &synth_core::LayerPatch,
+    patch: &Patch,
     output: &mut [f32; BLOCK_LENGTH * 2],
     dma_output: &mut [(f32, f32); BLOCK_LENGTH],
     controls: &ControlQueue,
@@ -353,9 +509,11 @@ fn measure_control_stress(
                 patch.effects.param1 + direction * 0.001,
             ),
         ] {
-            assert!(controls
-                .try_send(ControlMessage::edit_param(param, value))
-                .is_ok());
+            assert!(
+                controls
+                    .try_send(ControlMessage::edit_param(param, value))
+                    .is_ok()
+            );
         }
         let started = DWT::cycle_count();
         run_callback(
@@ -369,6 +527,40 @@ fn measure_control_stress(
         );
         timing.observe(DWT::cycle_count().wrapping_sub(started));
         black_box(dma_output[0]);
+    }
+    timing
+}
+
+fn measure_mode_transitions(
+    engine: &mut HardwareSynth<'_>,
+    output: &mut [f32; BLOCK_LENGTH * 2],
+    dma_output: &mut [(f32, f32); BLOCK_LENGTH],
+    controls: &ControlQueue,
+    patches: &PatchQueue,
+    adaptive_budget: &mut AdaptiveControlBudget,
+) -> RawTiming {
+    let mut timing = RawTiming::new();
+    let mut transition = PatchTransition::default();
+    for mode in [LayerMode::Normal, LayerMode::Stack, LayerMode::Split] {
+        assert!(
+            controls
+                .try_send(ControlMessage::SetLayerMode(mode))
+                .is_ok()
+        );
+        let started = DWT::cycle_count();
+        run_callback(
+            engine,
+            output,
+            dma_output,
+            controls,
+            patches,
+            &mut transition,
+            adaptive_budget,
+        );
+        timing.observe(DWT::cycle_count().wrapping_sub(started));
+        black_box(dma_output[0]);
+        assert_eq!(engine.playback_status().mode, mode);
+        assert_eq!(engine.playback_status().rendered_mask, 0b10);
     }
     timing
 }
@@ -392,7 +584,7 @@ fn run_callback(
         adaptive_budget.reset();
     }
     if let Some(patch) = action.patch {
-        apply_layer_patch(engine, &patch);
+        engine.apply_patch(&patch);
     }
     if let Ok(command) = controls.try_receive() {
         engine.handle_control(command);
@@ -446,16 +638,21 @@ impl AdaptiveBudgetSummary {
                 .expect("benchmark effects-memory layout is valid");
         engine.set_filter_type(FILTER_TYPE);
         engine.set_filter_oversampling(FILTER_OVERSAMPLING);
-        apply_layer_patch(&mut engine, patch);
+        engine.apply_patch(&Patch {
+            layer_a: patch.clone(),
+            ..Patch::default()
+        });
 
         let controls = ControlQueue::new();
         for note in [60, 64, 67, 72] {
-            assert!(controls
-                .try_send(ControlMessage::NoteOn {
-                    note,
-                    velocity: 1.0,
-                })
-                .is_ok());
+            assert!(
+                controls
+                    .try_send(ControlMessage::NoteOn {
+                        note,
+                        velocity: 1.0,
+                    })
+                    .is_ok()
+            );
         }
         for (param, value) in [
             (ParamId::FilterCutoff, patch.filter.cutoff),
@@ -463,9 +660,11 @@ impl AdaptiveBudgetSummary {
             (ParamId::Osc1ShapeMod, patch.osc1.shape_mod),
             (ParamId::EffectParam1, patch.effects.param1),
         ] {
-            assert!(controls
-                .try_send(ControlMessage::edit_param(param, value))
-                .is_ok());
+            assert!(
+                controls
+                    .try_send(ControlMessage::edit_param(param, value))
+                    .is_ok()
+            );
         }
         let patches = PatchQueue::new();
         let mut transition = PatchTransition::default();
@@ -582,22 +781,30 @@ impl RawTiming {
     }
 }
 
-const SCENARIO_COUNT: usize = 4;
+const SCENARIO_COUNT: usize = 8;
 
 #[derive(Clone, Copy)]
 enum Scenario {
     PatchTransition,
-    Attack,
-    Steady,
-    ControlStress,
+    LayerAAttack,
+    LayerASteady,
+    ControlStressA,
+    EditTransition,
+    LayerBSteady,
+    ControlStressB,
+    ModeTransition,
 }
 
 impl Scenario {
     const ALL: [Self; SCENARIO_COUNT] = [
         Self::PatchTransition,
-        Self::Attack,
-        Self::Steady,
-        Self::ControlStress,
+        Self::LayerAAttack,
+        Self::LayerASteady,
+        Self::ControlStressA,
+        Self::EditTransition,
+        Self::LayerBSteady,
+        Self::ControlStressB,
+        Self::ModeTransition,
     ];
 
     const fn index(self) -> usize {
@@ -607,9 +814,13 @@ impl Scenario {
     const fn name(self) -> &'static str {
         match self {
             Self::PatchTransition => "transition",
-            Self::Attack => "attack",
-            Self::Steady => "steady",
-            Self::ControlStress => "controls",
+            Self::LayerAAttack => "layer-a-attack",
+            Self::LayerASteady => "layer-a-steady",
+            Self::ControlStressA => "layer-a-controls",
+            Self::EditTransition => "edit-transition",
+            Self::LayerBSteady => "layer-b-steady",
+            Self::ControlStressB => "layer-b-controls",
+            Self::ModeTransition => "mode-transition",
         }
     }
 }
@@ -732,7 +943,7 @@ impl PresetPeak {
     const EMPTY: Self = Self {
         bank: 0,
         program: 0,
-        scenario: Scenario::Steady,
+        scenario: Scenario::LayerASteady,
         cycles: 0,
     };
 }
@@ -744,7 +955,7 @@ impl Summary {
             over_deadline: [0; SCENARIO_COUNT],
             worst_bank: 0,
             worst_program: 0,
-            worst_scenario: Scenario::Steady,
+            worst_scenario: Scenario::LayerASteady,
             worst_cycles: 0,
             slowest: [PresetPeak::EMPTY; 16],
             waveform_groups: [FeatureGroup::EMPTY; 4],
