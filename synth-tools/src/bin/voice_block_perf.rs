@@ -55,8 +55,7 @@ fn time_case(make_block: fn() -> BenchVoice) -> Duration {
 
 fn configured_block() -> BenchVoice {
     let patch = LayerPatch::default();
-    let mut modulation = PatchModulation::default();
-    modulation.apply_from_patch(&patch);
+    let modulation = PatchModulation::new(&patch);
     let mut block = VoiceBlock::new(SAMPLE_RATE);
     patch.for_each_param(|id, value| block.set_param(id, value));
     for (lane, note) in [48, 55, 60, 67].into_iter().enumerate() {

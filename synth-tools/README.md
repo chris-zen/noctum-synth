@@ -19,6 +19,7 @@ cargo run --release -p synth-tools --bin <name> [-- args...]
 | [`generate_wavetable_bank`](src/bin/generate_wavetable_bank.rs) | Write retained f32 (and Q15 comparison) wavetable bank files |
 | [`wavetable_listening_samples`](src/bin/wavetable_listening_samples.rs) | Short WAV listening samples for the wavetable prototype report |
 | [`factory_corpus_acceptance`](src/bin/factory_corpus_acceptance.rs) | Full 512-program, two-layer topology/filter acceptance with per-program CSV |
+| [`export_rev2_patches`](src/bin/export_rev2_patches.rs) | Decode Rev2 Program Data SysEx into schema v1 two-layer patch JSON |
 
 ### `filter_perf`
 
@@ -79,3 +80,17 @@ Gain-Limited TPT and Huovilainen filters. It validates the official mode
 distribution and four documented factory regressions, then writes peak/RMS,
 active-layer voices, non-finite count, limiter engagement, names, and host
 callback timing for every program.
+
+### `export_rev2_patches`
+
+```bash
+cargo run --release -p synth-tools --bin export_rev2_patches -- <input.syx> [output-dir]
+```
+
+Reads a Rev2 Program Data `.syx` byte stream (`F0`…`F7` framing), decodes each
+Program Data message, and writes schema version 1 two-layer patch JSON
+(`mode`, `split_point`, `layers.a` / `layers.b`). Filenames follow the desktop
+MIDI import convention (`F1-001-Name.json`, `U1`–`U4` for user banks).
+
+Default `output-dir` is the Noctum patches directory
+(`~/Library/Application Support/Noctum/patches` on macOS).

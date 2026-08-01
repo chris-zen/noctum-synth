@@ -2,15 +2,16 @@
 
 use core::marker::PhantomData;
 
-use crate::patch::decode_patch_name;
-use crate::{LayerId, LayerPatch, ParamId};
-
-use super::encoder::ControllerEncoder;
-use super::map::{
-    LfoPairingState, MappedUpdate, map_nrpn_with_lfo, program_nrpn_value, quantize, store_nrpn,
-    unit,
+use crate::midi::rev2::{
+    encoder::ControllerEncoder,
+    map::{
+        LfoPairingState, MappedUpdate, map_nrpn_with_lfo, program_nrpn_value, quantize, store_nrpn,
+        store_program_nrpn, unit,
+    },
+    program::PROGRAM_DATA_LEN,
 };
-use super::program::PROGRAM_DATA_LEN;
+use crate::patch::decode_patch_name;
+use crate::{LayerId, LayerPatch, ParamId, SequencerType};
 
 /// Layer-specific Rev2 program-image and NRPN addressing.
 pub trait Layer {
@@ -62,17 +63,30 @@ impl<L: Layer> LayerDecoder<L> {
     pub fn decode(raw: &[u8; PROGRAM_DATA_LEN]) -> LayerPatch {
         let mut patch = LayerPatch::default();
         let mut state = LfoPairingState::default();
-        for number in 0..=179 {
+        for number in 0..=1043 {
+            // Program byte 139 is a Type enum (0 Gated, 1 Polyphonic), while
+            // live NRPN 183 is an on/off switch with the opposite polarity.
+            if number == 183 {
+                continue;
+            }
             if let Some(value) = program_nrpn_value(raw, number, L::DATA_OFFSET) {
                 map_nrpn_with_lfo(number, value, &mut state, &mut |update| match update {
                     MappedUpdate::Param(param, value) => patch.set_param(param, value),
-                    MappedUpdate::MasterVolume(_) | MappedUpdate::MidiClockMode(_) => {}
+                    MappedUpdate::MasterVolume(_)
+                    | MappedUpdate::MidiClockMode(_)
+                    | MappedUpdate::LayerMode(_)
+                    | MappedUpdate::SplitPoint(_) => {}
                     MappedUpdate::Modulation { route, parameter } => {
                         patch.set_modulation_param(route, parameter)
                     }
+                    MappedUpdate::Sequence(update) => patch.sequence.apply(update),
+                    MappedUpdate::SequencerRunning(_) => {}
+                    MappedUpdate::SequencerRecording(_) => {}
                 });
             }
         }
+        patch.sequence.sequencer_type =
+            SequencerType::from_index(usize::from(raw[L::DATA_OFFSET + 139].min(1)));
         patch.name = decode_patch_name(&raw[L::NAME_RANGE]);
         patch.set_param(
             ParamId::VcaInitialLevel,
@@ -85,6 +99,10 @@ impl<L: Layer> LayerDecoder<L> {
     pub fn encode(patch: &LayerPatch, raw: &mut [u8; PROGRAM_DATA_LEN]) {
         let mut encoder = ControllerEncoder::default();
         patch.for_each_param(|param, value| {
+            // Program byte 139 uses enum polarity, not live NRPN 183 polarity.
+            if param == ParamId::SequencerType {
+                return;
+            }
             let inactive_lfo_rate = match param {
                 ParamId::Lfo1Rate => patch.lfos[0].clock_sync,
                 ParamId::Lfo2Rate => patch.lfos[1].clock_sync,
@@ -127,6 +145,51 @@ impl<L: Layer> LayerDecoder<L> {
                 store_nrpn(raw, sequence, L::DATA_OFFSET);
             }
         });
+        store_program_nrpn(
+            raw,
+            182,
+            patch.sequence.gated_mode.index() as u16,
+            L::DATA_OFFSET,
+        );
+        store_program_nrpn(
+            raw,
+            183,
+            patch.sequence.sequencer_type.index() as u16,
+            L::DATA_OFFSET,
+        );
+        for (track_index, track) in patch.sequence.gated.tracks.iter().enumerate() {
+            store_program_nrpn(
+                raw,
+                184 + track_index as u16,
+                track.destination.rev2_raw(),
+                L::DATA_OFFSET,
+            );
+            for (step_index, step) in track.steps.iter().copied().enumerate() {
+                store_program_nrpn(
+                    raw,
+                    192 + (track_index * 16 + step_index) as u16,
+                    step.rev2_raw(),
+                    L::DATA_OFFSET,
+                );
+            }
+        }
+        for (step_index, step) in patch.sequence.poly.steps.iter().enumerate() {
+            for (lane_index, lane) in step.lanes.iter().copied().enumerate() {
+                let base = 276 + lane_index as u16 * 128;
+                store_program_nrpn(
+                    raw,
+                    base + step_index as u16,
+                    lane.note.rev2_raw(),
+                    L::DATA_OFFSET,
+                );
+                store_program_nrpn(
+                    raw,
+                    base + 64 + step_index as u16,
+                    lane.velocity.rev2_raw(),
+                    L::DATA_OFFSET,
+                );
+            }
+        }
         raw[L::DATA_OFFSET + 27] = quantize(patch.amplifier.initial_level, 0.0, 1.0, 127) as u8;
         raw[L::NAME_RANGE].fill(b' ');
         raw[L::NAME_RANGE.start..L::NAME_RANGE.start + patch.name.len()]

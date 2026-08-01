@@ -4,21 +4,27 @@ use crate::patch::{
     CHORD_MEMORY_CAPACITY, DedicatedModSource, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination,
     ModSource, PATCH_NAME_CAPACITY,
 };
-use crate::{LayerMode, LayerPatch, MAX_SPLIT_POINT, ParamId, Patch};
+use crate::{
+    GATED_STEP_COUNT, GATED_TRACK_COUNT, GatedDestination, GatedStep, LayerMode, LayerPatch,
+    MAX_SPLIT_POINT, POLY_LANE_COUNT, POLY_STEP_COUNT, ParamId, Patch, PolyNote, PolyVelocity,
+};
 
-pub const PATCH_RECORD_SIZE: usize = 1024;
+pub const PATCH_RECORD_SIZE: usize = 3072;
 
 const MAGIC: [u8; 4] = *b"ASPG";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const HEADER_LEN: usize = 12;
 const PARAM_COUNT: usize = PARAM_IDS.len();
+const SEQUENCE_PAYLOAD_LEN: usize =
+    GATED_TRACK_COUNT * (1 + GATED_STEP_COUNT) + POLY_STEP_COUNT * POLY_LANE_COUNT * 2;
 const LAYER_PAYLOAD_LEN: usize = PARAM_COUNT * 2
     + MOD_MATRIX_FREE_SLOT_COUNT * 5
     + DedicatedModSource::COUNT * 4
     + 1
     + PATCH_NAME_CAPACITY
     + 1
-    + CHORD_MEMORY_CAPACITY;
+    + CHORD_MEMORY_CAPACITY
+    + SEQUENCE_PAYLOAD_LEN;
 const PAYLOAD_LEN: usize = 2 + LAYER_PAYLOAD_LEN * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +171,19 @@ fn encode_layer(patch: &LayerPatch, cursor: &mut Writer<'_>) -> Result<(), Patch
     cursor.u8(chord.len() as u8);
     cursor.bytes(chord);
     cursor.zeroes(CHORD_MEMORY_CAPACITY - chord.len());
+
+    for track in patch.sequence.gated.tracks {
+        cursor.u8(track.destination.rev2_raw() as u8);
+        for step in track.steps {
+            cursor.u8(step.rev2_raw() as u8);
+        }
+    }
+    for step in patch.sequence.poly.steps {
+        for lane in step.lanes {
+            cursor.u8(lane.note.rev2_raw() as u8);
+            cursor.u8(lane.velocity.rev2_raw() as u8);
+        }
+    }
     if cursor.position() - start != LAYER_PAYLOAD_LEN {
         return Err(PatchRecordError::CodecDrift);
     }
@@ -226,6 +245,19 @@ fn decode_layer(cursor: &mut Reader<'_>) -> Result<LayerPatch, PatchRecordError>
     }
     let chord = cursor.bytes(CHORD_MEMORY_CAPACITY)?;
     patch.unison_chord = crate::ChordMemory::from_intervals(&chord[..chord_len]);
+
+    for track in &mut patch.sequence.gated.tracks {
+        track.destination = GatedDestination::from_rev2_raw(u16::from(cursor.u8()?));
+        for step in &mut track.steps {
+            *step = GatedStep::from_rev2_raw(u16::from(cursor.u8()?));
+        }
+    }
+    for step in &mut patch.sequence.poly.steps {
+        for lane in &mut step.lanes {
+            lane.note = PolyNote::from_rev2_raw(u16::from(cursor.u8()?));
+            lane.velocity = PolyVelocity::from_rev2_raw(u16::from(cursor.u8()?));
+        }
+    }
     if cursor.position() - start != LAYER_PAYLOAD_LEN {
         return Err(PatchRecordError::InvalidLength);
     }
@@ -383,7 +415,7 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-const PARAM_IDS: [ParamId; 107] = [
+const PARAM_IDS: [ParamId; 109] = [
     ParamId::Osc1Waveform,
     ParamId::Osc1Enabled,
     ParamId::Osc1Frequency,
@@ -489,6 +521,8 @@ const PARAM_IDS: [ParamId; 107] = [
     ParamId::ArpHold,
     ParamId::ArpBeatSync,
     ParamId::ArpSustainMode,
+    ParamId::SequencerType,
+    ParamId::GatedSequencerMode,
     ParamId::ProgramVolume,
     ParamId::AnalogDrift,
 ];
@@ -526,6 +560,7 @@ mod tests {
         });
         assert_eq!(expected.name, actual.name);
         assert_eq!(expected.unison_chord, actual.unison_chord);
+        assert_eq!(expected.sequence, actual.sequence);
         for (expected, actual) in expected
             .mod_matrix
             .free_slots
@@ -580,6 +615,14 @@ mod tests {
         patch.layer_b.filter.cutoff = 8765.0;
         patch.layer_a.osc1.fine_tune = -17.75;
         patch.layer_b.lfos[2].rate_hz = 13.125;
+        patch.layer_a.sequence.sequencer_type = crate::SequencerType::Polyphonic;
+        patch.layer_a.sequence.gated_mode = crate::GatedSequencerMode::KeyStep;
+        patch.layer_a.sequence.gated.tracks[1].destination = crate::GatedDestination::Slew;
+        patch.layer_a.sequence.gated.tracks[0].steps[15] = crate::GatedStep::Rest;
+        patch.layer_a.sequence.poly.steps[63].lanes[5] = crate::PolyLaneStep {
+            note: crate::PolyNote::Tie,
+            velocity: crate::PolyVelocity::Velocity(127),
+        };
         patch.layer_a.mod_matrix.free_slots[3] = ModMatrixSlot {
             enabled: true,
             source: ModSource::Velocity,

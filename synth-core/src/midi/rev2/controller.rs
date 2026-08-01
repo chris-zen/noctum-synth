@@ -3,7 +3,11 @@
 use crate::midi::clock::MidiClockMode;
 use crate::midi::rev2::layer::{Layer, LayerA, LayerB};
 use crate::midi::rev2::map::{LfoPairingState, MappedUpdate, map_cc, map_nrpn_with_lfo, nrpn_max};
-use crate::{LayerId, LayerTarget, ModRoute, ModulationParam, ParamId};
+use crate::midi::rev2::program::layer_mode_from_raw;
+use crate::{
+    LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, ModRoute, ModulationParam, ParamId,
+    SequenceUpdate,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MidiUpdate {
@@ -14,11 +18,25 @@ pub enum MidiUpdate {
     },
     MasterVolume(f32),
     MidiClockMode(MidiClockMode),
+    LayerMode(LayerMode),
+    SplitPoint(u8),
     EditLayer(LayerId),
     Modulation {
         target: LayerTarget,
         route: ModRoute,
         parameter: ModulationParam,
+    },
+    Sequence {
+        target: LayerTarget,
+        update: SequenceUpdate,
+    },
+    SequencerRunning {
+        target: LayerTarget,
+        running: bool,
+    },
+    SequencerRecording {
+        target: LayerTarget,
+        recording: bool,
     },
 }
 
@@ -149,6 +167,19 @@ fn emit_live_nrpn(
         }));
         return;
     }
+    // A/B Mode and Split Point are program-global (no Layer B NRPN offset).
+    if number == 163 || number == LayerB::NRPN_OFFSET + 163 {
+        if let Some(mode) = layer_mode_from_raw(raw.min(2) as u8) {
+            emit(MidiUpdate::LayerMode(mode));
+        }
+        return;
+    }
+    if number == 171 || number == LayerB::NRPN_OFFSET + 171 {
+        emit(MidiUpdate::SplitPoint(
+            raw.min(u16::from(MAX_SPLIT_POINT)) as u8
+        ));
+        return;
+    }
     let (target, layer_index, number) = if (LayerB::NRPN_OFFSET..4096).contains(&number) {
         (
             LayerTarget::Explicit(LayerB::ID),
@@ -172,11 +203,18 @@ fn emit_mapped(target: LayerTarget, update: MappedUpdate, emit: &mut impl FnMut(
         },
         MappedUpdate::MasterVolume(volume) => MidiUpdate::MasterVolume(volume),
         MappedUpdate::MidiClockMode(mode) => MidiUpdate::MidiClockMode(mode),
+        MappedUpdate::LayerMode(mode) => MidiUpdate::LayerMode(mode),
+        MappedUpdate::SplitPoint(split_point) => MidiUpdate::SplitPoint(split_point),
         MappedUpdate::Modulation { route, parameter } => MidiUpdate::Modulation {
             target,
             route,
             parameter,
         },
+        MappedUpdate::Sequence(update) => MidiUpdate::Sequence { target, update },
+        MappedUpdate::SequencerRunning(running) => MidiUpdate::SequencerRunning { target, running },
+        MappedUpdate::SequencerRecording(recording) => {
+            MidiUpdate::SequencerRecording { target, recording }
+        }
     });
 }
 

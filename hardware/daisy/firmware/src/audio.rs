@@ -13,7 +13,9 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use heapless::Deque;
 
-use synth_core::{ControlMessage, LayerId, LayerMode, Patch, SynthEngineWithMemory};
+use synth_core::{
+    ControlMessage, LayerId, LayerMode, Patch, SequencerFeedback, SynthEngineWithMemory,
+};
 #[cfg(feature = "audio-profiling")]
 use synth_core::{RenderProfiler, RenderStage};
 
@@ -269,6 +271,32 @@ pub async fn run_task(
         engine.process_interleaved_profiled(&mut interleaved, 2, &mut profiler);
         #[cfg(not(feature = "audio-profiling"))]
         engine.process_interleaved(&mut interleaved, 2);
+
+        while let Some(feedback) = engine.pop_sequencer_feedback() {
+            match feedback {
+                SequencerFeedback::RecordStatus {
+                    layer,
+                    recording,
+                    cursor,
+                } => diagnostics::emit(diagnostics::Event::SequencerRecordStatus {
+                    layer: u8::from(layer == LayerId::B),
+                    recording,
+                    cursor,
+                }),
+                SequencerFeedback::StepChanged { layer, step, .. } => {
+                    diagnostics::emit(diagnostics::Event::SequencerStepChanged {
+                        layer: u8::from(layer == LayerId::B),
+                        step,
+                    });
+                }
+                SequencerFeedback::RecordOverflow { layer, cursor } => {
+                    diagnostics::emit(diagnostics::Event::SequencerRecordOverflow {
+                        layer: u8::from(layer == LayerId::B),
+                        cursor,
+                    });
+                }
+            }
+        }
 
         #[cfg(feature = "audio-profiling")]
         profiler.begin(RenderStage::OutputCopy);

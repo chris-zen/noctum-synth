@@ -10,13 +10,14 @@ use synth_core::midi::prophet::filter_cutoff_max_hz;
 use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
     EffectParams, EffectType, GlideMode, KeyMode, LayerId, LayerMode, LayerPatch,
-    LayerPlaybackStatus, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination, ModMatrix,
-    ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode, ParamId,
-    Patch, UnisonMode, glide_seconds,
+    LayerPlaybackStatus, LayerSequence, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination,
+    ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode,
+    ParamId, Patch, UnisonMode, glide_seconds,
 };
 
 use crate::config::APP_NAME_FOLDER;
-use crate::engine::{MidiUiUpdate, SynthEngineControl};
+use crate::engine::{MidiUiUpdate, SequencerPlaybackStatus, SynthEngineControl};
+use crate::ui::sequencer_view::SequencerViewState;
 use crate::ui::widgets::{
     KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
     master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
@@ -116,6 +117,7 @@ pub struct UiState {
     pub arp_hold: bool,
     pub arp_beat_sync: bool,
     pub arp_sustain_mode: usize,
+    pub sequence: LayerSequence,
     pub sub_level: f32,
     pub noise_level: f32,
     pub filter_cutoff: f32,
@@ -219,6 +221,7 @@ impl Default for UiState {
             arp_hold: false,
             arp_beat_sync: false,
             arp_sustain_mode: 1,
+            sequence: LayerSequence::default(),
             sub_level: 0.0,
             noise_level: 0.0,
             filter_cutoff: filter_cutoff_max_hz(),
@@ -393,6 +396,7 @@ impl UiState {
             ArpSustainMode::Sustain => 1,
             ArpSustainMode::ArpHoldMom => 2,
         };
+        self.sequence = patch.sequence;
     }
 
     /// Writes every UI-owned layer value without replacing fields that have no
@@ -406,6 +410,7 @@ impl UiState {
         });
         patch.unison_chord = updated.unison_chord;
         patch.mod_matrix = updated.mod_matrix;
+        patch.sequence = updated.sequence;
     }
 
     pub fn apply_midi_update(&mut self, update: MidiUiUpdate) {
@@ -419,6 +424,7 @@ impl UiState {
             } => {
                 self.apply_midi_modulation(route, parameter);
             }
+            MidiUiUpdate::Sequence { update, .. } => self.sequence.apply(update),
             MidiUiUpdate::LayerMode(_)
             | MidiUiUpdate::SplitPoint(_)
             | MidiUiUpdate::EditLayer(_)
@@ -539,6 +545,13 @@ impl UiState {
             ParamId::ArpHold => self.arp_hold = enabled,
             ParamId::ArpBeatSync => self.arp_beat_sync = enabled,
             ParamId::ArpSustainMode => self.arp_sustain_mode = value as usize,
+            ParamId::SequencerType => {
+                self.sequence.sequencer_type = synth_core::SequencerType::from_index(value as usize)
+            }
+            ParamId::GatedSequencerMode => {
+                self.sequence.gated_mode =
+                    synth_core::GatedSequencerMode::from_index(value as usize)
+            }
             _ => return,
         }
         if matches!(
@@ -778,6 +791,7 @@ impl From<&UiState> for LayerPatch {
                     _ => ArpSustainMode::Sustain,
                 },
             },
+            sequence: state.sequence,
             name: synth_core::PatchName::new(),
         }
     }
@@ -789,6 +803,8 @@ pub fn show(
     patch: &mut Patch,
     edit_layer: &mut LayerId,
     playback_status: LayerPlaybackStatus,
+    sequencer_playback: [SequencerPlaybackStatus; 2],
+    sequencer_state: &mut SequencerViewState,
     control: &SynthEngineControl,
     analysis_open: &mut bool,
     patch_mgr: &mut PatchManager,
@@ -813,6 +829,18 @@ pub fn show(
     ui.spacing_mut().scroll.fade.strength = 0.0;
     egui::ScrollArea::vertical().show(ui, |ui| {
         layer_control_bar(ui, state, patch, edit_layer, playback_status, control);
+
+        ui.add_space(8.0);
+
+        crate::ui::sequencer_view::sequencer_control_bar(
+            ui,
+            sequencer_state,
+            patch,
+            *edit_layer,
+            control,
+            sequencer_playback[layer_index(*edit_layer)],
+        );
+        state.sequence = patch.layer(*edit_layer).sequence;
 
         ui.add_space(8.0);
 
@@ -949,18 +977,28 @@ pub fn show(
     });
 }
 
-fn layer_control_bar(
+fn layer_index(layer: LayerId) -> usize {
+    match layer {
+        LayerId::A => 0,
+        LayerId::B => 1,
+    }
+}
+
+pub(crate) fn layer_control_bar(
     ui: &mut egui::Ui,
     state: &mut UiState,
     patch: &mut Patch,
     edit_layer: &mut LayerId,
     playback_status: LayerPlaybackStatus,
     control: &SynthEngineControl,
-) {
+) -> bool {
+    let previous_layer = *edit_layer;
     state.write_to_patch(patch.layer_mut(*edit_layer));
+    let available_width = ui.available_width();
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
+            ui.set_min_width((available_width - 20.0).max(0.0));
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Layers");
                 ui.separator();
@@ -1016,7 +1054,7 @@ fn layer_control_bar(
                     0b01 => "A",
                     0b10 => "B",
                     0b11 => "A + B",
-                    _ => "—",
+                    _ => "--",
                 };
                 ui.label(format!("Playing {rendering}"));
                 if playback_status.degraded {
@@ -1024,6 +1062,7 @@ fn layer_control_bar(
                 }
             });
         });
+    *edit_layer != previous_layer
 }
 
 fn select_ui_edit_layer(
@@ -3996,6 +4035,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn maximally_populated_sequence_round_trips_through_desktop_save_load() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("noctum-sequence-{unique}"));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut manager = PatchManager {
+            save_name: String::new(),
+            loaded_name: String::new(),
+            baseline: None,
+            working_patch: Patch::default(),
+            patch_names: Vec::new(),
+            config_dir: directory.clone(),
+            patches_dir: directory.clone(),
+        };
+        let mut patch = Patch::default();
+        for layer in [LayerId::A, LayerId::B] {
+            let sequence = &mut patch.layer_mut(layer).sequence;
+            sequence.sequencer_type = synth_core::SequencerType::Polyphonic;
+            for (track_index, track) in sequence.gated.tracks.iter_mut().enumerate() {
+                track.destination = synth_core::GatedDestination::Modulation(
+                    ModDestination::ALL[(track_index + 1) % ModDestination::COUNT],
+                );
+                for (step, value) in track.steps.iter_mut().enumerate() {
+                    *value = match step % 3 {
+                        0 => synth_core::GatedStep::Value(125),
+                        1 => synth_core::GatedStep::Rest,
+                        _ => synth_core::GatedStep::Reset,
+                    };
+                }
+            }
+            for (step_index, step) in sequence.poly.steps.iter_mut().enumerate() {
+                for (lane_index, lane) in step.lanes.iter_mut().enumerate() {
+                    lane.note = if (step_index + lane_index) % 2 == 0 {
+                        synth_core::PolyNote::Note(127)
+                    } else {
+                        synth_core::PolyNote::Tie
+                    };
+                    lane.velocity = synth_core::PolyVelocity::Velocity(127);
+                }
+            }
+        }
+        manager.save_program("maximum", &patch).unwrap();
+        let loaded = manager.load_patch("maximum").unwrap();
+        assert_eq!(loaded.layer_a.sequence, patch.layer_a.sequence);
+        assert_eq!(loaded.layer_b.sequence, patch.layer_b.sequence);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn patch_with_layer_a(layer_a: LayerPatch) -> Patch {
         Patch {
             layer_a,
@@ -4121,6 +4211,7 @@ mod tests {
         let mut muted = false;
         let mut program = patch_with_layer_a(loaded.clone());
         let mut edit_layer = LayerId::A;
+        let mut sequencer_state = crate::ui::sequencer_view::SequencerViewState::default();
 
         egui::__run_test_ui(|ui| {
             ui.set_min_size(egui::vec2(1_200.0, 3_000.0));
@@ -4135,6 +4226,8 @@ mod tests {
                     rendered_mask: 0b01,
                     degraded: false,
                 },
+                [SequencerPlaybackStatus::default(); 2],
+                &mut sequencer_state,
                 &bridge.control,
                 &mut analysis_open,
                 &mut manager,

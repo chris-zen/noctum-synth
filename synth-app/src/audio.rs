@@ -50,8 +50,8 @@ fn describe_config(config: &AudioConfig) -> String {
 }
 
 use crate::engine::{
-    self, AudioBlock, AudioCommand, AudioMetrics, SynthEngineAudio, SynthEngineBridge,
-    rebind_audio_channels,
+    self, AudioBlock, AudioCommand, AudioMetrics, SequencerPlaybackStatus, SynthEngineAudio,
+    SynthEngineBridge, rebind_audio_channels,
 };
 
 // ============================================================================
@@ -965,10 +965,12 @@ struct Renderer {
     timing: AudioTiming,
     input: Option<rtrb::Consumer<f32>>,
     input_enabled: Arc<AtomicBool>,
+    analysis_enabled: Arc<AtomicBool>,
     sample_rate: f32,
     channels: usize,
     last_midi_clock_status: MidiClockStatus,
     last_layer_playback_status: synth_core::LayerPlaybackStatus,
+    last_sequencer_playback: [SequencerPlaybackStatus; 2],
 }
 
 impl Renderer {
@@ -981,6 +983,7 @@ impl Renderer {
         filter_type: FilterType,
     ) -> Result<Self, String> {
         let input_enabled = engine_audio.input_enabled.clone();
+        let analysis_enabled = engine_audio.analysis_enabled.clone();
         // Stereo delays need one second of history per channel to match the
         // Rev2's documented maximum. Heap storage avoids a large audio-thread
         // stack object at high host sample rates.
@@ -1005,10 +1008,12 @@ impl Renderer {
             timing: AudioTiming::default(),
             input,
             input_enabled,
+            analysis_enabled,
             sample_rate,
             channels,
             last_midi_clock_status,
             last_layer_playback_status,
+            last_sequencer_playback: [SequencerPlaybackStatus::default(); 2],
         })
     }
 
@@ -1045,7 +1050,10 @@ impl Renderer {
 
         let render_start = Instant::now();
         self.engine.process_interleaved(data, self.channels);
-        let mut analysis_block = capture_synth_block(data, self.channels);
+        let mut analysis_block = self
+            .analysis_enabled
+            .load(Ordering::Relaxed)
+            .then(|| capture_synth_block(data, self.channels));
         if let Some(consumer) = self.input.as_mut() {
             consume_input(
                 data,
@@ -1053,7 +1061,7 @@ impl Renderer {
                 self.channels,
                 frames,
                 self.input_enabled.load(Ordering::Relaxed),
-                &mut analysis_block,
+                analysis_block.as_mut(),
             );
         }
         let render_elapsed = render_start.elapsed();
@@ -1062,7 +1070,15 @@ impl Renderer {
             .feedback
             .set_active_voices(self.engine.active_voice_count());
 
-        self.engine_audio.feedback.push_audio_block(analysis_block);
+        while let Some(feedback) = self.engine.pop_sequencer_feedback() {
+            if !self.engine_audio.feedback.push_sequencer_feedback(feedback) {
+                break;
+            }
+        }
+
+        if let Some(analysis_block) = analysis_block {
+            self.engine_audio.feedback.push_audio_block(analysis_block);
+        }
 
         let clock_status = self.engine.midi_clock_status();
         if clock_status != self.last_midi_clock_status
@@ -1079,6 +1095,24 @@ impl Renderer {
                 .push_layer_playback(layer_playback_status)
         {
             self.last_layer_playback_status = layer_playback_status;
+        }
+
+        for (index, layer) in [synth_core::LayerId::A, synth_core::LayerId::B]
+            .into_iter()
+            .enumerate()
+        {
+            let status = SequencerPlaybackStatus {
+                running: self.engine.sequencer_running(layer),
+                active_step: self.engine.sequencer_active_step(layer),
+            };
+            if status != self.last_sequencer_playback[index]
+                && self
+                    .engine_audio
+                    .feedback
+                    .push_sequencer_playback(layer, status)
+            {
+                self.last_sequencer_playback[index] = status;
+            }
         }
 
         if let Some(metrics) =
@@ -1144,7 +1178,7 @@ fn consume_input(
     channels: usize,
     block_frames: usize,
     mix_enabled: bool,
-    analysis_block: &mut AudioBlock,
+    mut analysis_block: Option<&mut AudioBlock>,
 ) {
     // Keep at most a couple of output blocks buffered to absorb jitter without
     // accumulating unbounded latency.
@@ -1177,7 +1211,9 @@ fn consume_input(
                 }
             }
         }
-        if frame_index < engine::MAX_AUDIO_BUF {
+        if frame_index < engine::MAX_AUDIO_BUF
+            && let Some(analysis_block) = analysis_block.as_deref_mut()
+        {
             analysis_block.input_left[frame_index] = input_left;
             analysis_block.input_right[frame_index] = input_right.unwrap_or(input_left);
         }
@@ -1247,9 +1283,72 @@ impl AudioTiming {
 
 #[cfg(test)]
 mod tests {
-    use super::consume_input;
+    use super::{Renderer, capture_synth_block, consume_input};
     use crate::engine::AudioBlock;
     use rtrb::RingBuffer;
+    use std::time::Instant;
+    use synth_core::dsp::{FilterOversampling, FilterType};
+
+    #[test]
+    #[ignore = "release-mode diagnostic benchmark"]
+    fn analysis_capture_perf() {
+        const ITERATIONS: usize = 100_000;
+        let data = [0.25_f32; 96];
+
+        let started = Instant::now();
+        for _ in 0..ITERATIONS {
+            std::hint::black_box(capture_synth_block(&data, 2));
+        }
+        let enabled = started.elapsed();
+
+        let started = Instant::now();
+        for _ in 0..ITERATIONS {
+            let capture = false.then(|| capture_synth_block(&data, 2));
+            std::hint::black_box(capture);
+        }
+        let disabled = started.elapsed();
+        eprintln!(
+            "analysis capture: enabled={:.1}ns/callback disabled={:.1}ns/callback",
+            enabled.as_nanos() as f64 / ITERATIONS as f64,
+            disabled.as_nanos() as f64 / ITERATIONS as f64,
+        );
+    }
+
+    #[test]
+    fn input_monitoring_does_not_require_analysis_capture() {
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(4);
+        producer.push(0.25).unwrap();
+        producer.push(-0.5).unwrap();
+        let mut data = [0.0_f32; 2];
+
+        consume_input(&mut data, &mut consumer, 2, 1, true, None);
+
+        assert_eq!(data, [0.25, -0.5]);
+    }
+
+    #[test]
+    fn renderer_publishes_audio_blocks_only_while_analysis_is_enabled() {
+        let (audio, bridge) = crate::engine::create_synth_engine_bridge(16);
+        let mut renderer = Renderer::new(
+            audio,
+            48_000.0,
+            2,
+            None,
+            FilterOversampling::Off,
+            FilterType::default(),
+        )
+        .unwrap();
+        let mut output = [0.0_f32; 96];
+
+        renderer.render(&mut output);
+        bridge.view.drain_feedback();
+        assert!(bridge.view.drain_audio_blocks().is_empty());
+
+        bridge.control.set_analysis_enabled(true);
+        renderer.render(&mut output);
+        bridge.view.drain_feedback();
+        assert_eq!(bridge.view.drain_audio_blocks().len(), 1);
+    }
 
     #[test]
     fn mix_input_only_consumes_whole_frames() {
@@ -1260,7 +1359,7 @@ mod tests {
 
         let mut data = [0.0f32; 8];
         let mut analysis = AudioBlock::default();
-        consume_input(&mut data, &mut consumer, 2, 1024, true, &mut analysis);
+        consume_input(&mut data, &mut consumer, 2, 1024, true, Some(&mut analysis));
 
         assert_eq!(data, [0.1, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert_eq!(analysis.input_left[0], 0.1);
@@ -1277,12 +1376,26 @@ mod tests {
 
         let mut first = [0.0f32; 4];
         let mut analysis = AudioBlock::default();
-        consume_input(&mut first, &mut consumer, 2, 1024, true, &mut analysis);
+        consume_input(
+            &mut first,
+            &mut consumer,
+            2,
+            1024,
+            true,
+            Some(&mut analysis),
+        );
         assert_eq!(first, [0.1, 0.2, 0.0, 0.0]);
 
         producer.push(0.4).unwrap();
         let mut second = [0.0f32; 4];
-        consume_input(&mut second, &mut consumer, 2, 1024, true, &mut analysis);
+        consume_input(
+            &mut second,
+            &mut consumer,
+            2,
+            1024,
+            true,
+            Some(&mut analysis),
+        );
         assert_eq!(
             second,
             [0.3, 0.4, 0.0, 0.0],
@@ -1298,7 +1411,7 @@ mod tests {
 
         let mut data = [0.5f32, 0.5];
         let mut analysis = AudioBlock::default();
-        consume_input(&mut data, &mut consumer, 2, 1024, true, &mut analysis);
+        consume_input(&mut data, &mut consumer, 2, 1024, true, Some(&mut analysis));
         assert_eq!(data, [1.0, -1.0]);
     }
 
@@ -1312,7 +1425,7 @@ mod tests {
 
         let mut data = [0.0f32; 4];
         let mut analysis = AudioBlock::default();
-        consume_input(&mut data, &mut consumer, 2, 1, true, &mut analysis);
+        consume_input(&mut data, &mut consumer, 2, 1, true, Some(&mut analysis));
 
         assert_eq!(data, [0.25, 0.28125, 0.3125, 0.34375]);
         assert_eq!(consumer.slots(), 0, "no stale frames left buffered");
@@ -1326,7 +1439,14 @@ mod tests {
 
         let mut data = [0.75f32, 0.75];
         let mut analysis = AudioBlock::default();
-        consume_input(&mut data, &mut consumer, 2, 1024, false, &mut analysis);
+        consume_input(
+            &mut data,
+            &mut consumer,
+            2,
+            1024,
+            false,
+            Some(&mut analysis),
+        );
 
         assert_eq!(data, [0.75, 0.75]);
         assert_eq!(analysis.input_left[0], 0.25);

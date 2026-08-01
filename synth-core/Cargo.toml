@@ -8,6 +8,7 @@ description = "Portable no_std synth engine: voices, DSP (oscillators, filters, 
 default = ["wide-4", "filter-all", "serde"]
 serde = ["dep:serde"]
 profiling = []
+sequencer-benchmark = []
 fast-math = ["dep:micromath"]
 downsampling = []
 oscillator-polyblep = []

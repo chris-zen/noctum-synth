@@ -1,7 +1,8 @@
 //! Official Sequential Prophet '08 factory-bank regressions.
 
 use synth_core::{
-    GlideMode, KeyMode, PanModMode, UnisonMode,
+    ClockDivision, GatedDestination, GatedSequencerMode, GatedStep, GlideMode, KeyMode, LayerPatch,
+    PanModMode, SequencerType, UnisonMode,
     midi::{
         p08::{PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_PACKED_LEN, decode},
         prophet::unpack_program_data,
@@ -80,6 +81,59 @@ fn factory_bank_contains_a_glide_enabled_program() {
         })
         .expect("factory bank should contain a glide program");
     assert!(decoded.patch.layer_a.glide_enabled);
+}
+
+#[test]
+fn factory_bank_decodes_gated_sequence_payloads_for_both_layers() {
+    for program in 0..256 {
+        let message = factory_message(program / 128, program % 128);
+        let mut raw = [0_u8; PROGRAM_DATA_LEN];
+        unpack_program_data(&message[6..6 + PROGRAM_PACKED_LEN], &mut raw);
+        let decoded = decode::program_data(message).unwrap();
+
+        assert_sequence_payload(&decoded.patch.layer_a, &raw, 0);
+        assert_sequence_payload(&decoded.patch.layer_b, &raw, 200);
+    }
+}
+
+fn assert_sequence_payload(patch: &LayerPatch, raw: &[u8; PROGRAM_DATA_LEN], offset: usize) {
+    assert_eq!(
+        patch.sequence.sequencer_type,
+        if raw[offset + 101] == 0 {
+            SequencerType::Polyphonic
+        } else {
+            SequencerType::Gated
+        }
+    );
+    assert_eq!(patch.bpm, f32::from(raw[offset + 91].clamp(30, 250)));
+    assert_eq!(
+        patch.clock_divide,
+        ClockDivision::from_index(usize::from(raw[offset + 92].min(12)))
+    );
+    assert_eq!(
+        patch.sequence.gated_mode,
+        GatedSequencerMode::from_index(usize::from(raw[offset + 94].min(4)))
+    );
+
+    for track in 0..4 {
+        if raw[offset + 77 + track] == 0 {
+            assert_eq!(
+                patch.sequence.gated.tracks[track].destination,
+                GatedDestination::Off
+            );
+        } else {
+            assert_ne!(
+                patch.sequence.gated.tracks[track].destination,
+                GatedDestination::Off
+            );
+        }
+        for step in 0..16 {
+            assert_eq!(
+                patch.sequence.gated.tracks[track].steps[step],
+                GatedStep::from_rev2_raw(u16::from(raw[offset + 120 + track * 16 + step]))
+            );
+        }
+    }
 }
 
 fn factory_message(bank: usize, program: usize) -> &'static [u8] {

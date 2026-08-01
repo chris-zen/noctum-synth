@@ -11,38 +11,41 @@ runs and shows live voice and timing status.
 
 ## Main views
 
-- **Parameters** edits the sound: oscillators, filter, envelopes, LFOs,
-  modulation, effects, and master volume. The **Analysis** button opens a
-  detached analysis window (see below).
-- **Settings** selects MIDI input/output, MIDI clock mode and source, audio
-  output and optional audio input devices, sample rate, filter oversampling,
-  and theme-related preferences.
-- **Analysis** is a separate viewport for spectrum and signal inspection. Its
-  open state and geometry are restored between runs.
+- **Parameters** is the sound-design view: oscillators, filter, envelopes, LFOs,
+  modulation, effects, and master volume. Use it to audition and shape patches
+  while the engine is running. It also exposes layer mode (Normal, Stack, or
+  Split) and sequencer transport shared with the Sequencer view. Open
+  **Analysis** from here when you need live spectrum or scope feedback.
+- **Sequencer** is for writing and playing the four-track gated and six-lane
+  polyphonic sequencers. Use it for step entry, recording, transport, and
+  clearing patterns. Musical states such as tie, rest, and reset are editable
+  without losing the underlying Rev2 note and velocity bytes.
+- **Settings** configures how the harness talks to the outside world: MIDI,
+  audio devices, sample rate, and host preferences. Start here when wiring
+  controllers, a Rev2-compatible device, or comparing hardware audio against
+  the software engine.
+- **Analysis** is a detached viewport for spectrum and signal inspection (see
+  below). Its open state and geometry are restored between runs.
 
-The application lists available audio devices on startup. It chooses a named
-device when supplied, otherwise the system default. An optional input can be
-opened at the output sample rate and summed into the synth output. Changing
-the output device, input device, or sample rate in Settings and clicking
-**Apply audio changes** rebuilds the CPAL streams at runtime (with a brief
-interruption). The current patch parameters are reloaded after a successful
-apply.
+## Settings
 
-The **MIDI Clock** settings group sits below the MIDI input/output selectors.
-The **MIDI Clock** control offers Off, Slave, and Master. Master
-sends Timing Clock on the selected MIDI output at 24 pulses per quarter note;
-Slave derives the effective tempo from the input selected with the exclusive
-**Clock** toggle. While slaved, the Parameters view displays the live effective
-BPM in place of a disabled BPM editor without overwriting the patch's local
-BPM. Switching to Off or Master restores that editable local value.
+Settings covers MIDI ports, MIDI clock, audio I/O, sample rate, filter
+oversampling, and theme. Audio device and sample-rate changes apply at runtime
+with a brief interruption; the current patch is reloaded afterward. An optional
+input can be opened at the output sample rate and summed into the synth output,
+or used only for Analysis comparison.
 
-**MIDI Output Clock** independently configures a connected Rev2-compatible
-device through global NRPN 4099. All five Rev2 choices remain visible: Off,
-Slave, and Slave No S/S are active, while Master and Slave Thru are marked as
-future work and disabled for Daisy. The Clock and Forward toggles are
-orthogonal: selected realtime messages can be used locally and forwarded when
-both are enabled. In harness Master mode, incoming realtime clock is not
-forwarded, preventing a second clock stream from competing with the generated
+**MIDI Clock** can be Off, Slave, or Master. Master sends Timing Clock on the
+selected MIDI output at 24 pulses per quarter note. Slave takes tempo from the
+MIDI input marked as the clock source and shows the live effective BPM in
+Parameters without overwriting the patch's local BPM; Off or Master restores
+that editable local value.
+
+**MIDI Output Clock** configures a connected Rev2-compatible device through
+global NRPN 4099. Off, Slave, and Slave No S/S are active; Master and Slave
+Thru are future work and disabled for Daisy. Realtime messages can be used
+locally, forwarded, or both. In harness Master mode, incoming realtime clock
+is not forwarded, so a second clock stream cannot compete with the generated
 one. The desired output mode and patch are replayed after output reconnection.
 
 ## Threading model
@@ -144,8 +147,8 @@ NRPN selection and Data Entry state is tracked independently for each MIDI
 channel. Data Increment, Data Decrement, and the null RPN reset are supported.
 Program Edit Buffer SysEx dumps are decoded into the shared `Patch` type. The
 app imports both layers independently, including names, key mode, unison,
-arpeggiator, Glide, effects, modulation, mode, split point, and per-oscillator
-rates. Sequencer and global settings remain unsupported. Rev2 chord voicings
+arpeggiator, Glide, effects, modulation, both sequencers, mode, split point, and
+per-oscillator rates. Global device settings remain unsupported. Rev2 chord voicings
 cannot be imported because their program-image bytes are not documented;
 native patches preserve chord memory.
 
@@ -195,7 +198,10 @@ the split point, and which layer the controls edit. Normal gives the selected
 layer all 16 voices; Stack and Split render both layers with eight voices each.
 Unsupported raw fields are zero. Live UI edits use Layer A NRPNs or the
 documented `+2048` Layer B numbers on channel 1, with NRPN 4190 selecting the
-edit layer. Repeated values that quantize to the same Rev2 value are suppressed.
+edit layer. Layer Mode and Split Point use program-global NRPN 163 and 171
+(CC 18 and 39 also accepted on input). Sequencer Play/Stop and Record use
+transient NRPN 180 and 181. Repeated values that quantize to the same Rev2
+value are suppressed.
 Parameter changes and patches received from MIDI update the local engine and UI
 without being copied to MIDI output, preventing feedback loops. The desktop and
 Daisy firmware use the same codec, so their parameter numbers and value scaling
@@ -213,9 +219,6 @@ output and retries once.
 cargo run --release -p synth-app
 ```
 
-Optional positional device filters are MIDI port, output device, then input
-device:
-
-```bash
-cargo run --release -p synth-app -- "MIDI Port Name" "Output Device Name" "Input Device Name"
-```
+Pick devices in Settings after launch. Positional CLI filters (MIDI port, then
+output and input device names) still work for scripting but are not the usual
+path.

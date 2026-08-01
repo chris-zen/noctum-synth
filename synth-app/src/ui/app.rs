@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use synth_core::dsp::FilterType;
-use synth_core::{LayerId, LayerTarget, Patch};
+use synth_core::{LayerId, LayerTarget, Patch, SequencerFeedback};
 
 use crate::audio::AudioManager;
 use crate::config::Config;
@@ -12,17 +12,21 @@ use crate::engine::{AudioMetrics, SynthEngineBridge};
 use crate::midi::MidiInputManager;
 use crate::ui::analysis::{self, AnalysisState, config::AnalysisConfig};
 use crate::ui::params_view::{PatchManager, UiState};
+use crate::ui::sequencer_view::SequencerViewState;
 use crate::ui::settings_view::{AudioBaseline, MidiInputEntry};
 use crate::ui::viewport::{DeferredViewport, RootViewport};
 use crate::ui::{params_view, settings_view};
 
 pub(crate) const APP_TITLE: &str = "Noctum";
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
+const ACTIVE_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+const IDLE_REPAINT_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(PartialEq, Eq, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum Tab {
     #[default]
     Parameters,
+    Sequencer,
     Settings,
 }
 
@@ -34,6 +38,7 @@ pub struct App {
     pub analysis_viewport: DeferredViewport,
     pub main_viewport: RootViewport,
     pub ui_state: UiState,
+    pub sequencer_state: SequencerViewState,
     pub patch: Patch,
     pub edit_layer: LayerId,
     pub midi_inputs: MidiInputManager,
@@ -95,6 +100,7 @@ impl App {
             .control
             .set_midi_output_port(config.settings.midi_output_port.as_deref());
         engine.control.set_input_enabled(config.input_enabled);
+        engine.control.set_analysis_enabled(config.analysis_open);
 
         let mut analysis = AnalysisState::default();
         config.analysis.apply_to(&mut analysis);
@@ -128,6 +134,7 @@ impl App {
             ),
             main_viewport: RootViewport::from_config(config.main_viewport),
             ui_state,
+            sequencer_state: SequencerViewState::default(),
             patch,
             edit_layer: LayerId::A,
             patch_mgr,
@@ -260,6 +267,17 @@ impl App {
                     });
                 }
             }
+            MidiUiUpdate::Sequence { target, update } => {
+                let layer = match target {
+                    LayerTarget::Edit => self.edit_layer,
+                    LayerTarget::Explicit(layer) => layer,
+                };
+                self.patch.layer_mut(layer).sequence.apply(update);
+                if layer == self.edit_layer {
+                    self.ui_state
+                        .apply_midi_update(MidiUiUpdate::Sequence { target, update });
+                }
+            }
         }
     }
 }
@@ -270,8 +288,33 @@ impl eframe::App for App {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.engine
+            .control
+            .set_analysis_enabled(self.analysis_viewport.open);
         self.sync_applied_audio();
         self.engine.view.drain_feedback();
+        if !self.analysis_viewport.open {
+            drop(self.engine.view.drain_audio_blocks());
+        }
+        let mut sequencer_feedback = Vec::new();
+        self.engine
+            .view
+            .drain_sequencer_feedback(|feedback| sequencer_feedback.push(feedback));
+        for feedback in sequencer_feedback {
+            self.sequencer_state.apply_feedback(feedback);
+            match feedback {
+                SequencerFeedback::StepChanged { layer, step, value } => {
+                    self.patch.layer_mut(layer).sequence.poly.steps[usize::from(step)] = value;
+                    if layer == self.edit_layer {
+                        self.ui_state.sequence.poly.steps[usize::from(step)] = value;
+                    }
+                }
+                SequencerFeedback::RecordOverflow { layer, cursor } => {
+                    eprintln!("Layer {layer:?} sequencer record overflow at step {cursor}");
+                }
+                SequencerFeedback::RecordStatus { .. } => {}
+            }
+        }
         self.main_viewport.drive(ctx);
 
         let mut midi_updates = Vec::new();
@@ -338,7 +381,15 @@ impl eframe::App for App {
             );
         });
 
-        ctx.request_repaint();
+        let sequencer_active = [LayerId::A, LayerId::B]
+            .into_iter()
+            .map(|layer| self.engine.view.sequencer_playback_status(layer))
+            .any(|status| status.running || status.active_step.is_some());
+        ctx.request_repaint_after(if sequencer_active || self.analysis_viewport.open {
+            ACTIVE_REPAINT_INTERVAL
+        } else {
+            IDLE_REPAINT_INTERVAL
+        });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -346,6 +397,7 @@ impl eframe::App for App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Parameters, "Parameters");
+                ui.selectable_value(&mut self.active_tab, Tab::Sequencer, "Sequencer");
                 ui.selectable_value(&mut self.active_tab, Tab::Settings, "Settings");
             });
             ui.add_space(4.0);
@@ -369,12 +421,18 @@ impl eframe::App for App {
             Tab::Parameters => {
                 let mut filter_type = self.filter_type.lock();
                 let playback_status = self.engine.view.layer_playback_status();
+                let sequencer_playback = [
+                    self.engine.view.sequencer_playback_status(LayerId::A),
+                    self.engine.view.sequencer_playback_status(LayerId::B),
+                ];
                 params_view::show(
                     ui,
                     &mut self.ui_state,
                     &mut self.patch,
                     &mut self.edit_layer,
                     playback_status,
+                    sequencer_playback,
+                    &mut self.sequencer_state,
                     &self.engine.control,
                     &mut self.analysis_viewport.open,
                     &mut self.patch_mgr,
@@ -384,6 +442,29 @@ impl eframe::App for App {
                 );
                 self.ui_state
                     .write_to_patch(self.patch.layer_mut(self.edit_layer));
+            }
+            Tab::Sequencer => {
+                let status = [
+                    self.engine.view.sequencer_playback_status(LayerId::A),
+                    self.engine.view.sequencer_playback_status(LayerId::B),
+                ];
+                let layer_playback = self.engine.view.layer_playback_status();
+                let layer_changed = crate::ui::sequencer_view::show(
+                    ui,
+                    &mut self.sequencer_state,
+                    &mut self.patch,
+                    &mut self.edit_layer,
+                    &mut self.ui_state,
+                    &self.engine.control,
+                    layer_playback,
+                    status,
+                );
+                if layer_changed {
+                    self.ui_state
+                        .apply_from_patch(self.patch.layer(self.edit_layer));
+                } else {
+                    self.ui_state.sequence = self.patch.layer(self.edit_layer).sequence;
+                }
             }
             Tab::Settings => {
                 self.sync_current_layer();

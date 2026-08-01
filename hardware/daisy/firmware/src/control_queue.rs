@@ -4,7 +4,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use heapless::Deque;
 
-use synth_core::{ControlMessage, LayerTarget};
+use synth_core::{ControlMessage, LayerTarget, SequenceUpdate};
 
 // Keep this small so the bounded in-place scan spends negligible time in its
 // critical section even under an NRPN flood.
@@ -64,6 +64,9 @@ fn uses_edit_target(command: &ControlMessage) -> bool {
             target: LayerTarget::Edit,
             ..
         } | ControlMessage::SetModulationParam {
+            target: LayerTarget::Edit,
+            ..
+        } | ControlMessage::SetSequence {
             target: LayerTarget::Edit,
             ..
         }
@@ -142,9 +145,79 @@ fn replaceable_same_field(existing: &ControlMessage, incoming: &ControlMessage) 
                 && core::mem::discriminant(left_parameter)
                     == core::mem::discriminant(right_parameter)
         }
+        (
+            ControlMessage::SetSequence {
+                target: left_target,
+                update: left,
+            },
+            ControlMessage::SetSequence {
+                target: right_target,
+                update: right,
+            },
+        ) => left_target == right_target && sequence_same_field(*left, *right),
         (ControlMessage::SetLayerMode(_), ControlMessage::SetLayerMode(_))
         | (ControlMessage::SetSplitPoint(_), ControlMessage::SetSplitPoint(_))
         | (ControlMessage::SetEditLayer(_), ControlMessage::SetEditLayer(_)) => true,
+        _ => false,
+    }
+}
+
+fn sequence_same_field(left: SequenceUpdate, right: SequenceUpdate) -> bool {
+    match (left, right) {
+        (SequenceUpdate::Type(_), SequenceUpdate::Type(_))
+        | (SequenceUpdate::GatedMode(_), SequenceUpdate::GatedMode(_)) => true,
+        (
+            SequenceUpdate::GatedDestination { track: left, .. },
+            SequenceUpdate::GatedDestination { track: right, .. },
+        ) => left == right,
+        (
+            SequenceUpdate::GatedStep {
+                track: left_track,
+                step: left_step,
+                ..
+            },
+            SequenceUpdate::GatedStep {
+                track: right_track,
+                step: right_step,
+                ..
+            },
+        ) => left_track == right_track && left_step == right_step,
+        (
+            SequenceUpdate::PolyNote {
+                step: left_step,
+                lane: left_lane,
+                ..
+            },
+            SequenceUpdate::PolyNote {
+                step: right_step,
+                lane: right_lane,
+                ..
+            },
+        )
+        | (
+            SequenceUpdate::PolyVelocity {
+                step: left_step,
+                lane: left_lane,
+                ..
+            },
+            SequenceUpdate::PolyVelocity {
+                step: right_step,
+                lane: right_lane,
+                ..
+            },
+        )
+        | (
+            SequenceUpdate::PolyLaneStep {
+                step: left_step,
+                lane: left_lane,
+                ..
+            },
+            SequenceUpdate::PolyLaneStep {
+                step: right_step,
+                lane: right_lane,
+                ..
+            },
+        ) => left_step == right_step && left_lane == right_lane,
         _ => false,
     }
 }
@@ -161,8 +234,8 @@ fn is_topology_control(command: &ControlMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use synth_core::{
-        ControlMessage, LayerId, LayerMode, LayerTarget, ModDestination, ModRoute, ModSource,
-        ModulationParam, ParamId,
+        ControlMessage, GatedStep, LayerId, LayerMode, LayerTarget, ModDestination, ModRoute,
+        ModSource, ModulationParam, ParamId, SequenceUpdate,
     };
 
     use super::{CONTROL_QUEUE_CAPACITY, ControlQueue};
@@ -283,5 +356,36 @@ mod tests {
             queue.try_receive(),
             Ok(ControlMessage::SetEditLayer(LayerId::A))
         ));
+    }
+
+    #[test]
+    fn repeated_grid_drag_coalesces_to_one_sequence_command() {
+        let queue = ControlQueue::new();
+        for value in 0..=125 {
+            assert!(
+                queue
+                    .try_send(ControlMessage::SetSequence {
+                        target: LayerTarget::Explicit(LayerId::A),
+                        update: SequenceUpdate::GatedStep {
+                            track: 3,
+                            step: 15,
+                            value: GatedStep::Value(value),
+                        },
+                    })
+                    .is_ok()
+            );
+        }
+        assert!(matches!(
+            queue.try_receive(),
+            Ok(ControlMessage::SetSequence {
+                update: SequenceUpdate::GatedStep {
+                    track: 3,
+                    step: 15,
+                    value: GatedStep::Value(125),
+                },
+                ..
+            })
+        ));
+        assert!(queue.try_receive().is_err());
     }
 }

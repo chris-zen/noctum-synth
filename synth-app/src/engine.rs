@@ -11,7 +11,8 @@ use synth_core::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent}
 use synth_core::midi::program::ProgramData;
 use synth_core::{
     ChordMemory, ControlMessage, LayerId, LayerMode, LayerPlaybackStatus, LayerTarget,
-    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch,
+    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SequenceClear,
+    SequenceUpdate, SequencerFeedback, SequencerRecordCommand,
 };
 
 use crate::midi::MidiOutputHandle;
@@ -59,6 +60,10 @@ pub enum MidiUiUpdate {
         route: ModRoute,
         parameter: ModulationParam,
     },
+    Sequence {
+        target: LayerTarget,
+        update: SequenceUpdate,
+    },
     LayerMode(LayerMode),
     SplitPoint(u8),
     EditLayer(LayerId),
@@ -78,11 +83,22 @@ pub struct AudioMetrics {
     pub callbacks: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SequencerPlaybackStatus {
+    pub running: bool,
+    pub active_step: Option<u8>,
+}
+
 pub enum FeedbackMessage {
     Audio(AudioBlock),
     Metrics(AudioMetrics),
     MidiClock(MidiClockStatus),
     LayerPlayback(LayerPlaybackStatus),
+    Sequencer(SequencerFeedback),
+    SequencerPlayback {
+        layer: LayerId,
+        status: SequencerPlaybackStatus,
+    },
 }
 
 pub struct SynthEngineFeedback {
@@ -112,6 +128,22 @@ impl SynthEngineFeedback {
             .push(FeedbackMessage::LayerPlayback(status))
             .is_ok()
     }
+
+    pub fn push_sequencer_feedback(&mut self, feedback: SequencerFeedback) -> bool {
+        self.sender
+            .push(FeedbackMessage::Sequencer(feedback))
+            .is_ok()
+    }
+
+    pub fn push_sequencer_playback(
+        &mut self,
+        layer: LayerId,
+        status: SequencerPlaybackStatus,
+    ) -> bool {
+        self.sender
+            .push(FeedbackMessage::SequencerPlayback { layer, status })
+            .is_ok()
+    }
 }
 
 /// Read-only view of engine state for the UI (active voices, captured audio).
@@ -122,6 +154,8 @@ pub struct SynthEngineView {
     metrics: Arc<RwLock<Option<AudioMetrics>>>,
     midi_clock: Arc<RwLock<Option<MidiClockStatus>>>,
     layer_playback: Arc<RwLock<LayerPlaybackStatus>>,
+    sequencer_feedback: Arc<Mutex<VecDeque<SequencerFeedback>>>,
+    sequencer_playback: Arc<RwLock<[SequencerPlaybackStatus; 2]>>,
     feedback_receiver: Arc<Mutex<rtrb::Consumer<FeedbackMessage>>>,
     midi_ui_receiver: Arc<Mutex<rtrb::Consumer<MidiUiUpdate>>>,
     midi_program_receiver: Arc<Mutex<rtrb::Consumer<Box<ProgramData>>>>,
@@ -161,6 +195,19 @@ impl SynthEngineView {
                 FeedbackMessage::LayerPlayback(status) => {
                     *self.layer_playback.write() = status;
                 }
+                FeedbackMessage::Sequencer(feedback) => {
+                    let mut queue = self.sequencer_feedback.lock();
+                    if queue.len() >= 64 {
+                        queue.pop_front();
+                    }
+                    queue.push_back(feedback);
+                }
+                FeedbackMessage::SequencerPlayback { layer, status } => {
+                    self.sequencer_playback.write()[match layer {
+                        LayerId::A => 0,
+                        LayerId::B => 1,
+                    }] = status;
+                }
             }
         }
     }
@@ -178,6 +225,20 @@ impl SynthEngineView {
         while let Ok(update) = receiver.pop() {
             handler(update);
         }
+    }
+
+    pub fn drain_sequencer_feedback(&self, mut handler: impl FnMut(SequencerFeedback)) {
+        let mut queue = self.sequencer_feedback.lock();
+        while let Some(feedback) = queue.pop_front() {
+            handler(feedback);
+        }
+    }
+
+    pub fn sequencer_playback_status(&self, layer: LayerId) -> SequencerPlaybackStatus {
+        self.sequencer_playback.read()[match layer {
+            LayerId::A => 0,
+            LayerId::B => 1,
+        }]
     }
 
     pub fn drain_midi_program_imports(&self, mut handler: impl FnMut(ProgramData)) {
@@ -205,6 +266,7 @@ pub struct SynthEngineControl {
     midi_output: MidiOutputHandle,
     midi_clock_status: Arc<RwLock<Option<MidiClockStatus>>>,
     input_enabled: Arc<AtomicBool>,
+    analysis_enabled: Arc<AtomicBool>,
     output_muted: Arc<AtomicBool>,
     held_notes: Arc<Mutex<[bool; 128]>>,
     edit_layer: Arc<AtomicU8>,
@@ -243,12 +305,24 @@ impl SynthEngineControl {
 
     pub fn set_layer_mode(&self, mode: LayerMode) {
         self.send(ControlMessage::SetLayerMode(mode));
+        self.midi_output.send_layer_mode(mode);
+    }
+
+    pub fn set_midi_layer_mode(&self, mode: LayerMode) {
+        self.send(ControlMessage::SetLayerMode(mode));
         self.midi_output.cache_layer_mode(mode);
+        self.send_midi_ui(MidiUiUpdate::LayerMode(mode));
     }
 
     pub fn set_split_point(&self, split_point: u8) {
         self.send(ControlMessage::SetSplitPoint(split_point));
+        self.midi_output.send_split_point(split_point);
+    }
+
+    pub fn set_midi_split_point(&self, split_point: u8) {
+        self.send(ControlMessage::SetSplitPoint(split_point));
         self.midi_output.cache_split_point(split_point);
+        self.send_midi_ui(MidiUiUpdate::SplitPoint(split_point));
     }
 
     pub fn set_modulation(
@@ -333,6 +407,104 @@ impl SynthEngineControl {
             route,
             parameter,
         });
+    }
+
+    /// Sends one MIDI-originated sequencer field to the cached patch and UI.
+    pub fn set_midi_sequence(&self, target: LayerTarget, update: SequenceUpdate) {
+        self.send(ControlMessage::SetSequence { target, update });
+        self.send_midi_ui(MidiUiUpdate::Sequence { target, update });
+    }
+
+    pub fn set_sequence(&self, target: LayerTarget, update: SequenceUpdate) {
+        let layer = match target {
+            LayerTarget::Edit => self.edit_layer(),
+            LayerTarget::Explicit(layer) => layer,
+        };
+        self.send(ControlMessage::SetSequence {
+            target: LayerTarget::Explicit(layer),
+            update,
+        });
+        self.midi_output.send_sequence(layer, update);
+    }
+
+    pub fn clear_sequence(&self, target: LayerTarget, section: SequenceClear) {
+        let layer = match target {
+            LayerTarget::Edit => self.edit_layer(),
+            LayerTarget::Explicit(layer) => layer,
+        };
+        self.send(ControlMessage::ClearSequence {
+            target: LayerTarget::Explicit(layer),
+            section,
+        });
+        self.midi_output.clear_sequence(layer, section);
+    }
+
+    pub fn set_sequencer_running(&self, target: LayerTarget, running: bool) {
+        let layer = match target {
+            LayerTarget::Edit => self.edit_layer(),
+            LayerTarget::Explicit(layer) => layer,
+        };
+        self.send(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Explicit(layer),
+            running,
+        });
+        self.midi_output.send_sequencer_running(layer, running);
+    }
+
+    /// Starts or stops the sequencers that are audible in the current patch
+    /// topology. Dual-layer presets may keep their musical sequence on either
+    /// layer, so Stack and Split transport addresses both layers.
+    pub fn set_patch_sequencers_running(
+        &self,
+        mode: LayerMode,
+        edit_layer: LayerId,
+        running: bool,
+    ) {
+        match mode {
+            LayerMode::Normal => {
+                self.set_sequencer_running(LayerTarget::Explicit(edit_layer), running)
+            }
+            LayerMode::Stack | LayerMode::Split => {
+                for layer in [LayerId::A, LayerId::B] {
+                    self.set_sequencer_running(LayerTarget::Explicit(layer), running);
+                }
+            }
+        }
+    }
+
+    pub fn set_midi_sequencer_running(&self, target: LayerTarget, running: bool) {
+        self.send(ControlMessage::SetSequencerRunning { target, running });
+    }
+
+    pub fn sequencer_record_command(&self, target: LayerTarget, command: SequencerRecordCommand) {
+        self.send(ControlMessage::SequencerRecord { target, command });
+    }
+
+    pub fn set_sequencer_recording(&self, target: LayerTarget, recording: bool) {
+        let layer = match target {
+            LayerTarget::Edit => self.edit_layer(),
+            LayerTarget::Explicit(layer) => layer,
+        };
+        self.sequencer_record_command(
+            LayerTarget::Explicit(layer),
+            if recording {
+                SequencerRecordCommand::Start
+            } else {
+                SequencerRecordCommand::Stop
+            },
+        );
+        self.midi_output.send_sequencer_recording(layer, recording);
+    }
+
+    pub fn set_midi_sequencer_recording(&self, target: LayerTarget, recording: bool) {
+        self.sequencer_record_command(
+            target,
+            if recording {
+                SequencerRecordCommand::Start
+            } else {
+                SequencerRecordCommand::Stop
+            },
+        );
     }
 
     pub fn set_filter_oversampling(&self, oversampling: FilterOversampling) {
@@ -470,6 +642,11 @@ impl SynthEngineControl {
         self.input_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    /// Enables audio-block capture only while the analysis viewport needs it.
+    pub fn set_analysis_enabled(&self, enabled: bool) {
+        self.analysis_enabled.store(enabled, Ordering::Relaxed);
+    }
+
     pub fn load_program(&self, patch: &Patch) {
         self.edit_layer.store(0, Ordering::Relaxed);
         self.midi_output.set_master_bpm(patch.layer_a.bpm);
@@ -509,8 +686,9 @@ impl SynthEngineControl {
         self.midi_output.send_patch(program)
     }
 
-    /// Applies a complete MIDI-originated patch without echoing it to MIDI output.
-    pub fn load_midi_program(&self, patch: &Patch) {
+    /// Applies a MIDI edit-buffer dump without echoing it to MIDI output.
+    /// Stored-program dumps use the background import queue instead.
+    pub fn load_midi_edit_buffer(&self, patch: &Patch) {
         self.edit_layer.store(0, Ordering::Relaxed);
         self.midi_output.set_master_bpm(patch.layer_a.bpm);
         self.midi_output.cache_patch(patch);
@@ -544,6 +722,9 @@ impl SynthEngineControl {
                 | ControlMessage::SetLayerMode(_)
                 | ControlMessage::SetSplitPoint(_)
                 | ControlMessage::SetEditLayer(_)
+                | ControlMessage::SetSequence { .. }
+                | ControlMessage::SetSequencerRunning { .. }
+                | ControlMessage::SequencerRecord { .. }
         );
         let mut pending = AudioCommand::Control(message);
         loop {
@@ -627,6 +808,8 @@ pub struct SynthEngineAudio {
     pub feedback: SynthEngineFeedback,
     /// Shared flag toggled from the UI to mute the audio input at runtime.
     pub input_enabled: Arc<AtomicBool>,
+    /// Shared flag which keeps analysis capture off the audio path while hidden.
+    pub analysis_enabled: Arc<AtomicBool>,
 }
 
 /// Creates the control ring buffer and UI-facing engine bridge.
@@ -646,7 +829,10 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
         rendered_mask: 0b01,
         degraded: false,
     }));
+    let sequencer_feedback = Arc::new(Mutex::new(VecDeque::new()));
+    let sequencer_playback = Arc::new(RwLock::new([SequencerPlaybackStatus::default(); 2]));
     let input_enabled = Arc::new(AtomicBool::new(true));
+    let analysis_enabled = Arc::new(AtomicBool::new(false));
     let edit_layer = Arc::new(AtomicU8::new(0));
     let feedback_receiver = Arc::new(Mutex::new(feedback_receiver));
 
@@ -658,6 +844,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             midi_output: MidiOutputHandle::default(),
             midi_clock_status: midi_clock.clone(),
             input_enabled: input_enabled.clone(),
+            analysis_enabled: analysis_enabled.clone(),
             output_muted: Arc::new(AtomicBool::new(false)),
             held_notes: Arc::new(Mutex::new([false; 128])),
             edit_layer,
@@ -668,6 +855,8 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             metrics,
             midi_clock,
             layer_playback,
+            sequencer_feedback,
+            sequencer_playback,
             feedback_receiver,
             midi_ui_receiver: Arc::new(Mutex::new(midi_ui_receiver)),
             midi_program_receiver: Arc::new(Mutex::new(midi_program_receiver)),
@@ -681,6 +870,7 @@ pub fn create_synth_engine_bridge(total_voices: usize) -> (SynthEngineAudio, Syn
             sender: feedback_sender,
         },
         input_enabled,
+        analysis_enabled,
     };
     (audio, bridge)
 }
@@ -699,6 +889,7 @@ pub fn rebind_audio_channels(bridge: &SynthEngineBridge) -> SynthEngineAudio {
             sender: feedback_sender,
         },
         input_enabled: bridge.control.input_enabled.clone(),
+        analysis_enabled: bridge.control.analysis_enabled.clone(),
     }
 }
 
@@ -706,6 +897,17 @@ pub fn rebind_audio_channels(bridge: &SynthEngineBridge) -> SynthEngineAudio {
 mod tests {
     use super::*;
     use synth_core::LayerPatch;
+
+    #[test]
+    fn analysis_capture_flag_survives_audio_channel_rebind() {
+        let (audio, bridge) = create_synth_engine_bridge(16);
+        assert!(!audio.analysis_enabled.load(Ordering::Relaxed));
+        bridge.control.set_analysis_enabled(true);
+        assert!(audio.analysis_enabled.load(Ordering::Relaxed));
+
+        let rebound = rebind_audio_channels(&bridge);
+        assert!(rebound.analysis_enabled.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn chord_capture_tracks_unique_held_notes_and_releases() {
@@ -904,5 +1106,143 @@ mod tests {
         let mut updates = 0;
         bridge.view.drain_midi_ui_updates(|_| updates += 1);
         assert_eq!(updates, 0);
+    }
+
+    #[test]
+    fn sequencer_record_feedback_crosses_the_bounded_audio_ui_bridge() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let feedback = SequencerFeedback::RecordOverflow {
+            layer: LayerId::B,
+            cursor: 63,
+        };
+        assert!(audio.feedback.push_sequencer_feedback(feedback));
+        bridge.view.drain_feedback();
+        let mut actual = None;
+        bridge
+            .view
+            .drain_sequencer_feedback(|event| actual = Some(event));
+        assert_eq!(actual, Some(feedback));
+    }
+
+    #[test]
+    fn bulk_sequence_clear_uses_one_bounded_audio_command() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        bridge
+            .control
+            .clear_sequence(LayerTarget::Explicit(LayerId::B), SequenceClear::Polyphonic);
+        let mut commands = Vec::new();
+        audio.control.drain(|command| commands.push(command));
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            commands[0],
+            AudioCommand::Control(ControlMessage::ClearSequence {
+                target: LayerTarget::Explicit(LayerId::B),
+                section: SequenceClear::Polyphonic,
+            })
+        ));
+    }
+
+    #[test]
+    fn semantic_poly_event_is_one_atomic_audio_command() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        let value = synth_core::PolyLaneStep {
+            note: synth_core::PolyNote::Tie,
+            velocity: synth_core::PolyVelocity::Velocity(127),
+        };
+        bridge.control.set_sequence(
+            LayerTarget::Explicit(LayerId::A),
+            SequenceUpdate::PolyLaneStep {
+                step: 7,
+                lane: 2,
+                value,
+            },
+        );
+
+        let mut commands = Vec::new();
+        audio.control.drain(|command| commands.push(command));
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            commands[0],
+            AudioCommand::Control(ControlMessage::SetSequence {
+                target: LayerTarget::Explicit(LayerId::A),
+                update: SequenceUpdate::PolyLaneStep {
+                    step: 7,
+                    lane: 2,
+                    value: actual,
+                },
+            }) if actual == value
+        ));
+    }
+
+    #[test]
+    fn dual_layer_patch_transport_addresses_both_sequencers() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        bridge
+            .control
+            .set_patch_sequencers_running(LayerMode::Stack, LayerId::A, true);
+
+        let mut targets = Vec::new();
+        audio.control.drain(|command| {
+            if let AudioCommand::Control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Explicit(layer),
+                running: true,
+            }) = command
+            {
+                targets.push(layer);
+            }
+        });
+        assert_eq!(targets, [LayerId::A, LayerId::B]);
+
+        bridge
+            .control
+            .set_patch_sequencers_running(LayerMode::Normal, LayerId::B, true);
+        targets.clear();
+        audio.control.drain(|command| {
+            if let AudioCommand::Control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Explicit(layer),
+                running: true,
+            }) = command
+            {
+                targets.push(layer);
+            }
+        });
+        assert_eq!(targets, [LayerId::B]);
+    }
+
+    #[test]
+    fn ui_layer_and_transport_controls_enqueue_audio_commands() {
+        let (mut audio, bridge) = create_synth_engine_bridge(16);
+        bridge.control.set_layer_mode(LayerMode::Split);
+        bridge.control.set_split_point(72);
+        bridge.control.set_edit_layer(LayerId::B);
+        bridge
+            .control
+            .set_sequencer_running(LayerTarget::Explicit(LayerId::B), true);
+        bridge
+            .control
+            .set_sequencer_recording(LayerTarget::Explicit(LayerId::B), true);
+
+        let mut saw_mode = false;
+        let mut saw_split = false;
+        let mut saw_edit = false;
+        let mut saw_running = false;
+        let mut saw_recording = false;
+        audio.control.drain(|command| match command {
+            AudioCommand::Control(ControlMessage::SetLayerMode(LayerMode::Split)) => {
+                saw_mode = true
+            }
+            AudioCommand::Control(ControlMessage::SetSplitPoint(72)) => saw_split = true,
+            AudioCommand::Control(ControlMessage::SetEditLayer(LayerId::B)) => saw_edit = true,
+            AudioCommand::Control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Explicit(LayerId::B),
+                running: true,
+            }) => saw_running = true,
+            AudioCommand::Control(ControlMessage::SequencerRecord {
+                target: LayerTarget::Explicit(LayerId::B),
+                command: SequencerRecordCommand::Start,
+            }) => saw_recording = true,
+            _ => {}
+        });
+        assert!(saw_mode && saw_split && saw_edit && saw_running && saw_recording);
     }
 }

@@ -105,6 +105,8 @@ impl Patch {
     /// Clamp externally populated fields to the supported patch contract.
     pub fn validate(&mut self) {
         self.set_split_point(self.split_point);
+        self.layer_a.sequence.validate();
+        self.layer_b.sequence.validate();
     }
 }
 

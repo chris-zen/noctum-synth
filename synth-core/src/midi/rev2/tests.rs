@@ -3,8 +3,9 @@
 use heapless::Vec;
 
 use crate::{
-    LayerId, LayerMode, LayerPatch, LayerTarget, LfoSyncDivision, ModDestination, ModSource,
-    ParamId, Patch,
+    GatedDestination, GatedSequencerMode, GatedStep, LayerId, LayerMode, LayerPatch, LayerTarget,
+    LfoSyncDivision, ModDestination, ModSource, ParamId, Patch, PolyLaneStep, PolyNote,
+    PolyVelocity, SequenceUpdate, SequencerType,
     midi::{
         clock::MidiClockMode,
         prophet::{
@@ -582,6 +583,287 @@ fn program_edit_buffer_round_trips_supported_patch_fields() {
 }
 
 #[test]
+fn program_edit_buffer_round_trips_sequencer_wire_fields() {
+    let mut source = Patch::default();
+    for layer in [&mut source.layer_a, &mut source.layer_b] {
+        layer.sequence.sequencer_type = SequencerType::Polyphonic;
+        layer.sequence.gated_mode = GatedSequencerMode::KeyStep;
+        layer.sequence.gated.tracks[0].destination =
+            GatedDestination::Modulation(ModDestination::FilterCutoff);
+        layer.sequence.gated.tracks[1].destination = GatedDestination::Slew;
+        layer.sequence.gated.tracks[0].steps[0] = GatedStep::Value(125);
+        layer.sequence.gated.tracks[0].steps[1] = GatedStep::Reset;
+        layer.sequence.gated.tracks[0].steps[2] = GatedStep::Rest;
+        layer.sequence.poly.steps[0].lanes[0].note = PolyNote::Note(127);
+        layer.sequence.poly.steps[0].lanes[0].velocity = PolyVelocity::Velocity(127);
+        layer.sequence.poly.steps[1].lanes[1].note = PolyNote::Tie;
+        layer.sequence.poly.steps[1].lanes[1].velocity = PolyVelocity::Rest;
+        layer.sequence.poly.steps[63].lanes[4].note = PolyNote::Note(1);
+        layer.sequence.poly.steps[63].lanes[4].velocity = PolyVelocity::Velocity(1);
+    }
+
+    let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+    encode::program_edit_buffer(&source, &mut message).unwrap();
+    let decoded = decode::program_edit_buffer(&message).unwrap();
+
+    for layer in [&decoded.layer_a, &decoded.layer_b] {
+        assert_eq!(layer.sequence.sequencer_type, SequencerType::Polyphonic);
+        assert_eq!(layer.sequence.gated_mode, GatedSequencerMode::KeyStep);
+        assert_eq!(
+            layer.sequence.gated.tracks[0].destination,
+            GatedDestination::Modulation(ModDestination::FilterCutoff)
+        );
+        assert_eq!(
+            layer.sequence.gated.tracks[1].destination,
+            GatedDestination::Slew
+        );
+        assert_eq!(
+            layer.sequence.gated.tracks[0].steps[0],
+            GatedStep::Value(125)
+        );
+        assert_eq!(layer.sequence.gated.tracks[0].steps[1], GatedStep::Reset);
+        assert_eq!(layer.sequence.gated.tracks[0].steps[2], GatedStep::Rest);
+        assert_eq!(
+            layer.sequence.poly.steps[0].lanes[0].note,
+            PolyNote::Note(127)
+        );
+        assert_eq!(
+            layer.sequence.poly.steps[0].lanes[0].velocity,
+            PolyVelocity::Velocity(127)
+        );
+        assert_eq!(layer.sequence.poly.steps[1].lanes[1].note, PolyNote::Tie);
+        assert_eq!(
+            layer.sequence.poly.steps[1].lanes[1].velocity,
+            PolyVelocity::Rest
+        );
+        assert_eq!(
+            layer.sequence.poly.steps[63].lanes[4].note,
+            PolyNote::Note(1)
+        );
+        assert_eq!(
+            layer.sequence.poly.steps[63].lanes[4].velocity,
+            PolyVelocity::Velocity(1)
+        );
+    }
+
+    let mut raw = [0_u8; PROGRAM_DATA_LEN];
+    unpack_program_data(&message[4..4 + PROGRAM_PACKED_LEN], &mut raw);
+    assert_eq!(raw[138], 4);
+    assert_eq!(raw[139], 1);
+    assert_eq!(raw[140], 125);
+    assert_eq!(raw[141], 126);
+    assert_eq!(raw[142], 127);
+    assert_eq!(raw[256], 127);
+    assert_eq!(raw[320], 255);
+    assert_eq!(raw[1024 + 112], 53);
+}
+
+#[test]
+fn program_sequencer_type_uses_enum_polarity_independently_per_layer() {
+    let mut source = Patch::default();
+    source.layer_a.sequence.sequencer_type = SequencerType::Gated;
+    source.layer_b.sequence.sequencer_type = SequencerType::Polyphonic;
+
+    let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
+    encode::program_edit_buffer(&source, &mut message).unwrap();
+    let mut raw = [0_u8; PROGRAM_DATA_LEN];
+    unpack_program_data(&message[4..4 + PROGRAM_PACKED_LEN], &mut raw);
+    assert_eq!(raw[139], 0);
+    assert_eq!(raw[1024 + 139], 1);
+
+    let decoded = decode::program_edit_buffer(&message).unwrap();
+    assert_eq!(
+        decoded.layer_a.sequence.sequencer_type,
+        SequencerType::Gated
+    );
+    assert_eq!(
+        decoded.layer_b.sequence.sequencer_type,
+        SequencerType::Polyphonic
+    );
+}
+
+#[test]
+fn sequencer_live_nrpn_round_trips_both_layers_and_special_values() {
+    let cases = [
+        SequenceUpdate::Type(SequencerType::Gated),
+        SequenceUpdate::Type(SequencerType::Polyphonic),
+        SequenceUpdate::GatedMode(GatedSequencerMode::NoGateNoReset),
+        SequenceUpdate::GatedDestination {
+            track: 1,
+            destination: GatedDestination::Slew,
+        },
+        SequenceUpdate::GatedStep {
+            track: 3,
+            step: 15,
+            value: GatedStep::Rest,
+        },
+        SequenceUpdate::PolyNote {
+            step: 63,
+            lane: 5,
+            value: PolyNote::Tie,
+        },
+        SequenceUpdate::PolyVelocity {
+            step: 63,
+            lane: 5,
+            value: PolyVelocity::Velocity(127),
+        },
+    ];
+    for layer in [LayerId::A, LayerId::B] {
+        for expected in cases {
+            let mut encoder = ControllerEncoder::default();
+            let mut decoder = ControllerDecoder::default();
+            let mut actual = None;
+            encoder.sequence(0, layer, expected, |message| {
+                decoder.control_change(0, message[1], message[2], |update| actual = Some(update));
+            });
+            assert_eq!(
+                actual,
+                Some(MidiUpdate::Sequence {
+                    target: LayerTarget::Explicit(layer),
+                    update: expected,
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn atomic_poly_lane_edit_expands_to_lossless_note_and_velocity_nrpns() {
+    let value = PolyLaneStep {
+        note: PolyNote::Tie,
+        velocity: PolyVelocity::Velocity(91),
+    };
+    for layer in [LayerId::A, LayerId::B] {
+        let mut encoder = ControllerEncoder::default();
+        let mut decoder = ControllerDecoder::default();
+        let mut actual = Vec::<MidiUpdate, 2>::new();
+        encoder.sequence(
+            0,
+            layer,
+            SequenceUpdate::PolyLaneStep {
+                step: 17,
+                lane: 3,
+                value,
+            },
+            |message| {
+                decoder.control_change(0, message[1], message[2], |update| {
+                    actual.push(update).unwrap()
+                });
+            },
+        );
+        assert_eq!(
+            actual.as_slice(),
+            &[
+                MidiUpdate::Sequence {
+                    target: LayerTarget::Explicit(layer),
+                    update: SequenceUpdate::PolyNote {
+                        step: 17,
+                        lane: 3,
+                        value: PolyNote::Tie,
+                    },
+                },
+                MidiUpdate::Sequence {
+                    target: LayerTarget::Explicit(layer),
+                    update: SequenceUpdate::PolyVelocity {
+                        step: 17,
+                        lane: 3,
+                        value: PolyVelocity::Velocity(91),
+                    },
+                },
+            ]
+        );
+    }
+}
+
+#[test]
+fn live_sequencer_on_off_nrpn_uses_on_for_gated_and_off_for_polyphonic() {
+    for (layer, number) in [(LayerId::A, 183_u16), (LayerId::B, 2231_u16)] {
+        for (sequencer_type, expected_raw) in [
+            (SequencerType::Gated, 1_u16),
+            (SequencerType::Polyphonic, 0_u16),
+        ] {
+            let mut messages = [[0_u8; 3]; 4];
+            let mut len = 0;
+            ControllerEncoder::default().sequence(
+                0,
+                layer,
+                SequenceUpdate::Type(sequencer_type),
+                |message| {
+                    messages[len] = message;
+                    len += 1;
+                },
+            );
+            assert_eq!(len, 4);
+            assert_eq!(
+                u16::from(messages[0][2]) * 128 + u16::from(messages[1][2]),
+                number
+            );
+            assert_eq!(
+                u16::from(messages[2][2]) * 128 + u16::from(messages[3][2]),
+                expected_raw
+            );
+
+            let mut param_messages = [[0_u8; 3]; 4];
+            let mut param_len = 0;
+            assert!(ControllerEncoder::default().param_for_layer(
+                0,
+                layer,
+                ParamId::SequencerType,
+                sequencer_type.index() as f32,
+                |message| {
+                    param_messages[param_len] = message;
+                    param_len += 1;
+                },
+            ));
+            assert_eq!(param_len, 4);
+            assert_eq!(param_messages[3][2], expected_raw as u8);
+        }
+    }
+}
+
+#[test]
+fn sequencer_transport_nrpn_180_round_trips_both_layers() {
+    for layer in [LayerId::A, LayerId::B] {
+        for running in [false, true] {
+            let mut encoder = ControllerEncoder::default();
+            let mut decoder = ControllerDecoder::default();
+            let mut actual = None;
+            encoder.sequencer_running(0, layer, running, |message| {
+                decoder.control_change(0, message[1], message[2], |update| actual = Some(update));
+            });
+            assert_eq!(
+                actual,
+                Some(MidiUpdate::SequencerRunning {
+                    target: LayerTarget::Explicit(layer),
+                    running,
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn sequencer_record_nrpn_181_round_trips_both_layers() {
+    for layer in [LayerId::A, LayerId::B] {
+        for recording in [false, true] {
+            let mut encoder = ControllerEncoder::default();
+            let mut decoder = ControllerDecoder::default();
+            let mut actual = None;
+            encoder.sequencer_recording(0, layer, recording, |message| {
+                decoder.control_change(0, message[1], message[2], |update| actual = Some(update));
+            });
+            assert_eq!(
+                actual,
+                Some(MidiUpdate::SequencerRecording {
+                    target: LayerTarget::Explicit(layer),
+                    recording,
+                })
+            );
+        }
+    }
+}
+
+#[test]
 fn program_edit_buffer_rejects_malformed_messages() {
     let mut message = [0_u8; PROGRAM_EDIT_BUFFER_SYSEX_LEN];
     encode::program_edit_buffer(&Patch::default(), &mut message).unwrap();
@@ -685,6 +967,43 @@ fn layer_mode_raw_values_follow_the_reference_contract() {
     assert_eq!(layer_mode_raw(LayerMode::Normal), 0);
     assert_eq!(layer_mode_raw(LayerMode::Stack), 1);
     assert_eq!(layer_mode_raw(LayerMode::Split), 2);
+}
+
+#[test]
+fn live_ab_mode_and_split_point_round_trip_as_program_global_nrpns() {
+    for mode in [LayerMode::Normal, LayerMode::Stack, LayerMode::Split] {
+        let mut encoder = ControllerEncoder::default();
+        let mut decoder = ControllerDecoder::default();
+        let mut actual = None;
+        encoder.layer_mode(0, mode, |message| {
+            decoder.control_change(0, message[1], message[2], |update| actual = Some(update));
+        });
+        assert_eq!(actual, Some(MidiUpdate::LayerMode(mode)));
+    }
+
+    let mut encoder = ControllerEncoder::default();
+    let mut decoder = ControllerDecoder::default();
+    let mut actual = None;
+    encoder.split_point(0, 72, |message| {
+        decoder.control_change(0, message[1], message[2], |update| actual = Some(update));
+    });
+    assert_eq!(actual, Some(MidiUpdate::SplitPoint(72)));
+
+    let mut decoder = ControllerDecoder::default();
+    let mut updates = Vec::<MidiUpdate, 4>::new();
+    decoder.control_change(0, 18, 1, |update| {
+        updates.push(update).unwrap();
+    });
+    decoder.control_change(0, 39, 60, |update| {
+        updates.push(update).unwrap();
+    });
+    assert_eq!(
+        updates.as_slice(),
+        &[
+            MidiUpdate::LayerMode(LayerMode::Stack),
+            MidiUpdate::SplitPoint(60),
+        ]
+    );
 }
 
 #[test]

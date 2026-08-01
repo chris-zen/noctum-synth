@@ -1,10 +1,11 @@
 use crate::{
-    LfoSyncDivision, ModDestination, ParamId,
+    ClockDivision, GatedDestination, GatedSequencerMode, GatedStep, LfoSyncDivision,
+    ModDestination, ParamId, SequencerType,
     dsp::MIN_LFO_RATE_HZ,
     midi::{
         p08::{
             decode,
-            layer::{Layer, LayerA},
+            layer::{Layer, LayerA, LayerB, LayerDecoder},
             map::{
                 MidiUpdate, emit_osc_shape, map_lfo_nrpn, map_nrpn, nrpn_max, p08_lfo_rate_hz,
                 p08_lfo_waveform, p08_mod_destination, program_nrpn_value,
@@ -55,6 +56,72 @@ fn program_values_above_127_use_the_documented_msb_sideband() {
     raw[20] = 1;
     raw[14] = 0x80;
     assert_eq!(program_nrpn_value(&raw, 20, LayerA::DATA_OFFSET), Some(129));
+}
+
+#[test]
+fn program_image_decodes_gated_sequences_for_both_layers() {
+    let mut raw = [0_u8; PROGRAM_DATA_LEN];
+
+    raw[91] = 250;
+    raw[92] = 9;
+    raw[94] = 3;
+    raw[101] = 1;
+    raw[77..81].copy_from_slice(&[0, 9, 25, 43]);
+    raw[120..136].fill(126);
+    raw[120..124].copy_from_slice(&[0, 125, 126, 127]);
+
+    let layer_b = LayerB::DATA_OFFSET;
+    raw[layer_b + 91] = 30;
+    raw[layer_b + 92] = 12;
+    raw[layer_b + 94] = 4;
+    raw[layer_b + 77..layer_b + 81].copy_from_slice(&[1, 2, 3, 4]);
+    raw[layer_b + 168..layer_b + 184].fill(127);
+    raw[layer_b + 168] = 42;
+
+    let layer_a = LayerDecoder::<LayerA>::decode(&raw);
+    assert_eq!(layer_a.bpm, 250.0);
+    assert_eq!(layer_a.clock_divide, ClockDivision::SixteenthTriplet);
+    assert_eq!(layer_a.sequence.sequencer_type, SequencerType::Gated);
+    assert_eq!(
+        layer_a.sequence.gated_mode,
+        GatedSequencerMode::NoGateNoReset
+    );
+    assert_eq!(
+        layer_a.sequence.gated.tracks[0].destination,
+        GatedDestination::Off
+    );
+    assert_eq!(
+        layer_a.sequence.gated.tracks[1].destination,
+        GatedDestination::Modulation(ModDestination::FilterCutoff)
+    );
+    assert_eq!(
+        layer_a.sequence.gated.tracks[2].destination,
+        GatedDestination::Modulation(ModDestination::AmpEnvAmount)
+    );
+    assert_eq!(
+        layer_a.sequence.gated.tracks[3].destination,
+        GatedDestination::Modulation(ModDestination::Mod4Amount)
+    );
+    assert_eq!(
+        &layer_a.sequence.gated.tracks[0].steps[..4],
+        &[
+            GatedStep::Value(0),
+            GatedStep::Value(125),
+            GatedStep::Reset,
+            GatedStep::Rest,
+        ]
+    );
+
+    let layer_b = LayerDecoder::<LayerB>::decode(&raw);
+    assert_eq!(layer_b.bpm, 30.0);
+    assert_eq!(layer_b.clock_divide, ClockDivision::SixtyFourthTriplet);
+    assert_eq!(layer_b.sequence.sequencer_type, SequencerType::Polyphonic);
+    assert_eq!(layer_b.sequence.gated_mode, GatedSequencerMode::KeyStep);
+    assert_eq!(
+        layer_b.sequence.gated.tracks[3].steps[0],
+        GatedStep::Value(42)
+    );
+    assert_eq!(layer_b.sequence.gated.tracks[3].steps[15], GatedStep::Rest);
 }
 
 #[test]

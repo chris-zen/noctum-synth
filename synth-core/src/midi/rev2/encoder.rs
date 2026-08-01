@@ -2,15 +2,20 @@
 
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
-use crate::midi::clock::MidiClockMode;
-use crate::midi::prophet::{
-    FILTER_CUTOFF_RAW_MAX, attack_decay_raw, cutoff_hz_to_raw, key_track_to_raw, release_raw,
+use crate::midi::{
+    clock::MidiClockMode,
+    prophet::{
+        FILTER_CUTOFF_RAW_MAX, attack_decay_raw, cutoff_hz_to_raw, key_track_to_raw, release_raw,
+    },
+    rev2::{
+        map::{bool_raw, emit_nrpn, key_mode_raw, quantize, quantize_log},
+        program::layer_mode_raw,
+    },
 };
 use crate::{
-    DedicatedModSource, LayerId, LfoSyncDivision, ModDestination, ModRoute, ModSource, ParamId,
+    DedicatedModSource, LayerId, LayerMode, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination,
+    ModRoute, ModSource, ParamId, SequenceUpdate, SequencerType,
 };
-
-use super::map::{bool_raw, emit_nrpn, key_mode_raw, quantize, quantize_log};
 
 /// Stateful Rev2 NRPN encoder. Oscillator shape combines enabled/waveform state.
 pub struct ControllerEncoder {
@@ -36,6 +41,19 @@ impl ControllerEncoder {
                 LayerId::A => 0,
                 LayerId::B => 1,
             },
+            &mut emit,
+        );
+    }
+
+    pub fn layer_mode(&mut self, channel: u8, mode: LayerMode, mut emit: impl FnMut([u8; 3])) {
+        emit_nrpn(channel, 163, u16::from(layer_mode_raw(mode)), &mut emit);
+    }
+
+    pub fn split_point(&mut self, channel: u8, split_point: u8, mut emit: impl FnMut([u8; 3])) {
+        emit_nrpn(
+            channel,
+            171,
+            u16::from(split_point.min(MAX_SPLIT_POINT)),
             &mut emit,
         );
     }
@@ -202,6 +220,11 @@ impl ControllerEncoder {
             ParamId::ArpRange => (174, quantize(value, 0.0, 2.0, 2)),
             ParamId::ArpRepeats => (177, quantize(value, 0.0, 2.0, 2)),
             ParamId::ArpRelatch => (178, bool_raw(value)),
+            ParamId::SequencerType => (
+                183,
+                u16::from(quantize(value, 0.0, 1.0, 1) == SequencerType::Gated.index() as u16),
+            ),
+            ParamId::GatedSequencerMode => (182, quantize(value, 0.0, 4.0, 4)),
             _ => return false,
         };
         let layer_offset = match layer {
@@ -210,6 +233,80 @@ impl ControllerEncoder {
         };
         emit_nrpn(channel, mapped.0 + layer_offset, mapped.1, &mut emit);
         true
+    }
+
+    /// Encode one lossless sequencer edit as a Rev2 NRPN sequence.
+    pub fn sequence(
+        &mut self,
+        channel: u8,
+        layer: LayerId,
+        update: SequenceUpdate,
+        mut emit: impl FnMut([u8; 3]),
+    ) {
+        let offset = match layer {
+            LayerId::A => 0,
+            LayerId::B => 2048,
+        };
+        if let SequenceUpdate::PolyLaneStep { step, lane, value } = update {
+            if step >= 64 || lane >= 6 {
+                return;
+            }
+            let base = 276 + u16::from(lane) * 128 + u16::from(step) + offset;
+            emit_nrpn(channel, base, value.note.rev2_raw(), &mut emit);
+            emit_nrpn(channel, base + 64, value.velocity.rev2_raw(), &mut emit);
+            return;
+        }
+        let (number, raw) = match update {
+            SequenceUpdate::Type(value) => (183, u16::from(value == SequencerType::Gated)),
+            SequenceUpdate::GatedMode(value) => (182, value.index() as u16),
+            SequenceUpdate::GatedDestination { track, destination } if track < 4 => {
+                (184 + u16::from(track), destination.rev2_raw())
+            }
+            SequenceUpdate::GatedStep { track, step, value } if track < 4 && step < 16 => (
+                192 + u16::from(track) * 16 + u16::from(step),
+                value.rev2_raw(),
+            ),
+            SequenceUpdate::PolyNote { step, lane, value } if step < 64 && lane < 6 => (
+                276 + u16::from(lane) * 128 + u16::from(step),
+                value.rev2_raw(),
+            ),
+            SequenceUpdate::PolyVelocity { step, lane, value } if step < 64 && lane < 6 => (
+                340 + u16::from(lane) * 128 + u16::from(step),
+                value.rev2_raw(),
+            ),
+            _ => return,
+        };
+        emit_nrpn(channel, number + offset, raw, &mut emit);
+    }
+
+    /// Encode the transient Rev2 polyphonic-sequencer play/stop switch (NRPN 180).
+    pub fn sequencer_running(
+        &mut self,
+        channel: u8,
+        layer: LayerId,
+        running: bool,
+        mut emit: impl FnMut([u8; 3]),
+    ) {
+        let offset = match layer {
+            LayerId::A => 0,
+            LayerId::B => 2048,
+        };
+        emit_nrpn(channel, 180 + offset, u16::from(running), &mut emit);
+    }
+
+    /// Encode the transient Rev2 polyphonic-sequencer record switch (NRPN 181).
+    pub fn sequencer_recording(
+        &mut self,
+        channel: u8,
+        layer: LayerId,
+        recording: bool,
+        mut emit: impl FnMut([u8; 3]),
+    ) {
+        let offset = match layer {
+            LayerId::A => 0,
+            LayerId::B => 2048,
+        };
+        emit_nrpn(channel, 181 + offset, u16::from(recording), &mut emit);
     }
 
     pub fn modulation(

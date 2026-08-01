@@ -2,8 +2,11 @@ use rand_core::Rng;
 use rand_core::SeedableRng;
 use rand_pcg::Pcg32;
 
-use crate::patch::{ArpMode, ArpParams, ArpSustainMode, ClockDivision};
-use crate::pressed_keys::PressedKeys;
+use crate::{
+    patch::{ArpMode, ArpParams, ArpSustainMode, ClockDivision},
+    pressed_keys::PressedKeys,
+    sequencer::clock::{StepClock, StepClockEvent},
+};
 
 pub const MAX_ARP_NOTES: usize = 16;
 pub const MAX_ARP_STEPS: usize = MAX_ARP_NOTES * 3 * 3;
@@ -28,11 +31,7 @@ pub(crate) struct ArpEngine {
     step: usize,
     current_note: Option<u8>,
     current_velocity: f32,
-    phase: f32,
-    samples_per_step: f32,
-    tempo_bpm: f32,
-    clock_division: ClockDivision,
-    sample_rate: f32,
+    clock: StepClock,
     sustain_pedal: bool,
     cycle_count: u32,
     needs_rebuild: bool,
@@ -48,15 +47,7 @@ impl ArpEngine {
             step: 0,
             current_note: None,
             current_velocity: 0.0,
-            phase: 0.0,
-            samples_per_step: Self::calc_samples_per_step(
-                sample_rate,
-                120.0,
-                ClockDivision::default(),
-            ),
-            tempo_bpm: 120.0,
-            clock_division: ClockDivision::default(),
-            sample_rate,
+            clock: StepClock::new(sample_rate),
             sustain_pedal: false,
             cycle_count: 0,
             needs_rebuild: false,
@@ -85,15 +76,19 @@ impl ArpEngine {
     }
 
     pub(crate) fn set_tempo_bpm(&mut self, tempo_bpm: f32) {
-        self.tempo_bpm = tempo_bpm;
-        self.samples_per_step =
-            Self::calc_samples_per_step(self.sample_rate, tempo_bpm, self.clock_division);
+        self.clock.set_tempo_bpm(tempo_bpm);
     }
 
     pub(crate) fn set_clock_division(&mut self, division: ClockDivision) {
-        self.clock_division = division;
-        self.samples_per_step =
-            Self::calc_samples_per_step(self.sample_rate, self.tempo_bpm, division);
+        self.clock.set_division(division);
+    }
+
+    pub(crate) fn set_external_clock(&mut self, external: bool) {
+        self.clock.set_external(external);
+    }
+
+    pub(crate) fn midi_clock_tick(&mut self) {
+        self.clock.midi_tick();
     }
 
     pub(crate) fn note_on(&mut self, note: u8, velocity: f32) {
@@ -126,7 +121,7 @@ impl ArpEngine {
         self.sequence.clear();
         self.step = 0;
         self.current_note = None;
-        self.phase = 0.0;
+        self.clock.reset();
         self.cycle_count = 0;
         self.needs_rebuild = false;
     }
@@ -180,12 +175,9 @@ impl ArpEngine {
             return self.current_note.take().map(ArpEvent::Release);
         }
 
-        self.phase += samples as f32;
-        if self.phase < self.samples_per_step {
+        if self.clock.advance(samples) != Some(StepClockEvent::Boundary) {
             return None;
         }
-
-        self.phase -= self.samples_per_step;
 
         if self.step >= self.sequence.len() {
             if self.params.mode == ArpMode::Random {
@@ -302,7 +294,7 @@ impl ArpEngine {
             self.step = 0;
         }
         if was_empty {
-            self.phase = self.samples_per_step;
+            self.clock.trigger_immediate();
         }
     }
 
@@ -313,18 +305,9 @@ impl ArpEngine {
         self.step = 0;
         self.current_note = None;
         self.current_velocity = 0.0;
-        self.phase = 0.0;
+        self.clock.reset();
         self.cycle_count = 0;
         self.needs_rebuild = false;
-    }
-
-    fn calc_samples_per_step(sample_rate: f32, tempo_bpm: f32, division: ClockDivision) -> f32 {
-        let bps = tempo_bpm / 60.0;
-        let steps_per_beat = division.steps_per_quarter();
-        if bps <= 0.0 || steps_per_beat <= 0.0 {
-            return sample_rate;
-        }
-        sample_rate / (bps * steps_per_beat)
     }
 }
 
@@ -536,9 +519,9 @@ mod tests {
     fn arp_tempo_changes_step_rate() {
         let mut arp = ArpEngine::new(48000.0);
         arp.set_tempo_bpm(120.0);
-        let s1 = arp.samples_per_step;
+        let s1 = arp.clock.nominal_samples_per_step();
         arp.set_tempo_bpm(60.0);
-        assert!((arp.samples_per_step - s1 * 2.0).abs() < 0.01);
+        assert!((arp.clock.nominal_samples_per_step() - s1 * 2.0).abs() < 0.01);
     }
 
     #[test]
@@ -546,9 +529,9 @@ mod tests {
         let mut arp = ArpEngine::new(48000.0);
         arp.set_tempo_bpm(120.0);
         arp.set_clock_division(ClockDivision::Quarter);
-        let s1 = arp.samples_per_step;
+        let s1 = arp.clock.nominal_samples_per_step();
         arp.set_clock_division(ClockDivision::Sixteenth);
-        assert!((arp.samples_per_step - s1 / 4.0).abs() < 0.01);
+        assert!((arp.clock.nominal_samples_per_step() - s1 / 4.0).abs() < 0.01);
     }
 
     #[test]

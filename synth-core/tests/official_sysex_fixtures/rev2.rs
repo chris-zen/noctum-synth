@@ -1,7 +1,8 @@
 //! Official Sequential Rev2 factory-bank regressions.
 
 use synth_core::{
-    LayerId, LayerMode, ModDestination, SynthEngineWithMemory, VOICE_PACKS,
+    ControlMessage, LayerId, LayerMode, LayerTarget, ModDestination, PolyVelocity,
+    SynthEngineWithMemory, VOICE_PACKS,
     midi::{
         prophet::unpack_program_data,
         rev2::{
@@ -107,6 +108,95 @@ fn documented_factory_layer_programs_render_without_parameter_workarounds() {
             "factory program {program} should render without changing cutoff or envelope amount; RMS {rms}"
         );
     }
+}
+
+#[test]
+fn f1_001_poly_sequence_plays_when_an_unused_lane_resets() {
+    let patch = decode::program_data(factory_message(0)).unwrap().patch;
+    assert_eq!(patch.layer_a.name.as_str(), "LosVangelis2041");
+    let first_step = patch.layer_a.sequence.poly.steps[0];
+    assert_eq!(first_step.lanes[0].velocity, PolyVelocity::Reset);
+    assert!(matches!(
+        first_step.lanes[1].velocity,
+        PolyVelocity::Velocity(_)
+    ));
+    let first_full_reset = patch
+        .layer_a
+        .sequence
+        .poly
+        .steps
+        .iter()
+        .position(|step| step.is_reset());
+    assert_eq!(first_full_reset, Some(23));
+
+    let effects_memory = vec![0.0; 48_000 * 4].into_boxed_slice();
+    let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS, 2>::new_with_effects_memory(
+        48_000.0,
+        effects_memory,
+    )
+    .unwrap();
+    engine.apply_patch(&patch);
+    engine.handle_control(ControlMessage::SetSequencerRunning {
+        target: LayerTarget::Explicit(LayerId::A),
+        running: true,
+    });
+
+    let mut output = [0.0; 2];
+    engine.process(&mut output);
+    assert_eq!(engine.layer_active_voice_count(LayerId::A), 1);
+}
+
+#[test]
+fn f1_002_stack_sequence_plays_from_layer_b() {
+    let patch = decode::program_data(factory_message(1)).unwrap().patch;
+    assert_eq!(patch.mode, LayerMode::Stack);
+    assert_eq!(patch.layer_a.name.as_str(), "All That Glitter");
+    assert_eq!(patch.layer_b.name.as_str(), "All That Glitter B");
+
+    let effects_memory = vec![0.0; 48_000 * 4].into_boxed_slice();
+    let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS, 2>::new_with_effects_memory(
+        48_000.0,
+        effects_memory,
+    )
+    .unwrap();
+    engine.apply_patch(&patch);
+    for layer in [LayerId::A, LayerId::B] {
+        engine.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Explicit(layer),
+            running: true,
+        });
+    }
+
+    let mut output = [0.0; 2];
+    engine.process(&mut output);
+    assert_eq!(engine.layer_active_voice_count(LayerId::A), 0);
+    assert_eq!(engine.layer_active_voice_count(LayerId::B), 1);
+}
+
+#[test]
+fn f1_004_gated_sequence_advances_while_a_key_is_held() {
+    let patch = decode::program_data(factory_message(3)).unwrap().patch;
+    assert_eq!(patch.layer_a.name.as_str(), "Balalaika2017");
+
+    let effects_memory = vec![0.0; 48_000 * 4].into_boxed_slice();
+    let mut engine = SynthEngineWithMemory::<_, VOICE_PACKS, 2>::new_with_effects_memory(
+        48_000.0,
+        effects_memory,
+    )
+    .unwrap();
+    engine.apply_patch(&patch);
+    engine.note_on(60, 1.0);
+
+    let mut output = vec![0.0; 48_000 * 2];
+    engine.process(&mut output);
+    assert!(
+        engine.sequencer_active_step(LayerId::A).is_some()
+            || engine.sequencer_active_step(LayerId::B).is_some(),
+        "F1-004 gated sequence should advance while a key is held"
+    );
+    let rms =
+        (output.iter().map(|sample| sample * sample).sum::<f32>() / output.len() as f32).sqrt();
+    assert!(rms > 0.000_01, "F1-004 should produce audio; rms={rms}");
 }
 
 #[test]

@@ -2,10 +2,14 @@
 
 use core::marker::PhantomData;
 
-use crate::{LayerId, LayerPatch};
-
-use super::map::{MidiUpdate, map_nrpn, program_nrpn_value};
-use super::program::PROGRAM_DATA_LEN;
+use crate::{
+    ClockDivision, GATED_STEP_COUNT, GATED_TRACK_COUNT, GatedDestination, GatedSequencerMode,
+    GatedStep, LayerId, LayerPatch, SequencerType,
+    midi::p08::{
+        map::{MidiUpdate, map_nrpn, p08_mod_destination, program_nrpn_value},
+        program::PROGRAM_DATA_LEN,
+    },
+};
 
 /// Layer-specific Prophet '08 program-image addressing.
 pub trait Layer {
@@ -22,17 +26,17 @@ pub trait Layer {
 /// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
 pub struct LayerA;
 
-/// Layer B in the official [Prophet '08 program image].
-///
-/// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
-pub struct LayerB;
-
 impl Layer for LayerA {
     const ID: LayerId = LayerId::A;
     const DATA_OFFSET: usize = 0;
     const NAME_RANGE: core::ops::Range<usize> = 184..200;
     const NRPN_OFFSET: u16 = 0;
 }
+
+/// Layer B in the official [Prophet '08 program image].
+///
+/// [Prophet '08 program image]: https://www.sequential.com/downloads/prophet_keyboard/doc/Prophet_08_Manual_v1.3.pdf
+pub struct LayerB;
 
 impl Layer for LayerB {
     const ID: LayerId = LayerId::B;
@@ -64,7 +68,36 @@ impl<L: Layer> LayerDecoder<L> {
                 });
             }
         }
+        decode_sequence::<L>(raw, &mut patch);
         patch.glide_enabled = patch.osc1.glide > 0.0 || patch.osc2.glide > 0.0;
         patch
+    }
+}
+
+fn decode_sequence<L: Layer>(raw: &[u8; PROGRAM_DATA_LEN], patch: &mut LayerPatch) {
+    let offset = L::DATA_OFFSET;
+    patch.bpm = f32::from(raw[offset + 91].clamp(30, 250));
+    patch.clock_divide = ClockDivision::from_index(usize::from(raw[offset + 92].min(12)));
+    patch.sequence.sequencer_type = if raw[offset + 101] == 0 {
+        SequencerType::Polyphonic
+    } else {
+        SequencerType::Gated
+    };
+    patch.sequence.gated_mode =
+        GatedSequencerMode::from_index(usize::from(raw[offset + 94].min(4)));
+
+    for track in 0..GATED_TRACK_COUNT {
+        let destination = raw[offset + 77 + track];
+        patch.sequence.gated.tracks[track].destination = if destination == 0 {
+            GatedDestination::Off
+        } else {
+            GatedDestination::Modulation(p08_mod_destination(u16::from(destination)))
+        };
+
+        for step in 0..GATED_STEP_COUNT {
+            let value = raw[offset + 120 + track * GATED_STEP_COUNT + step];
+            patch.sequence.gated.tracks[track].steps[step] =
+                GatedStep::from_rev2_raw(u16::from(value));
+        }
     }
 }

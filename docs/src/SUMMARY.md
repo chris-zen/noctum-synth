@@ -15,6 +15,7 @@
 - [Sound Architecture](synthesizer/sound-architecture.md)
 - [Parameter Guide](synthesizer/parameters.md)
 - [Modulation and Effects](synthesizer/modulation-effects.md)
+- [Sequencers](synthesizer/sequencer.md)
 
 # Application
 

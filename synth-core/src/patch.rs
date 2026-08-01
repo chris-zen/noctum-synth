@@ -1,14 +1,14 @@
 //! Per-layer patch parameters and modulation routing targets.
 
-use crate::ParamId;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use crate::dsp::{
     DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
     LfoWaveform, MIN_LFO_RATE_HZ,
 };
 use crate::midi::prophet;
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use crate::{LayerSequence, ParamId};
 
 pub const PATCH_NAME_CAPACITY: usize = 20;
 pub const CHORD_MEMORY_CAPACITY: usize = 16;
@@ -1265,6 +1265,7 @@ impl Default for ArpParams {
 
 /// One layer's complete sound parameters in a fixed-size serializable snapshot.
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 #[derive(Debug, Clone)]
 pub struct LayerPatch {
     pub osc1: OscillatorPatch,
@@ -1281,7 +1282,6 @@ pub struct LayerPatch {
     pub unison_enabled: bool,
     pub unison_mode: UnisonMode,
     pub unison_detune: f32,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub unison_chord: ChordMemory,
     pub bpm: f32,
     pub clock_divide: ClockDivision,
@@ -1291,50 +1291,11 @@ pub struct LayerPatch {
     pub lfos: [LfoParams; LFO_COUNT],
     pub mod_matrix: ModMatrix,
     pub effects: EffectParams,
-    #[cfg_attr(feature = "serde", serde(default))]
     pub arp: ArpParams,
+    pub sequence: LayerSequence,
     #[cfg_attr(feature = "serde", serde(alias = "master_volume"))]
     pub program_volume: f32,
     pub name: PatchName,
-}
-
-impl Default for LayerPatch {
-    fn default() -> Self {
-        Self {
-            osc1: OscillatorPatch {
-                enabled: true,
-                ..OscillatorPatch::default()
-            },
-            osc2: OscillatorPatch::default(),
-            osc_mix: 0.0,
-            sub_osc_level: 0.0,
-            noise_level: 0.0,
-            hard_sync: false,
-            osc_slop: 0.0,
-            glide_mode: GlideMode::default(),
-            glide_enabled: false,
-            pitch_bend_range: 2.0,
-            key_mode: KeyMode::default(),
-            unison_enabled: false,
-            unison_mode: UnisonMode::default(),
-            unison_detune: 0.0,
-            unison_chord: ChordMemory::default(),
-            bpm: crate::DEFAULT_TEMPO_BPM,
-            clock_divide: ClockDivision::default(),
-            filter: FilterParams {
-                cutoff: prophet::filter_cutoff_max_hz(),
-                ..FilterParams::default()
-            },
-            amplifier: AmplifierParams::default(),
-            aux_envelope: AuxEnvelopeParams::default(),
-            lfos: [LfoParams::default(); LFO_COUNT],
-            mod_matrix: ModMatrix::default(),
-            effects: EffectParams::default(),
-            arp: ArpParams::default(),
-            program_volume: 0.8,
-            name: PatchName::new(),
-        }
-    }
 }
 
 impl LayerPatch {
@@ -1506,6 +1467,14 @@ impl LayerPatch {
                 ArpSustainMode::ArpHoldMom => 2.0,
             },
         );
+        f(
+            ParamId::SequencerType,
+            self.sequence.sequencer_type.index() as f32,
+        );
+        f(
+            ParamId::GatedSequencerMode,
+            self.sequence.gated_mode.index() as f32,
+        );
 
         f(ParamId::ProgramVolume, self.program_volume);
         f(ParamId::AnalogDrift, self.osc_slop);
@@ -1674,6 +1643,12 @@ impl LayerPatch {
                     _ => ArpSustainMode::Sustain,
                 }
             }
+            ParamId::SequencerType => {
+                self.sequence.sequencer_type = crate::SequencerType::from_index(value as usize)
+            }
+            ParamId::GatedSequencerMode => {
+                self.sequence.gated_mode = crate::GatedSequencerMode::from_index(value as usize)
+            }
             ParamId::VcaDrive => {}
         }
     }
@@ -1705,6 +1680,46 @@ impl LayerPatch {
                     slot.enabled = slot.destination != ModDestination::Off;
                 }
             }
+        }
+    }
+}
+
+impl Default for LayerPatch {
+    fn default() -> Self {
+        Self {
+            osc1: OscillatorPatch {
+                enabled: true,
+                ..OscillatorPatch::default()
+            },
+            osc2: OscillatorPatch::default(),
+            osc_mix: 0.0,
+            sub_osc_level: 0.0,
+            noise_level: 0.0,
+            hard_sync: false,
+            osc_slop: 0.0,
+            glide_mode: GlideMode::default(),
+            glide_enabled: false,
+            pitch_bend_range: 2.0,
+            key_mode: KeyMode::default(),
+            unison_enabled: false,
+            unison_mode: UnisonMode::default(),
+            unison_detune: 0.0,
+            unison_chord: ChordMemory::default(),
+            bpm: crate::DEFAULT_TEMPO_BPM,
+            clock_divide: ClockDivision::default(),
+            filter: FilterParams {
+                cutoff: prophet::filter_cutoff_max_hz(),
+                ..FilterParams::default()
+            },
+            amplifier: AmplifierParams::default(),
+            aux_envelope: AuxEnvelopeParams::default(),
+            lfos: [LfoParams::default(); LFO_COUNT],
+            mod_matrix: ModMatrix::default(),
+            effects: EffectParams::default(),
+            arp: ArpParams::default(),
+            sequence: crate::LayerSequence::default(),
+            program_volume: 0.8,
+            name: PatchName::new(),
         }
     }
 }

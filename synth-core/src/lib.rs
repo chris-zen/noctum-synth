@@ -66,6 +66,7 @@ pub(crate) mod pressed_keys;
 pub mod profiling;
 pub mod program;
 mod rate_adapter;
+pub mod sequencer;
 pub mod tuning;
 pub mod voice;
 
@@ -84,6 +85,12 @@ pub use patch_storage::{PATCH_RECORD_SIZE, PatchRecord, PatchRecordError};
 pub use profiling::{RenderContext, RenderProfiler, RenderStage};
 pub use program::{
     DEFAULT_SPLIT_POINT, LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, MIN_SPLIT_POINT, Patch,
+};
+pub use sequencer::model::{
+    GATED_STEP_COUNT, GATED_TRACK_COUNT, GatedDestination, GatedSequence, GatedSequencerMode,
+    GatedStep, GatedTrack, LayerSequence, POLY_LANE_COUNT, POLY_STEP_COUNT, PolyLaneStep, PolyNote,
+    PolySequence, PolyStep, PolyVelocity, SequenceClear, SequenceUpdate, SequencerFeedback,
+    SequencerRecordCommand, SequencerTransportCommand, SequencerType,
 };
 pub use tuning::midi_to_hz;
 pub use voice::{
@@ -207,6 +214,8 @@ pub enum ParamId {
     ArpHold,
     ArpBeatSync,
     ArpSustainMode,
+    SequencerType,
+    GatedSequencerMode,
     ProgramVolume,
     PitchBendRange,
 }
@@ -321,6 +330,8 @@ impl ParamId {
             Self::ArpHold => "Arp Hold",
             Self::ArpBeatSync => "Arp Beat Sync",
             Self::ArpSustainMode => "Arp Sustain Mode",
+            Self::SequencerType => "Sequencer Type",
+            Self::GatedSequencerMode => "Gated Sequencer Mode",
             Self::ProgramVolume => "Program Volume",
             Self::PitchBendRange => "Pitch Bend Range",
         }
@@ -371,6 +382,27 @@ pub enum ControlMessage {
         target: LayerTarget,
         route: ModRoute,
         parameter: ModulationParam,
+    },
+    SetSequence {
+        target: LayerTarget,
+        update: SequenceUpdate,
+    },
+    SetSequencerTransport {
+        target: LayerTarget,
+        command: SequencerTransportCommand,
+    },
+    /// Convenience transport control used by UI and Rev2 play/stop NRPN paths.
+    SetSequencerRunning {
+        target: LayerTarget,
+        running: bool,
+    },
+    SequencerRecord {
+        target: LayerTarget,
+        command: SequencerRecordCommand,
+    },
+    ClearSequence {
+        target: LayerTarget,
+        section: SequenceClear,
     },
     SetLayerMode(LayerMode),
     SetSplitPoint(u8),

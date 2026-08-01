@@ -12,6 +12,7 @@ pub fn realtime_to_control(
     let event = match message {
         MidiMessage::TimingClock => MidiRealtimeEvent::TimingClock { timestamp_micros },
         MidiMessage::Start => MidiRealtimeEvent::Start,
+        MidiMessage::Continue => MidiRealtimeEvent::Continue,
         MidiMessage::Stop => MidiRealtimeEvent::Stop,
         _ => return None,
     };
@@ -85,6 +86,10 @@ pub fn message_to_controls(
                 rev2::MidiUpdate::MasterVolume(volume) => {
                     emit(ControlMessage::SetMasterVolume(volume));
                 }
+                rev2::MidiUpdate::LayerMode(mode) => emit(ControlMessage::SetLayerMode(mode)),
+                rev2::MidiUpdate::SplitPoint(split_point) => {
+                    emit(ControlMessage::SetSplitPoint(split_point))
+                }
                 rev2::MidiUpdate::Modulation {
                     target,
                     route,
@@ -95,6 +100,22 @@ pub fn message_to_controls(
                     parameter,
                 }),
                 rev2::MidiUpdate::EditLayer(layer) => emit(ControlMessage::SetEditLayer(layer)),
+                rev2::MidiUpdate::Sequence { target, update } => {
+                    emit(ControlMessage::SetSequence { target, update })
+                }
+                rev2::MidiUpdate::SequencerRunning { target, running } => {
+                    emit(ControlMessage::SetSequencerRunning { target, running })
+                }
+                rev2::MidiUpdate::SequencerRecording { target, recording } => {
+                    emit(ControlMessage::SequencerRecord {
+                        target,
+                        command: if recording {
+                            synth_core::SequencerRecordCommand::Start
+                        } else {
+                            synth_core::SequencerRecordCommand::Stop
+                        },
+                    })
+                }
             }) {
                 return;
             }
@@ -111,7 +132,7 @@ mod tests {
     use synth_core::{ControlMessage, LayerId, LayerTarget, ParamId};
     use wmidi::MidiMessage;
 
-    use super::message_to_controls;
+    use super::{message_to_control, message_to_controls};
 
     fn decode_sequence(bytes: &[[u8; 3]]) -> Option<ControlMessage> {
         let mut decoder = rev2::ControllerDecoder::default();
@@ -151,6 +172,20 @@ mod tests {
         assert!(matches!(
             command,
             Some(ControlMessage::SetEditLayer(LayerId::B))
+        ));
+    }
+
+    #[test]
+    fn note_recording_boundary_is_deliberately_channel_agnostic() {
+        let on = MidiMessage::try_from([0x90, 60, 100].as_slice()).unwrap();
+        let off = MidiMessage::try_from([0x8f, 60, 0].as_slice()).unwrap();
+        assert!(matches!(
+            message_to_control(on),
+            Some(ControlMessage::NoteOn { note: 60, .. })
+        ));
+        assert!(matches!(
+            message_to_control(off),
+            Some(ControlMessage::NoteOff { note: 60 })
         ));
     }
 }

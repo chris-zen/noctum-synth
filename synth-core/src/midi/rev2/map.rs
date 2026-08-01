@@ -2,14 +2,18 @@
 
 use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 use crate::math::F32;
-use crate::midi::clock::MidiClockMode;
-use crate::midi::prophet::{
-    FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
-    release_seconds,
+use crate::midi::{
+    clock::MidiClockMode,
+    prophet::{
+        FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
+        release_seconds,
+    },
+    rev2::program::layer_mode_from_raw,
 };
 use crate::{
-    DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
-    ParamId,
+    DedicatedModSource, GatedDestination, GatedSequencerMode, GatedStep, LayerMode,
+    LfoSyncDivision, MAX_SPLIT_POINT, ModDestination, ModRoute, ModSource, ModulationParam,
+    ParamId, PolyNote, PolyVelocity, SequenceUpdate, SequencerType,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -17,10 +21,15 @@ pub(super) enum MappedUpdate {
     Param(ParamId, f32),
     MasterVolume(f32),
     MidiClockMode(MidiClockMode),
+    LayerMode(LayerMode),
+    SplitPoint(u8),
     Modulation {
         route: ModRoute,
         parameter: ModulationParam,
     },
+    Sequence(SequenceUpdate),
+    SequencerRunning(bool),
+    SequencerRecording(bool),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -86,6 +95,11 @@ pub(super) fn program_field(number: u16, layer_offset: usize) -> Option<ProgramF
         178 => 135,
         175 => 131,
         179 => 130,
+        182 => 138,
+        183 => 139,
+        184..=187 => 111 + usize::from(number - 184),
+        192..=255 => 140 + usize::from(number - 192),
+        276..=1043 => 256 + usize::from(number - 276),
         _ => return None,
     };
     let msb_offset = match number {
@@ -253,6 +267,15 @@ pub(super) fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(MappedUpdate
         15 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
         16 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw >= 64)),
         17 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
+        18 => {
+            let Some(mode) = layer_mode_from_raw(raw.min(2) as u8) else {
+                return false;
+            };
+            emit(MappedUpdate::LayerMode(mode));
+        }
+        39 => emit(MappedUpdate::SplitPoint(
+            raw.min(u16::from(MAX_SPLIT_POINT)) as u8,
+        )),
         20 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
         21 => emit_param(emit, ParamId::Osc1FineTune, ranged(raw, 127, -50.0, 50.0)),
         22 => emit_osc_shape(
@@ -462,17 +485,63 @@ pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate
         156 => emit_param(emit, ParamId::EffectParam1, unit(raw, 255)),
         157 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
         158 => emit_param(emit, ParamId::EffectClockSync, f32::from(raw != 0)),
+        163 => {
+            if let Some(mode) = layer_mode_from_raw(raw.min(2) as u8) {
+                emit(MappedUpdate::LayerMode(mode));
+            }
+        }
         167 => emit_param(emit, ParamId::UnisonDetune, f32::from(raw.min(16))),
         168 => emit_param(emit, ParamId::UnisonEnabled, f32::from(raw != 0)),
         169 => emit_param(emit, ParamId::UnisonMode, f32::from(raw.min(16))),
         170 => emit_param(emit, ParamId::KeyMode, key_mode_index(raw)),
+        171 => emit(MappedUpdate::SplitPoint(
+            raw.min(u16::from(MAX_SPLIT_POINT)) as u8,
+        )),
         175 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
         179 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
+        180 => emit(MappedUpdate::SequencerRunning(raw != 0)),
+        181 => emit(MappedUpdate::SequencerRecording(raw != 0)),
         172 => emit_param(emit, ParamId::ArpEnabled, f32::from(raw != 0)),
         173 => emit_param(emit, ParamId::ArpMode, f32::from(raw.min(4))),
         174 => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
         177 => emit_param(emit, ParamId::ArpRepeats, f32::from(raw.min(2))),
         178 => emit_param(emit, ParamId::ArpRelatch, f32::from(raw != 0)),
+        182 => emit(MappedUpdate::Sequence(SequenceUpdate::GatedMode(
+            GatedSequencerMode::from_index(usize::from(raw.min(4))),
+        ))),
+        183 => emit(MappedUpdate::Sequence(SequenceUpdate::Type(if raw == 0 {
+            SequencerType::Polyphonic
+        } else {
+            SequencerType::Gated
+        }))),
+        184..=187 => emit(MappedUpdate::Sequence(SequenceUpdate::GatedDestination {
+            track: (number - 184) as u8,
+            destination: GatedDestination::from_rev2_raw(raw),
+        })),
+        192..=255 => emit(MappedUpdate::Sequence(SequenceUpdate::GatedStep {
+            track: ((number - 192) / 16) as u8,
+            step: ((number - 192) % 16) as u8,
+            value: GatedStep::from_rev2_raw(raw),
+        })),
+        276..=1043 => {
+            let field = number - 276;
+            let lane = field / 128;
+            let in_lane = field % 128;
+            let step = in_lane % 64;
+            if in_lane < 64 {
+                emit(MappedUpdate::Sequence(SequenceUpdate::PolyNote {
+                    step: step as u8,
+                    lane: lane as u8,
+                    value: PolyNote::from_rev2_raw(raw),
+                }));
+            } else {
+                emit(MappedUpdate::Sequence(SequenceUpdate::PolyVelocity {
+                    step: step as u8,
+                    lane: lane as u8,
+                    value: PolyVelocity::from_rev2_raw(raw),
+                }));
+            }
+        }
         4099 => emit(MappedUpdate::MidiClockMode(MidiClockMode::from_index(
             raw as usize,
         ))),
@@ -550,6 +619,9 @@ fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpd
 }
 
 pub(super) fn nrpn_max(number: u16) -> Option<u16> {
+    if (276..=1043).contains(&number) {
+        return Some(if (number - 276) % 128 < 64 { 128 } else { 255 });
+    }
     Some(match number {
         0 | 5 => 120,
         1 | 6 => 100,
@@ -557,10 +629,18 @@ pub(super) fn nrpn_max(number: u16) -> Option<u16> {
         10 | 19 | 41 | 46 | 51 | 56 | 97 | 99 | 104..=108 | 153 | 158 => 1,
         11 => 3,
         111 | 168 => 1,
+        163 => 2,
         167 | 169 => 16,
         170 => 5,
+        171 => 120,
         175 => 12,
         179 => 250,
+        180 | 181 => 1,
+        182 => 4,
+        183 => 1,
+        184 | 186 => 52,
+        185 | 187 => 53,
+        192..=255 => 127,
         172 => 1,
         173 => 4,
         174 => 2,

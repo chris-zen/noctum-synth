@@ -26,7 +26,7 @@ use crate::patch::{
     ClockDivision, LFO_COUNT, LayerPatch, LfoSyncDivision, ModDestination, PanModMode,
 };
 use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_TEMPO_BPM, GlideMode, ModSource, ParamId, VOICE_COUNT};
+use crate::{DEFAULT_TEMPO_BPM, GATED_TRACK_COUNT, GlideMode, ModSource, ParamId, VOICE_COUNT};
 use amplifier::Amplifier;
 use aux_env::AuxEnv;
 use filter::Filter;
@@ -85,6 +85,7 @@ pub struct PerformanceModulation {
     pub breath: f32,
     pub foot: f32,
     pub expression: f32,
+    pub sequence: [f32; GATED_TRACK_COUNT],
 }
 
 impl Default for PerformanceModulation {
@@ -96,6 +97,7 @@ impl Default for PerformanceModulation {
             breath: 0.0,
             foot: 0.0,
             expression: 0.0,
+            sequence: [0.0; GATED_TRACK_COUNT],
         }
     }
 }
@@ -1082,13 +1084,11 @@ impl VoiceBlock {
         context: ModSignalContext,
     ) -> WideF32 {
         match source {
-            ModSource::Off
-            | ModSource::Seq1
-            | ModSource::Seq2
-            | ModSource::Seq3
-            | ModSource::Seq4
-            | ModSource::Noise
-            | ModSource::AudioOut => WideF32::ZERO,
+            ModSource::Off | ModSource::Noise | ModSource::AudioOut => WideF32::ZERO,
+            ModSource::Seq1 => WideF32::splat(context.performance.sequence[0]),
+            ModSource::Seq2 => WideF32::splat(context.performance.sequence[1]),
+            ModSource::Seq3 => WideF32::splat(context.performance.sequence[2]),
+            ModSource::Seq4 => WideF32::splat(context.performance.sequence[3]),
             ModSource::Lfo1 => self.lfos[0].output(),
             ModSource::Lfo2 => self.lfos[1].output(),
             ModSource::Lfo3 => self.lfos[2].output(),
@@ -1437,8 +1437,7 @@ mod tests {
     use crate::{ControlMessage, ParamId};
 
     fn test_block(sample_rate: f32, patch: &LayerPatch) -> (VoiceBlock, PatchModulation) {
-        let mut modulation = PatchModulation::default();
-        modulation.apply_from_patch(patch);
+        let modulation = PatchModulation::new(patch);
         let mut block = VoiceBlock::new(sample_rate);
         block.apply_voice_patch(patch);
         block.refresh_lfo_engines();
@@ -1578,12 +1577,34 @@ mod tests {
                 breath: 0.25,
                 foot: 0.5,
                 expression: 0.75,
+                sequence: [0.0; crate::GATED_TRACK_COUNT],
             },
             velocities: WideF32::splat([0.2, 0.4, 0.6, 0.8][sample % 4]),
             filter_env: WideF32::splat(ramp),
             amp_env: WideF32::splat(1.0 - ramp),
             aux_env: WideF32::splat(0.5),
             aux_signal: WideF32::splat(0.3),
+        }
+    }
+
+    #[test]
+    fn sequence_modulation_sources_are_bounded_and_independent() {
+        let (block, _) = test_block(48_000.0, &LayerPatch::default());
+        let mut context = modulation_context(0);
+        context.performance.sequence = [0.0, 0.25, 0.5, 1.0];
+        for (source, expected) in [
+            (ModSource::Seq1, 0.0),
+            (ModSource::Seq2, 0.25),
+            (ModSource::Seq3, 0.5),
+            (ModSource::Seq4, 1.0),
+        ] {
+            assert!(
+                block
+                    .mod_source_signal(source, context)
+                    .to_array()
+                    .iter()
+                    .all(|value| (*value - expected).abs() < f32::EPSILON)
+            );
         }
     }
 

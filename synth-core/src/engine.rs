@@ -1,6 +1,5 @@
 //! Top-level synthesis engine and audio render entry point.
 
-use crate::EffectType;
 #[cfg(feature = "profiling")]
 use crate::RenderProfiler;
 use crate::dsp::lookahead_limiter::LookaheadLimiter;
@@ -9,13 +8,17 @@ use crate::dsp::{
 };
 use crate::midi::clock::MidiClockFollower;
 use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
+use crate::pressed_keys::PressedKeys;
 use crate::profiling::{RenderContext, RenderStage};
 use crate::rate_adapter::RateAdapter;
+use crate::sequencer::recorder::RecorderEvent;
 use crate::voice::{LayerEngine, VoicePool, VoiceRegion};
 use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, LayerId, LayerMode, LayerTarget, ModDestination,
-    ModRoute, ModSource, ParamId, Patch, VOICE_PACKS,
+    ActiveNotes, ClockDivision, ControlMessage, GatedSequence, LayerId, LayerMode, LayerTarget,
+    ModDestination, ModRoute, ModSource, ParamId, Patch, PolySequence, SequenceClear,
+    SequencerFeedback, SequencerTransportCommand, VOICE_PACKS,
 };
+use crate::{DEFAULT_SPLIT_POINT, EffectType};
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
 ///
@@ -135,30 +138,31 @@ pub struct SynthEngineWithMemory<Memory, const PACKS: usize, const LAYERS: usize
     applied_mode: LayerMode,
     applied_split_point: u8,
     applied_edit_layer: LayerId,
-    route_mask: [u8; 128],
-    physical_keys: crate::pressed_keys::PressedKeys,
-    sustain_pressed: bool,
     transition: TopologyTransition,
+    route_mask: [u8; 128],
+    physical_keys: PressedKeys,
+    sustain_pressed: bool,
     filter_oversampling: FilterOversampling,
     filter_type: FilterType,
     midi_clock: MidiClockFollower,
-    master_volume: ParameterSmoother,
     output_limiter: LookaheadLimiter,
+    master_volume: ParameterSmoother,
     rate_adapter: RateAdapter,
     has_rendered_audio: bool,
+    sequencer_feedback: heapless::Deque<SequencerFeedback, 32>,
 }
 
 impl<const PACKS: usize, const FX_SAMPLES: usize>
     SynthEngineWithMemory<[f32; FX_SAMPLES], PACKS, 1>
 {
-    const VALID_INLINE_MEMORY: () = assert!(
+    const _VALID_INLINE_MEMORY: () = assert!(
         FX_SAMPLES > 0 && FX_SAMPLES % 2 == 0,
         "inline effects memory must contain equal stereo halves"
     );
 
     /// Creates an engine at `sample_rate` with inline effects storage.
     pub fn new(sample_rate: f32) -> Self {
-        let () = Self::VALID_INLINE_MEMORY;
+        let () = Self::_VALID_INLINE_MEMORY;
         Self::build(sample_rate, [0.0; FX_SAMPLES])
     }
 }
@@ -201,23 +205,24 @@ where
             patch: Patch::default(),
             edit_layer: LayerId::A,
             applied_mode: LayerMode::Normal,
-            applied_split_point: crate::DEFAULT_SPLIT_POINT,
+            applied_split_point: DEFAULT_SPLIT_POINT,
             applied_edit_layer: LayerId::A,
-            route_mask: [0; 128],
-            physical_keys: crate::pressed_keys::PressedKeys::default(),
-            sustain_pressed: false,
             transition: TopologyTransition::default(),
+            route_mask: [0; 128],
+            physical_keys: PressedKeys::default(),
+            sustain_pressed: false,
             filter_oversampling: FilterOversampling::default(),
             filter_type: FilterType::default(),
             midi_clock: MidiClockFollower::new(sample_rate),
+            output_limiter: LookaheadLimiter::new(internal_sample_rate),
             master_volume: ParameterSmoother::new(
                 1.0,
                 internal_sample_rate,
                 DEFAULT_PARAMETER_SMOOTHING_SECONDS,
             ),
-            output_limiter: LookaheadLimiter::new(internal_sample_rate),
             rate_adapter: RateAdapter::default(),
             has_rendered_audio: false,
+            sequencer_feedback: heapless::Deque::new(),
         }
     }
 
@@ -232,7 +237,7 @@ where
             ControlMessage::SetUnisonChord { target, chord } => {
                 let layer_id = self.resolve_target(target);
                 self.patch.layer_mut(layer_id).unison_chord = chord;
-                if let Some(index) = self.active_engine_index(layer_id) {
+                if let Some(index) = self.active_layer_index(layer_id) {
                     self.layers[index].handle_control(
                         &mut self.voice_pool,
                         ControlMessage::SetUnisonChord {
@@ -260,7 +265,7 @@ where
             } => {
                 let layer_id = self.resolve_target(target);
                 self.cache_modulation(layer_id, route, enabled, source, destination, amount);
-                if let Some(index) = self.active_engine_index(layer_id) {
+                if let Some(index) = self.active_layer_index(layer_id) {
                     self.layers[index].handle_control(
                         &mut self.voice_pool,
                         ControlMessage::SetModulation {
@@ -283,7 +288,7 @@ where
                 self.patch
                     .layer_mut(layer_id)
                     .set_modulation_param(route, parameter);
-                if let Some(index) = self.active_engine_index(layer_id) {
+                if let Some(index) = self.active_layer_index(layer_id) {
                     self.layers[index].handle_control(
                         &mut self.voice_pool,
                         ControlMessage::SetModulationParam {
@@ -292,6 +297,70 @@ where
                             parameter,
                         },
                     );
+                }
+            }
+            ControlMessage::SetSequence { target, update } => {
+                let layer_id = self.resolve_target(target);
+                self.patch.layer_mut(layer_id).sequence.apply(update);
+                if let Some(index) = self.active_layer_index(layer_id) {
+                    self.layers[index].handle_control(
+                        &mut self.voice_pool,
+                        ControlMessage::SetSequence {
+                            target: LayerTarget::Explicit(layer_id),
+                            update,
+                        },
+                    );
+                }
+            }
+            ControlMessage::SetSequencerTransport { target, command } => {
+                let layer_id = self.resolve_target(target);
+                if let Some(index) = self.active_layer_index(layer_id) {
+                    self.layers[index].handle_control(
+                        &mut self.voice_pool,
+                        ControlMessage::SetSequencerTransport {
+                            target: LayerTarget::Explicit(layer_id),
+                            command,
+                        },
+                    );
+                }
+            }
+            ControlMessage::SetSequencerRunning { target, running } => {
+                self.handle_control(ControlMessage::SetSequencerTransport {
+                    target,
+                    command: if running {
+                        SequencerTransportCommand::Start
+                    } else {
+                        SequencerTransportCommand::Stop
+                    },
+                });
+            }
+            ControlMessage::SequencerRecord { target, command } => {
+                let layer_id = self.resolve_target(target);
+                if let Some(index) = self.active_layer_index(layer_id) {
+                    self.layers[index].handle_control(
+                        &mut self.voice_pool,
+                        ControlMessage::SequencerRecord {
+                            target: LayerTarget::Explicit(layer_id),
+                            command,
+                        },
+                    );
+                    self.drain_recorder_events(layer_id, index);
+                }
+            }
+            ControlMessage::ClearSequence { target, section } => {
+                let layer_id = self.resolve_target(target);
+                let sequence = &mut self.patch.layer_mut(layer_id).sequence;
+                match section {
+                    SequenceClear::Gated => {
+                        sequence.gated = GatedSequence::default();
+                    }
+                    SequenceClear::Polyphonic => {
+                        sequence.poly = PolySequence::default();
+                    }
+                }
+                let sequence = *sequence;
+                if let Some(index) = self.active_layer_index(layer_id) {
+                    self.layers[index].replace_sequence(&mut self.voice_pool, &sequence);
                 }
             }
             ControlMessage::SetLayerMode(mode) => {
@@ -373,6 +442,13 @@ where
     /// Applies an owned complete program without cloning it on the calling thread.
     pub fn apply_patch_owned(&mut self, mut next_patch: Patch) {
         next_patch.validate();
+        for layer_id in [LayerId::A, LayerId::B] {
+            if let Some(index) = self.active_layer_index(layer_id)
+                && self.layers[index].stop_recording()
+            {
+                self.drain_recorder_events(layer_id, index);
+            }
+        }
         let topology_unchanged = next_patch.mode == self.applied_mode
             && next_patch.split_point == self.applied_split_point
             && (LAYERS > 1 && next_patch.mode != LayerMode::Normal
@@ -417,7 +493,7 @@ where
         if let Some(external) = self.external_tempo() {
             return external;
         }
-        self.active_engine_index(self.edit_layer)
+        self.active_layer_index(self.edit_layer)
             .map(|index| self.layers[index].tempo_bpm())
             .unwrap_or_else(|| self.patch.layer(self.edit_layer).bpm.clamp(30.0, 250.0))
     }
@@ -430,6 +506,8 @@ where
         if self.midi_clock.set_mode(mode) {
             self.apply_effective_tempos();
         }
+        let external = self.midi_clock.mode().receives_clock();
+        self.for_each_active_layer(|layer, _| layer.set_external_clock(external));
     }
 
     pub fn master_volume(&self) -> f32 {
@@ -437,6 +515,43 @@ where
     }
 
     pub fn handle_midi_realtime(&mut self, event: MidiRealtimeEvent) {
+        if matches!(event, MidiRealtimeEvent::TimingClock { .. })
+            && self.midi_clock.mode().receives_clock()
+        {
+            self.for_each_active_layer(|layer, _| layer.midi_clock_tick());
+        }
+        if self.midi_clock.mode().receives_start_stop() {
+            match event {
+                MidiRealtimeEvent::Start => self.for_each_active_layer(|layer, pool| {
+                    layer.handle_control(
+                        pool,
+                        ControlMessage::SetSequencerTransport {
+                            target: LayerTarget::Edit,
+                            command: crate::SequencerTransportCommand::Start,
+                        },
+                    )
+                }),
+                MidiRealtimeEvent::Continue => self.for_each_active_layer(|layer, pool| {
+                    layer.handle_control(
+                        pool,
+                        ControlMessage::SetSequencerTransport {
+                            target: LayerTarget::Edit,
+                            command: crate::SequencerTransportCommand::Continue,
+                        },
+                    )
+                }),
+                MidiRealtimeEvent::Stop => self.for_each_active_layer(|layer, pool| {
+                    layer.handle_control(
+                        pool,
+                        ControlMessage::SetSequencerTransport {
+                            target: LayerTarget::Edit,
+                            command: crate::SequencerTransportCommand::Stop,
+                        },
+                    )
+                }),
+                MidiRealtimeEvent::TimingClock { .. } => {}
+            }
+        }
         if let Some(bpm) = self.midi_clock.handle(event) {
             self.apply_common_tempo(bpm);
         }
@@ -501,14 +616,14 @@ where
         }
     }
 
-    fn active_engine_index(&self, layer: LayerId) -> Option<usize> {
-        if self.rendered_mask() & Self::layer_bit(layer) == 0 {
+    fn active_layer_index(&self, layer_id: LayerId) -> Option<usize> {
+        if self.rendered_mask() & Self::layer_bit(layer_id) == 0 {
             return None;
         }
         if LAYERS == 1 {
             Some(0)
         } else {
-            Some(Self::layer_index(layer))
+            Some(Self::layer_index(layer_id))
         }
     }
 
@@ -547,7 +662,7 @@ where
     fn set_target_param(&mut self, target: LayerTarget, param: ParamId, value: f32) {
         let layer_id = self.resolve_target(target);
         self.patch.layer_mut(layer_id).set_param(param, value);
-        let Some(index) = self.active_engine_index(layer_id) else {
+        let Some(index) = self.active_layer_index(layer_id) else {
             return;
         };
 
@@ -706,7 +821,7 @@ where
         for (note, velocity) in held.iter() {
             let mask = self.route_for_note(note);
             self.route_mask[note as usize] = mask;
-            self.send_note_on(mask, note, velocity);
+            self.send_restored_note_on(mask, note, velocity);
         }
         if self.sustain_pressed {
             self.fan_out_performance(|layer, pool| {
@@ -737,11 +852,23 @@ where
             if mask & Self::layer_bit(layer_id) == 0 {
                 continue;
             }
-            if let Some(index) = self.active_engine_index(layer_id) {
+            if let Some(index) = self.active_layer_index(layer_id) {
                 self.layers[index].handle_control(
                     &mut self.voice_pool,
                     ControlMessage::NoteOn { note, velocity },
                 );
+                self.drain_recorder_events(layer_id, index);
+            }
+        }
+    }
+
+    fn send_restored_note_on(&mut self, mask: u8, note: u8, velocity: f32) {
+        for layer_id in [LayerId::A, LayerId::B] {
+            if mask & Self::layer_bit(layer_id) == 0 {
+                continue;
+            }
+            if let Some(index) = self.active_layer_index(layer_id) {
+                self.layers[index].restore_note_on(&mut self.voice_pool, note, velocity);
             }
         }
     }
@@ -751,9 +878,10 @@ where
             if mask & Self::layer_bit(layer_id) == 0 {
                 continue;
             }
-            if let Some(index) = self.active_engine_index(layer_id) {
+            if let Some(index) = self.active_layer_index(layer_id) {
                 self.layers[index]
                     .handle_control(&mut self.voice_pool, ControlMessage::NoteOff { note });
+                self.drain_recorder_events(layer_id, index);
             }
         }
     }
@@ -793,6 +921,34 @@ where
         self.route_mask.fill(0);
     }
 
+    fn drain_recorder_events(&mut self, layer: LayerId, index: usize) {
+        while let Some(event) = self.layers[index].pop_recorder_event() {
+            let feedback = match event {
+                RecorderEvent::Status { recording, cursor } => SequencerFeedback::RecordStatus {
+                    layer,
+                    recording,
+                    cursor,
+                },
+                RecorderEvent::StepChanged { step, value } => {
+                    self.patch.layer_mut(layer).sequence.poly.steps[usize::from(step)] = value;
+                    self.layers[index].apply_recorded_step(step, value);
+                    SequencerFeedback::StepChanged { layer, step, value }
+                }
+                RecorderEvent::Overflow { cursor } => {
+                    SequencerFeedback::RecordOverflow { layer, cursor }
+                }
+            };
+            if self.sequencer_feedback.push_back(feedback).is_err() {
+                let _ = self.sequencer_feedback.pop_front();
+                let _ = self.sequencer_feedback.push_back(feedback);
+            }
+        }
+    }
+
+    pub fn pop_sequencer_feedback(&mut self) -> Option<SequencerFeedback> {
+        self.sequencer_feedback.pop_front()
+    }
+
     pub fn playback_status(&self) -> LayerPlaybackStatus {
         LayerPlaybackStatus {
             mode: self.patch.mode,
@@ -802,6 +958,17 @@ where
         }
     }
 
+    pub fn sequencer_running(&self, layer: LayerId) -> bool {
+        self.active_layer_index(layer)
+            .map(|index| self.layers[index].poly_sequencer_active())
+            .unwrap_or(false)
+    }
+
+    pub fn sequencer_active_step(&self, layer: LayerId) -> Option<u8> {
+        self.active_layer_index(layer)
+            .and_then(|index| self.layers[index].sequencer_active_step())
+    }
+
     /// Whether the final linked output limiter is currently reducing gain or
     /// holding a recent over-ceiling peak.
     pub fn output_limiter_engaged(&self) -> bool {
@@ -809,7 +976,7 @@ where
     }
 
     pub fn layer_active_voice_count(&self, layer: LayerId) -> usize {
-        self.active_engine_index(layer)
+        self.active_layer_index(layer)
             .map(|index| self.layers[index].active_voice_count(&self.voice_pool))
             .unwrap_or(0)
     }
@@ -1018,7 +1185,9 @@ mod tests {
     use crate::{
         ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
         EffectType, EngineInitError, LayerId, LayerMode, LayerPatch, LayerTarget, ModDestination,
-        ModRoute, ModSource, ParamId, Patch, SynthEngine, SynthEngineWithMemory, VOICE_PACKS,
+        ModRoute, ModSource, ParamId, Patch, PolyLaneStep, PolyNote, PolyVelocity,
+        SequencerFeedback, SequencerRecordCommand, SequencerType, SynthEngine,
+        SynthEngineWithMemory, VOICE_PACKS,
     };
 
     extern crate std;
@@ -1691,6 +1860,296 @@ mod tests {
         assert_eq!(
             engine.midi_clock_status().transport,
             MidiTransportState::Stopped
+        );
+    }
+
+    #[test]
+    fn midi_start_stop_controls_poly_but_not_gated_transport() {
+        let mut poly_patch = LayerPatch::default();
+        poly_patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        poly_patch.sequence.poly.steps[0].lanes.fill(PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Rest,
+        });
+        poly_patch.sequence.poly.steps[0].lanes[0] = PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Velocity(127),
+        };
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: poly_patch,
+            ..Patch::default()
+        });
+        engine.set_midi_clock_mode(MidiClockMode::Slave);
+        engine.handle_midi_realtime(MidiRealtimeEvent::Start);
+        assert!(engine.sequencer_running(LayerId::A));
+        engine.handle_midi_realtime(MidiRealtimeEvent::Stop);
+        assert!(!engine.sequencer_running(LayerId::A));
+
+        let mut gated_patch = LayerPatch::default();
+        gated_patch.sequence.sequencer_type = SequencerType::Gated;
+        engine.apply_patch(&Patch {
+            layer_a: gated_patch,
+            ..Patch::default()
+        });
+        engine.handle_midi_realtime(MidiRealtimeEvent::Start);
+        assert!(!engine.sequencer_running(LayerId::A));
+    }
+
+    #[test]
+    fn slave_no_start_stop_ignores_transport_but_still_accepts_clock() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        engine.set_midi_clock_mode(MidiClockMode::SlaveNoStartStop);
+        engine.handle_midi_realtime(MidiRealtimeEvent::Start);
+        assert!(!engine.sequencer_running(LayerId::A));
+        engine.handle_midi_realtime(MidiRealtimeEvent::TimingClock {
+            timestamp_micros: 1,
+        });
+        assert!(engine.midi_clock_status().live);
+    }
+
+    #[test]
+    fn poly_transport_is_layer_addressed_and_survives_program_content_swap() {
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Stack;
+        patch.layer_a.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.layer_b.sequence.sequencer_type = SequencerType::Polyphonic;
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        engine.apply_patch(&patch);
+        engine.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Explicit(LayerId::A),
+            running: true,
+        });
+        assert!(engine.sequencer_running(LayerId::A));
+        assert!(!engine.sequencer_running(LayerId::B));
+        let mut frame = [0.0; 2];
+        engine.process(&mut frame);
+
+        let mut replacement = patch.clone();
+        replacement.layer_a.sequence.poly.steps[0].lanes[0] = PolyLaneStep {
+            note: PolyNote::Note(72),
+            velocity: PolyVelocity::Velocity(100),
+        };
+        engine.apply_patch(&replacement);
+        assert!(engine.sequencer_running(LayerId::A));
+        assert!(!engine.sequencer_running(LayerId::B));
+    }
+
+    #[test]
+    fn recording_commits_through_target_layer_patch_and_feedback() {
+        let mut patch = Patch::default();
+        patch.mode = LayerMode::Stack;
+        patch.layer_a.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.layer_b.sequence.sequencer_type = SequencerType::Polyphonic;
+        let mut engine =
+            SynthEngineWithMemory::<[f32; 64], { VOICE_PACKS }, 2>::new_with_effects_memory(
+                48_000.0, [0.0; 64],
+            )
+            .unwrap();
+        engine.apply_patch(&patch);
+        engine.handle_control(ControlMessage::SequencerRecord {
+            target: LayerTarget::Explicit(LayerId::A),
+            command: SequencerRecordCommand::Start,
+        });
+        engine.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 0.5,
+        });
+        engine.handle_control(ControlMessage::NoteOn {
+            note: 64,
+            velocity: 1.0,
+        });
+        engine.handle_control(ControlMessage::SustainPedal { pressed: true });
+        engine.handle_control(ControlMessage::NoteOff { note: 60 });
+        engine.handle_control(ControlMessage::NoteOff { note: 64 });
+
+        let recorded = engine.patch.layer_a.sequence.poly.steps[0];
+        assert_eq!(recorded.lanes[0].note, PolyNote::Note(60));
+        assert_eq!(recorded.lanes[1].note, PolyNote::Note(64));
+        assert_eq!(
+            engine.patch.layer_b.sequence.poly.steps[0],
+            crate::PolyStep::default()
+        );
+        let mut changed = false;
+        while let Some(feedback) = engine.pop_sequencer_feedback() {
+            if matches!(
+                feedback,
+                SequencerFeedback::StepChanged {
+                    layer: LayerId::A,
+                    step: 0,
+                    ..
+                }
+            ) {
+                changed = true;
+            }
+        }
+        assert!(changed);
+        assert!(!engine.sequencer_running(LayerId::A));
+    }
+
+    #[test]
+    fn record_modifier_does_not_overwrite_a_running_poly_sequence() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.sequence.poly.steps[0].lanes[0] = PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Velocity(100),
+        };
+        let expected = patch.sequence.poly;
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        engine.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        engine.handle_control(ControlMessage::SequencerRecord {
+            target: LayerTarget::Edit,
+            command: SequencerRecordCommand::Start,
+        });
+        engine.note_on(72, 1.0);
+        engine.note_off(72);
+        let mut frame = [0.0; 2];
+        engine.process(&mut frame);
+
+        assert_eq!(engine.patch.layer_a.sequence.poly, expected);
+        while let Some(feedback) = engine.pop_sequencer_feedback() {
+            assert!(
+                !matches!(feedback, SequencerFeedback::StepChanged { .. }),
+                "Record+key transposition must not write sequence data"
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_recording_cancels_partial_chord_without_patch_mutation() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        engine.handle_control(ControlMessage::SequencerRecord {
+            target: LayerTarget::Edit,
+            command: SequencerRecordCommand::Start,
+        });
+        engine.note_on(60, 1.0);
+        engine.handle_control(ControlMessage::SequencerRecord {
+            target: LayerTarget::Edit,
+            command: SequencerRecordCommand::Stop,
+        });
+        engine.note_off(60);
+        assert_eq!(
+            engine.patch.layer_a.sequence.poly.steps[0],
+            crate::PolyStep::default()
+        );
+    }
+
+    #[test]
+    fn program_replacement_cancels_held_recording_input_during_note_rehydration() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: patch.clone(),
+            ..Patch::default()
+        });
+        engine.handle_control(ControlMessage::SequencerRecord {
+            target: LayerTarget::Edit,
+            command: SequencerRecordCommand::Start,
+        });
+        engine.note_on(60, 1.0);
+        patch.name.clear();
+        patch.name.push_str("Replacement").unwrap();
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        engine.note_off(60);
+        engine.note_on(62, 1.0);
+        engine.note_off(62);
+        assert_eq!(
+            engine.patch.layer_a.sequence.poly.steps[0],
+            crate::PolyStep::default()
+        );
+        let mut last_recording_status = None;
+        while let Some(feedback) = engine.pop_sequencer_feedback() {
+            if let SequencerFeedback::RecordStatus { recording, .. } = feedback {
+                last_recording_status = Some(recording);
+            }
+        }
+        assert_eq!(last_recording_status, Some(false));
+    }
+
+    #[test]
+    fn starting_playback_without_record_does_not_capture_keyboard_notes() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        engine.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        engine.note_on(60, 1.0);
+        engine.note_off(60);
+
+        assert_eq!(
+            engine.patch.layer_a.sequence.poly.steps[0],
+            crate::PolyStep::default()
+        );
+        assert!(engine.pop_sequencer_feedback().is_none());
+    }
+
+    #[test]
+    fn confirmed_bulk_clear_is_one_control_and_releases_running_sequence_notes() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.sequence.poly.steps[0].lanes.fill(PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Rest,
+        });
+        patch.sequence.poly.steps[0].lanes[0] = PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Velocity(127),
+        };
+        let mut engine = SynthEngine::<1, 64>::new(48_000.0);
+        engine.apply_patch(&Patch {
+            layer_a: patch,
+            ..Patch::default()
+        });
+        engine.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        let mut frame = [0.0; 2];
+        engine.process(&mut frame);
+        assert!(engine.active_notes().contains(&60));
+        engine.handle_control(ControlMessage::ClearSequence {
+            target: LayerTarget::Edit,
+            section: crate::SequenceClear::Polyphonic,
+        });
+        assert!(engine.active_notes().is_empty());
+        assert!(engine.sequencer_running(LayerId::A));
+        assert_eq!(
+            engine.patch.layer_a.sequence.poly,
+            crate::PolySequence::default()
         );
     }
 

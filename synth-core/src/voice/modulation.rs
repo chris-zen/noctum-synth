@@ -3,34 +3,40 @@ use crate::patch::{
     AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LayerPatch, LfoParams,
     MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
 };
-use crate::{ModSource, ModulationParam};
+use crate::{GATED_TRACK_COUNT, GatedDestination, ModSource, ModulationParam, SequencerType};
 
 use super::VoiceBlock;
 
 const MAX_COMPILED_MOD_ROUTES: usize =
-    LFO_COUNT + 1 + MOD_MATRIX_FREE_SLOT_COUNT + DedicatedModSource::COUNT;
+    LFO_COUNT + 1 + MOD_MATRIX_FREE_SLOT_COUNT + DedicatedModSource::COUNT + GATED_TRACK_COUNT;
 
 pub struct PatchModulation {
     matrix: ModMatrix,
     lfo_patch: [LfoParams; LFO_COUNT],
     aux: AuxEnvelopeParams,
+    gated_destinations: [GatedDestination; GATED_TRACK_COUNT],
+    gated_enabled: bool,
     plan: ModulationExecutionPlan,
     defer_rebuild: bool,
 }
 
-impl Default for PatchModulation {
-    fn default() -> Self {
-        Self {
-            matrix: ModMatrix::default(),
-            lfo_patch: [LfoParams::default(); LFO_COUNT],
-            aux: AuxEnvelopeParams::default(),
+impl PatchModulation {
+    pub fn new(patch: &LayerPatch) -> Self {
+        let mut this = Self {
+            matrix: patch.mod_matrix.clone(),
+            lfo_patch: patch.lfos,
+            aux: patch.aux_envelope,
+            gated_destinations: core::array::from_fn(|index| {
+                patch.sequence.gated.tracks[index].destination
+            }),
+            gated_enabled: patch.sequence.sequencer_type == SequencerType::Gated,
             plan: ModulationExecutionPlan::default(),
             defer_rebuild: false,
-        }
+        };
+        this.rebuild();
+        this
     }
-}
 
-impl PatchModulation {
     pub(crate) fn plan(&self) -> &ModulationExecutionPlan {
         &self.plan
     }
@@ -39,19 +45,8 @@ impl PatchModulation {
         self.aux.amount
     }
 
-    #[cfg(test)]
-    pub(crate) fn aux_destination(&self) -> ModDestination {
-        self.aux.destination
-    }
-
-    #[cfg(test)]
-    pub(crate) fn matrix_free_slots(&self) -> &[ModMatrixSlot; MOD_MATRIX_FREE_SLOT_COUNT] {
-        &self.matrix.free_slots
-    }
-
-    #[cfg(test)]
-    pub(crate) fn matrix_dedicated_slots(&self) -> &[DedicatedModSlot; DedicatedModSource::COUNT] {
-        &self.matrix.dedicated
+    pub fn apply_patch(&mut self, patch: &LayerPatch) {
+        *self = Self::new(patch);
     }
 
     pub fn begin_patch_update(&mut self) {
@@ -63,12 +58,16 @@ impl PatchModulation {
         self.rebuild();
     }
 
-    pub fn apply_from_patch(&mut self, patch: &LayerPatch) {
-        self.begin_patch_update();
-        self.matrix = patch.mod_matrix.clone();
-        self.lfo_patch = patch.lfos;
-        self.aux = patch.aux_envelope;
-        self.finish_patch_update();
+    pub(crate) fn set_gated_enabled(&mut self, enabled: bool) {
+        self.gated_enabled = enabled;
+        self.refresh();
+    }
+
+    pub(crate) fn set_gated_destination(&mut self, track: usize, destination: GatedDestination) {
+        if let Some(slot) = self.gated_destinations.get_mut(track) {
+            *slot = destination;
+            self.refresh();
+        }
     }
 
     pub fn set_mod_route(
@@ -173,13 +172,27 @@ impl PatchModulation {
     }
 
     fn rebuild(&mut self) {
+        let mut matrix_slots = self.matrix.free_slots;
+        if !self.gated_enabled {
+            for slot in &mut matrix_slots {
+                if is_gated_sequence_source(slot.source) {
+                    slot.enabled = false;
+                }
+            }
+        }
+        let gated_destinations = if self.gated_enabled {
+            self.gated_destinations
+        } else {
+            [GatedDestination::Off; GATED_TRACK_COUNT]
+        };
         self.plan = ModulationExecutionPlan::compile(
             lfo_depths(&self.lfo_patch),
             lfo_destinations(&self.lfo_patch),
             self.aux.destination,
             self.aux.amount,
-            self.matrix.free_slots,
+            matrix_slots,
             self.matrix.dedicated,
+            gated_destinations,
         );
     }
 
@@ -191,6 +204,34 @@ impl PatchModulation {
     #[cfg(test)]
     pub(crate) fn test_plan_mut(&mut self) -> &mut ModulationExecutionPlan {
         &mut self.plan
+    }
+
+    #[cfg(test)]
+    pub(crate) fn aux_destination(&self) -> ModDestination {
+        self.aux.destination
+    }
+
+    #[cfg(test)]
+    pub(crate) fn matrix_free_slots(&self) -> &[ModMatrixSlot; MOD_MATRIX_FREE_SLOT_COUNT] {
+        &self.matrix.free_slots
+    }
+
+    #[cfg(test)]
+    pub(crate) fn matrix_dedicated_slots(&self) -> &[DedicatedModSlot; DedicatedModSource::COUNT] {
+        &self.matrix.dedicated
+    }
+}
+
+const fn is_gated_sequence_source(source: ModSource) -> bool {
+    matches!(
+        source,
+        ModSource::Seq1 | ModSource::Seq2 | ModSource::Seq3 | ModSource::Seq4
+    )
+}
+
+impl Default for PatchModulation {
+    fn default() -> Self {
+        Self::new(&LayerPatch::default())
     }
 }
 
@@ -253,6 +294,7 @@ impl ModulationExecutionPlan {
         aux_amount: f32,
         matrix_slots: [ModMatrixSlot; MOD_MATRIX_FREE_SLOT_COUNT],
         dedicated_slots: [DedicatedModSlot; DedicatedModSource::COUNT],
+        gated_destinations: [GatedDestination; GATED_TRACK_COUNT],
     ) -> Self {
         let mut plan = Self::default();
 
@@ -311,6 +353,17 @@ impl ModulationExecutionPlan {
                     destination: slot.destination,
                     amount: slot.amount,
                 });
+            }
+        }
+        for (track, destination) in gated_destinations.iter().copied().enumerate() {
+            if let Some(destination) = destination.modulation() {
+                if destination != ModDestination::Off {
+                    plan.add_route(CompiledModRoute {
+                        source: CompiledModSource::GatedDirect(track as u8),
+                        destination,
+                        amount: 1.0,
+                    });
+                }
             }
         }
         plan.single_pwm_route = plan.detect_single_pwm_route();
@@ -473,6 +526,22 @@ impl CompiledModRoute {
         let signal = match self.source {
             CompiledModSource::Standard(source) => block.mod_source_signal(source, context),
             CompiledModSource::AuxSignal => context.aux_signal,
+            CompiledModSource::GatedDirect(track) => {
+                let normalized = context.performance.sequence[usize::from(track)];
+                let value = if matches!(
+                    self.destination,
+                    ModDestination::Osc1Frequency
+                        | ModDestination::Osc2Frequency
+                        | ModDestination::OscAllFrequency
+                ) {
+                    // Gated pitch steps are exactly one half-semitone per raw unit;
+                    // frequency destinations subsequently apply the normal 12-semitone scale.
+                    normalized * 125.0 * 0.5 / 12.0
+                } else {
+                    normalized
+                };
+                WideF32::splat(value)
+            }
         };
         signal * WideF32::splat(self.amount)
     }
@@ -486,6 +555,69 @@ impl CompiledModRoute {
 enum CompiledModSource {
     Standard(ModSource),
     AuxSignal,
+    GatedDirect(u8),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{GatedDestination, LayerPatch, PerformanceModulation};
+
+    #[test]
+    fn direct_gated_pitch_route_scales_raw_steps_by_half_a_semitone() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Gated;
+        patch.sequence.gated.tracks[0].destination =
+            GatedDestination::Modulation(ModDestination::Osc1Frequency);
+        let modulation = PatchModulation::new(&patch);
+        let route = modulation.plan().audio_routes()[0];
+        let block = VoiceBlock::new(48_000.0);
+        let mut performance = PerformanceModulation::default();
+        performance.sequence[0] = 14.0 / 125.0;
+        let context = ModSignalContext {
+            performance,
+            velocities: WideF32::ZERO,
+            filter_env: WideF32::ZERO,
+            amp_env: WideF32::ZERO,
+            aux_env: WideF32::ZERO,
+            aux_signal: WideF32::ZERO,
+        };
+        // The destination applies its normal 12-semitone scale after this signal.
+        assert!((route.signal(&block, context).to_array()[0] * 12.0 - 7.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn polyphonic_selection_excludes_gated_routes() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.sequence.gated.tracks[0].destination =
+            GatedDestination::Modulation(ModDestination::Osc1Frequency);
+        let mut modulation = PatchModulation::new(&patch);
+
+        assert!(modulation.plan().audio_routes().is_empty());
+
+        modulation.set_gated_enabled(true);
+        assert_eq!(modulation.plan().audio_routes().len(), 1);
+    }
+
+    #[test]
+    fn polyphonic_selection_excludes_gated_matrix_sources() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Seq1,
+            destination: ModDestination::FilterCutoff,
+            amount: 1.0,
+        };
+        let mut modulation = PatchModulation::new(&patch);
+
+        assert!(modulation.plan().audio_routes().is_empty());
+        assert_eq!(modulation.matrix_free_slots()[0].source, ModSource::Seq1);
+
+        modulation.set_gated_enabled(true);
+        assert_eq!(modulation.plan().audio_routes().len(), 1);
+    }
 }
 
 #[derive(Clone, Copy)]

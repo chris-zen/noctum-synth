@@ -107,6 +107,19 @@ pub enum Event {
         rendered_mask: u8,
         degraded: bool,
     },
+    SequencerRecordStatus {
+        layer: u8,
+        recording: bool,
+        cursor: u8,
+    },
+    SequencerStepChanged {
+        layer: u8,
+        step: u8,
+    },
+    SequencerRecordOverflow {
+        layer: u8,
+        cursor: u8,
+    },
     ProgramStorageQueueFull,
     ProgramEditBufferReceived,
     ProgramDataReceived {
@@ -442,6 +455,22 @@ mod enabled {
                     rendered_mask,
                     degraded
                 ),
+                Event::SequencerRecordStatus {
+                    layer,
+                    recording,
+                    cursor,
+                } => defmt::info!(
+                    "sequencer record layer={} recording={} cursor={}",
+                    layer,
+                    recording,
+                    cursor
+                ),
+                Event::SequencerStepChanged { layer, step } => {
+                    defmt::info!("sequencer step changed layer={} step={}", layer, step)
+                }
+                Event::SequencerRecordOverflow { layer, cursor } => {
+                    defmt::warn!("sequencer chord overflow layer={} cursor={}", layer, cursor)
+                }
                 Event::ProgramStorageQueueFull => {
                     defmt::warn!("program storage overflow full; dropping newest request")
                 }

@@ -260,6 +260,7 @@ fn enqueue_command(
         &command,
         ControlMessage::SetParam { .. }
             | ControlMessage::SetModulationParam { .. }
+            | ControlMessage::SetSequence { .. }
             | ControlMessage::SetLayerMode(_)
             | ControlMessage::SetSplitPoint(_)
             | ControlMessage::SetEditLayer(_)
@@ -450,9 +451,10 @@ mod tests {
             realtime_to_control(&MidiMessage::try_from([0xfa].as_slice()).unwrap(), 0),
             Some(ControlMessage::MidiRealtime(MidiRealtimeEvent::Start))
         ));
-        assert!(
-            realtime_to_control(&MidiMessage::try_from([0xfb].as_slice()).unwrap(), 0).is_none()
-        );
+        assert!(matches!(
+            realtime_to_control(&MidiMessage::try_from([0xfb].as_slice()).unwrap(), 0),
+            Some(ControlMessage::MidiRealtime(MidiRealtimeEvent::Continue))
+        ));
         assert!(matches!(
             realtime_to_control(&MidiMessage::try_from([0xfc].as_slice()).unwrap(), 0),
             Some(ControlMessage::MidiRealtime(MidiRealtimeEvent::Stop))

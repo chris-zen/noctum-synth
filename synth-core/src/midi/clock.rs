@@ -73,6 +73,7 @@ impl MidiClockMode {
 pub enum MidiRealtimeEvent {
     TimingClock { timestamp_micros: u64 },
     Start,
+    Continue,
     Stop,
 }
 
@@ -155,6 +156,10 @@ impl MidiClockFollower {
             MidiRealtimeEvent::Start if self.mode.receives_start_stop() => {
                 self.transport = MidiTransportState::Running;
                 self.pulse_position = 0;
+                None
+            }
+            MidiRealtimeEvent::Continue if self.mode.receives_start_stop() => {
+                self.transport = MidiTransportState::Running;
                 None
             }
             MidiRealtimeEvent::Stop if self.mode.receives_start_stop() => {
@@ -295,6 +300,25 @@ mod tests {
             follower.status(120.0).transport,
             MidiTransportState::Stopped
         );
+    }
+
+    #[test]
+    fn continue_resumes_without_resetting_pulse_position() {
+        let mut follower = MidiClockFollower::new(48_000.0);
+        follower.set_mode(MidiClockMode::Slave);
+        follower.handle(MidiRealtimeEvent::Start);
+        follower.handle(MidiRealtimeEvent::TimingClock {
+            timestamp_micros: 1,
+        });
+        follower.handle(MidiRealtimeEvent::Stop);
+        assert_eq!(follower.status(120.0).pulse_position, 1);
+
+        follower.handle(MidiRealtimeEvent::Continue);
+        assert_eq!(
+            follower.status(120.0).transport,
+            MidiTransportState::Running
+        );
+        assert_eq!(follower.status(120.0).pulse_position, 1);
     }
 
     #[test]

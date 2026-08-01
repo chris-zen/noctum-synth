@@ -13,12 +13,18 @@ use crate::math::WideF32;
 use crate::midi::prophet::cutoff_raw_to_hz;
 use crate::pressed_keys::PressedKeys;
 use crate::profiling::RenderContext;
+use crate::sequencer::{
+    gated::{GatedEvent, GatedSequencer},
+    poly::{PolyEvent, PolySequencer, PolyStepEvent},
+    recorder::{RecorderEvent, StepRecorder},
+};
 use crate::voice::{
     IdleAdvance, NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
 };
 use crate::{
-    ChordMemory, ClockDivision, ControlMessage, GlideMode, KeyMode, LayerPatch, ModDestination,
-    ParamId, UnisonMode, VOICE_PACKS,
+    ChordMemory, ClockDivision, ControlMessage, GatedSequencerMode, GlideMode, KeyMode, LayerPatch,
+    ModDestination, ParamId, PolyStep, SequenceUpdate, SequencerRecordCommand,
+    SequencerTransportCommand, SequencerType, UnisonMode, VOICE_PACKS,
 };
 
 const MIDI_CC_FILTER_RESONANCE: u8 = 71;
@@ -156,6 +162,9 @@ pub struct LayerEngine<const PACKS: usize = VOICE_PACKS> {
     modulation: PatchModulation,
     last_effect_modulation: EffectModulation,
     arp: ArpEngine,
+    gated: GatedSequencer,
+    poly: PolySequencer,
+    recorder: StepRecorder,
     effects: EffectsState,
     local_tempo_bpm: f32,
     tempo_bpm: f32,
@@ -164,13 +173,11 @@ pub struct LayerEngine<const PACKS: usize = VOICE_PACKS> {
 }
 
 impl<const PACKS: usize> LayerEngine<PACKS> {
-    const VALID_PACK_COUNT: () = assert!(PACKS > 0, "layer must contain at least one voice pack");
+    const _VALID_PACK_COUNT: () = assert!(PACKS > 0, "layer must contain at least one voice pack");
 
     pub fn new(sample_rate: f32) -> Self {
-        let () = Self::VALID_PACK_COUNT;
+        let () = Self::_VALID_PACK_COUNT;
         let patch = LayerPatch::default();
-        let mut modulation = PatchModulation::default();
-        modulation.apply_from_patch(&patch);
         let mut effects = EffectsState::new(sample_rate);
         effects.set_tempo_bpm(crate::DEFAULT_TEMPO_BPM);
         Self {
@@ -182,9 +189,12 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             unison: UnisonSettings::default(),
             key_mode: KeyMode::default(),
             performance: PerformanceModulation::default(),
-            modulation,
+            modulation: PatchModulation::new(&patch),
             last_effect_modulation: EffectModulation::default(),
             arp: ArpEngine::new(sample_rate),
+            gated: GatedSequencer::new(sample_rate),
+            poly: PolySequencer::new(sample_rate),
+            recorder: StepRecorder::default(),
             effects,
             local_tempo_bpm: crate::DEFAULT_TEMPO_BPM,
             tempo_bpm: crate::DEFAULT_TEMPO_BPM,
@@ -204,7 +214,11 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
     }
 
     pub(crate) fn apply_patch(&mut self, pool: &mut VoicePool<PACKS>, patch: &LayerPatch) {
-        self.modulation.apply_from_patch(patch);
+        let was_poly_active = self.poly.is_active();
+        self.recorder.cancel_pending();
+        let release = self.poly.apply_sequence(&patch.sequence);
+        self.release_sequence_lanes(pool, release);
+        self.modulation.apply_patch(patch);
         pool.set_region_pan_positions(self.region);
         for block in pool.region_mut(self.region) {
             block.set_tempo_bpm(patch.bpm);
@@ -220,12 +234,19 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.unison.detune = patch.unison_detune.clamp(0.0, 16.0);
         self.unison.chord = patch.unison_chord;
         self.arp.set_params(&patch.arp);
+        self.gated.apply_sequence(&patch.sequence);
+        self.performance.sequence = self.gated.outputs();
+        self.gated.set_tempo_bpm(patch.bpm);
+        self.gated.set_clock_division(patch.clock_divide);
+        self.poly.set_tempo_bpm(patch.bpm);
+        self.poly.set_clock_division(patch.clock_divide);
         self.effects.set_params(patch.effects);
         self.local_tempo_bpm = patch.bpm.clamp(30.0, 250.0);
         self.clock_division = patch.clock_divide;
         self.program_volume
             .snap(patch.program_volume.clamp(0.0, 1.0));
         self.rebuild_sounding_notes(pool);
+        self.update_poly_routing_transition(pool, was_poly_active);
     }
 
     pub(crate) fn assign_region(&mut self, region: VoiceRegion) {
@@ -239,6 +260,18 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.last_played_note = None;
         self.arp.all_notes_off();
         self.arp.set_sustain_pedal(false);
+        self.gated.note_off_all();
+        let _ = self.poly.stop();
+        self.recorder.cancel_pending();
+    }
+
+    pub(crate) fn stop_recording(&mut self) -> bool {
+        if !self.recorder.is_recording() {
+            self.recorder.cancel_pending();
+            return false;
+        }
+        self.recorder.command(SequencerRecordCommand::Stop);
+        true
     }
 
     fn voice_count(&self) -> usize {
@@ -264,6 +297,9 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
                 self.allocated.clear_occupancy();
                 self.pressed_keys.clear();
                 self.arp.all_notes_off();
+                self.gated.note_off_all();
+                let _ = self.poly.stop();
+                self.recorder.cancel_pending();
             }
             ControlMessage::SetUnisonChord { chord, .. } => {
                 self.unison.chord = chord;
@@ -293,6 +329,27 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             } => {
                 self.modulation.set_mod_route_param(route, parameter);
                 self.sync_lfo_engines(pool);
+            }
+            ControlMessage::SetSequence { update, .. } => {
+                self.apply_sequence_update(pool, update);
+            }
+            ControlMessage::SetSequencerTransport { command, .. } => {
+                self.set_poly_transport(pool, command);
+            }
+            ControlMessage::SetSequencerRunning { running, .. } => {
+                self.set_poly_transport(
+                    pool,
+                    if running {
+                        SequencerTransportCommand::Start
+                    } else {
+                        SequencerTransportCommand::Stop
+                    },
+                );
+            }
+            ControlMessage::SequencerRecord { command, .. } => {
+                if self.poly.is_selected() || command == SequencerRecordCommand::Stop {
+                    self.recorder.command(command);
+                }
             }
             ControlMessage::PitchBend { value } => {
                 self.performance.pitch_bend = value.clamp(-1.0, 1.0);
@@ -331,10 +388,29 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
     }
 
     fn handle_note_on(&mut self, pool: &mut VoicePool<PACKS>, note: u8, velocity: f32) {
+        if self.poly.is_active() && self.recorder.is_recording() {
+            // Rev2 live notes play alongside a running poly sequence.
+            // Transposition is the explicit Record+key gesture.
+            self.poly.set_transpose_note(note);
+        } else {
+            self.recorder.note_on(note, velocity);
+        }
+        self.restore_note_on(pool, note, velocity);
+    }
+
+    pub(crate) fn restore_note_on(&mut self, pool: &mut VoicePool<PACKS>, note: u8, velocity: f32) {
+        let first_held_note = self.pressed_keys.is_empty();
+        self.handle_note_on_voice(pool, note, velocity);
+        if let Some(event) = self.gated.note_on(first_held_note) {
+            self.handle_gated_event(pool, event, false);
+        }
+    }
+
+    fn handle_note_on_voice(&mut self, pool: &mut VoicePool<PACKS>, note: u8, velocity: f32) {
         if note >= 128 {
             return;
         }
-        if self.arp.params().enabled {
+        if self.arp.params().enabled && !self.poly.is_active() {
             let was_empty = self.pressed_keys.is_empty();
             self.pressed_keys.press(note, velocity);
             self.last_played_note = Some(note);
@@ -378,11 +454,19 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
     }
 
     fn handle_note_off(&mut self, pool: &mut VoicePool<PACKS>, note: u8) {
+        self.recorder.note_off(note);
+        self.handle_note_off_voice(pool, note);
+        if self.pressed_keys.is_empty() {
+            self.gated.note_off_all();
+        }
+    }
+
+    fn handle_note_off_voice(&mut self, pool: &mut VoicePool<PACKS>, note: u8) {
         if note >= 128 {
             return;
         }
         self.pressed_keys.release(note);
-        if self.arp.params().enabled {
+        if self.arp.params().enabled && !self.poly.is_active() {
             self.arp.note_off(note);
             return;
         }
@@ -724,6 +808,18 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
                 });
                 return;
             }
+            ParamId::SequencerType => {
+                let update = SequenceUpdate::Type(SequencerType::from_index(value as usize));
+                self.apply_sequence_update(pool, update);
+                return;
+            }
+            ParamId::GatedSequencerMode => {
+                self.gated
+                    .apply_update(SequenceUpdate::GatedMode(GatedSequencerMode::from_index(
+                        value as usize,
+                    )));
+                return;
+            }
             _ => {}
         }
         for block in pool.region_mut(self.region) {
@@ -751,6 +847,8 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             block.set_tempo_bpm(self.tempo_bpm);
         }
         self.arp.set_tempo_bpm(self.tempo_bpm);
+        self.gated.set_tempo_bpm(self.tempo_bpm);
+        self.poly.set_tempo_bpm(self.tempo_bpm);
     }
 
     pub(crate) fn set_clock_division(
@@ -763,12 +861,197 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             block.set_clock_division(division);
         }
         self.arp.set_clock_division(division);
+        self.gated.set_clock_division(division);
+        self.poly.set_clock_division(division);
     }
-}
 
-impl<const PACKS: usize> LayerEngine<PACKS> {
-    fn arp_advance(&mut self, pool: &mut VoicePool<PACKS>) {
+    pub(crate) fn set_external_clock(&mut self, external: bool) {
+        self.arp.set_external_clock(external);
+        self.gated.set_external_clock(external);
+        self.poly.set_external_clock(external);
+    }
+
+    pub(crate) fn midi_clock_tick(&mut self) {
+        self.arp.midi_clock_tick();
+        self.gated.midi_clock_tick();
+        self.poly.midi_clock_tick();
+    }
+
+    fn release_sequence_lanes(&mut self, pool: &mut VoicePool<PACKS>, lanes: [bool; 6]) {
+        for (lane, release) in lanes.iter().copied().enumerate() {
+            if release {
+                self.allocated
+                    .sequence_note_off(pool.region_mut(self.region), lane as u8);
+            }
+        }
+    }
+
+    fn apply_poly_step(&mut self, pool: &mut VoicePool<PACKS>, event: PolyStepEvent) {
+        self.release_sequence_lanes(pool, event.note_off);
+        for note in event.note_on.into_iter().flatten() {
+            self.allocated.sequence_note_on(
+                pool.region_mut(self.region),
+                note.lane,
+                note.note,
+                note.velocity,
+            );
+        }
+    }
+
+    fn apply_sequence_update(&mut self, pool: &mut VoicePool<PACKS>, update: SequenceUpdate) {
+        let was_poly_active = self.poly.is_active();
+        let was_gated_envelope = self.gated.envelope_gating();
+        self.gated.apply_update(update);
+        if let SequenceUpdate::Type(sequencer_type) = update {
+            self.performance.sequence = self.gated.outputs();
+            self.modulation
+                .set_gated_enabled(sequencer_type == SequencerType::Gated);
+            self.sync_lfo_engines(pool);
+        }
+        let release = self.poly.apply_update(update);
+        self.release_sequence_lanes(pool, release);
+        self.update_poly_routing_transition(pool, was_poly_active);
+        if matches!(update, SequenceUpdate::Type(SequencerType::Polyphonic)) && was_gated_envelope {
+            self.rebuild_sounding_notes(pool);
+        }
+        if matches!(update, SequenceUpdate::Type(SequencerType::Gated)) {
+            self.recorder.cancel_pending();
+        }
+        if let SequenceUpdate::GatedDestination { track, destination } = update {
+            self.modulation
+                .set_gated_destination(usize::from(track), destination);
+            self.sync_lfo_engines(pool);
+        }
+    }
+
+    fn set_poly_transport(
+        &mut self,
+        pool: &mut VoicePool<PACKS>,
+        command: SequencerTransportCommand,
+    ) {
+        match command {
+            SequencerTransportCommand::Start => {
+                if self.poly.is_active() {
+                    let release = self.poly.stop();
+                    self.release_sequence_lanes(pool, release);
+                }
+                if !self.poly.start() {
+                    return;
+                }
+                self.enter_poly_routing(pool);
+            }
+            SequencerTransportCommand::Continue => {
+                let was_active = self.poly.is_active();
+                if !self.poly.continue_playback() {
+                    return;
+                }
+                if !was_active {
+                    self.enter_poly_routing(pool);
+                }
+            }
+            SequencerTransportCommand::Stop => {
+                let was_active = self.poly.is_active();
+                let release = self.poly.stop();
+                self.release_sequence_lanes(pool, release);
+                if was_active {
+                    self.restore_arp_routing(pool);
+                }
+            }
+        }
+    }
+
+    fn enter_poly_routing(&mut self, pool: &mut VoicePool<PACKS>) {
         if !self.arp.params().enabled {
+            return;
+        }
+        if let Some(note) = self.arp.current_note() {
+            self.allocated
+                .poly_note_off(pool.region_mut(self.region), note);
+        }
+        self.arp.all_notes_off();
+        let pressed = self.pressed_keys.clone();
+        for (note, velocity) in pressed.iter() {
+            self.allocated
+                .poly_note_on(pool.region_mut(self.region), note, velocity, None, false);
+        }
+    }
+
+    fn restore_arp_routing(&mut self, pool: &mut VoicePool<PACKS>) {
+        if !self.arp.params().enabled {
+            return;
+        }
+        let pressed = self.pressed_keys.clone();
+        for (note, _) in pressed.iter() {
+            self.allocated
+                .poly_note_off(pool.region_mut(self.region), note);
+        }
+        self.arp.all_notes_off();
+        for (note, velocity) in pressed.iter() {
+            self.arp.note_on(note, velocity);
+        }
+    }
+
+    fn update_poly_routing_transition(&mut self, pool: &mut VoicePool<PACKS>, was_active: bool) {
+        match (was_active, self.poly.is_active()) {
+            (true, false) => self.restore_arp_routing(pool),
+            (false, true) => self.enter_poly_routing(pool),
+            _ => {}
+        }
+    }
+
+    fn poly_advance(&mut self, pool: &mut VoicePool<PACKS>) {
+        match self.poly.advance() {
+            Some(PolyEvent::Step(event)) => self.apply_poly_step(pool, event),
+            Some(PolyEvent::GateOff(release)) => self.release_sequence_lanes(pool, release),
+            None => {}
+        }
+    }
+
+    fn release_gated_notes(&mut self, pool: &mut VoicePool<PACKS>) {
+        if self.unison.enabled {
+            self.release_unison_group(pool);
+        } else {
+            // The gated sequencer is the envelope gate source; a held sustain
+            // pedal must not turn its half-step gate-off into a sustained note.
+            let sustain_pressed = self.allocated.sustain_pressed;
+            self.allocated.sustain_pressed = false;
+            let pressed = self.pressed_keys.clone();
+            for (note, _) in pressed.iter() {
+                self.allocated
+                    .poly_note_off(pool.region_mut(self.region), note);
+            }
+            self.allocated.sustain_pressed = sustain_pressed;
+        }
+    }
+
+    fn handle_gated_event(
+        &mut self,
+        pool: &mut VoicePool<PACKS>,
+        event: GatedEvent,
+        retrigger: bool,
+    ) {
+        if !self.gated.envelope_gating() {
+            return;
+        }
+        match event {
+            GatedEvent::Boundary { gate: true } if retrigger => self.rebuild_sounding_notes(pool),
+            GatedEvent::Boundary { gate: false } | GatedEvent::GateOff => {
+                self.release_gated_notes(pool);
+            }
+            GatedEvent::Boundary { gate: true } => {}
+        }
+    }
+
+    fn gated_advance(&mut self, pool: &mut VoicePool<PACKS>) {
+        let held_note = !self.pressed_keys.is_empty();
+        if let Some(event) = self.gated.advance(held_note) {
+            self.handle_gated_event(pool, event, true);
+        }
+        self.performance.sequence = self.gated.outputs();
+    }
+
+    fn arp_advance(&mut self, pool: &mut VoicePool<PACKS>) {
+        if !self.arp.params().enabled || self.poly.is_active() {
             return;
         }
         let prev_note = self.arp.current_note();
@@ -801,7 +1084,14 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         pool: &mut VoicePool<PACKS>,
         ctx: &mut RenderContext<'_>,
     ) -> (f32, f32) {
-        self.arp_advance(pool);
+        if self.poly.is_active() {
+            self.poly_advance(pool);
+        } else {
+            if self.gated.is_active(!self.pressed_keys.is_empty()) {
+                self.gated_advance(pool);
+            }
+            self.arp_advance(pool);
+        }
         let mut left = 0.0f32;
         let mut right = 0.0f32;
         let mut effects = EffectModulation::default();
@@ -941,6 +1231,46 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.local_tempo_bpm
     }
 
+    pub(crate) const fn poly_sequencer_active(&self) -> bool {
+        self.poly.is_active()
+    }
+
+    pub(crate) fn sequencer_active_step(&self) -> Option<u8> {
+        if self.poly.is_active() {
+            self.poly.last_step()
+        } else {
+            self.gated.last_step()
+        }
+    }
+
+    pub(crate) fn pop_recorder_event(&mut self) -> Option<RecorderEvent> {
+        self.recorder.pop_event()
+    }
+
+    pub(crate) fn apply_recorded_step(&mut self, step: u8, value: PolyStep) {
+        self.poly.replace_step(step, value);
+    }
+
+    pub(crate) fn replace_sequence(
+        &mut self,
+        pool: &mut VoicePool<PACKS>,
+        sequence: &crate::LayerSequence,
+    ) {
+        let was_poly_active = self.poly.is_active();
+        self.gated.apply_sequence(sequence);
+        self.performance.sequence = self.gated.outputs();
+        let release = self.poly.apply_sequence(sequence);
+        self.release_sequence_lanes(pool, release);
+        for track in 0..crate::GATED_TRACK_COUNT {
+            self.modulation
+                .set_gated_destination(track, sequence.gated.tracks[track].destination);
+        }
+        self.modulation
+            .set_gated_enabled(sequence.sequencer_type == SequencerType::Gated);
+        self.update_poly_routing_transition(pool, was_poly_active);
+        self.sync_lfo_engines(pool);
+    }
+
     pub(crate) fn set_local_tempo_bpm(&mut self, bpm: f32) {
         self.local_tempo_bpm = bpm.clamp(30.0, 250.0);
     }
@@ -989,6 +1319,10 @@ mod test_support {
 
         pub(crate) fn active_voice_count(&self) -> usize {
             self.layer.active_voice_count(&self.pool)
+        }
+
+        pub(crate) fn sequence_outputs(&self) -> [f32; crate::GATED_TRACK_COUNT] {
+            self.layer.performance.sequence
         }
 
         pub(crate) fn set_clock_division(&mut self, division: ClockDivision) {
@@ -1159,11 +1493,19 @@ struct VoiceLocation {
     lane: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoiceOwner {
+    None,
+    Live,
+    Sequence(u8),
+}
+
 struct AllocatedVoices<const PACKS: usize> {
     held: FixedIndexList<PACKS, { WideF32::LANES }>,
     sustained: SustainedVoices,
     sustain_pressed: bool,
     next_voice: usize,
+    owners: [VoiceOwner; 32],
 }
 
 impl<const PACKS: usize> AllocatedVoices<PACKS> {
@@ -1176,12 +1518,14 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
             sustained: SustainedVoices { bits: 0 },
             sustain_pressed: false,
             next_voice: 0,
+            owners: [VoiceOwner::None; 32],
         }
     }
 
     fn clear_occupancy(&mut self) {
         self.held.clear();
         self.sustained.clear();
+        self.owners.fill(VoiceOwner::None);
     }
 
     fn voice_location(voice_idx: usize) -> VoiceLocation {
@@ -1201,6 +1545,9 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
 
     fn find_active_voice(&self, blocks: &[VoiceBlock], note: u8) -> Option<usize> {
         for voice_idx in self.held.iter() {
+            if self.owners[voice_idx] != VoiceOwner::Live {
+                continue;
+            }
             let VoiceLocation {
                 block_index: block_idx,
                 lane,
@@ -1300,7 +1647,57 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
             );
         }
         self.mark_held(voice_idx);
+        self.owners[voice_idx] = VoiceOwner::Live;
         self.next_voice = (voice_idx + 1) % (blocks.len() * WideF32::LANES);
+    }
+
+    fn sequence_note_on(
+        &mut self,
+        blocks: &mut [VoiceBlock],
+        lane_owner: u8,
+        note: u8,
+        velocity: f32,
+    ) {
+        self.sequence_note_off(blocks, lane_owner);
+        let voice_idx = self.allocate(blocks);
+        let VoiceLocation {
+            block_index: block_idx,
+            lane,
+        } = Self::voice_location(voice_idx);
+        self.held.remove(voice_idx);
+        self.sustained.remove(voice_idx);
+        let block = &mut blocks[block_idx];
+        if block.is_lane_silent(lane) {
+            block.note_on(lane, note, velocity, false);
+        } else {
+            block.schedule_note_on_tuned_with_glide(
+                lane,
+                note,
+                velocity,
+                false,
+                [0.0; WideF32::LANES],
+                NoteGlide::default(),
+            );
+        }
+        self.mark_held(voice_idx);
+        self.owners[voice_idx] = VoiceOwner::Sequence(lane_owner);
+        self.next_voice = (voice_idx + 1) % (blocks.len() * WideF32::LANES);
+    }
+
+    fn sequence_note_off(&mut self, blocks: &mut [VoiceBlock], lane_owner: u8) {
+        for voice_idx in 0..blocks.len() * WideF32::LANES {
+            if self.owners[voice_idx] != VoiceOwner::Sequence(lane_owner) {
+                continue;
+            }
+            let VoiceLocation {
+                block_index: block_idx,
+                lane,
+            } = Self::voice_location(voice_idx);
+            blocks[block_idx].note_off_lane(lane);
+            self.held.remove(voice_idx);
+            self.sustained.remove(voice_idx);
+            self.owners[voice_idx] = VoiceOwner::None;
+        }
     }
 
     fn poly_note_off(&mut self, blocks: &mut [VoiceBlock], note: u8) {
@@ -1318,6 +1715,7 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
                 if block.active_note(lane) == Some(note) {
                     block.note_off_lane(lane);
                 }
+                self.owners[voice_idx] = VoiceOwner::None;
             }
         }
     }
@@ -1331,6 +1729,7 @@ impl<const PACKS: usize> AllocatedVoices<PACKS> {
             } = Self::voice_location(voice_idx);
             blocks[block_idx].note_off_lane(lane);
             self.sustained.remove(voice_idx);
+            self.owners[voice_idx] = VoiceOwner::None;
         }
     }
 
@@ -1372,7 +1771,9 @@ fn midi_filter_cutoff_hz(value: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::{
-        LayerTarget, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, VOICE_COUNT,
+        GatedSequencerMode, GatedStep, LayerTarget, ModDestination, ModRoute, ModSource,
+        ModulationParam, ParamId, PolyLaneStep, PolyNote, PolyVelocity, SequenceUpdate,
+        SequencerType, VOICE_COUNT,
     };
 
     fn process_frames<const PACKS: usize>(voices: &mut TestLayerEngine<PACKS>, frames: usize) {
@@ -1406,6 +1807,339 @@ mod tests {
             mode.index() as f32,
         ));
         voices.handle_control(ControlMessage::edit_param(ParamId::UnisonEnabled, 1.0));
+    }
+
+    #[test]
+    fn empty_default_sequence_does_not_gate_normal_notes() {
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.apply_patch(&LayerPatch::default());
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        render_once(&mut voices);
+        assert!(find_gated_note(&voices, 60).is_some());
+    }
+
+    #[test]
+    fn key_step_rest_closes_gate_even_with_sustain_pressed() {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Gated;
+        patch.sequence.gated_mode = GatedSequencerMode::KeyStep;
+        patch.sequence.gated.tracks[0].steps[0] = GatedStep::Rest;
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        assert!(find_gated_note(&voices, 60).is_none());
+    }
+
+    #[test]
+    fn live_gated_edits_reach_only_the_target_layer_runtime() {
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Gated;
+        patch.sequence.gated_mode = GatedSequencerMode::KeyStep;
+        patch.sequence.gated.tracks[0].steps[0] = GatedStep::Value(25);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        render_once(&mut voices);
+        assert!((voices.sequence_outputs()[0] - 0.2).abs() < 1.0e-6);
+        voices.handle_control(ControlMessage::SetSequence {
+            target: LayerTarget::Edit,
+            update: SequenceUpdate::GatedStep {
+                track: 0,
+                step: 1,
+                value: GatedStep::Value(75),
+            },
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 62,
+            velocity: 1.0,
+        });
+        render_once(&mut voices);
+        assert!((voices.sequence_outputs()[0] - 0.6).abs() < 1.0e-6);
+    }
+
+    fn poly_patch(notes: &[u8]) -> LayerPatch {
+        let mut patch = LayerPatch::default();
+        patch.sequence.sequencer_type = SequencerType::Polyphonic;
+        patch.sequence.poly.steps[0].lanes.fill(PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Rest,
+        });
+        for (lane, note) in notes.iter().copied().take(6).enumerate() {
+            patch.sequence.poly.steps[0].lanes[lane] = PolyLaneStep {
+                note: PolyNote::Note(note),
+                velocity: PolyVelocity::Velocity(127),
+            };
+        }
+        patch
+    }
+
+    #[test]
+    fn poly_tie_keeps_the_actual_voice_gate_open_through_the_tie_step() {
+        let mut patch = poly_patch(&[60]);
+        patch.bpm = 120.0;
+        patch.clock_divide = ClockDivision::Quarter;
+        patch.sequence.poly.steps[1].lanes.fill(PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Rest,
+        });
+        patch.sequence.poly.steps[1].lanes[0] = PolyLaneStep {
+            note: PolyNote::Tie,
+            velocity: PolyVelocity::Velocity(127),
+        };
+        patch.sequence.poly.steps[2].lanes.fill(PolyLaneStep {
+            note: PolyNote::Note(60),
+            velocity: PolyVelocity::Rest,
+        });
+
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(100.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+
+        render_once(&mut voices); // Note boundary.
+        assert!(find_gated_note(&voices, 60).is_some());
+        process_frames(&mut voices, 49);
+        assert!(find_gated_note(&voices, 60).is_some());
+
+        render_once(&mut voices); // Tie boundary.
+        assert!(find_gated_note(&voices, 60).is_some());
+        process_frames(&mut voices, 49);
+        assert!(find_gated_note(&voices, 60).is_some());
+
+        render_once(&mut voices); // Rest boundary.
+        assert!(find_gated_note(&voices, 60).is_none());
+    }
+
+    #[test]
+    fn stopping_poly_sequence_releases_only_sequence_owned_duplicate_pitch() {
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.apply_patch(&poly_patch(&[60]));
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        render_once(&mut voices);
+        assert_eq!(
+            voices
+                .active_notes()
+                .iter()
+                .filter(|note| *note == 60)
+                .count(),
+            2
+        );
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: false,
+        });
+        assert_eq!(
+            voices
+                .active_notes()
+                .iter()
+                .filter(|note| *note == 60)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn live_notes_do_not_transpose_a_running_poly_sequence() {
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(100.0);
+        voices.apply_patch(&poly_patch(&[60]));
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        render_once(&mut voices);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+
+        process_frames(&mut voices, 50);
+
+        assert_eq!(
+            voices
+                .active_notes()
+                .iter()
+                .filter(|note| *note == 60)
+                .count(),
+            1,
+            "the sequence must keep its recorded pitch"
+        );
+        assert_eq!(
+            voices
+                .active_notes()
+                .iter()
+                .filter(|note| *note == 72)
+                .count(),
+            1,
+            "the live note must play alongside the sequence"
+        );
+    }
+
+    #[test]
+    fn record_modifier_transposes_a_running_poly_sequence() {
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(100.0);
+        voices.apply_patch(&poly_patch(&[60]));
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        render_once(&mut voices);
+        voices.handle_control(ControlMessage::SequencerRecord {
+            target: LayerTarget::Edit,
+            command: SequencerRecordCommand::Start,
+        });
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 72,
+            velocity: 1.0,
+        });
+
+        process_frames(&mut voices, 50);
+
+        assert_eq!(
+            voices
+                .active_notes()
+                .iter()
+                .filter(|note| *note == 72)
+                .count(),
+            2,
+            "Record+key must transpose the sequence while also sounding the live note"
+        );
+        assert!(!voices.active_notes().contains(&60));
+    }
+
+    #[test]
+    fn six_lane_chord_and_voice_stealing_leave_no_sequence_owned_notes() {
+        for mut voices in [
+            TestLayerEngine::<1>::new(48_000.0),
+            TestLayerEngine::<1>::new(48_000.0),
+        ] {
+            voices.apply_patch(&poly_patch(&[60, 61, 62, 63, 64, 65]));
+            voices.handle_control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Edit,
+                running: true,
+            });
+            render_once(&mut voices);
+            assert_eq!(voices.active_notes().len(), 6.min(WideF32::LANES));
+            voices.handle_control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Edit,
+                running: false,
+            });
+            assert!(voices.active_notes().is_empty());
+        }
+    }
+
+    #[test]
+    fn sequence_stop_bypasses_sustain_and_arp_resumes_after_transport() {
+        let mut patch = poly_patch(&[67]);
+        patch.arp.enabled = true;
+        let mut voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(48_000.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::SustainPedal { pressed: true });
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        render_once(&mut voices);
+        assert!(voices.active_notes().contains(&67));
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: false,
+        });
+        assert!(!voices.active_notes().contains(&67));
+        render_once(&mut voices);
+        assert!(voices.active_notes().contains(&60));
+    }
+
+    #[test]
+    fn repeated_play_stop_and_patch_swaps_never_orphan_sequence_voices() {
+        let mut voices = TestLayerEngine::<2>::new(48_000.0);
+        let mut first = poly_patch(&[60, 64, 67]);
+        let second = poly_patch(&[61, 65, 68]);
+        voices.apply_patch(&first);
+        for iteration in 0..256 {
+            voices.handle_control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Edit,
+                running: true,
+            });
+            render_once(&mut voices);
+            if iteration % 3 == 0 {
+                first = if first.sequence.poly.steps[0].lanes[0].note == PolyNote::Note(60) {
+                    second.clone()
+                } else {
+                    poly_patch(&[60, 64, 67])
+                };
+                voices.apply_patch(&first);
+            }
+            voices.handle_control(ControlMessage::SetSequencerRunning {
+                target: LayerTarget::Edit,
+                running: false,
+            });
+            process_frames(&mut voices, 8);
+            assert!(voices.active_notes().is_empty(), "iteration {iteration}");
+        }
+    }
+
+    #[test]
+    fn live_type_changes_restore_and_resuspend_arp_without_stuck_notes() {
+        let mut patch = poly_patch(&[67]);
+        patch.arp.enabled = true;
+        let mut voices = TestLayerEngine::<2>::new(100.0);
+        voices.apply_patch(&patch);
+        voices.handle_control(ControlMessage::NoteOn {
+            note: 60,
+            velocity: 1.0,
+        });
+        voices.handle_control(ControlMessage::SetSequencerRunning {
+            target: LayerTarget::Edit,
+            running: true,
+        });
+        render_once(&mut voices);
+        assert!(voices.poly_sequencer_active());
+        voices.handle_control(ControlMessage::SetSequence {
+            target: LayerTarget::Edit,
+            update: SequenceUpdate::Type(SequencerType::Gated),
+        });
+        assert!(!voices.poly_sequencer_active());
+        render_once(&mut voices);
+        assert!(voices.active_notes().contains(&60));
+        assert!(!voices.active_notes().contains(&67));
+
+        voices.handle_control(ControlMessage::SetSequence {
+            target: LayerTarget::Edit,
+            update: SequenceUpdate::Type(SequencerType::Polyphonic),
+        });
+        assert!(!voices.poly_sequencer_active());
+        voices.handle_control(ControlMessage::SetSequencerTransport {
+            target: LayerTarget::Edit,
+            command: SequencerTransportCommand::Start,
+        });
+        assert!(voices.poly_sequencer_active());
+        process_frames(&mut voices, 60);
+        assert!(voices.active_notes().contains(&67));
+        voices.handle_control(ControlMessage::AllNotesOff);
+        assert!(voices.active_notes().is_empty());
     }
 
     fn configure_glide<const PACKS: usize>(voices: &mut TestLayerEngine<PACKS>, mode: GlideMode) {

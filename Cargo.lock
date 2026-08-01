@@ -3353,7 +3353,10 @@ dependencies = [
 name = "synth-tools"
 version = "0.1.0"
 dependencies = [
+ "directories",
  "rustfft",
+ "serde",
+ "serde_json",
  "synth-core",
 ]
 

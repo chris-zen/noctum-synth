@@ -56,8 +56,14 @@ If pulses stop for 500 ms, clock status changes to lost and transport stops,
 while synchronized destinations retain the last learned tempo. Selecting Off
 restores the latest patch BPM.
 
-Slave Thru retransmits Timing Clock on MIDI output. MIDI Continue (`FB`) and
-Song Position Pointer are ignored.
+Slave Thru retransmits Timing Clock on MIDI output. Song Position Pointer is
+ignored. MIDI Continue (`FB`) resumes retained polyphonic-sequencer playback
+position without restarting at step 1.
+
+Polyphonic sequencer playback follows Start/Continue/Stop only in modes that
+accept transport. Start restarts at step 1, Stop releases sequencer-owned notes
+and retains position, and Continue resumes it. The gated sequencer follows
+Timing Clock but deliberately ignores transport.
 
 ## NRPN Protocol
 
@@ -180,6 +186,8 @@ All CC values are 7-bit (0–127).
 |---|---|---|---|
 | 7, 37 | Master Volume | 0–127 → 0%–100% | Device-global output level (not stored in the program) |
 | 10 | Pan Mod Mode | 0–63 = Alternate, 64–127 = Fixed | Boolean threshold at 64 |
+| 18 | A/B Mode | 0 = Normal, 1 = Stack, 2 = Split | Program topology |
+| 39 | Split Point | 0–120 MIDI note | Start of Layer B in Split mode |
 | 75 | Amp Envelope Sustain | 0–127 → 0%–100% | |
 | 76 | Amp Envelope Release | 0–127 → 0.5 ms – 10 seconds | |
 | 113 | VCA Level | 0–127 → 0%–100% | Static VCA bias |
@@ -219,9 +227,35 @@ NRPN values are 14-bit (0–16383). Each parameter has a documented maximum raw
 value shown in the Max column. Values beyond this maximum are clamped.
 The tables list Layer A numbers; add 2048 for the corresponding Layer B
 parameter. Global NRPN 4190 selects the current edit layer (`0` = A, `1` = B),
-while CC parameter updates are emitted as edit-layer-relative events. The MIDI
-decoder does not retain the edit selection; the layered engine resolves those
-events against its own state.
+while CC parameter updates are emitted as edit-layer-relative events. Program
+topology uses program-global live controls with no Layer B offset: NRPN 163 /
+CC 18 set Normal/Stack/Split mode, and NRPN 171 / CC 39 set the split point.
+The MIDI decoder does not retain the edit selection; the layered engine resolves
+those events against its own state.
+
+### Sequencer NRPNs
+
+| Layer A NRPN | Max | Meaning |
+|---:|---:|---|
+| 180 | 1 | Polyphonic sequencer Play (1) / Stop (0), transient |
+| 181 | 1 | Polyphonic step Record on/off, transient |
+| 182 | 4 | Gated mode: Normal, No Reset, No Gate, No Gate/No Reset, Key Step |
+| 183 | 1 | Gated sequencer on/off: 1 = Gated, 0 = Polyphonic |
+| 184–187 | 53 | Gated destinations for tracks 1–4; 53 is Slew on tracks 2/4 |
+| 192–255 | 127 | Four gated tracks × 16 steps; 126 Reset, 127 Rest |
+| 276–1043 | 255 | Six poly lanes × 64 notes and 64 velocities; note 128 Tie, velocity 0 Reset, 128 Rest, 129–255 velocity 1–127 |
+
+The same numbers plus 2048 address Layer B. NRPN state remains channel-local,
+but performance note recording is intentionally channel-agnostic after decode:
+a matching Note Off on another channel releases the recorded physical pitch.
+
+### Layers
+
+| NRPN | Parameter | Raw Range | Max |
+|---|---|---|---|
+| 163 | A/B Mode | 0 = Normal, 1 = Stack, 2 = Split (program-global; no `+2048`) | 2 |
+| 171 | Split Point | 0–120 MIDI note (program-global; no `+2048`) | 120 |
+| 4190 | Edit Layer | 0 = Layer A, 1 = Layer B (global) | 1 |
 
 ### Oscillators
 
@@ -776,8 +810,9 @@ Prophet '08 unison fields are applied: the three fixed detune modes map to
 eight Rev2-style voices at progressively larger detune values. The two
 oscillator Glide rates and Glide mode are imported, with Glide enabled when
 either rate is nonzero. The split point and Normal/Stack/Split mode are decoded
-from bytes 118 and 119. Sequencer, arpeggiator, and tempo settings remain
-unsupported.
+from bytes 118 and 119. The gated-sequencer selector, all four tracks, their
+destinations, trigger mode, tempo, and clock division are also imported.
+Arpeggiator settings remain unsupported.
 
 #### Layer B (bytes 200–383)
 
@@ -791,6 +826,6 @@ bytes 368–383 belong to Layer B sequence track 4, not a second name.
 The following Prophet '08 systems are not implemented:
 
 - Live MIDI control of Prophet '08 parameters (SysEx only, no CC/NRPN)
-- Sequencer and arpeggiator
+- Arpeggiator
 - Global settings (tuning, MIDI channel, pedal config, etc.)
 - Program memory management (save, rename, bank copy)
