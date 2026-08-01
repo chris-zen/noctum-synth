@@ -1,5 +1,5 @@
 [workspace]
-members = ["synth-core", "synth-app", "synth-tools"]
+members = ["synth-core", "synth-app", "synth-tools", "synth-capture"]
 resolver = "2"
 
 [workspace.package]

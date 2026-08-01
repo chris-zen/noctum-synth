@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rootnode>
+	<midiconfig name="Noctum Characterisation" factory="0">
+		<assignment controller="14" paramid="30" channel="0"/>
+		<assignment controller="15" paramid="31" channel="0"/>
+		<assignment controller="16" paramid="32" channel="0"/>
+		<assignment controller="17" paramid="25" channel="0"/>
+		<assignment controller="18" paramid="26" channel="0"/>
+		<assignment controller="19" paramid="27" channel="0"/>
+		<assignment controller="20" paramid="28" channel="0"/>
+		<assignment controller="21" paramid="46" channel="0"/>
+		<assignment controller="22" paramid="47" channel="0"/>
+		<assignment controller="23" paramid="48" channel="0"/>
+		<assignment controller="24" paramid="41" channel="0"/>
+		<assignment controller="25" paramid="40" channel="0"/>
+		<assignment controller="26" paramid="39" channel="0"/>
+		<assignment controller="27" paramid="42" channel="0"/>
+		<assignment controller="28" paramid="43" channel="0"/>
+		<assignment controller="29" paramid="44" channel="0"/>
+		<assignment controller="30" paramid="18" channel="0"/>
+		<assignment controller="31" paramid="16" channel="0"/>
+		<assignment controller="102" paramid="2" channel="0"/>
+		<assignment controller="104" paramid="3" channel="0"/>
+		<assignment controller="105" paramid="13" channel="0"/>
+		<assignment controller="106" paramid="8" channel="0"/>
+		<assignment controller="107" paramid="9" channel="0"/>
+		<assignment controller="108" paramid="10" channel="0"/>
+		<assignment controller="109" paramid="14" channel="0"/>
+		<assignment controller="111" paramid="12" channel="0"/>
+		<assignment controller="112" paramid="11" channel="0"/>
+		<assignment controller="13" paramid="22" channel="0"/>
+		<assignment controller="114" paramid="15" channel="0"/>
+		<assignment controller="115" paramid="4" channel="0"/>
+		<assignment controller="116" paramid="20" channel="0"/>
+		<assignment controller="117" paramid="21" channel="0"/>
+		<assignment controller="119" paramid="29" channel="0"/>
+	</midiconfig>
+</rootnode>

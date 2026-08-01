@@ -26,6 +26,7 @@ voice counts and form factors, one shared engine.
 - `synth-core` — portable `#![no_std]` DSP & Synth library (voice engine, effects, MIDI codec)
 - `synth-app` — desktop development harness
 - `synth-tools` — host-side perf, measurement, and wavetable tooling
+- `synth-capture` — host-only MIDI/audio capture and cycle extraction for external synth references
 - `hardware/daisy/firmware` — Micro firmware (`noctum-micro`) for Daisy Seed 1.1
 - `hardware/daisy/embassy-daisy` — Embassy-based Board Support Package (BSP) for Daisy Seed
 
@@ -59,7 +60,15 @@ RUST_MIN_STACK=16777216 cargo test --workspace
 cargo doc --no-deps --open -p synth-core
 cargo run --release -p synth-tools --bin voice_block_perf
 cargo run --release -p synth-tools --bin filter_perf
+cargo deny check advisories bans licenses sources
+cargo vet check
+cargo audit
 ```
+
+External synth reference capture (`synth-capture`) docs and CLI:
+[`synth-capture/README.md`](synth-capture/README.md).
+End-to-end oscillator characterisation (capture → extract → measured bank):
+[`synth-capture/docs/characterise-a-synth.md`](synth-capture/docs/characterise-a-synth.md).
 
 Some `synth-core` integration tests build large `SynthEngine` values on the
 stack. Set `RUST_MIN_STACK` to at least **16 MiB** (`16777216`):
