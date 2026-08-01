@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "target_id": "arturia-prophet5-v1",
+  "target_revision": "arturia-prophet5-v1",
+  "adapter_revision": "5",
+  "mapping_fingerprint": "267a916904bb93ceac87fafb41327e23505b0341053c1a33abb52f5abe79d83e",
+  "protocol_id": "oscillator-static-v1",
+  "protocol_revision": "oscillator-static-v1",
+  "project_schema_id": "synth-capture-project-v1",
+  "sample_rate_hz": 96000,
+  "require_native_float32": true,
+  "pitch_grid": {
+    "first_midi": 16,
+    "last_playable_midi": 88,
+    "guard_validation_midi": 89,
+    "guard_training_midi": 90,
+    "notes_per_waveform": 75
+  },
+  "waveforms": ["saw", "triangle", "pulse50"],
+  "oscillator": 2,
+  "identity_warning": "Arturia Prophet-5 V is a software instrument. Captures from this target are not measurements of Sequential/Prophet hardware and must not be labeled as hardware Prophet-5 or Rev2 references.",
+  "prior_work": {
+    "role": "methodological_prior_for_static_chromatic_protocol_and_cycle_extraction",
+    "dataset": "Korg Monologue analog VCO — Simionato/Fasciani",
+    "authors": ["Riccardo Simionato", "Stefano Fasciani"],
+    "doi": "10.5281/zenodo.15196138",
+    "record_url": "https://zenodo.org/records/15196138",
+    "license": "CC-BY-4.0",
+    "paper_url": "https://dafx.de/paper-archive/2025/DAFx25_paper_33.pdf",
+    "companion_code": "https://github.com/RiccardoVib/NeuralOSC",
+    "note": "This Arturia target does not redistribute or embed the Monologue pickle files."
+  },
+  "mapping_doc": "docs/arturia-prophet5-v1-mapping.md",
+  "promidi": "docs/Noctum-Characterisation.promidi",
+  "manual_session_controls": [
+    { "control": "osc2_fine_tune", "value": "0.000", "reason": "7-bit CC cannot center" },
+    { "control": "osc2_pulse_width", "value": "50%", "reason": "7-bit CC cannot center; MIDI Learn omitted" },
+    { "control": "filter_env_amount", "value": "5.0", "reason": "7-bit CC cannot center bipolar amount" }
+  ]
+}

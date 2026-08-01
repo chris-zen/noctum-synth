@@ -1,0 +1,40 @@
+[package]
+name = "synth-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Host-only MIDI/audio capture and extraction for external synth oscillator references"
+
+[[bin]]
+name = "synth-capture"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.4", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
+cpal = "0.18.1"
+ctrlc = "3.5.2"
+hound = "3.5.1"
+indicatif = { version = "0.18.6", default-features = false }
+midir = "0.11.0"
+ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
+ndarray-npy = { version = "0.10.0", default-features = false, features = [
+    "npz",
+    "num-complex-0_4",
+] }
+num-complex = "0.4.6"
+rtrb = "0.3.4"
+rustfft = "6.4.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["float_roundtrip"] }
+sha2 = "0.11.0"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tempfile = "3.27.0"

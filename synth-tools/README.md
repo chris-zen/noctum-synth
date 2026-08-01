@@ -16,7 +16,8 @@ cargo run --release -p synth-tools --bin <name> [-- args...]
 | [`voice_block_perf`](src/bin/voice_block_perf.rs) | `VoiceBlock` render timing for neutral / active / modulation / self-osc cases |
 | [`filter_measurements`](src/bin/filter_measurements.rs) | Deterministic per-model gain, slope, and self-oscillation metrics |
 | [`sample_rate_quality`](src/bin/sample_rate_quality.rs) | Offline spectral CSV for candidate sample rates (oscillator / filter / effects) |
-| [`generate_wavetable_bank`](src/bin/generate_wavetable_bank.rs) | Write retained f32 (and Q15 comparison) wavetable bank files |
+| [`generate_wavetable_bank`](src/bin/generate_wavetable_bank.rs) | Write retained **ideal** f32 (and Q15 comparison) wavetable bank files |
+| [`measured_wavetable_bank`](src/bin/measured_wavetable_bank.rs) | Build **measured** pitch-conditioned bank from `synth-capture` NPZs |
 | [`wavetable_listening_samples`](src/bin/wavetable_listening_samples.rs) | Short WAV listening samples for the wavetable prototype report |
 | [`factory_corpus_acceptance`](src/bin/factory_corpus_acceptance.rs) | Full 512-program, two-layer topology/filter acceptance with per-program CSV |
 | [`export_rev2_patches`](src/bin/export_rev2_patches.rs) | Decode Rev2 Program Data SysEx into schema v1 two-layer patch JSON |
@@ -58,6 +59,22 @@ cargo run --release -p synth-tools --bin generate_wavetable_bank -- <output-dire
 ```
 
 Default output directory: `target/wavetable-prototype`.
+
+### `measured_wavetable_bank`
+
+Builds an Arturia-first measured bank from extract NPZs (`median_cycles`,
+training `role == 0`, 96 kHz Nyquist guard). End-to-end capture→bank runbook:
+[`../synth-capture/docs/characterise-a-synth.md`](../synth-capture/docs/characterise-a-synth.md).
+
+```bash
+cargo run --release -p synth-tools --locked --bin measured_wavetable_bank -- \
+  --derived-root ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1/derived \
+  --output-dir ~/dev/analog-synth/plans/analog-osc/research/banks
+```
+
+Writes `{profile-id}.f32le` and `{profile-id}.json` (default profile
+`arturia-prophet5-measured-bank-v1`). Distinct from `generate_wavetable_bank`,
+which synthesizes ideal (non-measured) tables.
 
 ### `wavetable_listening_samples`
 
