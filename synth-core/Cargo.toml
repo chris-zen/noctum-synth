@@ -2,6 +2,8 @@
 name = "synth-core"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+publish = false
 description = "Portable no_std synth engine: voices, DSP (oscillators, filters, envelopes, LFOs), and patch params — SIMD via wide"
 
 [features]

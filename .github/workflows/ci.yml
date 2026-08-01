@@ -47,14 +47,36 @@ jobs:
             pkg-config
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       - name: Test
         env:
           RUST_MIN_STACK: "16777216"
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: synth-core feature matrix
         env:
           RUST_MIN_STACK: "16777216"
         run: make -C synth-core test-matrix
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install supply-chain tools
+        run: cargo install --locked cargo-deny cargo-vet cargo-audit
+
+      - name: cargo deny
+        run: cargo deny check advisories bans licenses sources
+
+      - name: cargo vet
+        run: cargo vet check
+
+      - name: cargo audit
+        run: cargo audit

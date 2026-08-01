@@ -60,6 +60,9 @@ RUST_MIN_STACK=16777216 cargo test --workspace
 cargo doc --no-deps --open -p synth-core
 cargo run --release -p synth-tools --bin voice_block_perf
 cargo run --release -p synth-tools --bin filter_perf
+cargo deny check advisories bans licenses sources
+cargo vet check
+cargo audit
 ```
 
 External synth reference capture (`synth-capture`) docs and CLI:

@@ -2,10 +2,12 @@
 name = "synth-app"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+publish = false
 description = "Standalone synth application with egui UI, MIDI input, and real-time audio"
 
 [dependencies]
-synth-core = { path = "../synth-core" }
+synth-core = { path = "../synth-core", version = "0.1.0" }
 
 eframe = "0.34"
 egui = "0.34"

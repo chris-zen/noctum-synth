@@ -10,7 +10,7 @@ description = "Host-side perf, measurement, and wavetable tooling for synth-core
 sequencer-benchmark = ["synth-core/sequencer-benchmark"]
 
 [dependencies]
-synth-core = { path = "../synth-core" }
+synth-core = { path = "../synth-core", version = "0.1.0" }
 directories = "6"
 ndarray = { version = "0.17.2", default-features = false, features = ["std"] }
 ndarray-npy = { version = "0.10.0", default-features = false, features = ["npz"] }

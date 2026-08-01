@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+    # synth-app egui/eframe stack; same debt as deny.toml
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # transitive via desktop stack; track until upstream clears
+    "RUSTSEC-2026-0221",
+]
