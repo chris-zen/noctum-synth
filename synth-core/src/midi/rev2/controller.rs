@@ -5,13 +5,18 @@ use crate::{
     SequenceUpdate,
     midi::{
         clock::MidiClockMode,
+        prophet::NRPN_RADIX,
         rev2::{
+            ids::*,
             layer::{Layer, LayerA, LayerB},
             map::{LfoPairingState, MappedUpdate, map_cc, map_nrpn_with_lfo, nrpn_max},
             program::layer_mode_from_raw,
         },
     },
 };
+
+const MIDI_CHANNEL_COUNT: usize = 16;
+const LAYER_B_NRPN_END: u16 = LayerB::NRPN_OFFSET * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MidiUpdate {
@@ -57,7 +62,7 @@ struct NrpnChannelState {
 
 impl NrpnChannelState {
     fn number(self) -> Option<u16> {
-        Some(u16::from(self.number_msb?) * 128 + u16::from(self.number_lsb?))
+        Some(u16::from(self.number_msb?) * NRPN_RADIX + u16::from(self.number_lsb?))
     }
 
     fn clear_nrpn(&mut self) {
@@ -70,13 +75,13 @@ impl NrpnChannelState {
 
 /// Stateful Rev2 controller decoder. NRPN selection is independent per channel.
 pub struct ControllerDecoder {
-    channels: [NrpnChannelState; 16],
+    channels: [NrpnChannelState; MIDI_CHANNEL_COUNT],
 }
 
 impl Default for ControllerDecoder {
     fn default() -> Self {
         Self {
-            channels: [NrpnChannelState::default(); 16],
+            channels: [NrpnChannelState::default(); MIDI_CHANNEL_COUNT],
         }
     }
 }
@@ -95,7 +100,7 @@ impl ControllerDecoder {
             return false;
         };
         match controller {
-            99 => {
+            CC_NRPN_MSB => {
                 state.number_msb = Some(value);
                 state.data_msb = None;
                 state.current_value = None;
@@ -103,7 +108,7 @@ impl ControllerDecoder {
                 state.rpn_lsb = None;
                 true
             }
-            98 => {
+            CC_NRPN_LSB => {
                 state.number_lsb = Some(value);
                 state.data_msb = None;
                 state.current_value = None;
@@ -111,21 +116,22 @@ impl ControllerDecoder {
                 state.rpn_lsb = None;
                 true
             }
-            6 => {
+            CC_DATA_ENTRY_MSB => {
                 state.data_msb = Some(value);
                 true
             }
-            38 => {
+            CC_DATA_ENTRY_LSB => {
                 if let (Some(number), Some(msb)) = (state.number(), state.data_msb) {
-                    let raw = clamp_nrpn_value(number, u16::from(msb) * 128 + u16::from(value));
+                    let raw =
+                        clamp_nrpn_value(number, u16::from(msb) * NRPN_RADIX + u16::from(value));
                     state.current_value = Some(raw);
                     emit_live_nrpn(number, raw, state, &mut emit);
                 }
                 true
             }
-            96 | 97 => {
+            CC_DATA_INCREMENT | CC_DATA_DECREMENT => {
                 if let (Some(number), Some(current)) = (state.number(), state.current_value) {
-                    let next = if controller == 96 {
+                    let next = if controller == CC_DATA_INCREMENT {
                         current.saturating_add(1)
                     } else {
                         current.saturating_sub(1)
@@ -136,16 +142,16 @@ impl ControllerDecoder {
                 }
                 true
             }
-            101 => {
+            CC_RPN_MSB => {
                 state.rpn_msb = Some(value);
-                if state.rpn_msb == Some(127) && state.rpn_lsb == Some(127) {
+                if state.rpn_msb == Some(RPN_NULL) && state.rpn_lsb == Some(RPN_NULL) {
                     state.clear_nrpn();
                 }
                 true
             }
-            100 => {
+            CC_RPN_LSB => {
                 state.rpn_lsb = Some(value);
-                if state.rpn_msb == Some(127) && state.rpn_lsb == Some(127) {
+                if state.rpn_msb == Some(RPN_NULL) && state.rpn_lsb == Some(RPN_NULL) {
                     state.clear_nrpn();
                 }
                 true
@@ -163,7 +169,7 @@ fn emit_live_nrpn(
     state: &mut NrpnChannelState,
     emit: &mut impl FnMut(MidiUpdate),
 ) {
-    if number == 4190 {
+    if number == NRPN_EDIT_LAYER {
         emit(MidiUpdate::EditLayer(if raw == 0 {
             LayerA::ID
         } else {
@@ -172,19 +178,20 @@ fn emit_live_nrpn(
         return;
     }
     // A/B Mode and Split Point are program-global (no Layer B NRPN offset).
-    if number == 163 || number == LayerB::NRPN_OFFSET + 163 {
+    if number == NRPN_LAYER_MODE || number == LayerB::NRPN_OFFSET + NRPN_LAYER_MODE {
         if let Some(mode) = layer_mode_from_raw(raw.min(2) as u8) {
             emit(MidiUpdate::LayerMode(mode));
         }
         return;
     }
-    if number == 171 || number == LayerB::NRPN_OFFSET + 171 {
+    if number == NRPN_SPLIT_POINT || number == LayerB::NRPN_OFFSET + NRPN_SPLIT_POINT {
         emit(MidiUpdate::SplitPoint(
             raw.min(u16::from(MAX_SPLIT_POINT)) as u8
         ));
         return;
     }
-    let (target, layer_index, number) = if (LayerB::NRPN_OFFSET..4096).contains(&number) {
+    let (target, layer_index, number) = if (LayerB::NRPN_OFFSET..LAYER_B_NRPN_END).contains(&number)
+    {
         (
             LayerTarget::Explicit(LayerB::ID),
             1,
@@ -223,7 +230,7 @@ fn emit_mapped(target: LayerTarget, update: MappedUpdate, emit: &mut impl FnMut(
 }
 
 fn clamp_nrpn_value(number: u16, raw: u16) -> u16 {
-    let base_number = if (LayerB::NRPN_OFFSET..4096).contains(&number) {
+    let base_number = if (LayerB::NRPN_OFFSET..LAYER_B_NRPN_END).contains(&number) {
         number - LayerB::NRPN_OFFSET
     } else {
         number

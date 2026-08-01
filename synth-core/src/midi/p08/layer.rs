@@ -9,8 +9,22 @@ use crate::{
         map::{MidiUpdate, map_nrpn, p08_mod_destination, program_nrpn_value},
         program::PROGRAM_DATA_LEN,
     },
+    midi::prophet::{MAX_BPM, MIN_BPM},
     sequencer::model::{GATED_STEP_COUNT, GATED_TRACK_COUNT},
 };
+
+const LAYER_DATA_LEN: usize = 200;
+const LAYER_NAME_OFFSET: usize = 184;
+const LAYER_NAME_END: usize = LAYER_DATA_LEN;
+const BPM_OFFSET: usize = 91;
+const CLOCK_DIVIDE_OFFSET: usize = 92;
+const GATED_MODE_OFFSET: usize = 94;
+const SEQUENCER_TYPE_OFFSET: usize = 101;
+const GATED_DESTINATION_BASE: usize = 77;
+const GATED_STEP_DATA_BASE: usize = 120;
+const CLOCK_DIVIDE_MAX_INDEX: u8 = 12;
+const GATED_MODE_MAX_INDEX: u8 = 4;
+const MAX_LAYER_NRPN: u16 = 119;
 
 /// Layer-specific Prophet '08 program-image addressing.
 pub trait Layer {
@@ -30,7 +44,7 @@ pub struct LayerA;
 impl Layer for LayerA {
     const ID: LayerId = LayerId::A;
     const DATA_OFFSET: usize = 0;
-    const NAME_RANGE: core::ops::Range<usize> = 184..200;
+    const NAME_RANGE: core::ops::Range<usize> = LAYER_NAME_OFFSET..LAYER_NAME_END;
     const NRPN_OFFSET: u16 = 0;
 }
 
@@ -41,9 +55,10 @@ pub struct LayerB;
 
 impl Layer for LayerB {
     const ID: LayerId = LayerId::B;
-    const DATA_OFFSET: usize = 200;
+    const DATA_OFFSET: usize = LAYER_DATA_LEN;
     /// Present in the image layout; naming uses the shared program name instead.
-    const NAME_RANGE: core::ops::Range<usize> = 368..384;
+    const NAME_RANGE: core::ops::Range<usize> =
+        LAYER_DATA_LEN + LAYER_NAME_OFFSET..LAYER_DATA_LEN * 2;
     const NRPN_OFFSET: u16 = 0;
 }
 
@@ -59,7 +74,7 @@ impl<L: Layer> LayerDecoder<L> {
     /// Decode one layer from an unpacked Prophet '08 program image.
     pub fn decode(raw: &[u8; PROGRAM_DATA_LEN]) -> LayerPatch {
         let mut patch = LayerPatch::default();
-        for number in 0..=119 {
+        for number in 0..=MAX_LAYER_NRPN {
             if let Some(value) = program_nrpn_value(raw, number, L::DATA_OFFSET) {
                 map_nrpn(number, value, &mut |update| match update {
                     MidiUpdate::Param(param, value) => patch.set_param(param, value),
@@ -77,18 +92,21 @@ impl<L: Layer> LayerDecoder<L> {
 
 fn decode_sequence<L: Layer>(raw: &[u8; PROGRAM_DATA_LEN], patch: &mut LayerPatch) {
     let offset = L::DATA_OFFSET;
-    patch.bpm = f32::from(raw[offset + 91].clamp(30, 250));
-    patch.clock_divide = ClockDivision::from_index(usize::from(raw[offset + 92].min(12)));
-    patch.sequence.sequencer_type = if raw[offset + 101] == 0 {
+    patch.bpm = f32::from(raw[offset + BPM_OFFSET].clamp(MIN_BPM, MAX_BPM));
+    patch.clock_divide = ClockDivision::from_index(usize::from(
+        raw[offset + CLOCK_DIVIDE_OFFSET].min(CLOCK_DIVIDE_MAX_INDEX),
+    ));
+    patch.sequence.sequencer_type = if raw[offset + SEQUENCER_TYPE_OFFSET] == 0 {
         SequencerType::Polyphonic
     } else {
         SequencerType::Gated
     };
-    patch.sequence.gated_mode =
-        GatedSequencerMode::from_index(usize::from(raw[offset + 94].min(4)));
+    patch.sequence.gated_mode = GatedSequencerMode::from_index(usize::from(
+        raw[offset + GATED_MODE_OFFSET].min(GATED_MODE_MAX_INDEX),
+    ));
 
     for track in 0..GATED_TRACK_COUNT {
-        let destination = raw[offset + 77 + track];
+        let destination = raw[offset + GATED_DESTINATION_BASE + track];
         patch.sequence.gated.tracks[track].destination = if destination == 0 {
             GatedDestination::Off
         } else {
@@ -96,7 +114,7 @@ fn decode_sequence<L: Layer>(raw: &[u8; PROGRAM_DATA_LEN], patch: &mut LayerPatc
         };
 
         for step in 0..GATED_STEP_COUNT {
-            let value = raw[offset + 120 + track * GATED_STEP_COUNT + step];
+            let value = raw[offset + GATED_STEP_DATA_BASE + track * GATED_STEP_COUNT + step];
             patch.sequence.gated.tracks[track].steps[step] =
                 GatedStep::from_rev2_raw(u16::from(value));
         }

@@ -13,6 +13,7 @@
 //! with the release curve scaled to the approximately 40-second maximum reported
 //! by the [Sound On Sound Rev2 review](https://www.soundonsound.com/reviews/dsi-prophet-rev-2).
 
+mod ids;
 mod layer;
 mod map;
 pub mod program;

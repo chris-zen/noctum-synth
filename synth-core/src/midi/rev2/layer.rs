@@ -6,6 +6,11 @@ use crate::{
     LayerId, LayerPatch, ParamId, SequencerType,
     midi::rev2::{
         encoder::ControllerEncoder,
+        ids::{
+            NRPN_GATED_DESTINATION_START, NRPN_GATED_MODE, NRPN_GATED_STEP_START,
+            NRPN_POLY_NOTE_START, NRPN_SEQUENCER_TYPE, POLY_LANE_NRPN_STRIDE,
+            POLY_VELOCITY_NRPN_OFFSET,
+        },
         map::{
             LfoPairingState, MappedUpdate, map_nrpn_with_lfo, program_nrpn_value, quantize,
             store_nrpn, store_program_nrpn, unit,
@@ -13,7 +18,15 @@ use crate::{
         program::PROGRAM_DATA_LEN,
     },
     patch::decode_patch_name,
+    sequencer::model::GATED_STEP_COUNT,
 };
+
+const LAYER_IMAGE_LEN: usize = 1024;
+const LAYER_NAME_OFFSET: usize = 235;
+const LAYER_NAME_LEN: usize = 20;
+const SEQUENCER_TYPE_IMAGE_OFFSET: usize = 139;
+const VCA_INITIAL_LEVEL_OFFSET: usize = 27;
+const MAX_LAYER_NRPN: u16 = 1043;
 
 /// Layer-specific Rev2 program-image and NRPN addressing.
 pub trait Layer {
@@ -41,18 +54,20 @@ impl Layer for LayerA {
     /// Verified against Sequential's official [Rev2 factory bank].
     ///
     /// [Rev2 factory bank]: https://sequential.com/support/download/prophet-rev2-sounds/
-    const NAME_RANGE: core::ops::Range<usize> = 235..255;
+    const NAME_RANGE: core::ops::Range<usize> =
+        LAYER_NAME_OFFSET..LAYER_NAME_OFFSET + LAYER_NAME_LEN;
     const NRPN_OFFSET: u16 = 0;
 }
 
 impl Layer for LayerB {
     const ID: LayerId = LayerId::B;
-    const DATA_OFFSET: usize = 1024;
+    const DATA_OFFSET: usize = LAYER_IMAGE_LEN;
     /// Verified against Sequential's official [Rev2 factory bank].
     ///
     /// [Rev2 factory bank]: https://sequential.com/support/download/prophet-rev2-sounds/
-    const NAME_RANGE: core::ops::Range<usize> = 1259..1279;
-    const NRPN_OFFSET: u16 = 2048;
+    const NAME_RANGE: core::ops::Range<usize> = Self::DATA_OFFSET + LAYER_NAME_OFFSET
+        ..Self::DATA_OFFSET + LAYER_NAME_OFFSET + LAYER_NAME_LEN;
+    const NRPN_OFFSET: u16 = LAYER_IMAGE_LEN as u16 * 2;
 }
 
 /// Decodes and encodes one layer half of a Rev2 program image.
@@ -65,10 +80,10 @@ impl<L: Layer> LayerDecoder<L> {
     pub fn decode(raw: &[u8; PROGRAM_DATA_LEN]) -> LayerPatch {
         let mut patch = LayerPatch::default();
         let mut state = LfoPairingState::default();
-        for number in 0..=1043 {
+        for number in 0..=MAX_LAYER_NRPN {
             // Program byte 139 is a Type enum (0 Gated, 1 Polyphonic), while
             // live NRPN 183 is an on/off switch with the opposite polarity.
-            if number == 183 {
+            if number == NRPN_SEQUENCER_TYPE {
                 continue;
             }
             if let Some(value) = program_nrpn_value(raw, number, L::DATA_OFFSET) {
@@ -87,12 +102,16 @@ impl<L: Layer> LayerDecoder<L> {
                 });
             }
         }
-        patch.sequence.sequencer_type =
-            SequencerType::from_index(usize::from(raw[L::DATA_OFFSET + 139].min(1)));
+        patch.sequence.sequencer_type = SequencerType::from_index(usize::from(
+            raw[L::DATA_OFFSET + SEQUENCER_TYPE_IMAGE_OFFSET].min(1),
+        ));
         patch.name = decode_patch_name(&raw[L::NAME_RANGE]);
         patch.set_param(
             ParamId::VcaInitialLevel,
-            unit(u16::from(raw[L::DATA_OFFSET + 27]), 127),
+            unit(
+                u16::from(raw[L::DATA_OFFSET + VCA_INITIAL_LEVEL_OFFSET]),
+                127,
+            ),
         );
         patch
     }
@@ -149,27 +168,27 @@ impl<L: Layer> LayerDecoder<L> {
         });
         store_program_nrpn(
             raw,
-            182,
+            NRPN_GATED_MODE,
             patch.sequence.gated_mode.index() as u16,
             L::DATA_OFFSET,
         );
         store_program_nrpn(
             raw,
-            183,
+            NRPN_SEQUENCER_TYPE,
             patch.sequence.sequencer_type.index() as u16,
             L::DATA_OFFSET,
         );
         for (track_index, track) in patch.sequence.gated.tracks.iter().enumerate() {
             store_program_nrpn(
                 raw,
-                184 + track_index as u16,
+                NRPN_GATED_DESTINATION_START + track_index as u16,
                 track.destination.rev2_raw(),
                 L::DATA_OFFSET,
             );
             for (step_index, step) in track.steps.iter().copied().enumerate() {
                 store_program_nrpn(
                     raw,
-                    192 + (track_index * 16 + step_index) as u16,
+                    NRPN_GATED_STEP_START + (track_index * GATED_STEP_COUNT + step_index) as u16,
                     step.rev2_raw(),
                     L::DATA_OFFSET,
                 );
@@ -177,7 +196,7 @@ impl<L: Layer> LayerDecoder<L> {
         }
         for (step_index, step) in patch.sequence.poly.steps.iter().enumerate() {
             for (lane_index, lane) in step.lanes.iter().copied().enumerate() {
-                let base = 276 + lane_index as u16 * 128;
+                let base = NRPN_POLY_NOTE_START + lane_index as u16 * POLY_LANE_NRPN_STRIDE;
                 store_program_nrpn(
                     raw,
                     base + step_index as u16,
@@ -186,13 +205,14 @@ impl<L: Layer> LayerDecoder<L> {
                 );
                 store_program_nrpn(
                     raw,
-                    base + 64 + step_index as u16,
+                    base + POLY_VELOCITY_NRPN_OFFSET + step_index as u16,
                     lane.velocity.rev2_raw(),
                     L::DATA_OFFSET,
                 );
             }
         }
-        raw[L::DATA_OFFSET + 27] = quantize(patch.amplifier.initial_level, 0.0, 1.0, 127) as u8;
+        raw[L::DATA_OFFSET + VCA_INITIAL_LEVEL_OFFSET] =
+            quantize(patch.amplifier.initial_level, 0.0, 1.0, 127) as u8;
         raw[L::NAME_RANGE].fill(b' ');
         raw[L::NAME_RANGE.start..L::NAME_RANGE.start + patch.name.len()]
             .copy_from_slice(patch.name.as_bytes());

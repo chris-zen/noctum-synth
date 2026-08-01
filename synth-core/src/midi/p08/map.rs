@@ -5,11 +5,16 @@ use crate::{
     ParamId,
     dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ},
     math::F32,
-    midi::prophet::{
-        FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
-        release_seconds,
+    midi::{
+        p08::ids::*,
+        prophet::{
+            FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
+            release_seconds,
+        },
     },
 };
+
+const P08_LFO_FREE_RATE_MAX: u16 = 150;
 
 #[derive(Clone, Copy)]
 pub(super) struct ProgramField {
@@ -156,7 +161,12 @@ pub(super) fn p08_lfo_waveform(raw: u16) -> f32 {
 }
 
 pub(super) fn p08_lfo_rate_hz(raw: u16) -> f32 {
-    logarithmic(raw.min(150), 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ)
+    logarithmic(
+        raw.min(P08_LFO_FREE_RATE_MAX),
+        P08_LFO_FREE_RATE_MAX,
+        MIN_LFO_RATE_HZ,
+        MAX_LFO_RATE_HZ,
+    )
 }
 
 pub(super) fn emit_osc_shape(emit: &mut impl FnMut(MidiUpdate), osc1: bool, raw: u16) {
@@ -202,120 +212,120 @@ pub(super) fn emit_osc_shape(emit: &mut impl FnMut(MidiUpdate), osc1: bool, raw:
 
 pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
     match number {
-        0 => emit(MidiUpdate::Param(
+        NRPN_OSC1_FREQUENCY => emit(MidiUpdate::Param(
             ParamId::Osc1Frequency,
             f32::from(raw.min(120)),
         )),
-        1 => emit(MidiUpdate::Param(
+        NRPN_OSC1_FINE_TUNE => emit(MidiUpdate::Param(
             ParamId::Osc1FineTune,
             f32::from(raw.min(100)) - 50.0,
         )),
-        2 => emit_osc_shape(emit, true, raw.min(103)),
-        3 => emit(MidiUpdate::Param(ParamId::Osc1Glide, unit(raw, 127))),
-        4 => emit(MidiUpdate::Param(
+        NRPN_OSC1_SHAPE => emit_osc_shape(emit, true, raw.min(103)),
+        NRPN_OSC1_GLIDE => emit(MidiUpdate::Param(ParamId::Osc1Glide, unit(raw, 127))),
+        NRPN_OSC1_KEYBOARD => emit(MidiUpdate::Param(
             ParamId::Osc1KeyboardOn,
             f32::from(raw != 0),
         )),
-        5 => emit(MidiUpdate::Param(
+        NRPN_OSC2_FREQUENCY => emit(MidiUpdate::Param(
             ParamId::Osc2Frequency,
             f32::from(raw.min(120)),
         )),
-        6 => emit(MidiUpdate::Param(
+        NRPN_OSC2_FINE_TUNE => emit(MidiUpdate::Param(
             ParamId::Osc2FineTune,
             f32::from(raw.min(100)) - 50.0,
         )),
-        7 => emit_osc_shape(emit, false, raw.min(103)),
-        8 => emit(MidiUpdate::Param(ParamId::Osc2Glide, unit(raw, 127))),
-        9 => emit(MidiUpdate::Param(
+        NRPN_OSC2_SHAPE => emit_osc_shape(emit, false, raw.min(103)),
+        NRPN_OSC2_GLIDE => emit(MidiUpdate::Param(ParamId::Osc2Glide, unit(raw, 127))),
+        NRPN_OSC2_KEYBOARD => emit(MidiUpdate::Param(
             ParamId::Osc2KeyboardOn,
             f32::from(raw != 0),
         )),
-        10 => emit(MidiUpdate::Param(ParamId::HardSync, f32::from(raw != 0))),
-        11 => emit(MidiUpdate::Param(ParamId::GlideMode, f32::from(raw.min(3)))),
-        12 => emit(MidiUpdate::Param(ParamId::OscSlop, unit(raw, 5))),
-        13 => emit(MidiUpdate::Param(ParamId::OscMix, unit(raw, 127))),
-        14 => emit(MidiUpdate::Param(ParamId::NoiseLevel, unit(raw, 127))),
-        15 => emit(MidiUpdate::Param(
+        NRPN_HARD_SYNC => emit(MidiUpdate::Param(ParamId::HardSync, f32::from(raw != 0))),
+        NRPN_GLIDE_MODE => emit(MidiUpdate::Param(ParamId::GlideMode, f32::from(raw.min(3)))),
+        NRPN_OSC_SLOP => emit(MidiUpdate::Param(ParamId::OscSlop, unit(raw, 5))),
+        NRPN_OSC_MIX => emit(MidiUpdate::Param(ParamId::OscMix, unit(raw, 127))),
+        NRPN_NOISE_LEVEL => emit(MidiUpdate::Param(ParamId::NoiseLevel, unit(raw, 127))),
+        NRPN_FILTER_CUTOFF => emit(MidiUpdate::Param(
             ParamId::FilterCutoff,
             cutoff_raw_to_hz(raw.min(FILTER_CUTOFF_RAW_MAX)),
         )),
-        16 => emit(MidiUpdate::Param(ParamId::FilterResonance, unit(raw, 127))),
-        17 => emit(MidiUpdate::Param(
+        NRPN_FILTER_RESONANCE => emit(MidiUpdate::Param(ParamId::FilterResonance, unit(raw, 127))),
+        NRPN_FILTER_KEY_TRACK => emit(MidiUpdate::Param(
             ParamId::FilterKeyTrack,
             key_track_from_raw(raw),
         )),
-        18 => emit(MidiUpdate::Param(ParamId::FilterAudioMod, unit(raw, 127))),
-        19 => emit(MidiUpdate::Param(ParamId::FilterPoles, f32::from(raw != 0))),
-        20 => emit(MidiUpdate::Param(
+        NRPN_FILTER_AUDIO_MOD => emit(MidiUpdate::Param(ParamId::FilterAudioMod, unit(raw, 127))),
+        NRPN_FILTER_POLES => emit(MidiUpdate::Param(ParamId::FilterPoles, f32::from(raw != 0))),
+        NRPN_FILTER_ENV_AMOUNT => emit(MidiUpdate::Param(
             ParamId::FilterEnvAmount,
             bipolar(raw, 254),
         )),
-        21 => emit(MidiUpdate::Param(ParamId::FilterVelocity, unit(raw, 127))),
-        22 => emit(MidiUpdate::Param(
+        NRPN_FILTER_VELOCITY => emit(MidiUpdate::Param(ParamId::FilterVelocity, unit(raw, 127))),
+        NRPN_FILTER_EG_DELAY => emit(MidiUpdate::Param(
             ParamId::FilterEgDelay,
             ranged(raw, 127, 0.0, 5.0),
         )),
-        23 => emit(MidiUpdate::Param(
+        NRPN_FILTER_EG_ATTACK => emit(MidiUpdate::Param(
             ParamId::FilterEgAttack,
             attack_decay_seconds(raw),
         )),
-        24 => emit(MidiUpdate::Param(
+        NRPN_FILTER_EG_DECAY => emit(MidiUpdate::Param(
             ParamId::FilterEgDecay,
             attack_decay_seconds(raw),
         )),
-        25 => emit(MidiUpdate::Param(ParamId::FilterEgSustain, unit(raw, 127))),
-        26 => emit(MidiUpdate::Param(
+        NRPN_FILTER_EG_SUSTAIN => emit(MidiUpdate::Param(ParamId::FilterEgSustain, unit(raw, 127))),
+        NRPN_FILTER_EG_RELEASE => emit(MidiUpdate::Param(
             ParamId::FilterEgRelease,
             release_seconds(raw),
         )),
-        27 => emit(MidiUpdate::Param(ParamId::VcaInitialLevel, unit(raw, 127))),
-        28 => emit(MidiUpdate::Param(ParamId::PanSpread, unit(raw, 127))),
-        29 => emit(MidiUpdate::Param(ParamId::ProgramVolume, unit(raw, 127))),
-        30 => emit(MidiUpdate::Param(ParamId::AmpEnvAmount, unit(raw, 127))),
-        31 => emit(MidiUpdate::Param(ParamId::AmpVelocity, unit(raw, 127))),
-        32 => emit(MidiUpdate::Param(
+        NRPN_VCA_INITIAL_LEVEL => emit(MidiUpdate::Param(ParamId::VcaInitialLevel, unit(raw, 127))),
+        NRPN_PAN_SPREAD => emit(MidiUpdate::Param(ParamId::PanSpread, unit(raw, 127))),
+        NRPN_PROGRAM_VOLUME => emit(MidiUpdate::Param(ParamId::ProgramVolume, unit(raw, 127))),
+        NRPN_AMP_ENV_AMOUNT => emit(MidiUpdate::Param(ParamId::AmpEnvAmount, unit(raw, 127))),
+        NRPN_AMP_VELOCITY => emit(MidiUpdate::Param(ParamId::AmpVelocity, unit(raw, 127))),
+        NRPN_AMP_EG_DELAY => emit(MidiUpdate::Param(
             ParamId::AmpEgDelay,
             ranged(raw, 127, 0.0, 5.0),
         )),
-        33 => emit(MidiUpdate::Param(
+        NRPN_AMP_EG_ATTACK => emit(MidiUpdate::Param(
             ParamId::AmpEgAttack,
             attack_decay_seconds(raw),
         )),
-        34 => emit(MidiUpdate::Param(
+        NRPN_AMP_EG_DECAY => emit(MidiUpdate::Param(
             ParamId::AmpEgDecay,
             attack_decay_seconds(raw),
         )),
-        35 => emit(MidiUpdate::Param(ParamId::AmpEgSustain, unit(raw, 127))),
-        36 => emit(MidiUpdate::Param(
+        NRPN_AMP_EG_SUSTAIN => emit(MidiUpdate::Param(ParamId::AmpEgSustain, unit(raw, 127))),
+        NRPN_AMP_EG_RELEASE => emit(MidiUpdate::Param(
             ParamId::AmpEgRelease,
             release_seconds(raw),
         )),
-        37..=56 => map_lfo_nrpn(number, raw, emit),
-        57 => emit(MidiUpdate::Param(
+        NRPN_LFO_BLOCK_START..=NRPN_LFO_BLOCK_END => map_lfo_nrpn(number, raw, emit),
+        NRPN_AUX_EG_DESTINATION => emit(MidiUpdate::Param(
             ParamId::AuxEgDestination,
             p08_mod_destination(raw).index() as f32,
         )),
-        58 => emit(MidiUpdate::Param(ParamId::AuxEgAmount, bipolar(raw, 254))),
-        59 => emit(MidiUpdate::Param(ParamId::AuxEgVelocity, unit(raw, 127))),
-        60 => emit(MidiUpdate::Param(
+        NRPN_AUX_EG_AMOUNT => emit(MidiUpdate::Param(ParamId::AuxEgAmount, bipolar(raw, 254))),
+        NRPN_AUX_EG_VELOCITY => emit(MidiUpdate::Param(ParamId::AuxEgVelocity, unit(raw, 127))),
+        NRPN_AUX_EG_DELAY => emit(MidiUpdate::Param(
             ParamId::AuxEgDelay,
             ranged(raw, 127, 0.0, 5.0),
         )),
-        61 => emit(MidiUpdate::Param(
+        NRPN_AUX_EG_ATTACK => emit(MidiUpdate::Param(
             ParamId::AuxEgAttack,
             attack_decay_seconds(raw),
         )),
-        62 => emit(MidiUpdate::Param(
+        NRPN_AUX_EG_DECAY => emit(MidiUpdate::Param(
             ParamId::AuxEgDecay,
             attack_decay_seconds(raw),
         )),
-        63 => emit(MidiUpdate::Param(ParamId::AuxEgSustain, unit(raw, 127))),
-        64 => emit(MidiUpdate::Param(
+        NRPN_AUX_EG_SUSTAIN => emit(MidiUpdate::Param(ParamId::AuxEgSustain, unit(raw, 127))),
+        NRPN_AUX_EG_RELEASE => emit(MidiUpdate::Param(
             ParamId::AuxEgRelease,
             release_seconds(raw),
         )),
-        95 => emit(MidiUpdate::Param(ParamId::KeyMode, f32::from(raw.min(5)))),
-        96 => {
+        NRPN_KEY_MODE => emit(MidiUpdate::Param(ParamId::KeyMode, f32::from(raw.min(5)))),
+        NRPN_UNISON_MODE => {
             let (mode, detune) = match raw.min(4) {
                 0 => (crate::UnisonMode::V1, 0.0),
                 1 => (crate::UnisonMode::V8, 0.0),
@@ -326,23 +336,25 @@ pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate))
             emit(MidiUpdate::Param(ParamId::UnisonMode, mode.index() as f32));
             emit(MidiUpdate::Param(ParamId::UnisonDetune, detune));
         }
-        99 => emit(MidiUpdate::Param(
+        NRPN_UNISON_ENABLED => emit(MidiUpdate::Param(
             ParamId::UnisonEnabled,
             f32::from(raw != 0),
         )),
-        100 => emit(MidiUpdate::Param(
+        NRPN_PITCH_BEND_RANGE => emit(MidiUpdate::Param(
             ParamId::PitchBendRange,
             f32::from(raw.min(12)),
         )),
-        65..=76 => map_free_mod_nrpn(number, raw, emit),
-        81..=90 => map_dedicated_mod_nrpn(number, raw, emit),
+        NRPN_FREE_MOD_START..=NRPN_FREE_MOD_END => map_free_mod_nrpn(number, raw, emit),
+        NRPN_DEDICATED_MOD_START..=NRPN_DEDICATED_MOD_END => {
+            map_dedicated_mod_nrpn(number, raw, emit)
+        }
         _ => {}
     }
 }
 
 pub(super) fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
-    let lfo = usize::from((number - 37) / 5);
-    let field = (number - 37) % 5;
+    let lfo = usize::from((number - NRPN_LFO_BLOCK_START) / NRPN_LFO_FIELD_COUNT);
+    let field = (number - NRPN_LFO_BLOCK_START) % NRPN_LFO_FIELD_COUNT;
     let params = [
         [
             ParamId::Lfo1Rate,
@@ -387,7 +399,7 @@ pub(super) fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpda
     ];
     match field {
         0 => {
-            let synced = raw > 150;
+            let synced = raw > P08_LFO_FREE_RATE_MAX;
             emit(MidiUpdate::Param(clock_sync[lfo], f32::from(synced)));
             if synced {
                 emit(MidiUpdate::Param(
@@ -409,8 +421,8 @@ pub(super) fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpda
 }
 
 pub(super) fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
-    let index = usize::from((number - 65) / 3);
-    let parameter = match (number - 65) % 3 {
+    let index = usize::from((number - NRPN_FREE_MOD_START) / 3);
+    let parameter = match (number - NRPN_FREE_MOD_START) % 3 {
         0 => ModulationParam::Source(ModSource::from_index(usize::from(raw.min(20)))),
         1 => ModulationParam::Amount(bipolar(raw, 254)),
         _ => ModulationParam::Destination(p08_mod_destination(raw)),
@@ -422,11 +434,11 @@ pub(super) fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(Mid
 }
 
 pub(super) fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MidiUpdate)) {
-    let index = usize::from((number - 81) / 2);
+    let index = usize::from((number - NRPN_DEDICATED_MOD_START) / 2);
     let Some(source) = DedicatedModSource::ALL.get(index) else {
         return;
     };
-    let parameter = if (number - 81) % 2 == 0 {
+    let parameter = if (number - NRPN_DEDICATED_MOD_START) % 2 == 0 {
         ModulationParam::Amount(bipolar(raw, 254))
     } else {
         ModulationParam::Destination(p08_mod_destination(raw))
@@ -439,17 +451,17 @@ pub(super) fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMu
 
 pub(super) fn nrpn_max(number: u16) -> Option<u16> {
     Some(match number {
-        0 | 5 => 120,
-        1 | 6 => 100,
-        2 | 7 => 103,
-        4 | 9 | 10 | 19 | 41 | 46 | 51 | 56 => 1,
-        12 => 5,
-        15 => 164,
-        20 | 58 | 66 | 69 | 72 | 75 | 81 | 83 | 85 | 87 | 89 => 254,
+        NRPN_OSC1_FREQUENCY | NRPN_OSC2_FREQUENCY => 120,
+        NRPN_OSC1_FINE_TUNE | NRPN_OSC2_FINE_TUNE => 100,
+        NRPN_OSC1_SHAPE | NRPN_OSC2_SHAPE => 103,
+        NRPN_OSC1_KEYBOARD | 9 | 10 | 19 | 41 | 46 | 51 | 56 => 1,
+        NRPN_OSC_SLOP => 5,
+        NRPN_FILTER_CUTOFF => 164,
+        NRPN_FILTER_ENV_AMOUNT | 58 | 66 | 69 | 72 | 75 | 81 | 83 | 85 | 87 | 89 => 254,
         37 | 42 | 47 | 52 => 166,
         38 | 43 | 48 | 53 => 4,
-        40 | 45 | 50 | 55 | 57 => 43,
-        100 => 12,
+        40 | 45 | 50 | 55 | NRPN_AUX_EG_DESTINATION => 43,
+        NRPN_PITCH_BEND_RANGE => 12,
         _ => 127,
     })
 }

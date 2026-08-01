@@ -11,25 +11,27 @@ use crate::{
 };
 
 use super::{
-    LAYER_MODE_OFFSET, PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    PROGRAM_PACKED_LEN, ProgramData, SPLIT_POINT_OFFSET, layer_mode_from_raw,
+    BANK_OFFSET, EDIT_BUFFER_COMMAND, EDIT_BUFFER_PAYLOAD_OFFSET, LAYER_MODE_OFFSET, MAX_BANK,
+    PROGRAM_DATA_COMMAND, PROGRAM_DATA_LEN, PROGRAM_DATA_PAYLOAD_OFFSET, PROGRAM_DATA_SYSEX_LEN,
+    PROGRAM_EDIT_BUFFER_SYSEX_LEN, PROGRAM_OFFSET, PROGRAM_PACKED_LEN, ProgramData,
+    SPLIT_POINT_OFFSET, SYSEX_END, SYSEX_MANUFACTURER, SYSEX_MODEL, SYSEX_START,
+    layer_mode_from_raw,
 };
-
-const SYSEX_MANUFACTURER: u8 = 0x01;
-const SYSEX_MODEL: u8 = 0x23;
 
 /// Decode a stored Prophet '08 Program Data dump.
 pub fn program_data(message: &[u8]) -> Result<ProgramData, SysexError> {
-    validate_header(message, PROGRAM_DATA_SYSEX_LEN, 0x02)?;
-    let bank = message[4];
-    let program = message[5];
-    if bank > 1 {
+    validate_header(message, PROGRAM_DATA_SYSEX_LEN, PROGRAM_DATA_COMMAND)?;
+    let bank = message[BANK_OFFSET];
+    let program = message[PROGRAM_OFFSET];
+    if bank > MAX_BANK {
         return Err(SysexError::InvalidBank);
     }
     if program & 0x80 != 0 {
         return Err(SysexError::NonSevenBitData);
     }
-    let patch = program_payload(&message[6..6 + PROGRAM_PACKED_LEN])?;
+    let patch = program_payload(
+        &message[PROGRAM_DATA_PAYLOAD_OFFSET..PROGRAM_DATA_PAYLOAD_OFFSET + PROGRAM_PACKED_LEN],
+    )?;
     Ok(ProgramData {
         bank,
         program,
@@ -39,8 +41,10 @@ pub fn program_data(message: &[u8]) -> Result<ProgramData, SysexError> {
 
 /// Decode a Prophet '08 Program Edit Buffer data dump.
 pub fn program_edit_buffer(message: &[u8]) -> Result<Patch, SysexError> {
-    validate_header(message, PROGRAM_EDIT_BUFFER_SYSEX_LEN, 0x03)?;
-    program_payload(&message[4..4 + PROGRAM_PACKED_LEN])
+    validate_header(message, PROGRAM_EDIT_BUFFER_SYSEX_LEN, EDIT_BUFFER_COMMAND)?;
+    program_payload(
+        &message[EDIT_BUFFER_PAYLOAD_OFFSET..EDIT_BUFFER_PAYLOAD_OFFSET + PROGRAM_PACKED_LEN],
+    )
 }
 
 fn program_payload(packed: &[u8]) -> Result<Patch, SysexError> {
@@ -67,7 +71,7 @@ fn validate_header(
     if message.len() != expected_len {
         return Err(SysexError::InvalidLength);
     }
-    if message[0] != 0xf0 || message[expected_len - 1] != 0xf7 {
+    if message[0] != SYSEX_START || message[expected_len - 1] != SYSEX_END {
         return Err(SysexError::InvalidFraming);
     }
     if message[1] != SYSEX_MANUFACTURER {

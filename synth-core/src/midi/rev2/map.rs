@@ -9,11 +9,13 @@ use crate::{
     midi::{
         clock::MidiClockMode,
         prophet::{
-            FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
+            FILTER_CUTOFF_RAW_MAX, MAX_BPM, MIDI_CC_STATUS_BASE, MIDI_CHANNEL_MASK, MIN_BPM,
+            NRPN_RADIX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
             release_seconds,
         },
-        rev2::program::layer_mode_from_raw,
+        rev2::{ids::*, program::layer_mode_from_raw},
     },
+    sequencer::model::{GATED_STEP_COUNT, POLY_STEP_COUNT},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,11 +97,15 @@ pub(super) fn program_field(number: u16, layer_offset: usize) -> Option<ProgramF
         178 => 135,
         175 => 131,
         179 => 130,
-        182 => 138,
-        183 => 139,
-        184..=187 => 111 + usize::from(number - 184),
-        192..=255 => 140 + usize::from(number - 192),
-        276..=1043 => 256 + usize::from(number - 276),
+        NRPN_GATED_MODE => 138,
+        NRPN_SEQUENCER_TYPE => 139,
+        NRPN_GATED_DESTINATION_START..=NRPN_GATED_DESTINATION_END => {
+            111 + usize::from(number - NRPN_GATED_DESTINATION_START)
+        }
+        NRPN_GATED_STEP_START..=NRPN_GATED_STEP_END => {
+            140 + usize::from(number - NRPN_GATED_STEP_START)
+        }
+        NRPN_POLY_NOTE_START..=NRPN_POLY_END => 256 + usize::from(number - NRPN_POLY_NOTE_START),
         _ => return None,
     };
     let msb_offset = match number {
@@ -162,17 +168,30 @@ pub(super) fn store_nrpn(raw: &mut [u8], messages: &[[u8; 3]], layer_offset: usi
     if messages.len() != 4 {
         return;
     }
-    let number = usize::from(messages[0][2]) * 128 + usize::from(messages[1][2]);
-    let value = u16::from(messages[2][2]) * 128 + u16::from(messages[3][2]);
+    let number =
+        usize::from(messages[0][2]) * usize::from(NRPN_RADIX) + usize::from(messages[1][2]);
+    let value = u16::from(messages[2][2]) * NRPN_RADIX + u16::from(messages[3][2]);
     store_program_nrpn(raw, number as u16, value.min(255), layer_offset);
 }
 
 pub(super) fn emit_nrpn(channel: u8, number: u16, value: u16, emit: &mut impl FnMut([u8; 3])) {
-    let status = 0xb0 | (channel & 0x0f);
-    emit([status, 99, ((number / 128) & 0x7f) as u8]);
-    emit([status, 98, (number & 0x7f) as u8]);
-    emit([status, 6, ((value / 128) & 0x7f) as u8]);
-    emit([status, 38, (value & 0x7f) as u8]);
+    let status = MIDI_CC_STATUS_BASE | (channel & MIDI_CHANNEL_MASK);
+    emit([
+        status,
+        CC_NRPN_MSB,
+        ((number / NRPN_RADIX) & u16::from(0x7f_u8)) as u8,
+    ]);
+    emit([status, CC_NRPN_LSB, (number & u16::from(0x7f_u8)) as u8]);
+    emit([
+        status,
+        CC_DATA_ENTRY_MSB,
+        ((value / NRPN_RADIX) & u16::from(0x7f_u8)) as u8,
+    ]);
+    emit([
+        status,
+        CC_DATA_ENTRY_LSB,
+        (value & u16::from(0x7f_u8)) as u8,
+    ]);
 }
 
 pub(super) fn bool_raw(value: f32) -> u16 {
@@ -192,7 +211,7 @@ pub(super) fn key_mode_raw(value: f32) -> u16 {
 
 pub(super) fn key_mode_index(raw: u16) -> f32 {
     (match raw.min(5) {
-        0 => crate::KeyMode::Low.index(),
+        NRPN_OSC1_FREQUENCY => crate::KeyMode::Low.index(),
         1 => crate::KeyMode::High.index(),
         2 => crate::KeyMode::Last.index(),
         3 => crate::KeyMode::LowRetrigger.index(),
@@ -251,88 +270,96 @@ pub(super) fn emit_osc_shape(emit: &mut impl FnMut(MappedUpdate), osc1: bool, ra
 pub(super) fn map_cc(controller: u8, raw: u8, emit: &mut impl FnMut(MappedUpdate)) -> bool {
     let raw = u16::from(raw);
     match controller {
-        3 => emit_param(
+        CC_EFFECT_TYPE => emit_param(
             emit,
             ParamId::EffectType,
             F32(ranged(raw, 127, 0.0, 12.0)).round().as_f32(),
         ),
-        5 => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
-        7 | 37 => emit(MappedUpdate::MasterVolume(unit(raw, 127))),
-        8 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
-        9 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
-        10 => emit_param(emit, ParamId::PanModMode, f32::from(raw >= 64)),
-        12 => emit_param(emit, ParamId::EffectParam1, unit(raw, 127)),
-        13 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
-        14 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
-        15 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
-        16 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw >= 64)),
-        17 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
-        18 => {
+        CC_GLIDE_MODE => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
+        CC_MASTER_VOLUME | CC_MASTER_VOLUME_ALT => emit(MappedUpdate::MasterVolume(unit(raw, 127))),
+        CC_SUB_OSC_LEVEL => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
+        CC_OSC_SLOP => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
+        CC_PAN_MOD_MODE => emit_param(emit, ParamId::PanModMode, f32::from(raw >= 64)),
+        CC_EFFECT_PARAM1 => emit_param(emit, ParamId::EffectParam1, unit(raw, 127)),
+        CC_EFFECT_PARAM2 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
+        CC_BPM => emit_param(
+            emit,
+            ParamId::Bpm,
+            f32::from(raw.clamp(MIN_BPM.into(), MAX_BPM.into())),
+        ),
+        CC_CLOCK_DIVIDE => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
+        CC_EFFECT_ENABLED => emit_param(emit, ParamId::EffectEnabled, f32::from(raw >= 64)),
+        CC_EFFECT_MIX => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
+        CC_LAYER_MODE => {
             let Some(mode) = layer_mode_from_raw(raw.min(2) as u8) else {
                 return false;
             };
             emit(MappedUpdate::LayerMode(mode));
         }
-        39 => emit(MappedUpdate::SplitPoint(
+        CC_SPLIT_POINT => emit(MappedUpdate::SplitPoint(
             raw.min(u16::from(MAX_SPLIT_POINT)) as u8,
         )),
-        20 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
-        21 => emit_param(emit, ParamId::Osc1FineTune, ranged(raw, 127, -50.0, 50.0)),
-        22 => emit_osc_shape(
+        CC_OSC1_FREQUENCY => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
+        CC_OSC1_FINE_TUNE => emit_param(emit, ParamId::Osc1FineTune, ranged(raw, 127, -50.0, 50.0)),
+        CC_OSC1_SHAPE => emit_osc_shape(
             emit,
             true,
             F32(ranged(raw, 127, 0.0, 4.0)).round().as_f32() as u16,
         ),
-        23 => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
-        24 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
-        25 => emit_param(emit, ParamId::Osc2FineTune, ranged(raw, 127, -50.0, 50.0)),
-        26 => emit_osc_shape(
+        CC_OSC1_GLIDE => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
+        CC_OSC2_FREQUENCY => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
+        CC_OSC2_FINE_TUNE => emit_param(emit, ParamId::Osc2FineTune, ranged(raw, 127, -50.0, 50.0)),
+        CC_OSC2_SHAPE => emit_osc_shape(
             emit,
             false,
             F32(ranged(raw, 127, 0.0, 4.0)).round().as_f32() as u16,
         ),
-        27 => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
-        28 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
-        29 => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
-        30 => emit_param(emit, ParamId::Osc1ShapeMod, unit(raw, 127)),
-        31 => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 127)),
-        65 => emit_param(emit, ParamId::GlideEnabled, f32::from(raw >= 64)),
-        71 | 103 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
-        74 | 102 => emit_param(emit, ParamId::FilterCutoff, cutoff_raw_to_hz(raw.min(127))),
-        75 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
-        76 => emit_param(emit, ParamId::AmpEgRelease, release_seconds(raw)),
-        77 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
-        78 => emit_param(emit, ParamId::AuxEgRelease, release_seconds(raw)),
-        85 => emit_param(
+        CC_OSC2_GLIDE => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
+        CC_OSC_MIX => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
+        CC_NOISE_LEVEL => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
+        CC_OSC1_SHAPE_MOD => emit_param(emit, ParamId::Osc1ShapeMod, unit(raw, 127)),
+        CC_OSC2_SHAPE_MOD => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 127)),
+        CC_GLIDE_ENABLED => emit_param(emit, ParamId::GlideEnabled, f32::from(raw >= 64)),
+        CC_FILTER_RESONANCE | CC_FILTER_RESONANCE_ALT => {
+            emit_param(emit, ParamId::FilterResonance, unit(raw, 127))
+        }
+        CC_FILTER_CUTOFF | CC_FILTER_CUTOFF_ALT => {
+            emit_param(emit, ParamId::FilterCutoff, cutoff_raw_to_hz(raw.min(127)))
+        }
+        CC_AMP_EG_SUSTAIN => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
+        CC_AMP_EG_RELEASE => emit_param(emit, ParamId::AmpEgRelease, release_seconds(raw)),
+        CC_AUX_EG_SUSTAIN => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
+        CC_AUX_EG_RELEASE => emit_param(emit, ParamId::AuxEgRelease, release_seconds(raw)),
+        CC_AUX_EG_DESTINATION => emit_param(
             emit,
             ParamId::AuxEgDestination,
             F32(ranged(raw, 127, 0.0, 52.0)).round().as_f32(),
         ),
-        86 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 127)),
-        87 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
-        88 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        89 => emit_param(emit, ParamId::AuxEgAttack, attack_decay_seconds(raw)),
-        90 => emit_param(emit, ParamId::AuxEgDecay, attack_decay_seconds(raw)),
-        104 => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
-        105 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
-        106 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 127)),
-        107 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
-        108 => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        109 => emit_param(emit, ParamId::FilterEgAttack, attack_decay_seconds(raw)),
-        110 => emit_param(emit, ParamId::FilterEgDecay, attack_decay_seconds(raw)),
-        111 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
-        112 => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
-        114 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
-        113 => emit_param(emit, ParamId::VcaInitialLevel, unit(raw, 127)),
-        115 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
-        116 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
-        117 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        118 => emit_param(emit, ParamId::AmpEgAttack, attack_decay_seconds(raw)),
-        119 => emit_param(emit, ParamId::AmpEgDecay, attack_decay_seconds(raw)),
-        33 => emit_param(emit, ParamId::ArpEnabled, f32::from(raw >= 64)),
-        34 => emit_param(emit, ParamId::ArpMode, f32::from(raw.min(4))),
-        35 => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
-        36 => emit_param(emit, ParamId::ArpRepeats, f32::from(raw.min(2))),
+        CC_AUX_EG_AMOUNT => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 127)),
+        CC_AUX_EG_VELOCITY => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
+        CC_AUX_EG_DELAY => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        CC_AUX_EG_ATTACK => emit_param(emit, ParamId::AuxEgAttack, attack_decay_seconds(raw)),
+        CC_AUX_EG_DECAY => emit_param(emit, ParamId::AuxEgDecay, attack_decay_seconds(raw)),
+        CC_FILTER_KEY_TRACK => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
+        CC_FILTER_AUDIO_MOD => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
+        CC_FILTER_ENV_AMOUNT => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 127)),
+        CC_FILTER_VELOCITY => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
+        CC_FILTER_EG_DELAY => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        CC_FILTER_EG_ATTACK => emit_param(emit, ParamId::FilterEgAttack, attack_decay_seconds(raw)),
+        CC_FILTER_EG_DECAY => emit_param(emit, ParamId::FilterEgDecay, attack_decay_seconds(raw)),
+        CC_FILTER_EG_SUSTAIN => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
+        CC_FILTER_EG_RELEASE => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
+        CC_PAN_SPREAD => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
+        CC_VCA_INITIAL_LEVEL => emit_param(emit, ParamId::VcaInitialLevel, unit(raw, 127)),
+        CC_AMP_ENV_AMOUNT => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
+        CC_AMP_VELOCITY => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
+        CC_AMP_EG_DELAY => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        CC_AMP_EG_ATTACK => emit_param(emit, ParamId::AmpEgAttack, attack_decay_seconds(raw)),
+        CC_AMP_EG_DECAY => emit_param(emit, ParamId::AmpEgDecay, attack_decay_seconds(raw)),
+        CC_ARP_ENABLED => emit_param(emit, ParamId::ArpEnabled, f32::from(raw >= 64)),
+        CC_ARP_MODE => emit_param(emit, ParamId::ArpMode, f32::from(raw.min(4))),
+        CC_ARP_RANGE => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
+        CC_ARP_REPEATS => emit_param(emit, ParamId::ArpRepeats, f32::from(raw.min(2))),
         _ => return false,
     }
     true
@@ -344,15 +371,15 @@ pub(super) fn map_nrpn_with_lfo(
     state: &mut LfoPairingState,
     emit: &mut impl FnMut(MappedUpdate),
 ) {
-    if number == 4099 {
+    if number == NRPN_MIDI_CLOCK {
         emit(MappedUpdate::MidiClockMode(MidiClockMode::from_index(
             raw as usize,
         )));
         return;
     }
-    if (37..=56).contains(&number) {
-        let lfo = usize::from((number - 37) / 5);
-        match (number - 37) % 5 {
+    if (NRPN_LFO1_RATE..=NRPN_LFO4_CLOCK_SYNC).contains(&number) {
+        let lfo = usize::from((number - NRPN_LFO1_RATE) / 5);
+        match (number - NRPN_LFO1_RATE) % 5 {
             0 => {
                 state.lfo_rate_raw[lfo] = Some(raw);
                 emit_rev2_lfo_rate(lfo, raw, state.lfo_clock_sync[lfo], emit);
@@ -412,123 +439,141 @@ const fn lfo_clock_sync_param(lfo: usize) -> ParamId {
 
 pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate)) {
     match number {
-        0 => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
-        1 => emit_param(emit, ParamId::Osc1FineTune, f32::from(raw.min(100)) - 50.0),
-        2 => emit_osc_shape(emit, true, raw.min(4)),
-        3 => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
-        4 => emit_param(emit, ParamId::Osc1KeyboardOn, f32::from(raw != 0)),
-        5 => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
-        6 => emit_param(emit, ParamId::Osc2FineTune, f32::from(raw.min(100)) - 50.0),
-        7 => emit_osc_shape(emit, false, raw.min(4)),
-        8 => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
-        9 => emit_param(emit, ParamId::Osc2KeyboardOn, f32::from(raw != 0)),
-        10 => emit_param(emit, ParamId::HardSync, f32::from(raw != 0)),
-        11 => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
-        12 => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
-        13 => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
-        14 => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
-        15 => emit_param(
+        NRPN_OSC1_FREQUENCY => emit_param(emit, ParamId::Osc1Frequency, f32::from(raw.min(120))),
+        NRPN_OSC1_FINE_TUNE => {
+            emit_param(emit, ParamId::Osc1FineTune, f32::from(raw.min(100)) - 50.0)
+        }
+        NRPN_OSC1_SHAPE => emit_osc_shape(emit, true, raw.min(4)),
+        NRPN_OSC1_GLIDE => emit_param(emit, ParamId::Osc1Glide, unit(raw, 127)),
+        NRPN_OSC1_KEYBOARD => emit_param(emit, ParamId::Osc1KeyboardOn, f32::from(raw != 0)),
+        NRPN_OSC2_FREQUENCY => emit_param(emit, ParamId::Osc2Frequency, f32::from(raw.min(120))),
+        NRPN_OSC2_FINE_TUNE => {
+            emit_param(emit, ParamId::Osc2FineTune, f32::from(raw.min(100)) - 50.0)
+        }
+        NRPN_OSC2_SHAPE => emit_osc_shape(emit, false, raw.min(4)),
+        NRPN_OSC2_GLIDE => emit_param(emit, ParamId::Osc2Glide, unit(raw, 127)),
+        NRPN_OSC2_KEYBOARD => emit_param(emit, ParamId::Osc2KeyboardOn, f32::from(raw != 0)),
+        NRPN_HARD_SYNC => emit_param(emit, ParamId::HardSync, f32::from(raw != 0)),
+        NRPN_GLIDE_MODE => emit_param(emit, ParamId::GlideMode, f32::from(raw.min(3))),
+        NRPN_OSC_SLOP => emit_param(emit, ParamId::OscSlop, unit(raw, 127)),
+        NRPN_OSC_MIX => emit_param(emit, ParamId::OscMix, unit(raw, 127)),
+        NRPN_NOISE_LEVEL => emit_param(emit, ParamId::NoiseLevel, unit(raw, 127)),
+        NRPN_FILTER_CUTOFF => emit_param(
             emit,
             ParamId::FilterCutoff,
             cutoff_raw_to_hz(raw.min(FILTER_CUTOFF_RAW_MAX)),
         ),
-        16 => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
-        17 => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
-        18 => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
-        19 => emit_param(emit, ParamId::FilterPoles, f32::from(raw != 0)),
-        20 => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 254)),
-        21 => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
-        22 => emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        23 => emit_param(emit, ParamId::FilterEgAttack, attack_decay_seconds(raw)),
-        24 => emit_param(emit, ParamId::FilterEgDecay, attack_decay_seconds(raw)),
-        25 => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
-        26 => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
-        28 => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
-        29 => emit_param(emit, ParamId::ProgramVolume, unit(raw, 127)),
-        30 => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
-        31 => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
-        32 => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        33 => emit_param(emit, ParamId::AmpEgAttack, attack_decay_seconds(raw)),
-        34 => emit_param(emit, ParamId::AmpEgDecay, attack_decay_seconds(raw)),
-        35 => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
-        36 => emit_param(emit, ParamId::AmpEgRelease, release_seconds(raw)),
-        37..=56 => map_lfo_nrpn(number, raw, emit),
-        57 => emit_param(
+        NRPN_FILTER_RESONANCE => emit_param(emit, ParamId::FilterResonance, unit(raw, 127)),
+        NRPN_FILTER_KEY_TRACK => emit_param(emit, ParamId::FilterKeyTrack, key_track_from_raw(raw)),
+        NRPN_FILTER_AUDIO_MOD => emit_param(emit, ParamId::FilterAudioMod, unit(raw, 127)),
+        NRPN_FILTER_POLES => emit_param(emit, ParamId::FilterPoles, f32::from(raw != 0)),
+        NRPN_FILTER_ENV_AMOUNT => emit_param(emit, ParamId::FilterEnvAmount, bipolar(raw, 254)),
+        NRPN_FILTER_VELOCITY => emit_param(emit, ParamId::FilterVelocity, unit(raw, 127)),
+        NRPN_FILTER_EG_DELAY => {
+            emit_param(emit, ParamId::FilterEgDelay, ranged(raw, 127, 0.0, 5.0))
+        }
+        NRPN_FILTER_EG_ATTACK => {
+            emit_param(emit, ParamId::FilterEgAttack, attack_decay_seconds(raw))
+        }
+        NRPN_FILTER_EG_DECAY => emit_param(emit, ParamId::FilterEgDecay, attack_decay_seconds(raw)),
+        NRPN_FILTER_EG_SUSTAIN => emit_param(emit, ParamId::FilterEgSustain, unit(raw, 127)),
+        NRPN_FILTER_EG_RELEASE => emit_param(emit, ParamId::FilterEgRelease, release_seconds(raw)),
+        NRPN_PAN_SPREAD => emit_param(emit, ParamId::PanSpread, unit(raw, 127)),
+        NRPN_PROGRAM_VOLUME => emit_param(emit, ParamId::ProgramVolume, unit(raw, 127)),
+        NRPN_AMP_ENV_AMOUNT => emit_param(emit, ParamId::AmpEnvAmount, unit(raw, 127)),
+        NRPN_AMP_VELOCITY => emit_param(emit, ParamId::AmpVelocity, unit(raw, 127)),
+        NRPN_AMP_EG_DELAY => emit_param(emit, ParamId::AmpEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        NRPN_AMP_EG_ATTACK => emit_param(emit, ParamId::AmpEgAttack, attack_decay_seconds(raw)),
+        NRPN_AMP_EG_DECAY => emit_param(emit, ParamId::AmpEgDecay, attack_decay_seconds(raw)),
+        NRPN_AMP_EG_SUSTAIN => emit_param(emit, ParamId::AmpEgSustain, unit(raw, 127)),
+        NRPN_AMP_EG_RELEASE => emit_param(emit, ParamId::AmpEgRelease, release_seconds(raw)),
+        NRPN_LFO1_RATE..=NRPN_LFO4_CLOCK_SYNC => map_lfo_nrpn(number, raw, emit),
+        NRPN_AUX_EG_DESTINATION => emit_param(
             emit,
             ParamId::AuxEgDestination,
             f32::from(ModDestination::from_index(usize::from(raw.min(52))).index() as u16),
         ),
-        58 => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 254)),
-        59 => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
-        60 => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
-        61 => emit_param(emit, ParamId::AuxEgAttack, attack_decay_seconds(raw)),
-        62 => emit_param(emit, ParamId::AuxEgDecay, attack_decay_seconds(raw)),
-        63 => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
-        64 => emit_param(emit, ParamId::AuxEgRelease, release_seconds(raw)),
-        65..=88 => map_free_mod_nrpn(number, raw, emit),
-        97 => emit_param(emit, ParamId::AuxEgLoop, f32::from(raw != 0)),
-        99 => emit_param(emit, ParamId::Osc1NoteReset, f32::from(raw != 0)),
-        100 => emit_param(emit, ParamId::PitchBendRange, f32::from(raw.min(12))),
-        102 => emit_param(emit, ParamId::Osc1ShapeMod, unit(raw, 99)),
-        103 => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 99)),
-        104 => emit_param(emit, ParamId::Osc2NoteReset, f32::from(raw != 0)),
-        105 => emit_param(emit, ParamId::Lfo1KeySync, f32::from(raw != 0)),
-        106 => emit_param(emit, ParamId::Lfo2KeySync, f32::from(raw != 0)),
-        107 => emit_param(emit, ParamId::Lfo3KeySync, f32::from(raw != 0)),
-        108 => emit_param(emit, ParamId::Lfo4KeySync, f32::from(raw != 0)),
-        110 => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
-        111 => emit_param(emit, ParamId::GlideEnabled, f32::from(raw != 0)),
-        116..=125 => map_dedicated_mod_nrpn(number, raw, emit),
-        153 => emit_param(emit, ParamId::EffectEnabled, f32::from(raw != 0)),
-        154 => emit_param(emit, ParamId::EffectType, f32::from(raw.min(12))),
-        155 => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
-        156 => emit_param(emit, ParamId::EffectParam1, unit(raw, 255)),
-        157 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
-        158 => emit_param(emit, ParamId::EffectClockSync, f32::from(raw != 0)),
-        163 => {
+        NRPN_AUX_EG_AMOUNT => emit_param(emit, ParamId::AuxEgAmount, bipolar(raw, 254)),
+        NRPN_AUX_EG_VELOCITY => emit_param(emit, ParamId::AuxEgVelocity, unit(raw, 127)),
+        NRPN_AUX_EG_DELAY => emit_param(emit, ParamId::AuxEgDelay, ranged(raw, 127, 0.0, 5.0)),
+        NRPN_AUX_EG_ATTACK => emit_param(emit, ParamId::AuxEgAttack, attack_decay_seconds(raw)),
+        NRPN_AUX_EG_DECAY => emit_param(emit, ParamId::AuxEgDecay, attack_decay_seconds(raw)),
+        NRPN_AUX_EG_SUSTAIN => emit_param(emit, ParamId::AuxEgSustain, unit(raw, 127)),
+        NRPN_AUX_EG_RELEASE => emit_param(emit, ParamId::AuxEgRelease, release_seconds(raw)),
+        NRPN_FREE_MOD_START..=NRPN_FREE_MOD_END => map_free_mod_nrpn(number, raw, emit),
+        NRPN_AUX_EG_LOOP => emit_param(emit, ParamId::AuxEgLoop, f32::from(raw != 0)),
+        NRPN_OSC1_NOTE_RESET => emit_param(emit, ParamId::Osc1NoteReset, f32::from(raw != 0)),
+        NRPN_PITCH_BEND_RANGE => emit_param(emit, ParamId::PitchBendRange, f32::from(raw.min(12))),
+        NRPN_OSC1_SHAPE_MOD => emit_param(emit, ParamId::Osc1ShapeMod, unit(raw, 99)),
+        NRPN_OSC2_SHAPE_MOD => emit_param(emit, ParamId::Osc2ShapeMod, unit(raw, 99)),
+        NRPN_OSC2_NOTE_RESET => emit_param(emit, ParamId::Osc2NoteReset, f32::from(raw != 0)),
+        NRPN_LFO1_KEY_SYNC => emit_param(emit, ParamId::Lfo1KeySync, f32::from(raw != 0)),
+        NRPN_LFO2_KEY_SYNC => emit_param(emit, ParamId::Lfo2KeySync, f32::from(raw != 0)),
+        NRPN_LFO3_KEY_SYNC => emit_param(emit, ParamId::Lfo3KeySync, f32::from(raw != 0)),
+        NRPN_LFO4_KEY_SYNC => emit_param(emit, ParamId::Lfo4KeySync, f32::from(raw != 0)),
+        NRPN_SUB_OSC_LEVEL => emit_param(emit, ParamId::SubOscLevel, unit(raw, 127)),
+        NRPN_GLIDE_ENABLED => emit_param(emit, ParamId::GlideEnabled, f32::from(raw != 0)),
+        NRPN_DEDICATED_MOD_START..=NRPN_DEDICATED_MOD_END => {
+            map_dedicated_mod_nrpn(number, raw, emit)
+        }
+        NRPN_EFFECT_ENABLED => emit_param(emit, ParamId::EffectEnabled, f32::from(raw != 0)),
+        NRPN_EFFECT_TYPE => emit_param(emit, ParamId::EffectType, f32::from(raw.min(12))),
+        NRPN_EFFECT_MIX => emit_param(emit, ParamId::EffectMix, unit(raw, 127)),
+        NRPN_EFFECT_PARAM1 => emit_param(emit, ParamId::EffectParam1, unit(raw, 255)),
+        NRPN_EFFECT_PARAM2 => emit_param(emit, ParamId::EffectParam2, unit(raw, 127)),
+        NRPN_EFFECT_CLOCK_SYNC => emit_param(emit, ParamId::EffectClockSync, f32::from(raw != 0)),
+        NRPN_LAYER_MODE => {
             if let Some(mode) = layer_mode_from_raw(raw.min(2) as u8) {
                 emit(MappedUpdate::LayerMode(mode));
             }
         }
-        167 => emit_param(emit, ParamId::UnisonDetune, f32::from(raw.min(16))),
-        168 => emit_param(emit, ParamId::UnisonEnabled, f32::from(raw != 0)),
-        169 => emit_param(emit, ParamId::UnisonMode, f32::from(raw.min(16))),
-        170 => emit_param(emit, ParamId::KeyMode, key_mode_index(raw)),
-        171 => emit(MappedUpdate::SplitPoint(
+        NRPN_UNISON_DETUNE => emit_param(emit, ParamId::UnisonDetune, f32::from(raw.min(16))),
+        NRPN_UNISON_ENABLED => emit_param(emit, ParamId::UnisonEnabled, f32::from(raw != 0)),
+        NRPN_UNISON_MODE => emit_param(emit, ParamId::UnisonMode, f32::from(raw.min(16))),
+        NRPN_KEY_MODE => emit_param(emit, ParamId::KeyMode, key_mode_index(raw)),
+        NRPN_SPLIT_POINT => emit(MappedUpdate::SplitPoint(
             raw.min(u16::from(MAX_SPLIT_POINT)) as u8,
         )),
-        175 => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
-        179 => emit_param(emit, ParamId::Bpm, f32::from(raw.clamp(30, 250))),
-        180 => emit(MappedUpdate::SequencerRunning(raw != 0)),
-        181 => emit(MappedUpdate::SequencerRecording(raw != 0)),
-        172 => emit_param(emit, ParamId::ArpEnabled, f32::from(raw != 0)),
-        173 => emit_param(emit, ParamId::ArpMode, f32::from(raw.min(4))),
-        174 => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
-        177 => emit_param(emit, ParamId::ArpRepeats, f32::from(raw.min(2))),
-        178 => emit_param(emit, ParamId::ArpRelatch, f32::from(raw != 0)),
-        182 => emit(MappedUpdate::Sequence(SequenceUpdate::GatedMode(
+        NRPN_CLOCK_DIVIDE => emit_param(emit, ParamId::ClockDivide, f32::from(raw.min(12))),
+        NRPN_BPM => emit_param(
+            emit,
+            ParamId::Bpm,
+            f32::from(raw.clamp(MIN_BPM.into(), MAX_BPM.into())),
+        ),
+        NRPN_SEQUENCER_RUNNING => emit(MappedUpdate::SequencerRunning(raw != 0)),
+        NRPN_SEQUENCER_RECORDING => emit(MappedUpdate::SequencerRecording(raw != 0)),
+        NRPN_ARP_ENABLED => emit_param(emit, ParamId::ArpEnabled, f32::from(raw != 0)),
+        NRPN_ARP_MODE => emit_param(emit, ParamId::ArpMode, f32::from(raw.min(4))),
+        NRPN_ARP_RANGE => emit_param(emit, ParamId::ArpRange, f32::from(raw.min(2))),
+        NRPN_ARP_REPEATS => emit_param(emit, ParamId::ArpRepeats, f32::from(raw.min(2))),
+        NRPN_ARP_RELATCH => emit_param(emit, ParamId::ArpRelatch, f32::from(raw != 0)),
+        NRPN_GATED_MODE => emit(MappedUpdate::Sequence(SequenceUpdate::GatedMode(
             GatedSequencerMode::from_index(usize::from(raw.min(4))),
         ))),
-        183 => emit(MappedUpdate::Sequence(SequenceUpdate::Type(if raw == 0 {
+        NRPN_SEQUENCER_TYPE => emit(MappedUpdate::Sequence(SequenceUpdate::Type(if raw == 0 {
             SequencerType::Polyphonic
         } else {
             SequencerType::Gated
         }))),
-        184..=187 => emit(MappedUpdate::Sequence(SequenceUpdate::GatedDestination {
-            track: (number - 184) as u8,
-            destination: GatedDestination::from_rev2_raw(raw),
-        })),
-        192..=255 => emit(MappedUpdate::Sequence(SequenceUpdate::GatedStep {
-            track: ((number - 192) / 16) as u8,
-            step: ((number - 192) % 16) as u8,
-            value: GatedStep::from_rev2_raw(raw),
-        })),
-        276..=1043 => {
-            let field = number - 276;
-            let lane = field / 128;
-            let in_lane = field % 128;
-            let step = in_lane % 64;
-            if in_lane < 64 {
+        NRPN_GATED_DESTINATION_START..=NRPN_GATED_DESTINATION_END => {
+            emit(MappedUpdate::Sequence(SequenceUpdate::GatedDestination {
+                track: (number - NRPN_GATED_DESTINATION_START) as u8,
+                destination: GatedDestination::from_rev2_raw(raw),
+            }))
+        }
+        NRPN_GATED_STEP_START..=NRPN_GATED_STEP_END => {
+            emit(MappedUpdate::Sequence(SequenceUpdate::GatedStep {
+                track: ((number - NRPN_GATED_STEP_START) / GATED_STEP_COUNT as u16) as u8,
+                step: ((number - NRPN_GATED_STEP_START) % GATED_STEP_COUNT as u16) as u8,
+                value: GatedStep::from_rev2_raw(raw),
+            }))
+        }
+        NRPN_POLY_NOTE_START..=NRPN_POLY_END => {
+            let field = number - NRPN_POLY_NOTE_START;
+            let lane = field / POLY_LANE_NRPN_STRIDE;
+            let in_lane = field % POLY_LANE_NRPN_STRIDE;
+            let step = in_lane % POLY_STEP_COUNT as u16;
+            if in_lane < POLY_VELOCITY_NRPN_OFFSET {
                 emit(MappedUpdate::Sequence(SequenceUpdate::PolyNote {
                     step: step as u8,
                     lane: lane as u8,
@@ -542,7 +587,7 @@ pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate
                 }));
             }
         }
-        4099 => emit(MappedUpdate::MidiClockMode(MidiClockMode::from_index(
+        NRPN_MIDI_CLOCK => emit(MappedUpdate::MidiClockMode(MidiClockMode::from_index(
             raw as usize,
         ))),
         _ => {}
@@ -550,8 +595,8 @@ pub(super) fn map_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate
 }
 
 fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate)) {
-    let lfo = usize::from((number - 37) / 5);
-    let field = (number - 37) % 5;
+    let lfo = usize::from((number - NRPN_LFO1_RATE) / 5);
+    let field = (number - NRPN_LFO1_RATE) % 5;
     let params = [
         [
             ParamId::Lfo1Rate,
@@ -586,15 +631,17 @@ fn map_lfo_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate)) {
         0 => logarithmic(raw, 150, MIN_LFO_RATE_HZ, MAX_LFO_RATE_HZ),
         1 => f32::from(raw.min(4)),
         2 => unit(raw, 127),
-        3 => f32::from(ModDestination::from_index(usize::from(raw.min(52))).index() as u16),
+        NRPN_OSC1_GLIDE => {
+            f32::from(ModDestination::from_index(usize::from(raw.min(52))).index() as u16)
+        }
         _ => f32::from(raw != 0),
     };
     emit_param(emit, params[lfo][field as usize], value);
 }
 
 fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate)) {
-    let index = usize::from((number - 65) / 3);
-    let parameter = match (number - 65) % 3 {
+    let index = usize::from((number - NRPN_FREE_MOD_START) / 3);
+    let parameter = match (number - NRPN_FREE_MOD_START) % 3 {
         0 => ModulationParam::Source(ModSource::from_index(usize::from(raw.min(22)))),
         1 => ModulationParam::Amount(bipolar(raw, 254)),
         _ => ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(52)))),
@@ -606,8 +653,8 @@ fn map_free_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate))
 }
 
 fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpdate)) {
-    let index = usize::from((number - 116) / 2);
-    let parameter = if (number - 116) % 2 == 0 {
+    let index = usize::from((number - NRPN_DEDICATED_MOD_START) / 2);
+    let parameter = if (number - NRPN_DEDICATED_MOD_START) % 2 == 0 {
         ModulationParam::Amount(bipolar(raw, 254))
     } else {
         ModulationParam::Destination(ModDestination::from_index(usize::from(raw.min(52))))
@@ -619,47 +666,86 @@ fn map_dedicated_mod_nrpn(number: u16, raw: u16, emit: &mut impl FnMut(MappedUpd
 }
 
 pub(super) fn nrpn_max(number: u16) -> Option<u16> {
-    if (276..=1043).contains(&number) {
-        return Some(if (number - 276) % 128 < 64 { 128 } else { 255 });
+    if (NRPN_POLY_NOTE_START..=NRPN_POLY_END).contains(&number) {
+        return Some(
+            if (number - NRPN_POLY_NOTE_START) % POLY_LANE_NRPN_STRIDE < POLY_VELOCITY_NRPN_OFFSET {
+                NRPN_RADIX
+            } else {
+                255
+            },
+        );
     }
     Some(match number {
-        0 | 5 => 120,
-        1 | 6 => 100,
-        2 | 7 | 38 | 43 | 48 | 53 => 4,
-        10 | 19 | 41 | 46 | 51 | 56 | 97 | 99 | 104..=108 | 153 | 158 => 1,
-        11 => 3,
-        111 | 168 => 1,
-        163 => 2,
-        167 | 169 => 16,
-        170 => 5,
-        171 => 120,
-        175 => 12,
-        179 => 250,
-        180 | 181 => 1,
-        182 => 4,
-        183 => 1,
-        184 | 186 => 52,
+        NRPN_OSC1_FREQUENCY | NRPN_OSC2_FREQUENCY => 120,
+        NRPN_OSC1_FINE_TUNE | NRPN_OSC2_FINE_TUNE => 100,
+        NRPN_OSC1_SHAPE | 7 | 38 | 43 | 48 | 53 => 4,
+        NRPN_HARD_SYNC
+        | 19
+        | 41
+        | 46
+        | 51
+        | 56
+        | 97
+        | 99
+        | 104..=108
+        | 153
+        | NRPN_EFFECT_CLOCK_SYNC => 1,
+        NRPN_GLIDE_MODE => 3,
+        NRPN_GLIDE_ENABLED | NRPN_UNISON_ENABLED => 1,
+        NRPN_LAYER_MODE => 2,
+        NRPN_UNISON_DETUNE | NRPN_UNISON_MODE => 16,
+        NRPN_KEY_MODE => 5,
+        NRPN_SPLIT_POINT => 120,
+        NRPN_CLOCK_DIVIDE => 12,
+        NRPN_BPM => u16::from(MAX_BPM),
+        NRPN_SEQUENCER_RUNNING | NRPN_SEQUENCER_RECORDING => 1,
+        NRPN_GATED_MODE => 4,
+        NRPN_SEQUENCER_TYPE => 1,
+        NRPN_GATED_DESTINATION_START | 186 => 52,
         185 | 187 => 53,
-        192..=255 => 127,
-        172 => 1,
-        173 => 4,
-        174 => 2,
-        177 => 2,
-        178 => 1,
-        4099 => 4,
-        4190 => 1,
-        15 => 164,
-        20 | 58 | 66 | 69 | 72 | 75 | 78 | 81 | 84 | 87 | 116 | 118 | 120 | 122 | 124 => 254,
+        NRPN_GATED_STEP_START..=NRPN_GATED_STEP_END => 127,
+        NRPN_ARP_ENABLED => 1,
+        NRPN_ARP_MODE => 4,
+        NRPN_ARP_RANGE => 2,
+        NRPN_ARP_REPEATS => 2,
+        NRPN_ARP_RELATCH => 1,
+        NRPN_MIDI_CLOCK => 4,
+        NRPN_EDIT_LAYER => 1,
+        NRPN_FILTER_CUTOFF => 164,
+        NRPN_FILTER_ENV_AMOUNT
+        | 58
+        | 66
+        | 69
+        | 72
+        | 75
+        | 78
+        | 81
+        | 84
+        | 87
+        | 116
+        | 118
+        | 120
+        | 122
+        | 124 => 254,
         37 | 42 | 47 | 52 => 150,
         40 | 45 | 50 | 55 | 57 | 67 | 70 | 73 | 76 | 79 | 82 | 85 | 88 | 117 | 119 | 121 | 123
         | 125 => 52,
         65 | 68 | 71 | 74 | 77 | 80 | 83 | 86 => 22,
-        102 | 103 => 99,
-        100 | 154 => 12,
-        156 => 255,
-        12..=14 | 16..=18 | 21..=26 | 28..=36 | 39 | 44 | 49 | 54 | 59..=64 | 110 | 155 | 157 => {
-            127
-        }
+        NRPN_OSC1_SHAPE_MOD | NRPN_OSC2_SHAPE_MOD => 99,
+        NRPN_PITCH_BEND_RANGE | NRPN_EFFECT_TYPE => 12,
+        NRPN_EFFECT_PARAM1 => 255,
+        12..=14
+        | 16..=18
+        | 21..=26
+        | 28..=36
+        | 39
+        | 44
+        | 49
+        | 54
+        | 59..=64
+        | 110
+        | 155
+        | NRPN_EFFECT_PARAM2 => 127,
         _ => return None,
     })
 }

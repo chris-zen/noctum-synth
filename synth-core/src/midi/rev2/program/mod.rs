@@ -5,6 +5,18 @@ use crate::{LayerMode, Patch, midi::prophet::packed_program_len};
 pub mod decode;
 pub mod encode;
 
+pub const SYSEX_START: u8 = 0xf0;
+pub const SYSEX_END: u8 = 0xf7;
+pub const SYSEX_MANUFACTURER: u8 = 0x01;
+pub const SYSEX_MODEL: u8 = 0x2f;
+pub const PROGRAM_DATA_COMMAND: u8 = 0x02;
+pub const EDIT_BUFFER_COMMAND: u8 = 0x03;
+pub const BANK_OFFSET: usize = 4;
+pub const PROGRAM_OFFSET: usize = 5;
+pub const PROGRAM_DATA_PAYLOAD_OFFSET: usize = 6;
+pub const EDIT_BUFFER_PAYLOAD_OFFSET: usize = 4;
+pub const MAX_BANK: u8 = 7;
+
 /// Raw program-mode values follow the official [Prophet '08 manual], [Edisyn],
 /// a working [Electra One implementation], and Sequential's official Rev2 factory bank.
 ///
@@ -16,8 +28,9 @@ const LAYER_MODES_BY_RAW_VALUE: [LayerMode; 3] =
 
 pub const PROGRAM_DATA_LEN: usize = 2046;
 pub const PROGRAM_PACKED_LEN: usize = packed_program_len(PROGRAM_DATA_LEN);
-pub const PROGRAM_DATA_SYSEX_LEN: usize = 2346;
-pub const PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize = 2344;
+pub const PROGRAM_DATA_SYSEX_LEN: usize = PROGRAM_DATA_PAYLOAD_OFFSET + PROGRAM_PACKED_LEN + 1;
+pub const PROGRAM_EDIT_BUFFER_SYSEX_LEN: usize =
+    EDIT_BUFFER_PAYLOAD_OFFSET + PROGRAM_PACKED_LEN + 1;
 
 /// Program-mode byte offset, verified against Sequential's official [Rev2 factory bank].
 ///

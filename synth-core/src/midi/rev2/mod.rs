@@ -9,6 +9,7 @@
 
 mod controller;
 mod encoder;
+mod ids;
 mod layer;
 mod map;
 pub mod program;

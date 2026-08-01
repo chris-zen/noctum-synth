@@ -9,6 +9,12 @@
 
 use crate::math::F32;
 
+pub const NRPN_RADIX: u16 = 128;
+pub const MIN_BPM: u8 = 30;
+pub const MAX_BPM: u8 = 250;
+pub const MIDI_CC_STATUS_BASE: u8 = 0xb0;
+pub const MIDI_CHANNEL_MASK: u8 = 0x0f;
+
 /// Prophet cutoff raw maximum from the
 /// [Rev2 User's Guide, Appendix E](https://www.sequential.com/wp-content/uploads/2019/05/Prophet-Rev2-Users-Guide-1.2.2.pdf).
 pub const FILTER_CUTOFF_RAW_MAX: u16 = 164;
