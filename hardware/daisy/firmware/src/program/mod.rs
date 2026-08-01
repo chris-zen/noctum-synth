@@ -64,6 +64,9 @@ pub fn init(
     };
     match init_status {
         InitStatus::Opened => defmt::info!("opened existing MIDI program catalog"),
+        InitStatus::Recovered => {
+            defmt::warn!("rebuilt MIDI program index from committed patch blocks")
+        }
         InitStatus::Formatted => {
             defmt::warn!("formatted MIDI program catalog with default slots")
         }

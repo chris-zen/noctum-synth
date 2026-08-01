@@ -72,6 +72,9 @@ fn emit_failure(
         ProgramStoreError::Flash(_) => StorageFailureReason::Flash,
         ProgramStoreError::InvalidAddress => StorageFailureReason::InvalidAddress,
         ProgramStoreError::Record(_) => StorageFailureReason::InvalidRecord,
+        ProgramStoreError::NoSpareBlock | ProgramStoreError::CorruptIndex => {
+            StorageFailureReason::CorruptStore
+        }
         ProgramStoreError::VerifyFailed => StorageFailureReason::VerifyFailed,
     };
     diagnostics::emit(diagnostics::Event::ProgramStorageFailed {

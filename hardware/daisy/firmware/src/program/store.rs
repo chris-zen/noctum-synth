@@ -1,4 +1,4 @@
-//! Compact QSPI-backed MIDI program catalog and sector-safe slot updates.
+//! Power-loss-safe indexed program storage for Daisy QSPI NOR flash.
 
 use synth_core::{PATCH_RECORD_SIZE, Patch, PatchRecord, PatchRecordError};
 
@@ -30,22 +30,27 @@ impl ProgramFlash for embassy_daisy::qspi::QspiFlash {
 pub const BANK_COUNT: u8 = 8;
 pub const PROGRAMS_PER_BANK: u8 = 128;
 pub const SLOT_COUNT: usize = BANK_COUNT as usize * PROGRAMS_PER_BANK as usize;
-pub const SLOT_STRIDE: usize = PATCH_RECORD_SIZE;
 pub const SECTOR_SIZE: usize = 4096;
+pub const PAGE_SIZE: usize = 256;
+pub const PATCH_BLOCK_COUNT: usize = SLOT_COUNT + 1;
 pub const CATALOG_A_ADDRESS: u32 = 0x000c_0000;
-pub const PROGRAMS_ADDRESS: u32 = CATALOG_A_ADDRESS + SECTOR_SIZE as u32;
-pub const CATALOG_B_ADDRESS: u32 = PROGRAMS_ADDRESS + (SLOT_COUNT * SLOT_STRIDE) as u32;
-pub const STORAGE_END: u32 = CATALOG_B_ADDRESS + SECTOR_SIZE as u32;
+pub const CATALOG_B_ADDRESS: u32 = CATALOG_A_ADDRESS + SECTOR_SIZE as u32;
+pub const PROGRAMS_ADDRESS: u32 = CATALOG_B_ADDRESS + SECTOR_SIZE as u32;
+pub const SLOT_STRIDE: usize = SECTOR_SIZE;
+pub const STORAGE_END: u32 = PROGRAMS_ADDRESS + (PATCH_BLOCK_COUNT * SECTOR_SIZE) as u32;
+
 const QSPI_SIZE_BYTES: u32 = 8 * 1024 * 1024;
 const FACTORY_BANK_SIZE: u32 = 512 * 2346;
 const FACTORY_BANK_SECTORS: u32 = FACTORY_BANK_SIZE.div_ceil(SECTOR_SIZE as u32);
 const FACTORY_BANK_ADDRESS: u32 = QSPI_SIZE_BYTES - FACTORY_BANK_SECTORS * SECTOR_SIZE as u32;
-const CATALOG_ADDRESSES: [u32; 2] = [CATALOG_A_ADDRESS, CATALOG_B_ADDRESS];
+const INVALID_BLOCK: u16 = u16::MAX;
 
 const _: () = {
     assert!(CATALOG_A_ADDRESS % SECTOR_SIZE as u32 == 0);
-    assert!(PROGRAMS_ADDRESS % SECTOR_SIZE as u32 == 0);
     assert!(CATALOG_B_ADDRESS % SECTOR_SIZE as u32 == 0);
+    assert!(PROGRAMS_ADDRESS % SECTOR_SIZE as u32 == 0);
+    assert!(PATCH_RECORD_SIZE + BLOCK_HEADER_LEN <= SECTOR_SIZE);
+    assert!(PATCH_BLOCK_COUNT < INVALID_BLOCK as usize);
     assert!(STORAGE_END <= FACTORY_BANK_ADDRESS);
     assert!(STORAGE_END <= QSPI_SIZE_BYTES);
 };
@@ -54,14 +59,27 @@ const _: () = {
 const _: () = {
     assert!(CATALOG_A_ADDRESS == embassy_daisy::qspi::APPLICATION_RESERVED_END);
     assert!(SECTOR_SIZE as u32 == embassy_daisy::qspi::SECTOR_SIZE);
+    assert!(PAGE_SIZE == embassy_daisy::qspi::PAGE_SIZE);
     assert!(QSPI_SIZE_BYTES == embassy_daisy::qspi::SIZE_BYTES);
-    assert!(STORAGE_END <= embassy_daisy::qspi::SIZE_BYTES);
 };
 
-const CATALOG_MAGIC: [u8; 4] = *b"NMPG";
-const CATALOG_VERSION: u8 = 3;
-const CATALOG_HEADER_LEN: usize = 20;
-const SELECTION_ENTRY_LEN: usize = 12;
+const BLOCK_MAGIC: [u8; 4] = *b"NMBK";
+const BLOCK_VERSION: u8 = 1;
+const BLOCK_HEADER_LEN: usize = 32;
+const BLOCK_COMMIT_OFFSET: usize = 24;
+const COMMITTED: u8 = 0;
+
+const INDEX_MAGIC: [u8; 4] = *b"NMIX";
+const INDEX_VERSION: u8 = 1;
+const INDEX_HEADER_LEN: usize = 32;
+const INDEX_COMMIT_OFFSET: usize = 24;
+const INDEX_TABLE_OFFSET: usize = INDEX_HEADER_LEN;
+const INDEX_TABLE_LEN: usize = SLOT_COUNT * 2;
+const INDEX_JOURNAL_OFFSET: usize = INDEX_TABLE_OFFSET + INDEX_TABLE_LEN;
+const INDEX_ENTRY_LEN: usize = 12;
+const INDEX_ENTRY_COMMIT_OFFSET: usize = 10;
+const INDEX_ENTRY_POINTER: u8 = 1;
+const INDEX_ENTRY_SELECTION: u8 = 2;
 
 #[cfg(not(test))]
 static mut SECTOR_BUFFER: [u8; SECTOR_SIZE] = [0u8; SECTOR_SIZE];
@@ -86,6 +104,7 @@ fn with_sector_buffer<R>(f: impl FnOnce(&mut [u8; SECTOR_SIZE]) -> R) -> R {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitStatus {
     Opened,
+    Recovered,
     Formatted,
 }
 
@@ -95,6 +114,8 @@ pub enum ProgramStoreError<E> {
     InvalidAddress,
     Record(PatchRecordError),
     VerifyFailed,
+    NoSpareBlock,
+    CorruptIndex,
 }
 
 impl<E> From<PatchRecordError> for ProgramStoreError<E> {
@@ -105,81 +126,51 @@ impl<E> From<PatchRecordError> for ProgramStoreError<E> {
 
 pub struct ProgramStore<F> {
     flash: F,
+    index: [u16; SLOT_COUNT],
+    spare_block: u16,
     last_bank: u8,
     last_program: u8,
-    generation: u32,
-    selection_sequence: u32,
-    next_selection_offset: usize,
+    epoch: u32,
+    next_journal_offset: usize,
     active_catalog_address: u32,
 }
 
 impl<F: ProgramFlash> ProgramStore<F> {
     pub fn open(mut flash: F) -> Result<(Self, InitStatus), ProgramStoreError<F::Error>> {
-        let mut best_address = 0_u32;
-        let mut best_catalog: Option<(Catalog, [u8; SECTOR_SIZE])> = None;
-
-        for &address in &CATALOG_ADDRESSES {
-            let mut sector = [0; SECTOR_SIZE];
-            flash
-                .read(address, &mut sector)
-                .map_err(ProgramStoreError::Flash)?;
-            let mut header = [0; CATALOG_HEADER_LEN];
-            header.copy_from_slice(&sector[..CATALOG_HEADER_LEN]);
-            if let Some(catalog) = Catalog::decode(&header) {
-                if best_catalog.as_ref().map_or(true, |(best, _)| {
-                    catalog.generation.wrapping_sub(best.generation) < u32::MAX / 2
-                }) {
-                    best_catalog = Some((catalog, sector));
-                    best_address = address;
+        let first = read_index(&mut flash, CATALOG_A_ADDRESS)?;
+        let second = read_index(&mut flash, CATALOG_B_ADDRESS)?;
+        let selected = match (first, second) {
+            (Some(a), Some(b)) => {
+                if generation_newer(b.epoch, a.epoch) {
+                    Some(b)
+                } else {
+                    Some(a)
                 }
+            }
+            (Some(index), None) | (None, Some(index)) => Some(index),
+            (None, None) => None,
+        };
+
+        if let Some(snapshot) = selected {
+            if let Some(spare_block) = validate_index(&mut flash, &snapshot.index)? {
+                ensure_erased(&mut flash, block_address(spare_block))?;
+                return Ok((
+                    Self {
+                        flash,
+                        index: snapshot.index,
+                        spare_block,
+                        last_bank: snapshot.bank,
+                        last_program: snapshot.program,
+                        epoch: snapshot.epoch,
+                        next_journal_offset: snapshot.next_journal_offset,
+                        active_catalog_address: snapshot.address,
+                    },
+                    InitStatus::Opened,
+                ));
             }
         }
 
-        if let Some((catalog, sector)) = best_catalog {
-            let journal = scan_selection_journal(&sector, catalog.bank, catalog.program);
-            return Ok((
-                Self {
-                    flash,
-                    last_bank: journal.bank,
-                    last_program: journal.program,
-                    generation: catalog.generation,
-                    selection_sequence: journal.sequence,
-                    next_selection_offset: journal.next_offset,
-                    active_catalog_address: best_address,
-                },
-                InitStatus::Opened,
-            ));
-        }
-
-        #[cfg(target_arch = "arm")]
-        defmt::warn!("invalid program catalog headers, formatting");
-
-        let generation = 1;
-        let catalog = Catalog {
-            bank: 0,
-            program: 0,
-            generation,
-        };
-        let mut address = CATALOG_A_ADDRESS;
-        while address < STORAGE_END {
-            flash
-                .erase_sector(address)
-                .map_err(ProgramStoreError::Flash)?;
-            address += SECTOR_SIZE as u32;
-        }
-        write_catalog(&mut flash, CATALOG_A_ADDRESS, catalog)?;
-        Ok((
-            Self {
-                flash,
-                last_bank: 0,
-                last_program: 0,
-                generation,
-                selection_sequence: 0,
-                next_selection_offset: CATALOG_HEADER_LEN,
-                active_catalog_address: CATALOG_A_ADDRESS,
-            },
-            InitStatus::Formatted,
-        ))
+        recover_blocks(flash)
     }
 
     pub fn last_load(&self) -> (u8, u8) {
@@ -187,12 +178,9 @@ impl<F: ProgramFlash> ProgramStore<F> {
     }
 
     pub fn load(&mut self, bank: u8, program: u8) -> Result<Patch, ProgramStoreError<F::Error>> {
-        let address = slot_address(bank, program)?;
-        let mut record = [0; PATCH_RECORD_SIZE];
-        self.flash
-            .read(address, &mut record)
-            .map_err(ProgramStoreError::Flash)?;
-        PatchRecord::decode(&record).map_err(ProgramStoreError::Record)
+        let logical = logical_slot(bank, program)?;
+        let block = self.index[logical];
+        read_patch(&mut self.flash, block, logical as u16)
     }
 
     pub fn save(
@@ -201,32 +189,58 @@ impl<F: ProgramFlash> ProgramStore<F> {
         program: u8,
         patch: &Patch,
     ) -> Result<(), ProgramStoreError<F::Error>> {
-        let address = slot_address(bank, program)?;
-        let sector_address = address - address % SECTOR_SIZE as u32;
-        let offset = (address - sector_address) as usize;
+        let logical = logical_slot(bank, program)?;
+        let old_block = self.index[logical];
+        let generation = read_block_header(&mut self.flash, old_block)?
+            .filter(|header| header.logical_slot == logical as u16)
+            .map_or(1, |header| header.generation.wrapping_add(1));
+        let new_block = self.spare_block;
+
         with_sector_buffer(|sector| {
-            self.flash
-                .read(sector_address, sector)
-                .map_err(ProgramStoreError::Flash)?;
-            let mut record = [0xff; PATCH_RECORD_SIZE];
-            PatchRecord::encode(patch, &mut record)?;
-            sector[offset..offset + PATCH_RECORD_SIZE].copy_from_slice(&record);
+            sector.fill(0xff);
+            let record: &mut [u8; PATCH_RECORD_SIZE] = (&mut sector
+                [BLOCK_HEADER_LEN..BLOCK_HEADER_LEN + PATCH_RECORD_SIZE])
+                .try_into()
+                .unwrap();
+            PatchRecord::encode(patch, record)?;
+            let header = BlockHeader {
+                logical_slot: logical as u16,
+                generation,
+                payload_len: PATCH_RECORD_SIZE as u16,
+                payload_crc: synth_core::patch_storage::crc32(record),
+            };
+            sector[..BLOCK_HEADER_LEN].copy_from_slice(&header.encode_uncommitted());
 
             self.flash
-                .erase_sector(sector_address)
+                .erase_sector(block_address(new_block))
                 .map_err(ProgramStoreError::Flash)?;
-            self.flash
-                .program(sector_address, sector)
-                .map_err(ProgramStoreError::Flash)?;
-            let mut verify = [0; PATCH_RECORD_SIZE];
-            self.flash
-                .read(address, &mut verify)
-                .map_err(ProgramStoreError::Flash)?;
-            if verify != record {
-                return Err(ProgramStoreError::VerifyFailed);
-            }
-            Ok(())
-        })
+            program_pages(
+                &mut self.flash,
+                block_address(new_block),
+                &sector[..BLOCK_HEADER_LEN + PATCH_RECORD_SIZE],
+            )?;
+            verify_bytes(
+                &mut self.flash,
+                block_address(new_block),
+                &sector[..BLOCK_HEADER_LEN + PATCH_RECORD_SIZE],
+            )?;
+            commit_byte(
+                &mut self.flash,
+                block_address(new_block) + BLOCK_COMMIT_OFFSET as u32,
+            )?;
+            Ok::<(), ProgramStoreError<F::Error>>(())
+        })?;
+
+        self.ensure_journal_space()?;
+        let entry = IndexEntry::pointer(logical as u16, new_block);
+        self.append_index_entry(entry)?;
+        self.index[logical] = new_block;
+
+        self.flash
+            .erase_sector(block_address(old_block))
+            .map_err(ProgramStoreError::Flash)?;
+        self.spare_block = old_block;
+        Ok(())
     }
 
     pub fn persist_last_load(
@@ -238,54 +252,43 @@ impl<F: ProgramFlash> ProgramStore<F> {
         if (bank, program) == (self.last_bank, self.last_program) {
             return Ok(());
         }
-        if self.selection_sequence != u32::MAX
-            && self.next_selection_offset + SELECTION_ENTRY_LEN <= SECTOR_SIZE
-        {
-            let entry = SelectionEntry {
-                bank,
-                program,
-                sequence: self.selection_sequence + 1,
-            }
-            .encode();
-            let address = self.active_catalog_address + self.next_selection_offset as u32;
-            self.flash
-                .program(address, &entry)
-                .map_err(ProgramStoreError::Flash)?;
-            let mut verify = [0; SELECTION_ENTRY_LEN];
-            self.flash
-                .read(address, &mut verify)
-                .map_err(ProgramStoreError::Flash)?;
-            if verify != entry {
-                return Err(ProgramStoreError::VerifyFailed);
-            }
-            self.last_bank = bank;
-            self.last_program = program;
-            self.selection_sequence += 1;
-            self.next_selection_offset += SELECTION_ENTRY_LEN;
-            return Ok(());
-        }
-
-        let generation = self.generation.wrapping_add(1);
-        let catalog = Catalog {
-            bank,
-            program,
-            generation,
-        };
-        let alternate = if self.active_catalog_address == CATALOG_A_ADDRESS {
-            CATALOG_B_ADDRESS
-        } else {
-            CATALOG_A_ADDRESS
-        };
-        self.flash
-            .erase_sector(alternate)
-            .map_err(ProgramStoreError::Flash)?;
-        write_catalog(&mut self.flash, alternate, catalog)?;
+        self.ensure_journal_space()?;
+        self.append_index_entry(IndexEntry::selection(bank, program))?;
         self.last_bank = bank;
         self.last_program = program;
-        self.generation = generation;
-        self.selection_sequence = 0;
-        self.next_selection_offset = CATALOG_HEADER_LEN;
+        Ok(())
+    }
+
+    fn ensure_journal_space(&mut self) -> Result<(), ProgramStoreError<F::Error>> {
+        if self.next_journal_offset + INDEX_ENTRY_LEN <= SECTOR_SIZE {
+            return Ok(());
+        }
+        let alternate = other_catalog(self.active_catalog_address);
+        let epoch = self.epoch.wrapping_add(1);
+        write_index(
+            &mut self.flash,
+            alternate,
+            epoch,
+            self.last_bank,
+            self.last_program,
+            &self.index,
+        )?;
         self.active_catalog_address = alternate;
+        self.epoch = epoch;
+        self.next_journal_offset = INDEX_JOURNAL_OFFSET;
+        self.flash
+            .erase_sector(other_catalog(alternate))
+            .map_err(ProgramStoreError::Flash)?;
+        Ok(())
+    }
+
+    fn append_index_entry(&mut self, entry: IndexEntry) -> Result<(), ProgramStoreError<F::Error>> {
+        let address = self.active_catalog_address + self.next_journal_offset as u32;
+        let encoded = entry.encode_uncommitted();
+        program_pages(&mut self.flash, address, &encoded)?;
+        verify_bytes(&mut self.flash, address, &encoded)?;
+        commit_byte(&mut self.flash, address + INDEX_ENTRY_COMMIT_OFFSET as u32)?;
+        self.next_journal_offset += INDEX_ENTRY_LEN;
         Ok(())
     }
 
@@ -295,155 +298,506 @@ impl<F: ProgramFlash> ProgramStore<F> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Catalog {
-    bank: u8,
-    program: u8,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockHeader {
+    logical_slot: u16,
     generation: u32,
+    payload_len: u16,
+    payload_crc: u32,
 }
 
-impl Catalog {
-    fn encode(self) -> [u8; CATALOG_HEADER_LEN] {
-        let mut bytes = [0xff; CATALOG_HEADER_LEN];
-        bytes[..4].copy_from_slice(&CATALOG_MAGIC);
-        bytes[4] = CATALOG_VERSION;
-        bytes[5] = self.bank;
-        bytes[6] = self.program;
-        bytes[7] = 0;
-        bytes[8..10].copy_from_slice(&(SLOT_COUNT as u16).to_le_bytes());
-        bytes[10..12].copy_from_slice(&(SLOT_STRIDE as u16).to_le_bytes());
-        bytes[12..16].copy_from_slice(&self.generation.to_le_bytes());
-        let checksum = synth_core::patch_storage::crc32(&bytes[..16]);
-        bytes[16..20].copy_from_slice(&checksum.to_le_bytes());
+impl BlockHeader {
+    fn encode_uncommitted(self) -> [u8; BLOCK_HEADER_LEN] {
+        let mut bytes = [0xff; BLOCK_HEADER_LEN];
+        bytes[..4].copy_from_slice(&BLOCK_MAGIC);
+        bytes[4] = BLOCK_VERSION;
+        bytes[6..8].copy_from_slice(&self.logical_slot.to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.generation.to_le_bytes());
+        bytes[12..14].copy_from_slice(&self.payload_len.to_le_bytes());
+        bytes[16..20].copy_from_slice(&self.payload_crc.to_le_bytes());
+        let checksum = synth_core::patch_storage::crc32(&bytes[..20]);
+        bytes[20..24].copy_from_slice(&checksum.to_le_bytes());
         bytes
     }
 
-    fn decode(bytes: &[u8; CATALOG_HEADER_LEN]) -> Option<Self> {
-        if bytes[..4] != CATALOG_MAGIC || bytes[4] != CATALOG_VERSION {
-            return None;
-        }
-        if u16::from_le_bytes([bytes[8], bytes[9]]) != SLOT_COUNT as u16
-            || u16::from_le_bytes([bytes[10], bytes[11]]) != SLOT_STRIDE as u16
+    fn decode(bytes: &[u8; BLOCK_HEADER_LEN]) -> Option<Self> {
+        if bytes[..4] != BLOCK_MAGIC
+            || bytes[4] != BLOCK_VERSION
+            || bytes[BLOCK_COMMIT_OFFSET] != COMMITTED
+            || synth_core::patch_storage::crc32(&bytes[..20])
+                != u32::from_le_bytes(bytes[20..24].try_into().ok()?)
         {
             return None;
         }
-        let checksum = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-        if checksum != synth_core::patch_storage::crc32(&bytes[..16]) {
-            return None;
-        }
-        let bank = bytes[5];
-        let program = bytes[6];
-        if bank >= BANK_COUNT || program >= PROGRAMS_PER_BANK {
+        let payload_len = u16::from_le_bytes(bytes[12..14].try_into().ok()?);
+        if payload_len != 0 && usize::from(payload_len) != PATCH_RECORD_SIZE {
             return None;
         }
         Some(Self {
-            bank,
-            program,
-            generation: u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+            logical_slot: u16::from_le_bytes(bytes[6..8].try_into().ok()?),
+            generation: u32::from_le_bytes(bytes[8..12].try_into().ok()?),
+            payload_len,
+            payload_crc: u32::from_le_bytes(bytes[16..20].try_into().ok()?),
         })
     }
+}
+
+struct IndexSnapshot {
+    address: u32,
+    epoch: u32,
+    bank: u8,
+    program: u8,
+    index: [u16; SLOT_COUNT],
+    next_journal_offset: usize,
 }
 
 #[derive(Clone, Copy)]
-struct SelectionEntry {
-    bank: u8,
-    program: u8,
-    sequence: u32,
+struct IndexEntry {
+    kind: u8,
+    first: u8,
+    second: u16,
+    third: u16,
 }
 
-impl SelectionEntry {
-    fn encode(self) -> [u8; SELECTION_ENTRY_LEN] {
-        let mut bytes = [0xff; SELECTION_ENTRY_LEN];
-        bytes[..2].copy_from_slice(b"SL");
-        bytes[2] = self.bank;
-        bytes[3] = self.program;
-        bytes[4..8].copy_from_slice(&self.sequence.to_le_bytes());
-        let checksum = synth_core::patch_storage::crc32(&bytes[..8]);
-        bytes[8..12].copy_from_slice(&checksum.to_le_bytes());
+impl IndexEntry {
+    const fn pointer(logical: u16, block: u16) -> Self {
+        Self {
+            kind: INDEX_ENTRY_POINTER,
+            first: 0,
+            second: logical,
+            third: block,
+        }
+    }
+
+    const fn selection(bank: u8, program: u8) -> Self {
+        Self {
+            kind: INDEX_ENTRY_SELECTION,
+            first: bank,
+            second: program as u16,
+            third: INVALID_BLOCK,
+        }
+    }
+
+    fn encode_uncommitted(self) -> [u8; INDEX_ENTRY_LEN] {
+        let mut bytes = [0xff; INDEX_ENTRY_LEN];
+        bytes[0] = self.kind;
+        bytes[1] = self.first;
+        bytes[2..4].copy_from_slice(&self.second.to_le_bytes());
+        bytes[4..6].copy_from_slice(&self.third.to_le_bytes());
+        let checksum = synth_core::patch_storage::crc32(&bytes[..6]);
+        bytes[6..10].copy_from_slice(&checksum.to_le_bytes());
         bytes
     }
 
-    fn decode(bytes: &[u8; SELECTION_ENTRY_LEN]) -> Option<Self> {
-        if bytes[..2] != *b"SL"
-            || synth_core::patch_storage::crc32(&bytes[..8])
-                != u32::from_le_bytes(bytes[8..12].try_into().ok()?)
+    fn decode(bytes: &[u8; INDEX_ENTRY_LEN]) -> Option<Self> {
+        if bytes[INDEX_ENTRY_COMMIT_OFFSET] != COMMITTED
+            || synth_core::patch_storage::crc32(&bytes[..6])
+                != u32::from_le_bytes(bytes[6..10].try_into().ok()?)
         {
             return None;
         }
-        let bank = bytes[2];
-        let program = bytes[3];
-        if bank >= BANK_COUNT || program >= PROGRAMS_PER_BANK {
-            return None;
-        }
-        Some(Self {
-            bank,
-            program,
-            sequence: u32::from_le_bytes(bytes[4..8].try_into().ok()?),
-        })
-    }
-}
-
-struct SelectionJournal {
-    bank: u8,
-    program: u8,
-    sequence: u32,
-    next_offset: usize,
-}
-
-fn scan_selection_journal(sector: &[u8; SECTOR_SIZE], bank: u8, program: u8) -> SelectionJournal {
-    let mut journal = SelectionJournal {
-        bank,
-        program,
-        sequence: 0,
-        next_offset: CATALOG_HEADER_LEN,
-    };
-    while journal.next_offset + SELECTION_ENTRY_LEN <= SECTOR_SIZE {
-        let mut bytes = [0; SELECTION_ENTRY_LEN];
-        bytes.copy_from_slice(
-            &sector[journal.next_offset..journal.next_offset + SELECTION_ENTRY_LEN],
-        );
-        if bytes.iter().all(|byte| *byte == 0xff) {
-            break;
-        }
-        let Some(entry) = SelectionEntry::decode(&bytes) else {
-            journal.next_offset = SECTOR_SIZE;
-            break;
+        let entry = Self {
+            kind: bytes[0],
+            first: bytes[1],
+            second: u16::from_le_bytes(bytes[2..4].try_into().ok()?),
+            third: u16::from_le_bytes(bytes[4..6].try_into().ok()?),
         };
-        if entry.sequence != journal.sequence.wrapping_add(1) {
-            journal.next_offset = SECTOR_SIZE;
-            break;
+        match entry.kind {
+            INDEX_ENTRY_POINTER
+                if usize::from(entry.second) < SLOT_COUNT
+                    && usize::from(entry.third) < PATCH_BLOCK_COUNT =>
+            {
+                Some(entry)
+            }
+            INDEX_ENTRY_SELECTION
+                if entry.first < BANK_COUNT && entry.second < u16::from(PROGRAMS_PER_BANK) =>
+            {
+                Some(entry)
+            }
+            _ => None,
         }
-        journal.bank = entry.bank;
-        journal.program = entry.program;
-        journal.sequence = entry.sequence;
-        journal.next_offset += SELECTION_ENTRY_LEN;
     }
-    journal
 }
 
-fn write_catalog<F: ProgramFlash>(
+fn read_index<F: ProgramFlash>(
     flash: &mut F,
     address: u32,
-    catalog: Catalog,
+) -> Result<Option<IndexSnapshot>, ProgramStoreError<F::Error>> {
+    with_sector_buffer(|sector| {
+        flash
+            .read(address, sector)
+            .map_err(ProgramStoreError::Flash)?;
+        if sector[..4] != INDEX_MAGIC
+            || sector[4] != INDEX_VERSION
+            || sector[INDEX_COMMIT_OFFSET] != COMMITTED
+            || u16::from_le_bytes([sector[12], sector[13]]) != SLOT_COUNT as u16
+            || u16::from_le_bytes([sector[14], sector[15]]) != PATCH_BLOCK_COUNT as u16
+            || synth_core::patch_storage::crc32(&sector[..20])
+                != u32::from_le_bytes(sector[20..24].try_into().unwrap())
+            || synth_core::patch_storage::crc32(
+                &sector[INDEX_TABLE_OFFSET..INDEX_TABLE_OFFSET + INDEX_TABLE_LEN],
+            ) != u32::from_le_bytes(sector[16..20].try_into().unwrap())
+        {
+            return Ok(None);
+        }
+        let bank = sector[5];
+        let program = sector[6];
+        if bank >= BANK_COUNT || program >= PROGRAMS_PER_BANK {
+            return Ok(None);
+        }
+        let mut index = [INVALID_BLOCK; SLOT_COUNT];
+        for (logical, block) in index.iter_mut().enumerate() {
+            let offset = INDEX_TABLE_OFFSET + logical * 2;
+            *block = u16::from_le_bytes([sector[offset], sector[offset + 1]]);
+        }
+        let mut snapshot = IndexSnapshot {
+            address,
+            epoch: u32::from_le_bytes(sector[8..12].try_into().unwrap()),
+            bank,
+            program,
+            index,
+            next_journal_offset: INDEX_JOURNAL_OFFSET,
+        };
+        replay_journal(&mut snapshot, sector);
+        Ok(Some(snapshot))
+    })
+}
+
+fn replay_journal(snapshot: &mut IndexSnapshot, sector: &[u8; SECTOR_SIZE]) {
+    let mut offset = INDEX_JOURNAL_OFFSET;
+    while offset + INDEX_ENTRY_LEN <= SECTOR_SIZE {
+        let bytes: &[u8; INDEX_ENTRY_LEN] =
+            sector[offset..offset + INDEX_ENTRY_LEN].try_into().unwrap();
+        if bytes.iter().all(|byte| *byte == 0xff) {
+            snapshot.next_journal_offset = offset;
+            return;
+        }
+        let Some(entry) = IndexEntry::decode(bytes) else {
+            snapshot.next_journal_offset = SECTOR_SIZE;
+            return;
+        };
+        if entry.kind == INDEX_ENTRY_POINTER {
+            snapshot.index[usize::from(entry.second)] = entry.third;
+        } else {
+            snapshot.bank = entry.first;
+            snapshot.program = entry.second as u8;
+        }
+        offset += INDEX_ENTRY_LEN;
+    }
+    snapshot.next_journal_offset = SECTOR_SIZE;
+}
+
+fn write_index<F: ProgramFlash>(
+    flash: &mut F,
+    address: u32,
+    epoch: u32,
+    bank: u8,
+    program: u8,
+    index: &[u16; SLOT_COUNT],
 ) -> Result<(), ProgramStoreError<F::Error>> {
-    let header = catalog.encode();
+    with_sector_buffer(|sector| {
+        sector.fill(0xff);
+        sector[..4].copy_from_slice(&INDEX_MAGIC);
+        sector[4] = INDEX_VERSION;
+        sector[5] = bank;
+        sector[6] = program;
+        sector[8..12].copy_from_slice(&epoch.to_le_bytes());
+        sector[12..14].copy_from_slice(&(SLOT_COUNT as u16).to_le_bytes());
+        sector[14..16].copy_from_slice(&(PATCH_BLOCK_COUNT as u16).to_le_bytes());
+        for (logical, block) in index.iter().copied().enumerate() {
+            let offset = INDEX_TABLE_OFFSET + logical * 2;
+            sector[offset..offset + 2].copy_from_slice(&block.to_le_bytes());
+        }
+        let table_crc = synth_core::patch_storage::crc32(
+            &sector[INDEX_TABLE_OFFSET..INDEX_TABLE_OFFSET + INDEX_TABLE_LEN],
+        );
+        sector[16..20].copy_from_slice(&table_crc.to_le_bytes());
+        let header_crc = synth_core::patch_storage::crc32(&sector[..20]);
+        sector[20..24].copy_from_slice(&header_crc.to_le_bytes());
+
+        flash
+            .erase_sector(address)
+            .map_err(ProgramStoreError::Flash)?;
+        program_pages(flash, address, &sector[..INDEX_JOURNAL_OFFSET])?;
+        verify_bytes(flash, address, &sector[..INDEX_JOURNAL_OFFSET])?;
+        commit_byte(flash, address + INDEX_COMMIT_OFFSET as u32)
+    })
+}
+
+fn validate_index<F: ProgramFlash>(
+    flash: &mut F,
+    index: &[u16; SLOT_COUNT],
+) -> Result<Option<u16>, ProgramStoreError<F::Error>> {
+    let mut referenced = [false; PATCH_BLOCK_COUNT];
+    for (logical, block) in index.iter().copied().enumerate() {
+        let physical = usize::from(block);
+        if physical >= PATCH_BLOCK_COUNT || referenced[physical] {
+            return Ok(None);
+        }
+        let Some(header) = read_valid_block(flash, block)? else {
+            return Ok(None);
+        };
+        if header.logical_slot != logical as u16 {
+            return Ok(None);
+        }
+        referenced[physical] = true;
+    }
+    let mut spare = None;
+    for (block, used) in referenced.into_iter().enumerate() {
+        if !used {
+            if spare.is_some() {
+                return Ok(None);
+            }
+            spare = Some(block as u16);
+        }
+    }
+    Ok(spare)
+}
+
+fn recover_blocks<F: ProgramFlash>(
+    mut flash: F,
+) -> Result<(ProgramStore<F>, InitStatus), ProgramStoreError<F::Error>> {
+    let mut index = [INVALID_BLOCK; SLOT_COUNT];
+    let mut generations = [0_u32; SLOT_COUNT];
+    let mut found_valid = false;
+    for physical in 0..PATCH_BLOCK_COUNT {
+        if let Some(header) = read_valid_block(&mut flash, physical as u16)? {
+            let logical = usize::from(header.logical_slot);
+            if logical >= SLOT_COUNT {
+                continue;
+            }
+            found_valid = true;
+            if index[logical] == INVALID_BLOCK
+                || generation_newer(header.generation, generations[logical])
+            {
+                index[logical] = physical as u16;
+                generations[logical] = header.generation;
+            }
+        }
+    }
+
+    let mut selected = [false; PATCH_BLOCK_COUNT];
+    for block in index
+        .iter()
+        .copied()
+        .filter(|block| *block != INVALID_BLOCK)
+    {
+        selected[usize::from(block)] = true;
+    }
+    let mut candidate = 0;
+    for logical in 0..SLOT_COUNT {
+        if index[logical] != INVALID_BLOCK {
+            continue;
+        }
+        while candidate < PATCH_BLOCK_COUNT && selected[candidate] {
+            candidate += 1;
+        }
+        if candidate == PATCH_BLOCK_COUNT {
+            return Err(ProgramStoreError::NoSpareBlock);
+        }
+        write_default_block(&mut flash, candidate as u16, logical as u16, 1)?;
+        index[logical] = candidate as u16;
+        selected[candidate] = true;
+    }
+    let spare = selected
+        .iter()
+        .position(|selected| !selected)
+        .ok_or(ProgramStoreError::NoSpareBlock)? as u16;
+    ensure_erased(&mut flash, block_address(spare))?;
+
+    write_index(&mut flash, CATALOG_A_ADDRESS, 1, 0, 0, &index)?;
+    flash
+        .erase_sector(CATALOG_B_ADDRESS)
+        .map_err(ProgramStoreError::Flash)?;
+    Ok((
+        ProgramStore {
+            flash,
+            index,
+            spare_block: spare,
+            last_bank: 0,
+            last_program: 0,
+            epoch: 1,
+            next_journal_offset: INDEX_JOURNAL_OFFSET,
+            active_catalog_address: CATALOG_A_ADDRESS,
+        },
+        if found_valid {
+            InitStatus::Recovered
+        } else {
+            InitStatus::Formatted
+        },
+    ))
+}
+
+fn write_default_block<F: ProgramFlash>(
+    flash: &mut F,
+    block: u16,
+    logical: u16,
+    generation: u32,
+) -> Result<(), ProgramStoreError<F::Error>> {
+    let header = BlockHeader {
+        logical_slot: logical,
+        generation,
+        payload_len: 0,
+        payload_crc: synth_core::patch_storage::crc32(&[]),
+    }
+    .encode_uncommitted();
+    let address = block_address(block);
+    flash
+        .erase_sector(address)
+        .map_err(ProgramStoreError::Flash)?;
     flash
         .program(address, &header)
         .map_err(ProgramStoreError::Flash)?;
-    let mut verify = [0; CATALOG_HEADER_LEN];
+    verify_bytes(flash, address, &header)?;
+    commit_byte(flash, address + BLOCK_COMMIT_OFFSET as u32)
+}
+
+fn read_patch<F: ProgramFlash>(
+    flash: &mut F,
+    block: u16,
+    logical: u16,
+) -> Result<Patch, ProgramStoreError<F::Error>> {
+    let header = read_block_header(flash, block)?
+        .filter(|header| header.logical_slot == logical)
+        .ok_or(ProgramStoreError::CorruptIndex)?;
+    if header.payload_len == 0 {
+        return Ok(Patch::default());
+    }
+    with_sector_buffer(|sector| {
+        let record = &mut sector[..PATCH_RECORD_SIZE];
+        flash
+            .read(block_address(block) + BLOCK_HEADER_LEN as u32, record)
+            .map_err(ProgramStoreError::Flash)?;
+        if synth_core::patch_storage::crc32(record) != header.payload_crc {
+            return Err(ProgramStoreError::Record(
+                PatchRecordError::ChecksumMismatch,
+            ));
+        }
+        let record: &[u8; PATCH_RECORD_SIZE] = (&*record).try_into().unwrap();
+        PatchRecord::decode(record).map_err(ProgramStoreError::Record)
+    })
+}
+
+fn read_valid_block<F: ProgramFlash>(
+    flash: &mut F,
+    block: u16,
+) -> Result<Option<BlockHeader>, ProgramStoreError<F::Error>> {
+    let Some(header) = read_block_header(flash, block)? else {
+        return Ok(None);
+    };
+    if usize::from(header.logical_slot) >= SLOT_COUNT {
+        return Ok(None);
+    }
+    if header.payload_len == 0 {
+        return Ok((header.payload_crc == synth_core::patch_storage::crc32(&[])).then_some(header));
+    }
+    let valid = with_sector_buffer(|sector| {
+        let record = &mut sector[..PATCH_RECORD_SIZE];
+        flash
+            .read(block_address(block) + BLOCK_HEADER_LEN as u32, record)
+            .map_err(ProgramStoreError::Flash)?;
+        if synth_core::patch_storage::crc32(record) != header.payload_crc {
+            return Ok(false);
+        }
+        let record: &[u8; PATCH_RECORD_SIZE] = (&*record).try_into().unwrap();
+        Ok::<bool, ProgramStoreError<F::Error>>(PatchRecord::decode(record).is_ok())
+    })?;
+    Ok(valid.then_some(header))
+}
+
+fn read_block_header<F: ProgramFlash>(
+    flash: &mut F,
+    block: u16,
+) -> Result<Option<BlockHeader>, ProgramStoreError<F::Error>> {
+    if usize::from(block) >= PATCH_BLOCK_COUNT {
+        return Ok(None);
+    }
+    let mut bytes = [0; BLOCK_HEADER_LEN];
+    flash
+        .read(block_address(block), &mut bytes)
+        .map_err(ProgramStoreError::Flash)?;
+    Ok(BlockHeader::decode(&bytes))
+}
+
+fn program_pages<F: ProgramFlash>(
+    flash: &mut F,
+    mut address: u32,
+    mut data: &[u8],
+) -> Result<(), ProgramStoreError<F::Error>> {
+    while !data.is_empty() {
+        let remaining = PAGE_SIZE - address as usize % PAGE_SIZE;
+        let count = remaining.min(data.len());
+        flash
+            .program(address, &data[..count])
+            .map_err(ProgramStoreError::Flash)?;
+        address += count as u32;
+        data = &data[count..];
+    }
+    Ok(())
+}
+
+fn verify_bytes<F: ProgramFlash>(
+    flash: &mut F,
+    address: u32,
+    expected: &[u8],
+) -> Result<(), ProgramStoreError<F::Error>> {
+    let mut offset = 0;
+    let mut buffer = [0; PAGE_SIZE];
+    while offset < expected.len() {
+        let count = (expected.len() - offset).min(PAGE_SIZE);
+        flash
+            .read(address + offset as u32, &mut buffer[..count])
+            .map_err(ProgramStoreError::Flash)?;
+        if buffer[..count] != expected[offset..offset + count] {
+            return Err(ProgramStoreError::VerifyFailed);
+        }
+        offset += count;
+    }
+    Ok(())
+}
+
+fn commit_byte<F: ProgramFlash>(
+    flash: &mut F,
+    address: u32,
+) -> Result<(), ProgramStoreError<F::Error>> {
+    flash
+        .program(address, &[COMMITTED])
+        .map_err(ProgramStoreError::Flash)?;
+    let mut verify = [0xff];
     flash
         .read(address, &mut verify)
         .map_err(ProgramStoreError::Flash)?;
-    if verify != header {
+    if verify[0] != COMMITTED {
         return Err(ProgramStoreError::VerifyFailed);
     }
     Ok(())
 }
 
-fn slot_address<E>(bank: u8, program: u8) -> Result<u32, ProgramStoreError<E>> {
+fn ensure_erased<F: ProgramFlash>(
+    flash: &mut F,
+    address: u32,
+) -> Result<(), ProgramStoreError<F::Error>> {
+    let erased = with_sector_buffer(|sector| {
+        flash
+            .read(address, sector)
+            .map_err(ProgramStoreError::Flash)?;
+        Ok::<bool, ProgramStoreError<F::Error>>(sector.iter().all(|byte| *byte == 0xff))
+    })?;
+    if !erased {
+        flash
+            .erase_sector(address)
+            .map_err(ProgramStoreError::Flash)?;
+    }
+    Ok(())
+}
+
+const fn block_address(block: u16) -> u32 {
+    PROGRAMS_ADDRESS + block as u32 * SECTOR_SIZE as u32
+}
+
+fn logical_slot<E>(bank: u8, program: u8) -> Result<usize, ProgramStoreError<E>> {
     validate_address(bank, program)?;
-    let index = usize::from(bank) * usize::from(PROGRAMS_PER_BANK) + usize::from(program);
-    Ok(PROGRAMS_ADDRESS + (index * SLOT_STRIDE) as u32)
+    Ok(usize::from(bank) * usize::from(PROGRAMS_PER_BANK) + usize::from(program))
 }
 
 fn validate_address<E>(bank: u8, program: u8) -> Result<(), ProgramStoreError<E>> {
@@ -452,6 +806,18 @@ fn validate_address<E>(bank: u8, program: u8) -> Result<(), ProgramStoreError<E>
     } else {
         Ok(())
     }
+}
+
+const fn other_catalog(address: u32) -> u32 {
+    if address == CATALOG_A_ADDRESS {
+        CATALOG_B_ADDRESS
+    } else {
+        CATALOG_A_ADDRESS
+    }
+}
+
+const fn generation_newer(candidate: u32, current: u32) -> bool {
+    candidate != current && candidate.wrapping_sub(current) < 0x8000_0000
 }
 
 #[cfg(test)]
@@ -466,6 +832,7 @@ mod tests {
     enum MockError {
         OutOfBounds,
         Unaligned,
+        CrossPage,
         NeedsErase,
         Injected,
     }
@@ -475,11 +842,12 @@ mod tests {
         state: Rc<RefCell<MockFlashState>>,
     }
 
+    #[derive(Clone)]
     struct MockFlashState {
         bytes: Vec<u8>,
         erased: Vec<u32>,
-        write_operations: usize,
-        fail_after_write: Option<usize>,
+        mutations: usize,
+        fail_at: Option<usize>,
     }
 
     impl MockFlash {
@@ -488,16 +856,25 @@ mod tests {
                 state: Rc::new(RefCell::new(MockFlashState {
                     bytes: vec![0xff; STORAGE_END as usize],
                     erased: Vec::new(),
-                    write_operations: 0,
-                    fail_after_write: None,
+                    mutations: 0,
+                    fail_at: None,
                 })),
             }
         }
 
-        fn with_size(size: usize) -> Self {
-            let flash = Self::erased();
-            flash.state.borrow_mut().bytes.resize(size, 0xff);
-            flash
+        fn deep_clone(&self) -> Self {
+            Self {
+                state: Rc::new(RefCell::new(self.state.borrow().clone())),
+            }
+        }
+
+        fn inject_next(&self, offset: usize) {
+            let mut state = self.state.borrow_mut();
+            state.fail_at = Some(state.mutations + offset);
+        }
+
+        fn clear_failure(&self) {
+            self.state.borrow_mut().fail_at = None;
         }
 
         fn range(
@@ -508,24 +885,16 @@ mod tests {
             let start = address as usize;
             let end = start.checked_add(len).ok_or(MockError::OutOfBounds)?;
             if end > state.bytes.len() {
-                return Err(MockError::OutOfBounds);
+                Err(MockError::OutOfBounds)
+            } else {
+                Ok(start..end)
             }
-            Ok(start..end)
         }
 
-        fn fail_after_write(&self, offset: usize) {
-            let mut state = self.state.borrow_mut();
-            state.fail_after_write = Some(state.write_operations + offset);
-        }
-
-        fn clear_failure(&self) {
-            self.state.borrow_mut().fail_after_write = None;
-        }
-
-        fn finish_write(state: &mut MockFlashState) -> Result<(), MockError> {
-            let operation = state.write_operations;
-            state.write_operations += 1;
-            if state.fail_after_write == Some(operation) {
+        fn mutated(state: &mut MockFlashState) -> Result<(), MockError> {
+            let operation = state.mutations;
+            state.mutations += 1;
+            if state.fail_at == Some(operation) {
                 Err(MockError::Injected)
             } else {
                 Ok(())
@@ -551,10 +920,13 @@ mod tests {
             let range = Self::range(&state, address, SECTOR_SIZE)?;
             state.bytes[range].fill(0xff);
             state.erased.push(address);
-            Self::finish_write(&mut state)
+            Self::mutated(&mut state)
         }
 
         fn program(&mut self, address: u32, data: &[u8]) -> Result<(), Self::Error> {
+            if address as usize / PAGE_SIZE != (address as usize + data.len() - 1) / PAGE_SIZE {
+                return Err(MockError::CrossPage);
+            }
             let mut state = self.state.borrow_mut();
             let range = Self::range(&state, address, data.len())?;
             for (old, new) in state.bytes[range.clone()].iter().zip(data) {
@@ -565,7 +937,7 @@ mod tests {
             for (old, new) in state.bytes[range].iter_mut().zip(data) {
                 *old &= *new;
             }
-            Self::finish_write(&mut state)
+            Self::mutated(&mut state)
         }
     }
 
@@ -573,262 +945,236 @@ mod tests {
         let mut patch = Patch::default();
         patch.layer_a.name.push_str(name).unwrap();
         patch.layer_a.filter.cutoff = cutoff;
-        patch.layer_b.name.push_str("layer b").unwrap();
-        patch.layer_b.filter.cutoff = cutoff * 0.5;
-        patch.mode = synth_core::LayerMode::Stack;
-        patch.split_point = 73;
+        patch.layer_a.sequence.sequencer_type = synth_core::SequencerType::Polyphonic;
+        patch.layer_a.sequence.poly.steps[63].lanes[5] = synth_core::PolyLaneStep {
+            note: synth_core::PolyNote::Tie,
+            velocity: synth_core::PolyVelocity::Velocity(127),
+        };
         patch
     }
 
     #[test]
-    fn erased_flash_formats_to_logical_default_programs() {
+    fn format_creates_1024_defaults_and_exactly_one_spare() {
         let (mut store, status) = ProgramStore::open(MockFlash::erased()).unwrap();
         assert_eq!(status, InitStatus::Formatted);
         assert_eq!(store.last_load(), (0, 0));
-        assert!(store.load(0, 0).unwrap().layer_a.name.is_empty());
-        let flash = store.into_flash();
-        let state = flash.state.borrow();
-        assert_eq!(
-            state.erased.len(),
-            2 + SLOT_COUNT * SLOT_STRIDE / SECTOR_SIZE
-        );
-        assert!(
-            state.bytes[PROGRAMS_ADDRESS as usize..]
-                .iter()
-                .all(|byte| *byte == 0xff)
-        );
+        assert_eq!(store.load(7, 127).unwrap().layer_a.name.as_str(), "");
+        assert_eq!(usize::from(store.spare_block), SLOT_COUNT);
+        assert_eq!(STORAGE_END, PROGRAMS_ADDRESS + 1025 * 4096);
     }
 
     #[test]
-    fn interrupted_format_reopens_or_safely_reformats_after_every_write() {
-        let formatting_writes =
-            ((STORAGE_END - CATALOG_A_ADDRESS) / SECTOR_SIZE as u32) as usize + 1;
-        for failure in 0..formatting_writes {
+    fn every_interrupted_initialization_can_resume_safely() {
+        let probe = MockFlash::erased();
+        let before = probe.state.borrow().mutations;
+        ProgramStore::open(probe.clone()).unwrap();
+        let mutation_count = probe.state.borrow().mutations - before;
+
+        for failure in 0..mutation_count {
             let flash = MockFlash::erased();
-            flash.fail_after_write(failure);
+            flash.inject_next(failure);
             assert!(matches!(
                 ProgramStore::open(flash.clone()),
                 Err(ProgramStoreError::Flash(MockError::Injected))
             ));
             flash.clear_failure();
             let (mut reopened, status) = ProgramStore::open(flash).unwrap();
-            assert!(matches!(status, InitStatus::Opened | InitStatus::Formatted));
-            assert_eq!(reopened.last_load(), (0, 0));
-            assert_eq!(
-                reopened.load(0, 0).unwrap().mode,
-                synth_core::LayerMode::Normal
-            );
+            assert!(matches!(
+                status,
+                InitStatus::Opened | InitStatus::Recovered | InitStatus::Formatted
+            ));
+            assert_eq!(reopened.load(0, 0).unwrap().layer_a.name.as_str(), "");
+            assert_eq!(reopened.load(7, 127).unwrap().layer_a.name.as_str(), "");
         }
     }
 
     #[test]
-    fn interrupted_slot_and_catalog_writes_leave_a_reopenable_catalog() {
-        for failure in 0..2 {
-            let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-            let flash = store.flash.clone();
-            flash.fail_after_write(failure);
-            assert!(matches!(
-                store.save(0, 0, &named_patch("interrupted", 1234.0)),
-                Err(ProgramStoreError::Flash(MockError::Injected))
-            ));
-            flash.clear_failure();
-            let (_, status) = ProgramStore::open(flash).unwrap();
-            assert_eq!(status, InitStatus::Opened);
-        }
-
-        for failure in 0..2 {
-            let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-            store.next_selection_offset = SECTOR_SIZE;
-            let flash = store.flash.clone();
-            flash.fail_after_write(failure);
-            assert!(matches!(
-                store.persist_last_load(7, 127),
-                Err(ProgramStoreError::Flash(MockError::Injected))
-            ));
-            flash.clear_failure();
-            let (reopened, status) = ProgramStore::open(flash).unwrap();
-            assert_eq!(status, InitStatus::Opened);
-            assert!(matches!(reopened.last_load(), (0, 0) | (7, 127)));
-        }
-
+    fn save_rotates_the_single_spare_and_preserves_other_programs() {
         let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        let flash = store.flash.clone();
-        flash.fail_after_write(0);
-        assert!(matches!(
-            store.persist_last_load(3, 4),
-            Err(ProgramStoreError::Flash(MockError::Injected))
-        ));
-        flash.clear_failure();
-        let (reopened, status) = ProgramStore::open(flash).unwrap();
-        assert_eq!(status, InitStatus::Opened);
-        assert_eq!(reopened.last_load(), (3, 4));
+        let initial_spare = store.spare_block;
+        store.save(0, 0, &named_patch("first", 1111.0)).unwrap();
+        assert_eq!(store.spare_block, 0);
+        store.save(0, 1, &named_patch("second", 2222.0)).unwrap();
+        assert_eq!(store.spare_block, 1);
+        store.save(0, 0, &named_patch("updated", 3333.0)).unwrap();
+        assert_eq!(store.spare_block, initial_spare);
+        assert_eq!(store.load(0, 0).unwrap().layer_a.name.as_str(), "updated");
+        assert_eq!(store.load(0, 1).unwrap().layer_a.name.as_str(), "second");
+        assert_eq!(
+            store.load(0, 0).unwrap().layer_a.sequence.poly.steps[63].lanes[5].note,
+            synth_core::PolyNote::Tie
+        );
     }
 
     #[test]
-    fn old_catalog_version_is_reformatted_without_migration() {
+    fn ordinary_save_has_a_fixed_two_erase_sixteen_program_budget() {
         let flash = MockFlash::erased();
-        let mut header = Catalog {
-            bank: 7,
-            program: 127,
-            generation: 99,
+        let (mut store, _) = ProgramStore::open(flash.clone()).unwrap();
+        let before_mutations = flash.state.borrow().mutations;
+        let before_erases = flash.state.borrow().erased.len();
+        store.save(0, 0, &named_patch("budget", 1234.0)).unwrap();
+        let state = flash.state.borrow();
+        assert_eq!(state.mutations - before_mutations, 18);
+        assert_eq!(state.erased.len() - before_erases, 2);
+        assert_eq!(18 - 2, 16, "page/commit program operations");
+    }
+
+    #[test]
+    fn repeated_saves_ping_pong_between_exactly_two_blocks() {
+        let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
+        let original = store.index[0];
+        let original_spare = store.spare_block;
+        for revision in 0..6 {
+            store
+                .save(0, 0, &named_patch("hot", 1000.0 + revision as f32))
+                .unwrap();
+            assert!(
+                matches!(store.index[0], block if block == original || block == original_spare)
+            );
+            assert!(
+                matches!(store.spare_block, block if block == original || block == original_spare)
+            );
+            assert_ne!(store.index[0], store.spare_block);
         }
-        .encode();
-        header[4] = CATALOG_VERSION - 1;
-        let checksum = synth_core::patch_storage::crc32(&header[..16]);
-        header[16..20].copy_from_slice(&checksum.to_le_bytes());
-        let mut old_record = [0xff; PATCH_RECORD_SIZE];
-        PatchRecord::encode(&named_patch("must not migrate", 4321.0), &mut old_record).unwrap();
+    }
+
+    #[test]
+    fn every_interrupted_save_reopens_to_old_or_new_patch() {
+        let (mut baseline_store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
+        baseline_store
+            .save(0, 0, &named_patch("old", 1000.0))
+            .unwrap();
+        let baseline = baseline_store.into_flash();
+
+        let probe = baseline.deep_clone();
+        let before = probe.state.borrow().mutations;
+        let (mut store, _) = ProgramStore::open(probe.clone()).unwrap();
+        store.save(0, 0, &named_patch("new", 2000.0)).unwrap();
+        let mutation_count = probe.state.borrow().mutations - before;
+
+        for failure in 0..mutation_count {
+            let flash = baseline.deep_clone();
+            flash.inject_next(failure);
+            let (mut store, _) = ProgramStore::open(flash.clone()).unwrap();
+            assert!(store.save(0, 0, &named_patch("new", 2000.0)).is_err());
+            flash.clear_failure();
+            let (mut reopened, _) = ProgramStore::open(flash).unwrap();
+            let name = reopened.load(0, 0).unwrap().layer_a.name;
+            assert!(
+                matches!(name.as_str(), "old" | "new"),
+                "failure {failure}: {name}"
+            );
+            assert!(reopened.load(0, 1).unwrap().layer_a.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn both_lost_indexes_rebuild_from_committed_block_headers() {
+        let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
+        store.save(3, 9, &named_patch("recover", 4321.0)).unwrap();
+        let flash = store.into_flash();
         {
             let mut state = flash.state.borrow_mut();
-            state.bytes
-                [CATALOG_A_ADDRESS as usize..CATALOG_A_ADDRESS as usize + CATALOG_HEADER_LEN]
-                .copy_from_slice(&header);
-            state.bytes[PROGRAMS_ADDRESS as usize..PROGRAMS_ADDRESS as usize + PATCH_RECORD_SIZE]
-                .copy_from_slice(&old_record);
+            state.bytes[CATALOG_A_ADDRESS as usize..CATALOG_A_ADDRESS as usize + SECTOR_SIZE]
+                .fill(0);
+            state.bytes[CATALOG_B_ADDRESS as usize..CATALOG_B_ADDRESS as usize + SECTOR_SIZE]
+                .fill(0);
         }
-
-        let (mut store, status) = ProgramStore::open(flash).unwrap();
-        assert_eq!(status, InitStatus::Formatted);
-        assert_eq!(store.last_load(), (0, 0));
-        assert!(store.load(0, 0).unwrap().layer_a.name.is_empty());
-    }
-
-    #[test]
-    fn formatting_does_not_touch_the_high_factory_bank_region() {
-        let marker = *b"factory-bank-test";
-        let flash = MockFlash::with_size(FACTORY_BANK_ADDRESS as usize + marker.len());
-        flash.state.borrow_mut().bytes
-            [FACTORY_BANK_ADDRESS as usize..FACTORY_BANK_ADDRESS as usize + marker.len()]
-            .copy_from_slice(&marker);
-        let (_, status) = ProgramStore::open(flash.clone()).unwrap();
-        assert_eq!(status, InitStatus::Formatted);
+        let (mut reopened, status) = ProgramStore::open(flash).unwrap();
+        assert_eq!(status, InitStatus::Recovered);
         assert_eq!(
-            &flash.state.borrow().bytes
-                [FACTORY_BANK_ADDRESS as usize..FACTORY_BANK_ADDRESS as usize + marker.len()],
-            &marker
+            reopened.load(3, 9).unwrap().layer_a.name.as_str(),
+            "recover"
         );
+        assert_eq!(reopened.load(7, 127).unwrap().layer_a.name.as_str(), "");
     }
 
     #[test]
-    fn sector_rewrite_preserves_neighboring_slots() {
+    fn torn_index_entry_is_ignored_and_compacted_on_next_write() {
         let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        let first = named_patch("first", 1111.0);
-        let neighbor = named_patch("neighbor", 2222.0);
-        store.save(0, 0, &first).unwrap();
-        store.save(0, 1, &neighbor).unwrap();
-        assert_eq!(store.load(0, 1).unwrap().layer_a.name.as_str(), "neighbor");
-        store.save(0, 0, &named_patch("updated", 3333.0)).unwrap();
-        assert_eq!(store.load(0, 0).unwrap().layer_a.name.as_str(), "updated");
-        let loaded_neighbor = store.load(0, 1).unwrap();
-        assert_eq!(loaded_neighbor.layer_a.name.as_str(), "neighbor");
-        assert!((loaded_neighbor.layer_a.filter.cutoff - 2222.0).abs() < 2.0);
-        assert_eq!(loaded_neighbor.layer_b.name.as_str(), "layer b");
-        assert!((loaded_neighbor.layer_b.filter.cutoff - 1111.0).abs() < 2.0);
-        assert_eq!(loaded_neighbor.mode, synth_core::LayerMode::Stack);
-        assert_eq!(loaded_neighbor.split_point, 73);
-    }
-
-    #[test]
-    fn programs_and_last_load_survive_reopen() {
-        let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        store.save(7, 127, &named_patch("last", 9876.0)).unwrap();
-        store.persist_last_load(7, 127).unwrap();
+        let address = store.active_catalog_address + store.next_journal_offset as u32;
+        let torn = IndexEntry::selection(7, 127).encode_uncommitted();
+        store.flash.program(address, &torn).unwrap();
         let (mut reopened, status) = ProgramStore::open(store.into_flash()).unwrap();
         assert_eq!(status, InitStatus::Opened);
-        assert_eq!(reopened.last_load(), (7, 127));
-        assert_eq!(reopened.load(7, 127).unwrap().layer_a.name.as_str(), "last");
+        assert_eq!(reopened.last_load(), (0, 0));
+        assert_eq!(reopened.next_journal_offset, SECTOR_SIZE);
+        reopened.persist_last_load(6, 126).unwrap();
+        assert_eq!(reopened.last_load(), (6, 126));
     }
 
     #[test]
-    fn selection_journal_avoids_an_erase_per_load() {
+    fn selection_and_index_compaction_survive_reopen() {
         let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        for index in 1..=100 {
+        let capacity = (SECTOR_SIZE - INDEX_JOURNAL_OFFSET) / INDEX_ENTRY_LEN;
+        for index in 0..=capacity {
             store
-                .persist_last_load((index % 8) as u8, (index % 128) as u8)
+                .persist_last_load((index % 8) as u8, ((index + 1) % 128) as u8)
                 .unwrap();
         }
-        assert_eq!(
-            store
-                .flash
-                .state
-                .borrow()
-                .erased
-                .iter()
-                .filter(|address| **address == CATALOG_A_ADDRESS)
-                .count(),
-            1
-        );
         let expected = store.last_load();
+        assert_eq!(store.active_catalog_address, CATALOG_B_ADDRESS);
         let (reopened, status) = ProgramStore::open(store.into_flash()).unwrap();
         assert_eq!(status, InitStatus::Opened);
         assert_eq!(reopened.last_load(), expected);
     }
 
     #[test]
-    fn full_or_interrupted_journal_compacts_on_next_selection() {
-        let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        let capacity = (SECTOR_SIZE - CATALOG_HEADER_LEN) / SELECTION_ENTRY_LEN;
-        for index in 1..=capacity {
-            store
-                .persist_last_load((index % 8) as u8, (index % 128) as u8)
+    fn every_interrupted_index_compaction_reopens_to_prior_or_new_selection() {
+        let (mut baseline_store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
+        let capacity = (SECTOR_SIZE - INDEX_JOURNAL_OFFSET) / INDEX_ENTRY_LEN;
+        for index in 0..capacity {
+            baseline_store
+                .persist_last_load((index % 8) as u8, ((index + 1) % 128) as u8)
                 .unwrap();
         }
+        assert_eq!(
+            baseline_store.next_journal_offset + INDEX_ENTRY_LEN > SECTOR_SIZE,
+            true
+        );
+        let prior = baseline_store.last_load();
+        let baseline = baseline_store.into_flash();
+
+        let probe = baseline.deep_clone();
+        let before = probe.state.borrow().mutations;
+        let (mut store, _) = ProgramStore::open(probe.clone()).unwrap();
         store.persist_last_load(7, 127).unwrap();
-        assert_eq!(
-            store
-                .flash
-                .state
-                .borrow()
-                .erased
-                .iter()
-                .filter(|address| **address == CATALOG_A_ADDRESS)
-                .count(),
-            1
-        );
-        assert_eq!(
-            store
-                .flash
-                .state
-                .borrow()
-                .erased
-                .iter()
-                .filter(|address| **address == CATALOG_B_ADDRESS)
-                .count(),
-            2
-        );
+        let mutation_count = probe.state.borrow().mutations - before;
 
-        let corrupt_offset = store.next_selection_offset;
-        store.flash.state.borrow_mut().bytes[CATALOG_B_ADDRESS as usize + corrupt_offset] = 0;
-        let (mut reopened, _) = ProgramStore::open(store.into_flash()).unwrap();
-        assert_eq!(reopened.next_selection_offset, SECTOR_SIZE);
-        reopened.persist_last_load(6, 126).unwrap();
-        assert_eq!(reopened.last_load(), (6, 126));
+        for failure in 0..mutation_count {
+            let flash = baseline.deep_clone();
+            flash.inject_next(failure);
+            let (mut store, _) = ProgramStore::open(flash.clone()).unwrap();
+            assert!(store.persist_last_load(7, 127).is_err());
+            flash.clear_failure();
+            let (reopened, _) = ProgramStore::open(flash).unwrap();
+            assert!(matches!(reopened.last_load(), value if value == prior || value == (7, 127)));
+        }
     }
 
     #[test]
-    fn corrupt_catalog_reformats_entire_store() {
+    fn corrupt_payload_is_recovered_from_older_committed_duplicate() {
         let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        store.save(2, 3, &named_patch("discarded", 1234.0)).unwrap();
+        store.save(0, 0, &named_patch("old", 1000.0)).unwrap();
+        let old_block = store.index[0];
+        let spare = store.spare_block;
+        // Manually retain an older duplicate before writing a corrupt newer block.
+        let old_sector = {
+            let state = store.flash.state.borrow();
+            state.bytes
+                [block_address(old_block) as usize..block_address(old_block) as usize + SECTOR_SIZE]
+                .to_vec()
+        };
+        store.flash.erase_sector(block_address(spare)).unwrap();
+        program_pages(&mut store.flash, block_address(spare), &old_sector).unwrap();
+        store.flash.state.borrow_mut().bytes
+            [block_address(store.index[0]) as usize + BLOCK_HEADER_LEN + 30] ^= 1;
         let flash = store.into_flash();
-        flash.state.borrow_mut().bytes[CATALOG_A_ADDRESS as usize] ^= 1;
-        flash.state.borrow_mut().bytes[CATALOG_B_ADDRESS as usize] ^= 1;
+        flash.state.borrow_mut().bytes[CATALOG_A_ADDRESS as usize..CATALOG_A_ADDRESS as usize + 4]
+            .fill(0);
         let (mut reopened, status) = ProgramStore::open(flash).unwrap();
-        assert_eq!(status, InitStatus::Formatted);
-        assert!(reopened.load(2, 3).unwrap().layer_a.name.is_empty());
-    }
-
-    #[test]
-    fn corrupt_slot_is_reported_without_reformatting() {
-        let (mut store, _) = ProgramStore::open(MockFlash::erased()).unwrap();
-        store.save(1, 9, &named_patch("damaged", 4444.0)).unwrap();
-        let address = slot_address::<MockError>(1, 9).unwrap() as usize;
-        store.flash.state.borrow_mut().bytes[address + 30] ^= 1;
-        assert!(matches!(
-            store.load(1, 9),
-            Err(ProgramStoreError::Record(
-                PatchRecordError::ChecksumMismatch
-            ))
-        ));
+        assert_eq!(status, InitStatus::Recovered);
+        assert_eq!(reopened.load(0, 0).unwrap().layer_a.name.as_str(), "old");
     }
 
     #[test]
@@ -842,5 +1188,12 @@ mod tests {
             store.save(0, 128, &Patch::default()),
             Err(ProgramStoreError::InvalidAddress)
         ));
+    }
+
+    #[test]
+    fn generation_comparison_is_wrap_safe() {
+        assert!(generation_newer(0, u32::MAX));
+        assert!(!generation_newer(u32::MAX, 0));
+        assert!(!generation_newer(7, 7));
     }
 }

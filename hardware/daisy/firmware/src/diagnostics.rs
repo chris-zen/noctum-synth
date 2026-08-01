@@ -47,6 +47,7 @@ pub enum StorageFailureReason {
     Flash,
     InvalidAddress,
     InvalidRecord,
+    CorruptStore,
     VerifyFailed,
 }
 

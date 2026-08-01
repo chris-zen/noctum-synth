@@ -178,15 +178,32 @@ public release:
 
 ## Program storage
 
-8 banks × 128 complete two-layer programs (1024-byte records) are stored in
-QSPI. Catalog A is at `0x000C0000`, records occupy
-`0x000C1000..0x001C1000`, and Catalog B is at `0x001C1000`. The
+8 banks × 128 complete two-layer programs are stored as 3072-byte records in
+4 KiB QSPI blocks. Index A is at `0x000C0000`, Index B at `0x000C1000`, and
+1025 patch blocks occupy `0x000C2000..0x004C3000` (exclusive end). Exactly 1024
+blocks are live and one is the copy-on-write spare. The
 bootloader/application reservation below this region and the high-address raw
-factory bank are never erased. On first boot or when neither versioned catalog
-is valid, firmware formats only this region. Empty slots load the default
-complete patch. Until layered rendering lands, firmware renders Layer A from
-the loaded record. One thread-mode task owns QSPI; neither flash erase nor page
-programming runs in the audio path.
+factory bank are never erased.
+
+Each block has a logical slot, wrapping generation, payload CRC, header CRC, and
+commit byte programmed last. A save writes and verifies the spare, commits the
+block, appends and commits one index-journal pointer, then erases the old block
+to become the next spare. An ordinary save performs two 4 KiB erases and 16
+page/commit program operations. Repeated saves of one slot alternate between two
+blocks; saves spread across slots naturally rotate the spare through their old
+blocks.
+
+The two index snapshots are recoverable caches. Boot chooses the newest valid
+snapshot and ignores torn journal entries. If one index is lost, the other is
+used. If both are lost, firmware scans committed block headers, selects the
+newest valid generation per logical slot, restores default blocks for missing
+slots, and rebuilds an index. Old pre-indexed storage is intentionally not
+migrated: the region is reformatted and programs must be reimported.
+
+One thread-mode task owns QSPI; neither flash erase nor page programming runs in
+the audio path. Diagnostics distinguish invalid records, corrupt stores,
+verification failure, and flash failure, and report sequencer record status,
+step changes, and six-note overflow.
 
 Bank Select (CC0/CC32, values 0–7) followed by Program Change loads a program.
 Rev2 and Prophet '08 Program Data SysEx messages save to their addressed slot.
