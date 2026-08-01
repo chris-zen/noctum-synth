@@ -1,13 +1,17 @@
 //! Non-blocking mirror from the SAI-paced synth output to USB Audio Class 1.
 
-use embassy_daisy::usb::audio::{RecoveryEndpoint, Stream};
-use embassy_daisy::usb::{EndpointError, UsbDriver};
+use embassy_daisy::usb::{
+    EndpointError, UsbDriver,
+    audio::{RecoveryEndpoint, Stream},
+};
 use embassy_time::{Duration, with_timeout};
 
-use crate::diagnostics;
-use crate::usb_audio_core::{
-    MAX_PACKET_FRAMES, PRIME_FRAMES, STARTUP_FADE_FRAMES, encode_frames, packet_frames,
-    pad_to_silence,
+use crate::{
+    diagnostics,
+    usb_audio_core::{
+        MAX_PACKET_FRAMES, PRIME_FRAMES, STARTUP_FADE_FRAMES, encode_frames, packet_frames,
+        pad_to_silence,
+    },
 };
 
 pub use crate::usb_audio_core::{MAX_PACKET_BYTES, SAMPLE_RATE_HZ, UsbAudioBuffer};

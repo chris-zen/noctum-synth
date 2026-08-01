@@ -2,11 +2,17 @@
 
 use wmidi::MidiMessage;
 
-use synth_core::midi::{p08, rev2};
-use synth_core::{ControlMessage, Patch};
+use embassy_daisy::usb::midi::DecodeError;
 
-pub use crate::midi_control::{message_to_control, message_to_controls, realtime_to_control};
-use crate::program::{ProgramSelection, ProgramStorageQueue, ProgramStorageRequest};
+use synth_core::{
+    ControlMessage, Patch,
+    midi::{p08, rev2},
+};
+
+use crate::{
+    midi_control::{message_to_controls, realtime_to_control},
+    program::{ProgramStorageQueue, ProgramStorageRequest, selection::ProgramSelection},
+};
 
 pub struct SynthMidiHandler<'a, const PATCH_CAPACITY: usize> {
     controls: &'a crate::audio::ControlQueue,
@@ -69,7 +75,7 @@ impl<'a, const PATCH_CAPACITY: usize> SynthMidiHandler<'a, PATCH_CAPACITY> {
     }
 }
 
-impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
+impl<const PATCH_CAPACITY: usize> embassy_daisy::usb::midi::MessageHandler
     for SynthMidiHandler<'_, PATCH_CAPACITY>
 {
     fn handle_message(&mut self, cable: u8, bytes: &[u8]) {
@@ -146,19 +152,17 @@ impl<const PATCH_CAPACITY: usize> crate::midi::MessageHandler
         }
     }
 
-    fn decode_error(&mut self, cable: u8, error: crate::midi::DecodeError) {
+    fn decode_error(&mut self, cable: u8, error: DecodeError) {
         use crate::diagnostics::InvalidMidiReason;
 
         let reason = match error {
-            crate::midi::DecodeError::UnsupportedCable(_) => InvalidMidiReason::UnsupportedCable,
-            crate::midi::DecodeError::UnsupportedCodeIndex(_) => {
-                InvalidMidiReason::UnsupportedCodeIndex
-            }
-            crate::midi::DecodeError::UnexpectedSysExContinuation => {
+            DecodeError::UnsupportedCable(_) => InvalidMidiReason::UnsupportedCable,
+            DecodeError::UnsupportedCodeIndex(_) => InvalidMidiReason::UnsupportedCodeIndex,
+            DecodeError::UnexpectedSysExContinuation => {
                 InvalidMidiReason::UnexpectedSysExContinuation
             }
-            crate::midi::DecodeError::NestedSysExStart => InvalidMidiReason::NestedSysExStart,
-            crate::midi::DecodeError::SysExTooLong => InvalidMidiReason::SysExTooLong,
+            DecodeError::NestedSysExStart => InvalidMidiReason::NestedSysExStart,
+            DecodeError::SysExTooLong => InvalidMidiReason::SysExTooLong,
         };
         crate::diagnostics::emit(crate::diagnostics::Event::InvalidMidi {
             cable,
@@ -354,9 +358,9 @@ mod tests {
     use synth_core::midi::rev2;
     use synth_core::{ControlMessage, LayerId, LayerTarget, ParamId};
 
+    use crate::midi_control::{message_to_control, message_to_controls, realtime_to_control};
     #[cfg(feature = "diagnostics")]
     use crate::synth::{CompletedNrpn, NrpnMonitor};
-    use crate::synth::{message_to_control, message_to_controls, realtime_to_control};
 
     fn command(bytes: &[u8]) -> Option<ControlMessage> {
         message_to_control(MidiMessage::try_from(bytes).unwrap())

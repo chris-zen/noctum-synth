@@ -12,11 +12,12 @@ use std::collections::VecDeque;
 
 use synth_core::dsp::FilterType;
 
-use crate::engine::AudioBlock;
-use crate::engine::SynthEngineControl;
-use crate::ui::analysis::filter_design::FilterDesignState;
-use crate::ui::analysis::osc_design::OscillatorViewState;
-use crate::ui::analysis::real_time::RealTimeState;
+use crate::{
+    engine::{AudioBlock, SynthEngineControl},
+    ui::analysis::{
+        filter_design::FilterDesignState, osc_design::OscillatorViewState, real_time::RealTimeState,
+    },
+};
 
 // ---------------------------------------------------------------------------
 // State

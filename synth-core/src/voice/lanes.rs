@@ -1,8 +1,8 @@
-use crate::dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, WideParameterSmoother};
-use crate::math::WideF32;
-
-use super::NoteGlide;
-use super::voice_pan_position;
+use crate::{
+    dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, parameter_smoother::WideParameterSmoother},
+    math::WideF32,
+    voice::{NoteGlide, voice_pan_position},
+};
 
 #[derive(Clone, Copy, Default)]
 struct LaneFade {

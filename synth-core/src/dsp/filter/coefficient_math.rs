@@ -1,8 +1,6 @@
 //! Target-specific coefficient math hidden behind filter-level intent.
 
-use crate::math::WideF32;
-
-use super::MIN_CUTOFF_HZ;
+use crate::{dsp::filter::MIN_CUTOFF_HZ, math::WideF32};
 
 /// Cutoff pitch modulation prepared by the signal-routing layer.
 ///
@@ -54,7 +52,9 @@ pub(super) fn modulated_tpt_coefficient(
 
 #[cfg(feature = "fast-math")]
 mod backend {
-    use super::*;
+    use crate::math::WideF32;
+
+    use super::{PreparedCutoffModulation, embedded_coefficient};
 
     #[inline(always)]
     pub(super) fn modulated_tpt_coefficient(
@@ -74,7 +74,9 @@ mod backend {
 
 #[cfg(not(feature = "fast-math"))]
 mod backend {
-    use super::*;
+    use crate::math::WideF32;
+
+    use super::{PreparedCutoffModulation, vector_coefficient};
 
     #[inline(always)]
     pub(super) fn modulated_tpt_coefficient(

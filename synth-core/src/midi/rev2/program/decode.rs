@@ -1,11 +1,18 @@
 //! Rev2 SysEx program dump decode.
 
-use crate::Patch;
-use crate::midi::prophet::unpack_program_data;
-use crate::midi::rev2::layer::{LayerA, LayerB, LayerDecoder};
-use crate::midi::rev2::program::{
-    LAYER_MODE_OFFSET, PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    PROGRAM_PACKED_LEN, ProgramData, SPLIT_POINT_OFFSET, SysexError, layer_mode_from_raw,
+use crate::{
+    Patch,
+    midi::{
+        prophet::unpack_program_data,
+        rev2::{
+            layer::{LayerA, LayerB, LayerDecoder},
+            program::{
+                LAYER_MODE_OFFSET, PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN,
+                PROGRAM_EDIT_BUFFER_SYSEX_LEN, PROGRAM_PACKED_LEN, ProgramData, SPLIT_POINT_OFFSET,
+                SysexError, layer_mode_from_raw,
+            },
+        },
+    },
 };
 
 /// Decode a stored Prophet Rev2 Program Data dump.

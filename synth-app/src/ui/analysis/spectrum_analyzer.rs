@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
-use crate::ui::analysis::oscilloscope::OscilloscopeState;
-use crate::ui::analysis::real_time::{HoverStatus, SignalSource, SpectrumChannel};
-use crate::ui::analysis::spectrum::{self, SpectrumConfig};
+use crate::ui::analysis::{
+    oscilloscope::OscilloscopeState,
+    real_time::{HoverStatus, SignalSource, SpectrumChannel},
+    spectrum::{self, SpectrumConfig},
+};
 
 const INPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 150, 45);
 const OUTPUT_LEFT_COLOR: egui::Color32 = egui::Color32::from_rgb(80, 205, 255);

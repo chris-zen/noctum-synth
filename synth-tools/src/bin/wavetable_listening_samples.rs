@@ -1,11 +1,14 @@
 //! Generates short listening samples for the wavetable prototype report.
 
 use std::{fs, io::Write, path::Path};
-use synth_core::dsp::{
-    AnalogOscillator, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
-    WavetableOscillator, generate_wavetable_bank,
+
+use synth_core::{
+    dsp::{
+        AnalogOscillator, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
+        WavetableOscillator, generate_wavetable_bank,
+    },
+    math::WideF32,
 };
-use synth_core::math::WideF32;
 
 const SAMPLE_RATE: u32 = 48_000;
 const SAMPLES: usize = SAMPLE_RATE as usize * 3;

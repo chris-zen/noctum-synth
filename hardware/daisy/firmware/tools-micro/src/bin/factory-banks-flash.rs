@@ -3,12 +3,16 @@
 
 use {defmt_rtt as _, panic_probe as _};
 
+use embassy_daisy::{
+    Board,
+    qspi::{QspiFlash, SECTOR_SIZE},
+};
 use tools_micro::{self as factory_banks, Crc32};
-use embassy_daisy::qspi::{QspiFlash, SECTOR_SIZE};
-use embassy_daisy::Board;
 
-const COMPRESSED_BANK: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/factory-bank.zlib"));
+const COMPRESSED_BANK: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../target/factory-bank.zlib"
+));
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
@@ -38,10 +42,7 @@ fn main() -> ! {
         .allocate_f32(words)
         .expect("SDRAM factory-bank allocation failed");
     let bank = unsafe {
-        core::slice::from_raw_parts_mut(
-            scratch.as_mut_ptr().cast::<u8>(),
-            factory_banks::BANK_SIZE,
-        )
+        core::slice::from_raw_parts_mut(scratch.as_mut_ptr().cast::<u8>(), factory_banks::BANK_SIZE)
     };
 
     let decompressed = match miniz_oxide::inflate::decompress_slice_iter_to_slice(
@@ -84,9 +85,7 @@ fn main() -> ! {
     let mut message = [0_u8; factory_banks::PROGRAM_DATA_SYSEX_LEN];
     for index in 0..factory_banks::PRESET_COUNT {
         let offset = index * factory_banks::PROGRAM_DATA_SYSEX_LEN;
-        message.copy_from_slice(
-            &bank[offset..offset + factory_banks::PROGRAM_DATA_SYSEX_LEN],
-        );
+        message.copy_from_slice(&bank[offset..offset + factory_banks::PROGRAM_DATA_SYSEX_LEN]);
         crc.update(&message);
     }
     let actual_crc = crc.finish();
@@ -101,10 +100,7 @@ fn main() -> ! {
         }
     }
 
-    defmt::info!(
-        "factory bank flashed and verified CRC32={:#x}",
-        actual_crc
-    );
+    defmt::info!("factory bank flashed and verified CRC32={:#x}", actual_crc);
     loop {
         cortex_m::asm::wfi();
     }

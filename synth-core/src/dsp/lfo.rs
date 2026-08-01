@@ -1,9 +1,9 @@
 //! Low-frequency oscillators for periodic modulation.
 
-use crate::dsp::WideParameterSmoother;
-use crate::math::WideF32;
-
-use super::rng::DspRng;
+use crate::{
+    dsp::{parameter_smoother::WideParameterSmoother, rng::DspRng},
+    math::WideF32,
+};
 
 /// Minimum LFO rate in Hz.
 pub const MIN_LFO_RATE_HZ: f32 = 0.022;

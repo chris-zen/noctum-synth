@@ -9,10 +9,13 @@ use {defmt_rtt as _, panic_probe as _};
 
 use synth_core::midi::clock::MidiClockMode;
 
-use noctum_micro::audio::{ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue};
-use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
-use noctum_micro::pending_releases::PendingReleases;
-use noctum_micro::{audio, diagnostics, fatal, indicator, midi, program, usb_audio};
+use noctum_micro::{
+    audio::{self, ControlQueue, HardwareSynth, PatchQueue, PerformanceQueue},
+    diagnostics, fatal, indicator, midi,
+    model::{FILTER_OVERSAMPLING, FILTER_TYPE},
+    pending_releases::PendingReleases,
+    program, usb_audio,
+};
 
 const SAMPLE_RATE_HZ: f32 = usb_audio::SAMPLE_RATE_HZ as f32;
 // One second of float delay history per stereo channel. The buffer remains a
@@ -92,7 +95,7 @@ async fn main(spawner: embassy_executor::Spawner) {
         Err(_) => defmt::error!("diagnostics task unavailable"),
     }
 
-    match program::run_task(program_store, &PROGRAM_REQUESTS, &PATCHES) {
+    match program::task::run_task(program_store, &PROGRAM_REQUESTS, &PATCHES) {
         Ok(task) => spawner.spawn(task),
         Err(_) => fatal("program storage task unavailable"),
     }

@@ -1,9 +1,11 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use synth_core::VOICE_PACKS;
-use synth_core::dsp::{Filter, FilterOversampling, FilterType};
-use synth_core::math::WideF32;
+use synth_core::{
+    VOICE_PACKS,
+    dsp::{Filter, FilterOversampling, FilterType},
+    math::WideF32,
+};
 
 const SAMPLE_RATE: f32 = 44_100.0;
 const ITERATIONS: usize = 1_000_000;

@@ -70,10 +70,8 @@ pub mod sequencer;
 pub mod tuning;
 pub mod voice;
 
-use crate::math::WideF32;
-
-pub use effects::{EffectModulation, Effects, EffectsState, EffectsWithMemory};
-pub use engine::{EngineInitError, LayerPlaybackStatus, SynthEngine, SynthEngineWithMemory};
+pub use effects::{EffectModulation, Effects};
+pub use engine::{LayerPlaybackStatus, SynthEngine, SynthEngineWithMemory};
 pub use patch::{
     AmplifierParams, ArpMode, ArpParams, ArpSustainMode, AuxEnvelopeParams, ChordMemory,
     ClockDivision, DedicatedModSlot, DedicatedModSource, EffectParams, EffectType, FilterParams,
@@ -82,29 +80,24 @@ pub use patch::{
     OscillatorPatch, PanModMode, PatchName, UnisonMode,
 };
 pub use patch_storage::{PATCH_RECORD_SIZE, PatchRecord, PatchRecordError};
-pub use profiling::{RenderContext, RenderProfiler, RenderStage};
-pub use program::{
-    DEFAULT_SPLIT_POINT, LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, MIN_SPLIT_POINT, Patch,
-};
+pub use profiling::{RenderProfiler, RenderStage};
+pub use program::{LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, Patch};
 pub use sequencer::model::{
-    GATED_STEP_COUNT, GATED_TRACK_COUNT, GatedDestination, GatedSequence, GatedSequencerMode,
-    GatedStep, GatedTrack, LayerSequence, POLY_LANE_COUNT, POLY_STEP_COUNT, PolyLaneStep, PolyNote,
-    PolySequence, PolyStep, PolyVelocity, SequenceClear, SequenceUpdate, SequencerFeedback,
-    SequencerRecordCommand, SequencerTransportCommand, SequencerType,
+    GatedDestination, GatedSequence, GatedSequencerMode, GatedStep, GatedTrack, LayerSequence,
+    PolyLaneStep, PolyNote, PolySequence, PolyStep, PolyVelocity, SequenceClear, SequenceUpdate,
+    SequencerFeedback, SequencerRecordCommand, SequencerType,
 };
-pub use tuning::midi_to_hz;
-pub use voice::{
-    ActiveNotes, LayerEngine, OscillatorModulation, OscillatorParams, Oscillators,
-    OscillatorsOutput, OscillatorsParams, PerformanceModulation, REV2_VOICE_PAN_POSITIONS,
-    VoiceBlock, VoicePool, VoiceRegion, glide_seconds, voice_pan_position,
-};
+pub use voice::{PerformanceModulation, VoiceBlock, glide_seconds};
 
-use crate::dsp::{FilterOversampling, FilterType};
-use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent};
+use crate::{
+    dsp::{FilterOversampling, FilterType},
+    math::WideF32,
+    midi::clock::{MidiClockMode, MidiRealtimeEvent},
+};
 
 /// Identifies a single synthesizer parameter for [`ControlMessage::SetParam`].
 ///
-/// The UI, MIDI mapping layer, and [`LayerEngine`] all use this enum
+/// The UI, MIDI mapping layer, and [`voice::LayerEngine`] all use this enum
 /// to address patch state uniformly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamId {
@@ -389,7 +382,7 @@ pub enum ControlMessage {
     },
     SetSequencerTransport {
         target: LayerTarget,
-        command: SequencerTransportCommand,
+        command: sequencer::model::SequencerTransportCommand,
     },
     /// Convenience transport control used by UI and Rev2 play/stop NRPN paths.
     SetSequencerRunning {

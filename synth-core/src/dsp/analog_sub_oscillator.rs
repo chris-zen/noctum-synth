@@ -1,8 +1,11 @@
-use crate::math::WideF32;
-
-use crate::dsp::analog_oscillator::{MAX_PHASE_INC, MIN_PHASE_INC};
-use crate::dsp::blep::{SawMethod, blep_pulse};
-use crate::wrap01;
+use crate::{
+    dsp::{
+        analog_oscillator::{MAX_PHASE_INC, MIN_PHASE_INC},
+        blep::{SawMethod, blep_pulse},
+    },
+    math::WideF32,
+    wrap01,
+};
 
 /// One-octave-down square sub oscillator.
 pub struct AnalogSubOscillator {

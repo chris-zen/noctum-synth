@@ -2,23 +2,23 @@
 
 #[cfg(feature = "profiling")]
 use crate::RenderProfiler;
-use crate::dsp::lookahead_limiter::LookaheadLimiter;
-use crate::dsp::{
-    DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, ParameterSmoother,
-};
-use crate::midi::clock::MidiClockFollower;
-use crate::midi::clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent};
-use crate::pressed_keys::PressedKeys;
-use crate::profiling::{RenderContext, RenderStage};
-use crate::rate_adapter::RateAdapter;
-use crate::sequencer::recorder::RecorderEvent;
-use crate::voice::{LayerEngine, VoicePool, VoiceRegion};
 use crate::{
-    ActiveNotes, ClockDivision, ControlMessage, GatedSequence, LayerId, LayerMode, LayerTarget,
+    ClockDivision, ControlMessage, EffectType, GatedSequence, LayerId, LayerMode, LayerTarget,
     ModDestination, ModRoute, ModSource, ParamId, Patch, PolySequence, SequenceClear,
-    SequencerFeedback, SequencerTransportCommand, VOICE_PACKS,
+    SequencerFeedback, VOICE_PACKS,
+    dsp::{
+        DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType,
+        lookahead_limiter::LookaheadLimiter, parameter_smoother::ParameterSmoother,
+    },
+    midi::clock::{MidiClockFollower, MidiClockMode, MidiClockStatus, MidiRealtimeEvent},
+    pressed_keys::PressedKeys,
+    profiling::{RenderContext, RenderStage},
+    program::DEFAULT_SPLIT_POINT,
+    rate_adapter::RateAdapter,
+    sequencer::model::SequencerTransportCommand,
+    sequencer::recorder::RecorderEvent,
+    voice::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion},
 };
-use crate::{DEFAULT_SPLIT_POINT, EffectType};
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
 ///
@@ -527,7 +527,7 @@ where
                         pool,
                         ControlMessage::SetSequencerTransport {
                             target: LayerTarget::Edit,
-                            command: crate::SequencerTransportCommand::Start,
+                            command: crate::sequencer::model::SequencerTransportCommand::Start,
                         },
                     )
                 }),
@@ -536,7 +536,7 @@ where
                         pool,
                         ControlMessage::SetSequencerTransport {
                             target: LayerTarget::Edit,
-                            command: crate::SequencerTransportCommand::Continue,
+                            command: crate::sequencer::model::SequencerTransportCommand::Continue,
                         },
                     )
                 }),
@@ -545,7 +545,7 @@ where
                         pool,
                         ControlMessage::SetSequencerTransport {
                             target: LayerTarget::Edit,
-                            command: crate::SequencerTransportCommand::Stop,
+                            command: crate::sequencer::model::SequencerTransportCommand::Stop,
                         },
                     )
                 }),
@@ -1184,10 +1184,10 @@ mod tests {
     use crate::midi::clock::{MidiClockMode, MidiRealtimeEvent, MidiTransportState};
     use crate::{
         ClockDivision, ControlMessage, DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, DedicatedModSource,
-        EffectType, EngineInitError, LayerId, LayerMode, LayerPatch, LayerTarget, ModDestination,
-        ModRoute, ModSource, ParamId, Patch, PolyLaneStep, PolyNote, PolyVelocity,
-        SequencerFeedback, SequencerRecordCommand, SequencerType, SynthEngine,
-        SynthEngineWithMemory, VOICE_PACKS,
+        EffectType, LayerId, LayerMode, LayerPatch, LayerTarget, ModDestination, ModRoute,
+        ModSource, ParamId, Patch, PolyLaneStep, PolyNote, PolyVelocity, SequencerFeedback,
+        SequencerRecordCommand, SequencerType, SynthEngine, SynthEngineWithMemory, VOICE_PACKS,
+        engine::EngineInitError,
     };
 
     extern crate std;

@@ -3,12 +3,13 @@
 use core::marker::PhantomData;
 
 use crate::{
-    ClockDivision, GATED_STEP_COUNT, GATED_TRACK_COUNT, GatedDestination, GatedSequencerMode,
-    GatedStep, LayerId, LayerPatch, SequencerType,
+    ClockDivision, GatedDestination, GatedSequencerMode, GatedStep, LayerId, LayerPatch,
+    SequencerType,
     midi::p08::{
         map::{MidiUpdate, map_nrpn, p08_mod_destination, program_nrpn_value},
         program::PROGRAM_DATA_LEN,
     },
+    sequencer::model::{GATED_STEP_COUNT, GATED_TRACK_COUNT},
 };
 
 /// Layer-specific Prophet '08 program-image addressing.

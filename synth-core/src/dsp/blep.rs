@@ -1,7 +1,9 @@
-use crate::dsp::analog_oscillator::{MAX_PULSE_WIDTH, MIN_PULSE_WIDTH};
-use crate::math::WideF32;
 #[cfg(test)]
 use crate::wrap01;
+use crate::{
+    dsp::analog_oscillator::{MAX_PULSE_WIDTH, MIN_PULSE_WIDTH},
+    math::WideF32,
+};
 
 // Pre-computed 4096-point Blackman-Harris BLEP table.
 include!("blep_table.rs");

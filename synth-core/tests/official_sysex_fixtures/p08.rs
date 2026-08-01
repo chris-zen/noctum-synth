@@ -4,7 +4,10 @@ use synth_core::{
     ClockDivision, GatedDestination, GatedSequencerMode, GatedStep, GlideMode, KeyMode, LayerPatch,
     PanModMode, SequencerType, UnisonMode,
     midi::{
-        p08::{PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_PACKED_LEN, decode},
+        p08::{
+            PROGRAM_DATA_SYSEX_LEN, decode,
+            program::{PROGRAM_DATA_LEN, PROGRAM_PACKED_LEN},
+        },
         prophet::unpack_program_data,
     },
 };

@@ -23,7 +23,7 @@ layout and defaults live under [`patch`](src/patch.rs).
 | Module | Purpose |
 |--------|---------|
 | [`engine`](src/engine.rs) | Top-level render loop and master volume |
-| [`voice`](src/voice/) | Voice manager (polyphony, stealing) and per-block signal chain |
+| [`voice`](src/voice/) | Layer engine (polyphony, stealing) and per-block signal chain |
 | [`dsp`](src/dsp/) | Generic DSP (oscillators, filter, envelopes, LFOs) |
 | [`patch`](src/patch.rs) | Parameter structs and LFO destinations |
 | [`noise`](src/dsp/noise.rs) | White (and internal pink) noise |

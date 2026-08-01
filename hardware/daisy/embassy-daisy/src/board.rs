@@ -4,13 +4,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_stm32::{Peri, peripherals};
 
-use crate::audio::AudioResources;
-use crate::led::UserLedPin;
-use crate::memory::zero_sram1_bss;
-use crate::pins::Pins;
-use crate::qspi::QspiFlashResources;
-use crate::sdram::SdramResources;
-use crate::usb::UsbResources;
+use crate::{
+    audio::AudioResources, led::UserLedPin, memory::zero_sram1_bss, pins::Pins,
+    qspi::QspiFlashResources, sdram::SdramResources, usb::UsbResources,
+};
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
 

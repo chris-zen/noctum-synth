@@ -4,8 +4,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use synth_core::midi::rev2;
-use synth_core::{LayerMode, LayerPatch, Patch};
+
+use synth_core::{LayerMode, LayerPatch, Patch, midi::rev2};
 
 const PATCH_SCHEMA_VERSION: u8 = 1;
 

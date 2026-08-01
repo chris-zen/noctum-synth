@@ -19,11 +19,9 @@ use synth_core::{
 #[cfg(feature = "audio-profiling")]
 use synth_core::{RenderProfiler, RenderStage};
 
-use crate::pending_releases::PendingReleases;
 #[cfg(feature = "audio-profiling")]
 use crate::profiling;
-use crate::usb_audio::UsbAudioBuffer;
-use crate::{diagnostics, indicator};
+use crate::{diagnostics, indicator, pending_releases::PendingReleases, usb_audio::UsbAudioBuffer};
 
 // Parameter traffic is isolated from performance events and coalesced by key.
 pub use crate::control_queue::{CONTROL_QUEUE_CAPACITY, ControlQueue};

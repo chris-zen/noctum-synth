@@ -6,9 +6,11 @@ mod engine;
 mod midi;
 mod ui;
 
-use crate::audio::{AudioConfig, AudioManager};
-use crate::engine::create_synth_engine_bridge;
-use crate::ui::app::APP_TITLE;
+use crate::{
+    audio::{AudioConfig, AudioManager},
+    engine::create_synth_engine_bridge,
+    ui::app::APP_TITLE,
+};
 
 fn main() -> eframe::Result {
     let (engine_audio, engine_bridge) = create_synth_engine_bridge(synth_core::VOICE_COUNT);

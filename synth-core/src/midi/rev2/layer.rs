@@ -2,16 +2,18 @@
 
 use core::marker::PhantomData;
 
-use crate::midi::rev2::{
-    encoder::ControllerEncoder,
-    map::{
-        LfoPairingState, MappedUpdate, map_nrpn_with_lfo, program_nrpn_value, quantize, store_nrpn,
-        store_program_nrpn, unit,
+use crate::{
+    LayerId, LayerPatch, ParamId, SequencerType,
+    midi::rev2::{
+        encoder::ControllerEncoder,
+        map::{
+            LfoPairingState, MappedUpdate, map_nrpn_with_lfo, program_nrpn_value, quantize,
+            store_nrpn, store_program_nrpn, unit,
+        },
+        program::PROGRAM_DATA_LEN,
     },
-    program::PROGRAM_DATA_LEN,
+    patch::decode_patch_name,
 };
-use crate::patch::decode_patch_name;
-use crate::{LayerId, LayerPatch, ParamId, SequencerType};
 
 /// Layer-specific Rev2 program-image and NRPN addressing.
 pub trait Layer {

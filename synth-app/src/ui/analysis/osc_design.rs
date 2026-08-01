@@ -6,8 +6,10 @@ use eframe::egui::epaint::PathShape;
 use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::{Deserialize, Serialize};
 
-use synth_core::dsp::{AnalogOscillator, SawMethod, Waveform};
-use synth_core::math::WideF32;
+use synth_core::{
+    dsp::{AnalogOscillator, SawMethod, Waveform},
+    math::WideF32,
+};
 
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 

@@ -1,13 +1,16 @@
-use crate::ParamId;
-use crate::dsp::{
-    DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, ParameterSmoother,
+use crate::{
+    ParamId,
+    dsp::{
+        DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType,
+        parameter_smoother::ParameterSmoother,
+    },
+    math::WideF32,
+    patch::FilterParams,
 };
-use crate::math::WideF32;
-use crate::patch::FilterParams;
 
 pub struct Filter {
     engine: crate::dsp::Filter,
-    envelope: crate::dsp::DadsrEnvelope,
+    envelope: crate::dsp::envelope::DadsrEnvelope,
     env_amount: ParameterSmoother,
     env_velocity_amount: ParameterSmoother,
 }
@@ -16,7 +19,7 @@ impl Filter {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             engine: crate::dsp::Filter::default(),
-            envelope: crate::dsp::DadsrEnvelope::analog(sample_rate),
+            envelope: crate::dsp::envelope::DadsrEnvelope::analog(sample_rate),
             env_amount: ParameterSmoother::new(
                 0.0,
                 sample_rate,

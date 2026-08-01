@@ -5,12 +5,16 @@
 //! 24 -> 48 kHz reconstruction currently used by the fallback rate adapter.
 
 use rustfft::{FftPlanner, num_complex::Complex32};
-use synth_core::dsp::{
-    AnalogOscillator, Filter, FilterOversampling, FilterType, SawMethod, WAVETABLE_BANK_SAMPLES,
-    Waveform, WavetableBank, WavetableOscillator, generate_wavetable_bank,
+
+use synth_core::{
+    EffectModulation, EffectParams, EffectType, Effects,
+    dsp::{
+        AnalogOscillator, Filter, FilterOversampling, FilterType, SawMethod,
+        WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableOscillator,
+        generate_wavetable_bank,
+    },
+    math::WideF32,
 };
-use synth_core::math::WideF32;
-use synth_core::{EffectModulation, EffectParams, EffectType, Effects};
 
 const RATES: [usize; 4] = [24_000, 32_000, 44_100, 48_000];
 const ANALYSIS_SECONDS: usize = 2;

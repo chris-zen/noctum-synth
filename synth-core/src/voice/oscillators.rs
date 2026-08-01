@@ -1,11 +1,15 @@
 //! Dual-oscillator mixer with sub oscillator, noise, sync, and glide.
 
-use crate::dsp::analog_oscillator::EngineOscillator;
-use crate::dsp::{AnalogSubOscillator, Waveform, WhiteNoise};
-use crate::math::{F32, WideF32};
-use crate::patch::{LayerPatch, OscillatorPatch};
-use crate::profiling::{RenderContext, RenderStage};
-use crate::{GlideMode, ParamId};
+use crate::{
+    GlideMode, ParamId,
+    dsp::{
+        Waveform, analog_oscillator::EngineOscillator, analog_sub_oscillator::AnalogSubOscillator,
+        noise::WhiteNoise,
+    },
+    math::{F32, WideF32},
+    patch::{LayerPatch, OscillatorPatch},
+    profiling::{RenderContext, RenderStage},
+};
 
 // Give unassigned, keyboard-tracked lanes a real pitch so their
 // phases advance before the first note when note reset is off.
@@ -807,7 +811,7 @@ mod tests {
     use super::{OscillatorModulation, Oscillators, Waveform, osc_mix_to_gains};
     use crate::GlideMode;
     use crate::math::WideF32;
-    use crate::midi_to_hz;
+    use crate::tuning::midi_to_hz;
 
     const SAMPLE_RATE: f32 = 44_100.0;
 
@@ -1448,7 +1452,7 @@ mod tests {
             "frequency should rise during upward glide; after one {freq_after_one}, after many {freq_after_many}"
         );
 
-        let max_target = crate::midi_to_hz(73);
+        let max_target = crate::tuning::midi_to_hz(73);
         assert!(
             freq_after_many < max_target,
             "frequency {freq_after_many} must not overshoot target (72 semitones)"

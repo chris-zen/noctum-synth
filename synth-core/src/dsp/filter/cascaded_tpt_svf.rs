@@ -1,9 +1,11 @@
 //! Cascaded trapezoidal state-variable filter reference.
 
-use crate::dsp::filter::{
-    FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_RESONANCE_START,
+use crate::{
+    dsp::filter::{
+        FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_RESONANCE_START,
+    },
+    math::{F32, WideF32},
 };
-use crate::math::{F32, WideF32};
 
 const TWO_POLE_DAMPING: f32 = core::f32::consts::SQRT_2;
 const FOUR_POLE_FIRST_DAMPING: f32 = 1.847_759_1;

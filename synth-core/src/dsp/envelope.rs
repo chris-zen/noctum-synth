@@ -1,5 +1,4 @@
-use crate::math::F32;
-use crate::math::WideF32;
+use crate::math::{F32, WideF32};
 
 pub const MIN_TIME_SECONDS: f32 = 0.0005;
 pub const MAX_TIME_SECONDS: f32 = 40.0;

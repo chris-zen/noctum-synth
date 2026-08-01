@@ -19,9 +19,11 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use synth_core::dsp::{FilterOversampling, FilterType};
-use synth_core::midi::clock::MidiClockStatus;
-use synth_core::{ControlMessage, SynthEngineWithMemory, VOICE_PACKS};
+use synth_core::{
+    ControlMessage, SynthEngineWithMemory, VOICE_PACKS,
+    dsp::{FilterOversampling, FilterType},
+    midi::clock::MidiClockStatus,
+};
 
 /// How long to wait for `cpal` to switch the device sample rate and build a
 /// stream. CoreAudio rate changes can take longer than the default, so give

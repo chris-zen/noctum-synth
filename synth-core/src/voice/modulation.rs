@@ -1,11 +1,13 @@
-use crate::math::WideF32;
-use crate::patch::{
-    AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LayerPatch, LfoParams,
-    MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
+use crate::{
+    GatedDestination, ModSource, ModulationParam, SequencerType,
+    math::WideF32,
+    patch::{
+        AuxEnvelopeParams, DedicatedModSlot, DedicatedModSource, LFO_COUNT, LayerPatch, LfoParams,
+        MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
+    },
+    sequencer::model::GATED_TRACK_COUNT,
+    voice::VoiceBlock,
 };
-use crate::{GATED_TRACK_COUNT, GatedDestination, ModSource, ModulationParam, SequencerType};
-
-use super::VoiceBlock;
 
 const MAX_COMPILED_MOD_ROUTES: usize =
     LFO_COUNT + 1 + MOD_MATRIX_FREE_SLOT_COUNT + DedicatedModSource::COUNT + GATED_TRACK_COUNT;

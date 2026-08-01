@@ -5,10 +5,13 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use crate::dsp::{ParameterSmoother, smoothing_coefficient_euler_approx};
-use crate::math::{F32, TAU};
-use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_TEMPO_BPM, EffectParams, EffectType, midi_to_hz};
+use crate::{
+    DEFAULT_TEMPO_BPM, EffectParams, EffectType,
+    dsp::parameter_smoother::{ParameterSmoother, smoothing_coefficient_euler_approx},
+    math::{F32, TAU},
+    profiling::{RenderContext, RenderStage},
+    tuning::midi_to_hz,
+};
 
 const DELAY_TIME_CROSSFADE_SECONDS: f32 = 0.035;
 const DELAY_TIME_CHANGE_THRESHOLD_SAMPLES: f32 = 8.0;
@@ -1422,7 +1425,7 @@ mod tests {
     use super::*;
     use crate::{
         DEFAULT_SAMPLE_RATE, DEFAULT_TEMPO_BPM, EffectParams, EffectType, Effects,
-        EffectsWithMemory,
+        effects::EffectsWithMemory,
     };
 
     extern crate std;

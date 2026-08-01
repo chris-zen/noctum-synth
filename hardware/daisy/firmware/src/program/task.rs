@@ -2,10 +2,14 @@
 
 use embassy_daisy::qspi::{FlashError, QspiFlash};
 
-use crate::audio::PatchQueue;
-use crate::diagnostics::{self, StorageFailureReason, StorageOperation};
-use crate::program::store::{ProgramStore, ProgramStoreError};
-use crate::program::{ProgramStorageQueue, ProgramStorageRequest};
+use crate::{
+    audio::PatchQueue,
+    diagnostics::{self, StorageFailureReason, StorageOperation},
+    program::{
+        ProgramStorageQueue, ProgramStorageRequest,
+        store::{ProgramStore, ProgramStoreError},
+    },
+};
 
 #[embassy_executor::task]
 pub async fn run_task(

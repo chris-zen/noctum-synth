@@ -4,9 +4,13 @@ use eframe::egui::epaint::PathShape;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-use crate::engine::{AudioBlock, MAX_AUDIO_BUF};
-use crate::ui::analysis::real_time::{HoverStatus, SignalSource};
-use crate::ui::analysis::spectrum_analyzer::{FftState, fill_fft_from_captured, process_fft_trace};
+use crate::{
+    engine::{AudioBlock, MAX_AUDIO_BUF},
+    ui::analysis::{
+        real_time::{HoverStatus, SignalSource},
+        spectrum_analyzer::{FftState, fill_fft_from_captured, process_fft_trace},
+    },
+};
 
 pub(crate) const MAX_SCOPE_SAMPLES: usize = 65536;
 const DEFAULT_CLICK_SENSITIVITY: f32 = 0.5;

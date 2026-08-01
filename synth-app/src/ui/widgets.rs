@@ -1,10 +1,12 @@
 use eframe::egui;
 use egui_knob::{Knob, KnobStyle};
 
-use synth_core::ParamId;
-use synth_core::midi::prophet::{
-    FILTER_CUTOFF_RAW_MAX, FILTER_KEY_TRACK_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz,
-    key_track_from_raw, key_track_to_raw,
+use synth_core::{
+    ParamId,
+    midi::prophet::{
+        FILTER_CUTOFF_RAW_MAX, FILTER_KEY_TRACK_RAW_MAX, cutoff_hz_to_raw, cutoff_raw_to_hz,
+        key_track_from_raw, key_track_to_raw,
+    },
 };
 
 use crate::engine::SynthEngineControl;

@@ -1,20 +1,21 @@
 //! Live Rev2 NRPN/CC parameter encoder.
 
-use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
-use crate::math::F32;
-use crate::midi::{
-    clock::MidiClockMode,
-    prophet::{
-        FILTER_CUTOFF_RAW_MAX, attack_decay_raw, cutoff_hz_to_raw, key_track_to_raw, release_raw,
-    },
-    rev2::{
-        map::{bool_raw, emit_nrpn, key_mode_raw, quantize, quantize_log},
-        program::layer_mode_raw,
-    },
-};
 use crate::{
     DedicatedModSource, LayerId, LayerMode, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination,
     ModRoute, ModSource, ParamId, SequenceUpdate, SequencerType,
+    dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ},
+    math::F32,
+    midi::{
+        clock::MidiClockMode,
+        prophet::{
+            FILTER_CUTOFF_RAW_MAX, attack_decay_raw, cutoff_hz_to_raw, key_track_to_raw,
+            release_raw,
+        },
+        rev2::{
+            map::{bool_raw, emit_nrpn, key_mode_raw, quantize, quantize_log},
+            program::layer_mode_raw,
+        },
+    },
 };
 
 /// Stateful Rev2 NRPN encoder. Oscillator shape combines enabled/waveform state.

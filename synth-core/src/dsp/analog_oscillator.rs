@@ -1,12 +1,16 @@
-use crate::dsp::blep::{
-    PulseBlepState, blep_pulse, blep_pulse_prepared, blep_saw, table_points_per_side_lane,
+use crate::{
+    DEFAULT_SAMPLE_RATE,
+    dsp::{
+        blep::{
+            PulseBlepState, SawMethod, blep_pulse, blep_pulse_prepared, blep_saw,
+            table_points_per_side_lane,
+        },
+        rng::DspRng,
+    },
+    math::{F32, WideF32},
+    profiling::{RenderContext, RenderStage},
+    wrap01,
 };
-use crate::dsp::rng::DspRng;
-use crate::math::{F32, WideF32};
-use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_SAMPLE_RATE, wrap01};
-
-pub use crate::dsp::blep::SawMethod;
 
 pub(crate) const MIN_PHASE_INC: f32 = 0.0;
 pub(crate) const MAX_PHASE_INC: f32 = 0.499;

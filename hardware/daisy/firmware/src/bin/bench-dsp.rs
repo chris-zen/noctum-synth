@@ -3,19 +3,19 @@
 
 use core::hint::black_box;
 use cortex_m::peripheral::DWT;
-use embassy_daisy::audio::BLOCK_LENGTH;
-use embassy_daisy::sdram::Sdram;
-use embassy_daisy::Board;
+use embassy_daisy::{Board, audio::BLOCK_LENGTH, sdram::Sdram};
 use {defmt_rtt as _, panic_probe as _};
 
-use noctum_micro::audio::{AdaptiveControlBudget, ControlQueue, BLOCK_CYCLE_BUDGET};
-use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
-use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use synth_core::dsp::{FilterOversampling, Waveform};
+use noctum_micro::{
+    audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue},
+    model::{FILTER_OVERSAMPLING, FILTER_TYPE},
+    profiling::{AudioProfiler, Snapshot},
+};
 use synth_core::{
-    profiling::RenderStage, ControlMessage, DedicatedModSource, EffectType, GlideMode, LayerPatch,
-    LayerTarget, ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch,
-    SynthEngineWithMemory,
+    ControlMessage, DedicatedModSource, EffectType, GlideMode, LayerPatch, LayerTarget,
+    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SynthEngineWithMemory,
+    dsp::{FilterOversampling, Waveform},
+    profiling::RenderStage,
 };
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;

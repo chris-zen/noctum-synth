@@ -7,8 +7,10 @@ use synth_core::{
     SequencerFeedback, SequencerRecordCommand, SequencerType,
 };
 
-use crate::engine::{SequencerPlaybackStatus, SynthEngineControl};
-use crate::ui::params_view::{UiState, layer_control_bar};
+use crate::{
+    engine::{SequencerPlaybackStatus, SynthEngineControl},
+    ui::params_view::{UiState, layer_control_bar},
+};
 
 const TRANSPORT_BUTTON_WIDTH: f32 = 72.0;
 const TYPE_SEGMENT_WIDTH: f32 = 84.0;

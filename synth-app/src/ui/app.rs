@@ -3,19 +3,23 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use synth_core::dsp::FilterType;
-use synth_core::{LayerId, LayerTarget, Patch, SequencerFeedback};
+use synth_core::{LayerId, LayerTarget, Patch, SequencerFeedback, dsp::FilterType};
 
-use crate::audio::AudioManager;
-use crate::config::Config;
-use crate::engine::{AudioMetrics, SynthEngineBridge};
-use crate::midi::MidiInputManager;
-use crate::ui::analysis::{self, AnalysisState, config::AnalysisConfig};
-use crate::ui::params_view::{PatchManager, UiState};
-use crate::ui::sequencer_view::SequencerViewState;
-use crate::ui::settings_view::{AudioBaseline, MidiInputEntry};
-use crate::ui::viewport::{DeferredViewport, RootViewport};
-use crate::ui::{params_view, settings_view};
+use crate::{
+    audio::AudioManager,
+    config::Config,
+    engine::{AudioMetrics, SynthEngineBridge},
+    midi::MidiInputManager,
+    ui::{
+        analysis::{self, AnalysisState, config::AnalysisConfig},
+        params_view,
+        params_view::{PatchManager, UiState},
+        sequencer_view::SequencerViewState,
+        settings_view,
+        settings_view::{AudioBaseline, MidiInputEntry},
+        viewport::{DeferredViewport, RootViewport},
+    },
+};
 
 pub(crate) const APP_TITLE: &str = "Noctum";
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);

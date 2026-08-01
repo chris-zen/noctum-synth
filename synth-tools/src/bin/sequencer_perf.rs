@@ -3,11 +3,11 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use synth_core::dsp::FilterOversampling;
 use synth_core::{
     ClockDivision, ControlMessage, GatedDestination, GatedSequencerMode, GatedStep, LayerId,
     LayerMode, LayerTarget, ModDestination, Patch, PolyLaneStep, PolyNote, PolyVelocity,
-    SequencerTransportCommand, SequencerType, SynthEngineWithMemory, VOICE_PACKS,
+    SequencerType, SynthEngineWithMemory, VOICE_PACKS, dsp::FilterOversampling,
+    sequencer::model::SequencerTransportCommand,
 };
 
 const SAMPLE_RATE: f32 = 48_000.0;

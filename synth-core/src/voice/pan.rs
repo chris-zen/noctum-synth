@@ -1,7 +1,4 @@
-use crate::math::WideF32;
-
-use crate::ParamId;
-use crate::patch::PanModMode;
+use crate::{ParamId, math::WideF32, patch::PanModMode};
 
 const CENTERED_PAN_SCALE: f32 = core::f32::consts::FRAC_1_SQRT_2;
 const CENTERED_PAN_SIN: WideF32 = WideF32::splat(CENTERED_PAN_SCALE);

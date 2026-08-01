@@ -178,7 +178,7 @@ mod enabled {
     use synth_core::RenderStage;
     use synth_core::{ModRoute, ModulationParam};
 
-    use super::Event;
+    use crate::diagnostics::Event;
 
     const QUEUE_CAPACITY: usize = 32;
     const PERF_REPORT_INTERVAL_BLOCKS: u32 = 1_500;
@@ -598,7 +598,7 @@ mod enabled {
 
 #[cfg(not(feature = "diagnostics"))]
 mod disabled {
-    use super::Event;
+    use crate::diagnostics::Event;
 
     pub struct PerfMonitor;
 

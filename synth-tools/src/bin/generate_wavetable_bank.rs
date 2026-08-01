@@ -1,6 +1,7 @@
 //! Explicit host-side generator for the retained wavetable prototype.
 
 use std::{env, f64::consts::PI, fs, path::PathBuf};
+
 use synth_core::dsp::wavetable::{
     WAVETABLE_HARMONIC_LIMITS, WAVETABLE_LENGTHS, WAVETABLE_WAVE_SAMPLES,
 };

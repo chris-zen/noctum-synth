@@ -1,12 +1,16 @@
 //! Live Rev2 CC/NRPN controller decode.
 
-use crate::midi::clock::MidiClockMode;
-use crate::midi::rev2::layer::{Layer, LayerA, LayerB};
-use crate::midi::rev2::map::{LfoPairingState, MappedUpdate, map_cc, map_nrpn_with_lfo, nrpn_max};
-use crate::midi::rev2::program::layer_mode_from_raw;
 use crate::{
     LayerId, LayerMode, LayerTarget, MAX_SPLIT_POINT, ModRoute, ModulationParam, ParamId,
     SequenceUpdate,
+    midi::{
+        clock::MidiClockMode,
+        rev2::{
+            layer::{Layer, LayerA, LayerB},
+            map::{LfoPairingState, MappedUpdate, map_cc, map_nrpn_with_lfo, nrpn_max},
+            program::layer_mode_from_raw,
+        },
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -18,22 +18,9 @@ pub(crate) mod rng;
 pub(crate) mod upsampler;
 pub mod wavetable;
 
-pub use analog_oscillator::WavetableOscillator;
-pub use analog_oscillator::{AnalogOscillator, SawMethod, Waveform};
-pub use analog_sub_oscillator::AnalogSubOscillator;
-pub use dc_blocker::DcBlocker;
-pub use envelope::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    DadsrEnvelope,
-};
-pub use filter::{Filter, FilterOversampling, FilterType, LadderFilter};
-pub use lfo::{Lfo, LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
-pub use noise::WhiteNoise;
-pub use parameter_smoother::{
-    DEFAULT_PARAMETER_SMOOTHING_SECONDS, ParameterSmoother, WideParameterSmoother,
-    smoothing_coefficient, smoothing_coefficient_euler_approx,
-};
-pub use wavetable::{
-    WAVETABLE_BANK_SAMPLES, WavetableBank, WavetableBankError, WavetableBankReport,
-    generate_wavetable_bank,
-};
+pub use analog_oscillator::{AnalogOscillator, Waveform, WavetableOscillator};
+pub use blep::SawMethod;
+pub use filter::{Filter, FilterOversampling, FilterType};
+pub use lfo::{LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
+pub use parameter_smoother::DEFAULT_PARAMETER_SMOOTHING_SECONDS;
+pub use wavetable::{WAVETABLE_BANK_SAMPLES, WavetableBank, generate_wavetable_bank};

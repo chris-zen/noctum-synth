@@ -1,12 +1,13 @@
 //! Compact, versioned patch records for non-volatile program storage.
 
-use crate::patch::{
-    CHORD_MEMORY_CAPACITY, DedicatedModSource, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination,
-    ModSource, PATCH_NAME_CAPACITY,
-};
 use crate::{
-    GATED_STEP_COUNT, GATED_TRACK_COUNT, GatedDestination, GatedStep, LayerMode, LayerPatch,
-    MAX_SPLIT_POINT, POLY_LANE_COUNT, POLY_STEP_COUNT, ParamId, Patch, PolyNote, PolyVelocity,
+    GatedDestination, GatedStep, LayerMode, LayerPatch, MAX_SPLIT_POINT, ParamId, Patch, PolyNote,
+    PolyVelocity,
+    patch::{
+        CHORD_MEMORY_CAPACITY, DedicatedModSource, MOD_MATRIX_FREE_SLOT_COUNT, ModDestination,
+        ModSource, PATCH_NAME_CAPACITY,
+    },
+    sequencer::model::{GATED_STEP_COUNT, GATED_TRACK_COUNT, POLY_LANE_COUNT, POLY_STEP_COUNT},
 };
 
 pub const PATCH_RECORD_SIZE: usize = 3072;

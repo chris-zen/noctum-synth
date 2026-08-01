@@ -1,17 +1,19 @@
-use crate::ParamId;
-use crate::dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, ParameterSmoother};
-use crate::math::WideF32;
-use crate::patch::AuxEnvelopeParams;
+use crate::{
+    ParamId,
+    dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, parameter_smoother::ParameterSmoother},
+    math::WideF32,
+    patch::AuxEnvelopeParams,
+};
 
 pub struct AuxEnv {
-    envelope: crate::dsp::DadsrEnvelope,
+    envelope: crate::dsp::envelope::DadsrEnvelope,
     velocity_amount: ParameterSmoother,
 }
 
 impl AuxEnv {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            envelope: crate::dsp::DadsrEnvelope::analog(sample_rate),
+            envelope: crate::dsp::envelope::DadsrEnvelope::analog(sample_rate),
             velocity_amount: ParameterSmoother::new(
                 0.0,
                 sample_rate,

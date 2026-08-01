@@ -1,8 +1,6 @@
 //! Shared Rev2 SysEx program image constants and types.
 
-use crate::LayerMode;
-use crate::Patch;
-use crate::midi::prophet::packed_program_len;
+use crate::{LayerMode, Patch, midi::prophet::packed_program_len};
 
 pub mod decode;
 pub mod encode;

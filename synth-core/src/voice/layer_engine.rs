@@ -1,30 +1,32 @@
 //! Polyphonic voice allocation and mixing.
 
-use crate::arp::{ArpEngine, ArpEvent};
 #[cfg(test)]
 use crate::dsp::filter::MAX_CUTOFF_HZ;
-use crate::dsp::{
-    DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, ParameterSmoother,
-};
-use crate::effects::{EffectModulation, EffectsState};
-use crate::fixed_index_list::FixedIndexList;
-use crate::math::F32;
-use crate::math::WideF32;
-use crate::midi::prophet::cutoff_raw_to_hz;
-use crate::pressed_keys::PressedKeys;
-use crate::profiling::RenderContext;
-use crate::sequencer::{
-    gated::{GatedEvent, GatedSequencer},
-    poly::{PolyEvent, PolySequencer, PolyStepEvent},
-    recorder::{RecorderEvent, StepRecorder},
-};
-use crate::voice::{
-    IdleAdvance, NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock, voice_pan_position,
-};
 use crate::{
     ChordMemory, ClockDivision, ControlMessage, GatedSequencerMode, GlideMode, KeyMode, LayerPatch,
-    ModDestination, ParamId, PolyStep, SequenceUpdate, SequencerRecordCommand,
-    SequencerTransportCommand, SequencerType, UnisonMode, VOICE_PACKS,
+    ModDestination, ParamId, PolyStep, SequenceUpdate, SequencerRecordCommand, SequencerType,
+    UnisonMode, VOICE_PACKS,
+    arp::{ArpEngine, ArpEvent},
+    dsp::{
+        DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType,
+        parameter_smoother::ParameterSmoother,
+    },
+    effects::{EffectModulation, EffectsState},
+    fixed_index_list::FixedIndexList,
+    math::{F32, WideF32},
+    midi::prophet::cutoff_raw_to_hz,
+    pressed_keys::PressedKeys,
+    profiling::RenderContext,
+    sequencer::model::SequencerTransportCommand,
+    sequencer::{
+        gated::{GatedEvent, GatedSequencer},
+        poly::{PolyEvent, PolySequencer, PolyStepEvent},
+        recorder::{RecorderEvent, StepRecorder},
+    },
+    voice::{
+        IdleAdvance, NoteGlide, PatchModulation, PerformanceModulation, VoiceBlock,
+        voice_pan_position,
+    },
 };
 
 const MIDI_CC_FILTER_RESONANCE: u8 = 71;
@@ -51,7 +53,7 @@ impl<const PACKS: usize> VoicePool<PACKS> {
     /// Creates physical voice storage for a non-zero compile-time pack count.
     ///
     /// ```compile_fail
-    /// use synth_core::VoicePool;
+    /// use synth_core::voice::VoicePool;
     ///
     /// let _ = VoicePool::<0>::new(48_000.0);
     /// ```
@@ -1261,7 +1263,7 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
         self.performance.sequence = self.gated.outputs();
         let release = self.poly.apply_sequence(sequence);
         self.release_sequence_lanes(pool, release);
-        for track in 0..crate::GATED_TRACK_COUNT {
+        for track in 0..crate::sequencer::model::GATED_TRACK_COUNT {
             self.modulation
                 .set_gated_destination(track, sequence.gated.tracks[track].destination);
         }
@@ -1321,7 +1323,7 @@ mod test_support {
             self.layer.active_voice_count(&self.pool)
         }
 
-        pub(crate) fn sequence_outputs(&self) -> [f32; crate::GATED_TRACK_COUNT] {
+        pub(crate) fn sequence_outputs(&self) -> [f32; crate::sequencer::model::GATED_TRACK_COUNT] {
             self.layer.performance.sequence
         }
 
@@ -1773,7 +1775,7 @@ mod tests {
     use crate::{
         GatedSequencerMode, GatedStep, LayerTarget, ModDestination, ModRoute, ModSource,
         ModulationParam, ParamId, PolyLaneStep, PolyNote, PolyVelocity, SequenceUpdate,
-        SequencerType, VOICE_COUNT,
+        SequencerType, VOICE_COUNT, voice::REV2_VOICE_PAN_POSITIONS,
     };
 
     fn process_frames<const PACKS: usize>(voices: &mut TestLayerEngine<PACKS>, frames: usize) {
@@ -2207,7 +2209,7 @@ mod tests {
             note: 72,
             velocity: 1.0,
         });
-        assert!((gated_note_frequency(&staccato, 72) - crate::midi_to_hz(72)).abs() < 0.1);
+        assert!((gated_note_frequency(&staccato, 72) - crate::tuning::midi_to_hz(72)).abs() < 0.1);
 
         let mut legato = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
         configure_glide(&mut legato, GlideMode::FixedTimeAuto);
@@ -2219,7 +2221,7 @@ mod tests {
             note: 72,
             velocity: 1.0,
         });
-        assert!((gated_note_frequency(&legato, 72) - crate::midi_to_hz(60)).abs() < 0.1);
+        assert!((gated_note_frequency(&legato, 72) - crate::tuning::midi_to_hz(60)).abs() < 0.1);
     }
 
     #[test]
@@ -2236,7 +2238,7 @@ mod tests {
             velocity: 1.0,
         });
 
-        assert!((gated_note_frequency(&voices, 72) - crate::midi_to_hz(60)).abs() < 0.1);
+        assert!((gated_note_frequency(&voices, 72) - crate::tuning::midi_to_hz(60)).abs() < 0.1);
     }
 
     #[test]
@@ -2251,8 +2253,8 @@ mod tests {
         }
         process_frames(&mut voices, 1_000);
         let before = gated_note_frequency(&voices, 72);
-        assert!(before > crate::midi_to_hz(60));
-        assert!(before < crate::midi_to_hz(72));
+        assert!(before > crate::tuning::midi_to_hz(60));
+        assert!(before < crate::tuning::midi_to_hz(72));
 
         voices.handle_control(ControlMessage::NoteOn {
             note: 76,
@@ -2298,7 +2300,7 @@ mod tests {
         assert_eq!(tuning[3], 16.0);
         assert!((tuning.iter().sum::<f32>()).abs() < 0.001);
         let frequencies = voices[0].oscillators().osc1_frequency_hz().to_array();
-        let center = crate::midi_to_hz(60);
+        let center = crate::tuning::midi_to_hz(60);
         assert!(frequencies[0] < center);
         assert!(frequencies[3] > center);
         assert!((frequencies[0] * frequencies[3] - center * center).abs() < 1.0);
@@ -2379,11 +2381,11 @@ mod tests {
         assert!(!voices[0].has_pending_note(0));
         assert!(voices.active_notes().iter().all(|note| note == 72));
         let start = gated_note_frequency(&voices, 72);
-        assert!((start - crate::midi_to_hz(60)).abs() < 0.1);
+        assert!((start - crate::tuning::midi_to_hz(60)).abs() < 0.1);
         process_frames(&mut voices, 1_000);
         let progressed = gated_note_frequency(&voices, 72);
         assert!(progressed > start);
-        assert!(progressed < crate::midi_to_hz(72));
+        assert!(progressed < crate::tuning::midi_to_hz(72));
     }
 
     #[test]
@@ -2557,7 +2559,7 @@ mod tests {
             assert!(!voices[0].has_pending_note(lane));
         }
         let frequencies = voices[0].oscillators().osc1_frequency_hz().to_array();
-        let center = crate::midi_to_hz(60);
+        let center = crate::tuning::midi_to_hz(60);
         assert!(frequencies[0] < center);
         assert!(frequencies[3] > center);
     }
@@ -2723,7 +2725,7 @@ mod tests {
         assert_eq!(block.lanes().notes_array(), [60, 64, 67, 72]);
 
         for lane in 0..WideF32::LANES {
-            let expected = crate::midi_to_hz(block.lanes().notes_array()[lane]);
+            let expected = crate::tuning::midi_to_hz(block.lanes().notes_array()[lane]);
             let osc1_freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
             assert!(
                 (osc1_freq - expected).abs() < 0.1,
@@ -2744,7 +2746,7 @@ mod tests {
 
         render_once(&mut voices);
 
-        let expected = crate::midi_to_hz(62);
+        let expected = crate::tuning::midi_to_hz(62);
         let block = &voices[0];
         let osc1 = block.oscillators().osc1_frequency_hz().to_array()[0];
         assert!(
@@ -2774,7 +2776,7 @@ mod tests {
 
         let block = &voices[0];
         let osc1 = block.oscillators().osc1_frequency_hz().to_array()[0];
-        let expected_osc1 = crate::midi_to_hz(68);
+        let expected_osc1 = crate::tuning::midi_to_hz(68);
         assert!(
             (osc1 - expected_osc1).abs() < 0.1,
             "matrix-routed osc 1 was {osc1}, expected {expected_osc1}"
@@ -2784,14 +2786,14 @@ mod tests {
     #[test]
     fn physical_voices_use_the_rev2_pan_pattern() {
         let voices = TestLayerEngine::<{ crate::VOICE_PACKS }>::new(44_100.0);
-        for voice_index in 0..crate::REV2_VOICE_PAN_POSITIONS.len() {
+        for voice_index in 0..REV2_VOICE_PAN_POSITIONS.len() {
             let VoiceLocation {
                 block_index: block,
                 lane,
             } = AllocatedVoices::<{ crate::VOICE_PACKS }>::voice_location(voice_index);
             assert_eq!(
                 voices[block].lanes().pan_positions_array()[lane],
-                crate::REV2_VOICE_PAN_POSITIONS[voice_index]
+                REV2_VOICE_PAN_POSITIONS[voice_index]
             );
         }
     }
@@ -3294,8 +3296,8 @@ mod tests {
             find_gated_note(&voices, 72).expect("note 72 should be gated after C5 press");
 
         let freq_after_trigger = gated_note_frequency(&voices, 72);
-        let freq_c3 = crate::midi_to_hz(48u8);
-        let freq_c5 = crate::midi_to_hz(72u8);
+        let freq_c3 = crate::tuning::midi_to_hz(48u8);
+        let freq_c5 = crate::tuning::midi_to_hz(72u8);
 
         assert!(
             (freq_after_trigger - freq_c3).abs() / freq_c3 < 0.01,

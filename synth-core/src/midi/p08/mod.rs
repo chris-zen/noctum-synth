@@ -20,7 +20,4 @@ pub mod program;
 #[cfg(test)]
 mod tests;
 
-pub use program::{
-    PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN, PROGRAM_PACKED_LEN,
-    ProgramData, decode,
-};
+pub use program::{PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN, ProgramData, decode};

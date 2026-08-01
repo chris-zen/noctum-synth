@@ -1,12 +1,19 @@
 //! Rev2 SysEx program dump encode.
 
-use crate::midi::prophet::pack_program_data;
-use crate::midi::rev2::layer::{LayerA, LayerB, LayerDecoder};
-use crate::midi::rev2::program::{
-    LAYER_MODE_OFFSET, PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN, PROGRAM_EDIT_BUFFER_SYSEX_LEN,
-    PROGRAM_PACKED_LEN, SPLIT_POINT_OFFSET, SysexError, layer_mode_raw,
+use crate::{
+    MAX_SPLIT_POINT, Patch,
+    midi::{
+        prophet::pack_program_data,
+        rev2::{
+            layer::{LayerA, LayerB, LayerDecoder},
+            program::{
+                LAYER_MODE_OFFSET, PROGRAM_DATA_LEN, PROGRAM_DATA_SYSEX_LEN,
+                PROGRAM_EDIT_BUFFER_SYSEX_LEN, PROGRAM_PACKED_LEN, SPLIT_POINT_OFFSET, SysexError,
+                layer_mode_raw,
+            },
+        },
+    },
 };
-use crate::{MAX_SPLIT_POINT, Patch};
 
 const SYSEX_HEADER: [u8; 4] = [0xf0, 0x01, 0x2f, 0x03];
 

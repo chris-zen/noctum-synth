@@ -1,9 +1,10 @@
 //! Four-stage TPT cascade with an analytic, gain-limited feedback loop.
 
-use crate::math::{F32, WideF32};
-
-use crate::dsp::filter::{
-    FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_RESONANCE_START,
+use crate::{
+    dsp::filter::{
+        FilterAlgorithm, FilterFrame, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ, SELF_OSC_RESONANCE_START,
+    },
+    math::{F32, WideF32},
 };
 
 const TWO_POLE_MAX_RESONANCE: f32 = 1.9;

@@ -7,16 +7,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 use wmidi::MidiMessage;
 
-use synth_core::midi::clock::{MidiClockMode, MidiRealtimeEvent};
-use synth_core::midi::program::ProgramData;
-use synth_core::midi::{p08, rev2};
 use synth_core::{
     LayerId, LayerMode, LayerTarget, ModDestination, ModRoute, ModSource, ModulationParam, ParamId,
     Patch, SequenceClear, SequenceUpdate,
+    midi::{
+        clock::{MidiClockMode, MidiRealtimeEvent},
+        p08,
+        program::ProgramData,
+        rev2,
+    },
 };
 
-use crate::engine::SynthEngineControl;
-use crate::ui::settings_view::MidiInputEntry;
+use crate::{engine::SynthEngineControl, ui::settings_view::MidiInputEntry};
 
 const RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
 const MIDI_ECHO_TTL: Duration = Duration::from_secs(1);

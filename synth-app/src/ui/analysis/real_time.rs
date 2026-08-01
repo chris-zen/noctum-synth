@@ -2,10 +2,14 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-use crate::engine::AudioBlock;
-use crate::ui::analysis::oscilloscope::{self, OscilloscopeState, OscilloscopeViewConfig};
-use crate::ui::analysis::spectrum_analyzer::{self, FftState, FftViewConfig};
-use crate::ui::analysis::vu_meter::{self, VU_WIDTH, VuMeterState};
+use crate::{
+    engine::AudioBlock,
+    ui::analysis::{
+        oscilloscope::{self, OscilloscopeState, OscilloscopeViewConfig},
+        spectrum_analyzer::{self, FftState, FftViewConfig},
+        vu_meter::{self, VU_WIDTH, VuMeterState},
+    },
+};
 
 // ---------------------------------------------------------------------------
 // Shared enums

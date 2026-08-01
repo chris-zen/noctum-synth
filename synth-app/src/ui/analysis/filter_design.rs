@@ -5,11 +5,15 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
-use synth_core::dsp::{Filter, FilterOversampling, FilterType, filter::SELF_OSC_RESONANCE_START};
-use synth_core::math::WideF32;
+use synth_core::{
+    dsp::{Filter, FilterOversampling, FilterType, filter::SELF_OSC_RESONANCE_START},
+    math::WideF32,
+};
 
-use crate::engine::SynthEngineControl;
-use crate::ui::analysis::spectrum::{self, SpectrumConfig};
+use crate::{
+    engine::SynthEngineControl,
+    ui::analysis::spectrum::{self, SpectrumConfig},
+};
 
 /// Small impulse used to keep analysis mostly in the filter's linear region.
 const ANALYSIS_IMPULSE_GAIN: f32 = 1.0e-4;

@@ -1,14 +1,14 @@
 //! Prophet '08 NRPN parameter maps and program-field layout.
 
-use crate::dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
-use crate::math::F32;
-use crate::midi::prophet::{
-    FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
-    release_seconds,
-};
 use crate::{
     DedicatedModSource, LfoSyncDivision, ModDestination, ModRoute, ModSource, ModulationParam,
     ParamId,
+    dsp::{MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ},
+    math::F32,
+    midi::prophet::{
+        FILTER_CUTOFF_RAW_MAX, attack_decay_seconds, cutoff_raw_to_hz, key_track_from_raw,
+        release_seconds,
+    },
 };
 
 #[derive(Clone, Copy)]

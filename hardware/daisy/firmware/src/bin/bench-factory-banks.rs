@@ -5,19 +5,18 @@ use core::hint::black_box;
 use cortex_m::peripheral::DWT;
 use {defmt_rtt as _, panic_probe as _};
 
-use embassy_daisy::Board;
-use embassy_daisy::audio::BLOCK_LENGTH;
-use embassy_daisy::qspi::QspiFlash;
-use noctum_micro::audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue, PatchQueue};
-use noctum_micro::patch_transition::PatchTransition;
-use noctum_micro::profiling::{AudioProfiler, Snapshot};
-use synth_core::midi::rev2::{PROGRAM_DATA_SYSEX_LEN, decode};
+use embassy_daisy::{Board, audio::BLOCK_LENGTH, qspi::QspiFlash};
+use noctum_micro::{
+    audio::{AdaptiveControlBudget, BLOCK_CYCLE_BUDGET, ControlQueue, PatchQueue},
+    model::{FILTER_OVERSAMPLING, FILTER_TYPE},
+    patch_transition::PatchTransition,
+    profiling::{AudioProfiler, Snapshot},
+};
 use synth_core::{
     ControlMessage, LayerId, LayerMode, ModDestination, ParamId, Patch, SynthEngineWithMemory,
+    midi::rev2::{PROGRAM_DATA_SYSEX_LEN, decode},
     profiling::RenderStage,
 };
-
-use noctum_micro::model::{FILTER_OVERSAMPLING, FILTER_TYPE};
 use tools_micro::{self as factory_banks, Crc32};
 
 const SAMPLE_RATE_HZ: f32 = 48_000.0;

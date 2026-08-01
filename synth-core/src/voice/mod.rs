@@ -1,32 +1,31 @@
-//! Voice layer: polyphony manager and per-block signal chain.
+//! Voice layer: layer engine and per-block signal chain.
 
 mod amplifier;
 mod aux_env;
 mod filter;
 mod lanes;
+mod layer_engine;
 mod lfo;
-mod manager;
 mod modulation;
 mod oscillators;
 mod pan;
 
-#[cfg(test)]
-pub(crate) use manager::TestLayerEngine;
-pub use manager::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion, unison_detune_cents};
+pub use layer_engine::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion};
 
-use crate::dsp::{
-    DEFAULT_PARAMETER_SMOOTHING_SECONDS, DcBlocker, FilterOversampling, FilterType, LfoWaveform,
-    ParameterSmoother, Waveform,
-};
-use crate::effects::EffectModulation;
-use crate::math::{F32, WideF32};
 #[cfg(test)]
 use crate::patch::DedicatedModSource;
-use crate::patch::{
-    ClockDivision, LFO_COUNT, LayerPatch, LfoSyncDivision, ModDestination, PanModMode,
+use crate::{
+    DEFAULT_TEMPO_BPM, GlideMode, ModSource, ParamId, VOICE_COUNT,
+    dsp::{
+        DEFAULT_PARAMETER_SMOOTHING_SECONDS, FilterOversampling, FilterType, LfoWaveform, Waveform,
+        dc_blocker::DcBlocker, parameter_smoother::ParameterSmoother,
+    },
+    effects::EffectModulation,
+    math::{F32, WideF32},
+    patch::{ClockDivision, LFO_COUNT, LayerPatch, LfoSyncDivision, ModDestination, PanModMode},
+    profiling::{RenderContext, RenderStage},
+    sequencer::model::GATED_TRACK_COUNT,
 };
-use crate::profiling::{RenderContext, RenderStage};
-use crate::{DEFAULT_TEMPO_BPM, GATED_TRACK_COUNT, GlideMode, ModSource, ParamId, VOICE_COUNT};
 use amplifier::Amplifier;
 use aux_env::AuxEnv;
 use filter::Filter;
@@ -1433,7 +1432,7 @@ mod tests {
     use super::*;
     use crate::dsp::MAX_LFO_RATE_HZ;
     use crate::patch::{DedicatedModSource, ModRoute};
-    use crate::voice::TestLayerEngine;
+    use crate::voice::layer_engine::TestLayerEngine;
     use crate::{ControlMessage, ParamId};
 
     fn test_block(sample_rate: f32, patch: &LayerPatch) -> (VoiceBlock, PatchModulation) {
@@ -1577,7 +1576,7 @@ mod tests {
                 breath: 0.25,
                 foot: 0.5,
                 expression: 0.75,
-                sequence: [0.0; crate::GATED_TRACK_COUNT],
+                sequence: [0.0; crate::sequencer::model::GATED_TRACK_COUNT],
             },
             velocities: WideF32::splat([0.2, 0.4, 0.6, 0.8][sample % 4]),
             filter_env: WideF32::splat(ramp),
@@ -2103,7 +2102,7 @@ mod tests {
             .iter()
             .position(|gate| *gate)
             .unwrap();
-        let expected = crate::midi_to_hz(112);
+        let expected = crate::tuning::midi_to_hz(112);
         let osc1_freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
         assert_eq!(block.lanes().note(lane), 64);
         assert!(
@@ -2141,7 +2140,7 @@ mod tests {
             (block.oscillators().params().osc1.fine_tune_cents - 50.0).abs() < f32::EPSILON,
             "osc1 fine tune should clamp to +50 cents"
         );
-        let expected = crate::midi_to_hz(120) * 2.0f32.powf(50.0 / 1200.0);
+        let expected = crate::tuning::midi_to_hz(120) * 2.0f32.powf(50.0 / 1200.0);
         let osc1_freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
 
         assert!(
@@ -2172,7 +2171,7 @@ mod tests {
         }
         let stable_block = &stable[0];
         for lane in 0..WideF32::LANES {
-            let expected = crate::midi_to_hz(stable_block.lanes().notes_array()[lane]);
+            let expected = crate::tuning::midi_to_hz(stable_block.lanes().notes_array()[lane]);
             let freq = stable_block.oscillators().osc1_frequency_hz().to_array()[lane];
             assert!(
                 (freq - expected).abs() < 0.1,
@@ -2190,7 +2189,7 @@ mod tests {
         }
         let sloppy_block = &sloppy[0];
         let offsets: [f32; WideF32::LANES] = core::array::from_fn(|lane| {
-            let expected = crate::midi_to_hz(sloppy_block.lanes().notes_array()[lane]);
+            let expected = crate::tuning::midi_to_hz(sloppy_block.lanes().notes_array()[lane]);
             sloppy_block.oscillators().osc1_frequency_hz().to_array()[lane] - expected
         });
 
@@ -2214,7 +2213,7 @@ mod tests {
         voices.handle_control(ControlMessage::edit_param(ParamId::OscSlop, 0.0));
         let block = &voices[0];
         for lane in 0..WideF32::LANES {
-            let expected = crate::midi_to_hz(block.lanes().notes_array()[lane]);
+            let expected = crate::tuning::midi_to_hz(block.lanes().notes_array()[lane]);
             let freq = block.oscillators().osc1_frequency_hz().to_array()[lane];
             assert!(
                 (freq - expected).abs() < 0.1,
@@ -2262,7 +2261,7 @@ mod tests {
 
         let block = &voices[0];
         let freq = block.oscillators().osc1_frequency_hz().to_array()[0];
-        let expected = crate::midi_to_hz(72);
+        let expected = crate::tuning::midi_to_hz(72);
         assert!(
             (freq - expected).abs() < 5.0,
             "full positive aux pitch modulation should raise osc1 by about one octave, got {freq}, expected {expected}"

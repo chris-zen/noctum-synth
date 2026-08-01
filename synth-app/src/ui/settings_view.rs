@@ -1,11 +1,15 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use synth_core::dsp::{FilterOversampling, FilterType};
-use synth_core::midi::clock::{MidiClockMode, MidiTransportState};
+use synth_core::{
+    dsp::{FilterOversampling, FilterType},
+    midi::clock::{MidiClockMode, MidiTransportState},
+};
 
-use crate::audio::{AppliedAudioConfig, AudioConfig, AudioManager};
-use crate::engine::SynthEngineControl;
-use crate::{audio, midi};
+use crate::{
+    audio::{self, AppliedAudioConfig, AudioConfig, AudioManager},
+    engine::SynthEngineControl,
+    midi,
+};
 
 fn default_true() -> bool {
     true

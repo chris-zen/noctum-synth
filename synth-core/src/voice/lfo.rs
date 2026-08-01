@@ -1,9 +1,11 @@
-use crate::dsp::{LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
-use crate::math::WideF32;
-use crate::patch::{ClockDivision, LFO_COUNT, LfoParams, LfoSyncDivision, ModDestination};
+use crate::{
+    dsp::{LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ},
+    math::WideF32,
+    patch::{ClockDivision, LFO_COUNT, LfoParams, LfoSyncDivision, ModDestination},
+};
 
 pub struct Lfo {
-    engine: crate::dsp::Lfo,
+    engine: crate::dsp::lfo::Lfo,
     destination: ModDestination,
     clock_sync: bool,
     sync_division: LfoSyncDivision,
@@ -15,7 +17,7 @@ pub struct Lfo {
 impl Lfo {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            engine: crate::dsp::Lfo::new(sample_rate),
+            engine: crate::dsp::lfo::Lfo::new(sample_rate),
             destination: ModDestination::Off,
             clock_sync: false,
             sync_division: LfoSyncDivision::default(),

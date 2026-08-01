@@ -2,7 +2,7 @@ use core::ops::{
     Add, AddAssign, BitAnd, BitXor, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign,
 };
 
-use super::scalar::F32;
+use crate::math::F32;
 
 #[cfg(feature = "wide-8")]
 const WIDE_LANES: usize = 8;

@@ -6,9 +6,12 @@ use std::time::Instant;
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
-use synth_core::dsp::{FilterOversampling, FilterType};
-use synth_core::midi::rev2::{PROGRAM_DATA_SYSEX_LEN, decode};
-use synth_core::{ControlMessage, LayerId, LayerMode, Patch, SynthEngineWithMemory, VOICE_PACKS};
+
+use synth_core::{
+    ControlMessage, LayerId, LayerMode, Patch, SynthEngineWithMemory, VOICE_PACKS,
+    dsp::{FilterOversampling, FilterType},
+    midi::rev2::{PROGRAM_DATA_SYSEX_LEN, decode},
+};
 
 const SAMPLE_RATE: f32 = 48_000.0;
 const CALLBACK_FRAMES: usize = 48;

@@ -1,4 +1,4 @@
-use super::WideF32;
+use crate::math::WideF32;
 
 #[inline]
 pub fn splat(value: f32) -> WideF32 {

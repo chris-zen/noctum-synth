@@ -1,28 +1,36 @@
 use eframe::egui;
 use std::path::PathBuf;
 
-use synth_core::dsp::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
-};
-use synth_core::midi::clock::MidiClockMode;
-use synth_core::midi::prophet::filter_cutoff_max_hz;
 use synth_core::{
     ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
     EffectParams, EffectType, GlideMode, KeyMode, LayerId, LayerMode, LayerPatch,
     LayerPlaybackStatus, LayerSequence, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination,
     ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode,
-    ParamId, Patch, UnisonMode, glide_seconds,
+    ParamId, Patch, UnisonMode,
+    dsp::{
+        FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+        envelope::{
+            DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
+            DEFAULT_SUSTAIN_LEVEL,
+        },
+    },
+    glide_seconds,
+    midi::{clock::MidiClockMode, prophet::filter_cutoff_max_hz},
 };
 
-use crate::config::APP_NAME_FOLDER;
-use crate::engine::{MidiUiUpdate, SequencerPlaybackStatus, SynthEngineControl};
-use crate::ui::sequencer_view::SequencerViewState;
-use crate::ui::widgets::{
-    KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
-    master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32, param_knob_f32_custom,
-    param_knob_f32_offset, param_knob_filter_cutoff, param_knob_filter_key_amount,
-    param_knob_log_hz, param_knob_note, param_toggle, param_toggle_sized,
+use crate::{
+    config::APP_NAME_FOLDER,
+    engine::{MidiUiUpdate, SequencerPlaybackStatus, SynthEngineControl},
+    ui::{
+        sequencer_view::SequencerViewState,
+        widgets::{
+            KNOB_SIZE, framed_selectable, framed_selectable_sized, linked_param_knob_f32_custom,
+            master_volume, param_knob_bipolar, param_knob_discrete, param_knob_f32,
+            param_knob_f32_custom, param_knob_f32_offset, param_knob_filter_cutoff,
+            param_knob_filter_key_amount, param_knob_log_hz, param_knob_note, param_toggle,
+            param_toggle_sized,
+        },
+    },
 };
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;

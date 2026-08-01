@@ -3,7 +3,7 @@ use core::ops::{
 };
 
 #[cfg(feature = "wide-1")]
-use super::scalar::F32;
+use crate::math::F32;
 
 #[cfg(feature = "wide-8")]
 pub const WIDE_LANES: usize = 8;

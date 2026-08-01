@@ -6,14 +6,9 @@ pub mod store;
 #[cfg(target_arch = "arm")]
 pub mod task;
 
-#[cfg(target_arch = "arm")]
-pub use task::run_task;
-
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use synth_core::Patch;
-
-pub use selection::ProgramSelection;
 
 pub const STORAGE_QUEUE_CAPACITY: usize = 8;
 

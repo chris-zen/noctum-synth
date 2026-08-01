@@ -1,8 +1,9 @@
 //! Pure MIDI-to-engine control translation shared by firmware and host tests.
 
-use synth_core::ControlMessage;
-use synth_core::midi::clock::MidiRealtimeEvent;
-use synth_core::midi::rev2;
+use synth_core::{
+    ControlMessage,
+    midi::{clock::MidiRealtimeEvent, rev2},
+};
 use wmidi::MidiMessage;
 
 pub fn realtime_to_control(

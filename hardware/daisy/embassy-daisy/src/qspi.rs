@@ -1,6 +1,6 @@
 //! IS25LP064 QSPI flash access for Daisy Seed 1.1.
 
-use embassy_stm32::{mode::Blocking, peripherals, qspi, Peri};
+use embassy_stm32::{Peri, mode::Blocking, peripherals, qspi};
 use qspi::enums::{AddressSize, ChipSelectHighTime, MemorySize, QspiWidth, SampleShifting};
 
 pub const SIZE_BYTES: u32 = 8 * 1024 * 1024;

@@ -4,9 +4,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tools_micro as factory_banks;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
+use tools_micro as factory_banks;
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);

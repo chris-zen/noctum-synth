@@ -69,7 +69,6 @@ impl UsbAudioBuffer {
         }
         self.write
             .store((write + count) % RING_FRAMES, Ordering::Release);
-
     }
 
     pub(crate) fn pop_into(&self, output: &mut [Frame]) -> usize {
@@ -110,7 +109,6 @@ impl UsbAudioBuffer {
         let write = self.write.load(Ordering::Acquire);
         self.read.store(write, Ordering::Release);
     }
-
 }
 
 pub const fn packet_frames(primed: bool, occupancy: usize) -> usize {

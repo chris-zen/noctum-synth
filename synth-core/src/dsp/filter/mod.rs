@@ -643,7 +643,7 @@ mod tests {
         MIN_BASE_CUTOFF_HZ, SELF_OSC_PITCH_TUNING_CENTS, SELF_OSC_RESONANCE_START,
     };
     use crate::math::WideF32;
-    use crate::midi_to_hz;
+    use crate::tuning::midi_to_hz;
 
     extern crate std;
     use super::{

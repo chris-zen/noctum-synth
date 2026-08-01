@@ -1,10 +1,12 @@
-use crate::ParamId;
-use crate::dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, ParameterSmoother};
-use crate::math::WideF32;
-use crate::patch::AmplifierParams;
+use crate::{
+    ParamId,
+    dsp::{DEFAULT_PARAMETER_SMOOTHING_SECONDS, parameter_smoother::ParameterSmoother},
+    math::WideF32,
+    patch::AmplifierParams,
+};
 
 pub struct Amplifier {
-    envelope: crate::dsp::DadsrEnvelope,
+    envelope: crate::dsp::envelope::DadsrEnvelope,
     initial_level: ParameterSmoother,
     env_amount: ParameterSmoother,
     velocity_amount: ParameterSmoother,
@@ -13,7 +15,7 @@ pub struct Amplifier {
 impl Amplifier {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            envelope: crate::dsp::DadsrEnvelope::analog(sample_rate),
+            envelope: crate::dsp::envelope::DadsrEnvelope::analog(sample_rate),
             initial_level: ParameterSmoother::new(
                 0.0,
                 sample_rate,

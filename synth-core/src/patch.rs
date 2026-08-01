@@ -3,12 +3,17 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::dsp::{
-    DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS, DEFAULT_SUSTAIN_LEVEL,
-    LfoWaveform, MIN_LFO_RATE_HZ,
+use crate::{
+    LayerSequence, ParamId,
+    dsp::{
+        LfoWaveform, MIN_LFO_RATE_HZ,
+        envelope::{
+            DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
+            DEFAULT_SUSTAIN_LEVEL,
+        },
+    },
+    midi::prophet,
 };
-use crate::midi::prophet;
-use crate::{LayerSequence, ParamId};
 
 pub const PATCH_NAME_CAPACITY: usize = 20;
 pub const CHORD_MEMORY_CAPACITY: usize = 16;
