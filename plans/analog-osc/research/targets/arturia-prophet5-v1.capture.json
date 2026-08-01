@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "target_id": "arturia-prophet5-v1",
+  "display_name": "Arturia Prophet-5 V software reference",
+  "source_kind": "software_capture",
+  "status": "capture_required",
+  "identity_warning": "This target represents Arturia Prophet-5 V output and must not be labelled Prophet Rev2 hardware.",
+  "required_session_metadata": {
+    "plugin_version": null,
+    "plugin_format": null,
+    "host_and_version": null,
+    "operating_system": null,
+    "virtual_cable": null,
+    "render_sample_rate_hz": 96000,
+    "render_bit_depth": "32-bit float",
+    "quality_or_oversampling_mode": null,
+    "init_preset_name": null,
+    "oscillator_level": null,
+    "master_level": null,
+    "tuning_reference_hz": 440.0,
+    "bypassed_stages_verified": [
+      "filter",
+      "amplifier envelope",
+      "effects",
+      "unison",
+      "voice dispersion",
+      "modulation"
+    ]
+  },
+  "capture_rules": {
+    "preserve_original_before_processing": true,
+    "minimum_static_duration_seconds": 8.0,
+    "discard_startup_seconds": 0.5,
+    "normalization": "none in source capture; derived normalized copies must remain separate",
+    "channels": "mono, or document stereo summing",
+    "phase_reset": "capture both forced reset and free-running behavior where supported",
+    "silence_capture_seconds": 10.0
+  },
+  "static_matrix": {
+    "notes_midi": [16, 21, 28, 33, 40, 45, 52, 57, 64, 69, 76, 81, 88],
+    "waveforms": ["saw", "triangle", "pulse", "saw_triangle"],
+    "pulse_width_percent": [10, 25, 50, 75, 90],
+    "output_level_relative_db": [-18, -12, -6, 0, 6]
+  },
+  "dynamic_matrix": [
+    "logarithmic pitch sweep E0-E6",
+    "pulse-width sweep 10-90-10 percent",
+    "PWM at 0.1, 1, 5, and 20 Hz",
+    "hard-sync ratios 1.5, 2, 3, and 4 where available",
+    "repeated note-reset events",
+    "free-running repeated note events"
+  ],
+  "file_naming": "{target_id}__{waveform}__m{midi}__pw{percent-or-na}__lvl{db}__{case}.wav"
+}

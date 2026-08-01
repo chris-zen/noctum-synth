@@ -254,6 +254,10 @@ where
             ControlMessage::SetMasterVolume(volume) => {
                 self.master_volume.set_target(volume.clamp(0.0, 1.0));
             }
+            #[cfg(feature = "experimental-oscillators")]
+            ControlMessage::SetExperimentalOscillatorModel(model) => {
+                self.voice_pool.set_experimental_oscillator_model(model);
+            }
             ControlMessage::MidiRealtime(event) => self.handle_midi_realtime(event),
             ControlMessage::SetModulation {
                 target,
@@ -979,6 +983,16 @@ where
         self.active_layer_index(layer)
             .map(|index| self.layers[index].active_voice_count(&self.voice_pool))
             .unwrap_or(0)
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_experimental_oscillator_model(&mut self, model: crate::ExperimentalOscillatorModel) {
+        self.voice_pool.set_experimental_oscillator_model(model);
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_measured_wavetable_bank(&mut self, bank: crate::dsp::MeasuredWavetableBank) {
+        self.voice_pool.set_measured_wavetable_bank(bank);
     }
 
     pub fn note_on(&mut self, note: u8, velocity: f32) {

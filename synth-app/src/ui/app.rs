@@ -63,6 +63,7 @@ impl App {
         audio_manager: AudioManager,
         midi_port: Option<String>,
         mut config: Config,
+        #[cfg(feature = "experimental-oscillators")] measured_wavetable_available: bool,
     ) -> Self {
         let theme_dark = config.settings.dark_theme;
 
@@ -116,6 +117,10 @@ impl App {
         let mut patch_mgr = PatchManager::new();
         let mut ui_state = UiState::default();
         let mut patch = Patch::default();
+        #[cfg(feature = "experimental-oscillators")]
+        {
+            ui_state.measured_wavetable_available = measured_wavetable_available;
+        }
         if let Some((restored, loaded_name, baseline, save_name)) = patch_mgr.load_autosave() {
             patch_mgr.restore_autosave_metadata(loaded_name, baseline, save_name, &restored);
             patch = restored;
@@ -183,6 +188,10 @@ impl App {
             self.engine
                 .control
                 .set_filter_type(*self.filter_type.lock());
+            #[cfg(feature = "experimental-oscillators")]
+            self.engine
+                .control
+                .set_experimental_oscillator_model(self.ui_state.experimental_oscillator_model);
             self.engine
                 .control
                 .set_midi_clock_mode(self.config.settings.midi_clock_mode);

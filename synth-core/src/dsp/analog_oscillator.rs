@@ -779,7 +779,7 @@ fn wrap_subsample_offset(phi: WideF32, phase_inc: WideF32, wrapped: LaneMask) ->
 
 /// Evaluates a band-limited triangle per SIMD lane, correcting the two
 /// slope discontinuities with second-order polyBLAMP residuals.
-fn polyblamp2_triangle(phi: WideF32, dt: WideF32) -> WideF32 {
+pub(crate) fn polyblamp2_triangle(phi: WideF32, dt: WideF32) -> WideF32 {
     #[cfg(feature = "fast-math")]
     {
         return polyblamp2_triangle_scalar_lanes(phi, dt);

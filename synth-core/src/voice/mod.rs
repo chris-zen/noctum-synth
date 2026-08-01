@@ -12,6 +12,8 @@ mod pan;
 
 pub use layer_engine::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion};
 
+#[cfg(feature = "experimental-oscillators")]
+use crate::dsp::ExperimentalOscillatorModel;
 #[cfg(test)]
 use crate::patch::DedicatedModSource;
 use crate::{
@@ -767,6 +769,16 @@ impl VoiceBlock {
 
     pub fn set_filter_type(&mut self, filter_type: FilterType) {
         self.filter.set_filter_type(filter_type);
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_experimental_oscillator_model(&mut self, model: ExperimentalOscillatorModel) {
+        self.oscillators.set_experimental_model(model);
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_measured_wavetable_bank(&mut self, bank: crate::dsp::MeasuredWavetableBank) {
+        self.oscillators.set_measured_wavetable_bank(bank);
     }
 
     pub fn set_filter_cutoff(&mut self, cutoff: f32) {

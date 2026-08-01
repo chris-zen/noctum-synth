@@ -699,6 +699,8 @@ fn audio_settings_panel(
                         sample_rate: settings.sample_rate,
                         filter_oversampling: settings.filter_oversampling,
                         filter_type,
+                        #[cfg(feature = "experimental-oscillators")]
+                        measured_wavetable_bank: audio_manager.measured_wavetable_bank(),
                     });
                 }
 
@@ -719,6 +721,8 @@ fn audio_settings_panel(
                         sample_rate: settings.sample_rate,
                         filter_oversampling: settings.filter_oversampling,
                         filter_type,
+                        #[cfg(feature = "experimental-oscillators")]
+                        measured_wavetable_bank: audio_manager.measured_wavetable_bank(),
                     });
                 }
             });

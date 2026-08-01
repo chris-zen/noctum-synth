@@ -70,6 +70,15 @@ pub mod sequencer;
 pub mod tuning;
 pub mod voice;
 
+#[cfg(feature = "experimental-oscillators")]
+pub use dsp::{ExperimentalOscillatorCapabilities, ExperimentalOscillatorModel};
+#[cfg(feature = "oscillator-research")]
+pub use dsp::{
+    OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics, ResearchError,
+    ResearchEvent, ResearchModelDescriptor, ResearchModelFamily, ResearchModelId,
+    ResearchParameterDescriptor, ResearchParameterScale, ResearchRegistry, ResearchRenderCase,
+    ResearchRenderSummary, ResearchSignalMetrics, render_research_case,
+};
 pub use effects::{EffectModulation, Effects};
 pub use engine::{LayerPlaybackStatus, SynthEngine, SynthEngineWithMemory};
 pub use patch::{
@@ -405,6 +414,9 @@ pub enum ControlMessage {
     SetFilterOversampling(FilterOversampling),
     /// Selects a filter model and resets its per-voice DSP state.
     SetFilterType(FilterType),
+    /// Selects a desktop research oscillator source outside patch state.
+    #[cfg(feature = "experimental-oscillators")]
+    SetExperimentalOscillatorModel(ExperimentalOscillatorModel),
     NoteOn {
         note: u8,
         velocity: f32,

@@ -19,6 +19,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "experimental-oscillators")]
+use synth_core::dsp::MeasuredWavetableBank;
 use synth_core::{
     ControlMessage, SynthEngineWithMemory, VOICE_PACKS,
     dsp::{FilterOversampling, FilterType},
@@ -67,6 +69,8 @@ pub struct AudioConfig {
     pub sample_rate: Option<u32>,
     pub filter_oversampling: FilterOversampling,
     pub filter_type: FilterType,
+    #[cfg(feature = "experimental-oscillators")]
+    pub measured_wavetable_bank: Option<MeasuredWavetableBank>,
 }
 
 #[derive(Clone)]
@@ -94,6 +98,8 @@ impl Default for AppliedAudioConfig {
 pub struct AudioManager {
     request_tx: mpsc::Sender<AudioConfig>,
     applied: Arc<RwLock<AppliedAudioConfig>>,
+    #[cfg(feature = "experimental-oscillators")]
+    measured_wavetable_bank: Option<MeasuredWavetableBank>,
 }
 
 impl AudioManager {
@@ -102,6 +108,8 @@ impl AudioManager {
         engine_audio: SynthEngineAudio,
         initial: AudioConfig,
     ) -> Self {
+        #[cfg(feature = "experimental-oscillators")]
+        let measured_wavetable_bank = initial.measured_wavetable_bank;
         let (request_tx, request_rx) = mpsc::channel();
         let applied = Arc::new(RwLock::new(AppliedAudioConfig::default()));
         let applied_thread = applied.clone();
@@ -111,6 +119,8 @@ impl AudioManager {
         Self {
             request_tx,
             applied,
+            #[cfg(feature = "experimental-oscillators")]
+            measured_wavetable_bank,
         }
     }
 
@@ -125,6 +135,11 @@ impl AudioManager {
 
     pub fn applied(&self) -> AppliedAudioConfig {
         self.applied.read().clone()
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn measured_wavetable_bank(&self) -> Option<MeasuredWavetableBank> {
+        self.measured_wavetable_bank
     }
 }
 
@@ -438,6 +453,8 @@ fn effective_config(config: &AudioConfig, info: &SessionInfo) -> AudioConfig {
         sample_rate: info.sample_rate_setting,
         filter_oversampling: config.filter_oversampling,
         filter_type: config.filter_type,
+        #[cfg(feature = "experimental-oscillators")]
+        measured_wavetable_bank: config.measured_wavetable_bank,
     }
 }
 
@@ -570,6 +587,8 @@ fn build_session(
         input_consumer,
         config.filter_oversampling,
         config.filter_type,
+        #[cfg(feature = "experimental-oscillators")]
+        config.measured_wavetable_bank,
     )?;
     let output_stream = build_output_stream(
         &output.device,
@@ -983,6 +1002,9 @@ impl Renderer {
         input: Option<rtrb::Consumer<f32>>,
         filter_oversampling: FilterOversampling,
         filter_type: FilterType,
+        #[cfg(feature = "experimental-oscillators")] measured_wavetable_bank: Option<
+            MeasuredWavetableBank,
+        >,
     ) -> Result<Self, String> {
         let input_enabled = engine_audio.input_enabled.clone();
         let analysis_enabled = engine_audio.analysis_enabled.clone();
@@ -995,6 +1017,10 @@ impl Renderer {
             effects_memory,
         )
         .map_err(|error| format!("Invalid synth effects-memory layout: {error:?}"))?;
+        #[cfg(feature = "experimental-oscillators")]
+        if let Some(bank) = measured_wavetable_bank {
+            engine.set_measured_wavetable_bank(bank);
+        }
         engine.set_filter_oversampling(filter_oversampling);
         engine.set_filter_type(filter_type);
         log_audio(&format!(

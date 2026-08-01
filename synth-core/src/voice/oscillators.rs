@@ -1,11 +1,14 @@
 //! Dual-oscillator mixer with sub oscillator, noise, sync, and glide.
 
+#[cfg(not(feature = "experimental-oscillators"))]
+use crate::dsp::analog_oscillator::EngineOscillator;
+#[cfg(feature = "experimental-oscillators")]
+use crate::dsp::experimental_oscillator::ExperimentalOscillatorSource;
+#[cfg(feature = "experimental-oscillators")]
+use crate::dsp::{ExperimentalOscillatorModel, MeasuredWavetableBank};
 use crate::{
     GlideMode, ParamId,
-    dsp::{
-        Waveform, analog_oscillator::EngineOscillator, analog_sub_oscillator::AnalogSubOscillator,
-        noise::WhiteNoise,
-    },
+    dsp::{Waveform, analog_sub_oscillator::AnalogSubOscillator, noise::WhiteNoise},
     math::{F32, WideF32},
     patch::{LayerPatch, OscillatorPatch},
     profiling::{RenderContext, RenderStage},
@@ -46,6 +49,21 @@ const MAX_GLIDE_SECONDS: f32 = 2.0;
 const MIDI_GLIDE_STEP: f32 = 1.0 / 127.0;
 const GLIDE_PITCH_SCALE: f32 = 65_536.0;
 
+#[cfg(feature = "experimental-oscillators")]
+type VoiceOscillator = ExperimentalOscillatorSource;
+#[cfg(not(feature = "experimental-oscillators"))]
+type VoiceOscillator = EngineOscillator;
+
+#[cfg(feature = "experimental-oscillators")]
+fn new_voice_oscillator(sample_rate: f32) -> VoiceOscillator {
+    VoiceOscillator::new(ExperimentalOscillatorModel::Baseline, sample_rate, None)
+}
+
+#[cfg(not(feature = "experimental-oscillators"))]
+fn new_voice_oscillator(sample_rate: f32) -> VoiceOscillator {
+    VoiceOscillator::new_engine(sample_rate)
+}
+
 #[derive(Clone, Copy)]
 struct GlideState {
     current: [f32; WideF32::LANES],
@@ -79,8 +97,8 @@ impl Default for GlideState {
 
 /// Oscillator section for one voice block: two analog oscillators, sub, and noise.
 pub struct Oscillators {
-    osc1: EngineOscillator,
-    osc2: EngineOscillator,
+    osc1: VoiceOscillator,
+    osc2: VoiceOscillator,
     sub_osc: AnalogSubOscillator,
     noise: WhiteNoise,
     params: OscillatorsParams,
@@ -88,13 +106,15 @@ pub struct Oscillators {
     last_frequency_modulation: [WideF32; 2],
     last_shape_modulation: [f32; 2],
     sample_rate: f32,
+    #[cfg(feature = "experimental-oscillators")]
+    measured_wavetable_bank: Option<MeasuredWavetableBank>,
 }
 
 impl Oscillators {
     pub fn new(sample_rate: f32) -> Self {
         let mut oscillators = Self {
-            osc1: EngineOscillator::new_engine(sample_rate),
-            osc2: EngineOscillator::new_engine(sample_rate),
+            osc1: new_voice_oscillator(sample_rate),
+            osc2: new_voice_oscillator(sample_rate),
             sub_osc: AnalogSubOscillator::default(),
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
@@ -102,6 +122,8 @@ impl Oscillators {
             last_frequency_modulation: [WideF32::ZERO; 2],
             last_shape_modulation: [0.0; 2],
             sample_rate,
+            #[cfg(feature = "experimental-oscillators")]
+            measured_wavetable_bank: None,
         };
         oscillators.apply_params_without_frequency();
         oscillators.update_frequencies();
@@ -118,6 +140,46 @@ impl Oscillators {
 
     pub(crate) fn current_keyboard_semitones(&self) -> WideF32 {
         WideF32::new(self.glide[0].current)
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn experimental_model(&self) -> ExperimentalOscillatorModel {
+        self.osc1.model()
+    }
+
+    /// Reconstructs every research source with one shared engine selection.
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_experimental_model(&mut self, model: ExperimentalOscillatorModel) {
+        self.replace_experimental_source(0, model);
+        self.replace_experimental_source(1, model);
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_measured_wavetable_bank(&mut self, bank: MeasuredWavetableBank) {
+        self.measured_wavetable_bank = Some(bank);
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    fn replace_experimental_source(&mut self, index: usize, model: ExperimentalOscillatorModel) {
+        let params = self.oscillator_params(index).clone();
+        let frequency = oscillator_frequency(
+            WideF32::new(self.glide[index].current),
+            &params,
+            self.last_frequency_modulation[index],
+        );
+        let mut source =
+            VoiceOscillator::new(model, self.sample_rate, self.measured_wavetable_bank);
+        source.set_enabled(params.enabled);
+        source.set_waveform(params.waveform);
+        source.set_shape(params.shape_mod.clamp(0.0, 1.0));
+        source.set_slop_amount(self.params.osc_slop);
+        source.set_frequency(frequency);
+        if index == 0 {
+            self.osc1 = source;
+        } else {
+            self.osc2 = source;
+        }
+        self.last_shape_modulation[index] = 0.0;
     }
 
     pub fn apply_params(&mut self, patch: &LayerPatch) {
@@ -753,7 +815,7 @@ impl Default for OscillatorParams {
     }
 }
 
-fn apply_shape_mod(osc: &mut EngineOscillator, params: &OscillatorParams) {
+fn apply_shape_mod(osc: &mut VoiceOscillator, params: &OscillatorParams) {
     let shape_mod = params.shape_mod.clamp(0.0, 1.0);
     osc.set_shape(shape_mod);
 }

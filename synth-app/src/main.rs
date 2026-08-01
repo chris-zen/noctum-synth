@@ -12,6 +12,45 @@ use crate::{
     ui::app::APP_TITLE,
 };
 
+#[cfg(feature = "experimental-oscillators")]
+fn load_measured_wavetable_bank() -> Option<synth_core::dsp::MeasuredWavetableBank> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!(
+                "Measured wavetable unavailable ({}): {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    if bytes.len() % 4 != 0 {
+        eprintln!(
+            "Measured wavetable has an invalid byte length: {}",
+            bytes.len()
+        );
+        return None;
+    }
+    let samples = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let samples = Box::leak(samples);
+    match synth_core::dsp::MeasuredWavetableBank::new(samples) {
+        Ok(bank) => {
+            eprintln!("Loaded measured wavetable: {} bytes", bank.report().bytes);
+            Some(bank)
+        }
+        Err(error) => {
+            eprintln!("Measured wavetable validation failed: {error:?}");
+            None
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let (engine_audio, engine_bridge) = create_synth_engine_bridge(synth_core::VOICE_COUNT);
 
@@ -33,6 +72,8 @@ fn main() -> eframe::Result {
     let sample_rate = config.settings.sample_rate;
     let filter_oversampling = config.settings.filter_oversampling;
     let filter_type = config.filter_type;
+    #[cfg(feature = "experimental-oscillators")]
+    let measured_wavetable_bank = load_measured_wavetable_bank();
 
     let audio_config = AudioConfig {
         output_device: audio_device,
@@ -40,6 +81,8 @@ fn main() -> eframe::Result {
         sample_rate,
         filter_oversampling,
         filter_type,
+        #[cfg(feature = "experimental-oscillators")]
+        measured_wavetable_bank,
     };
     let audio_manager = AudioManager::start(engine_bridge.clone(), engine_audio, audio_config);
 
@@ -61,6 +104,8 @@ fn main() -> eframe::Result {
                 audio_manager,
                 midi_port,
                 config,
+                #[cfg(feature = "experimental-oscillators")]
+                measured_wavetable_bank.is_some(),
             )))
         }),
     )

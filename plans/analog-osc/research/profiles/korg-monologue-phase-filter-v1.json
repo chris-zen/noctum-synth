@@ -1,0 +1,4828 @@
+{
+  "schema_version": 1,
+  "fit_revision": 1,
+  "model_id": "target-conditioned-phase-filter-v1",
+  "profile_id": "korg-monologue-phase-filter-v1",
+  "target_id": "korg-monologue-v1",
+  "sample_rate_hz": 48000.0,
+  "phase_bins": 2048,
+  "fit_policy": {
+    "training_split": "pitch_index modulo 4 is 0 or 2",
+    "interpolation": "piecewise linear in log2 measured frequency",
+    "phase_map": "p + a*sin(2*pi*p)/(2*pi) + b*sin(4*pi*p)/(4*pi)",
+    "minimum_phase_derivative": 0.08,
+    "filter": "first-order lowpass, first-order highpass, pole-zero section",
+    "objective": "normalized time error plus complex error for harmonics 1..128",
+    "nonlinearity": "disabled"
+  },
+  "parameter_names": [
+    "phase_a",
+    "phase_b",
+    "phase_offset_cycles",
+    "log_lowpass_hz",
+    "log_highpass_hz",
+    "log_pole_hz",
+    "log_zero_hz",
+    "gain"
+  ],
+  "waveforms": {
+    "saw": {
+      "source_npz_sha256": "5f203a35367f05d7299cbbc7b31ed12000cfd8b3eb3ac533eafa4a8a2eadcf66",
+      "source_pickle_md5": "f92638eb45e9ce6a0d5187d552dcca3f",
+      "fit_knot_count": 36,
+      "knots": [
+        {
+          "pitch_index": 0,
+          "frequency_hz": 41.02564102564103,
+          "log2_frequency": 5.3584539709124765,
+          "phase_a": 0.08078010231165582,
+          "phase_b": 0.013875739855429548,
+          "phase_offset_cycles": 0.0019531130958000658,
+          "lowpass_hz": 13927.585346835083,
+          "highpass_hz": 17.443112529943676,
+          "pole_hz": 997.9546076609665,
+          "zero_hz": 1001.784897473105,
+          "gain": 0.7226781662344753,
+          "dc": -0.015118158515847635,
+          "fit": {
+            "time_nrmse": 0.03548821400021612,
+            "complex_harmonic_nrmse": 0.03537549049890649,
+            "minimum_phase_derivative": 0.9330956375437738,
+            "optimizer_cost": 1.3583565603891263,
+            "optimizer_evaluations": 31,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 2,
+          "frequency_hz": 46.51162790697674,
+          "log2_frequency": 5.539519529959989,
+          "phase_a": 0.14263086453970863,
+          "phase_b": -0.02151265786502189,
+          "phase_offset_cycles": 0.0009765378024327446,
+          "lowpass_hz": 2062.2202343054805,
+          "highpass_hz": 17.69071530491416,
+          "pole_hz": 2062.2841270844183,
+          "zero_hz": 1351.4114785922561,
+          "gain": 1.0589386824025333,
+          "dc": -0.006779318853560312,
+          "fit": {
+            "time_nrmse": 0.04409656648664973,
+            "complex_harmonic_nrmse": 0.04381911949517774,
+            "minimum_phase_derivative": 0.8358564775952695,
+            "optimizer_cost": 2.0678977678595194,
+            "optimizer_evaluations": 55,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 4,
+          "frequency_hz": 52.060737527114966,
+          "log2_frequency": 5.702123844953905,
+          "phase_a": 0.13910632510587703,
+          "phase_b": -0.02388371874081148,
+          "phase_offset_cycles": 0.0014648289495488062,
+          "lowpass_hz": 2213.7856801084595,
+          "highpass_hz": 17.514982842149124,
+          "pole_hz": 2024.3025514814542,
+          "zero_hz": 1370.9916513076012,
+          "gain": 1.0688948657216668,
+          "dc": 0.0008987320206870208,
+          "fit": {
+            "time_nrmse": 0.0451931361043057,
+            "complex_harmonic_nrmse": 0.04500863764058758,
+            "minimum_phase_derivative": 0.8370099561533114,
+            "optimizer_cost": 2.1899451121646125,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 6,
+          "frequency_hz": 58.25242718446602,
+          "log2_frequency": 5.8642462582000245,
+          "phase_a": 0.10251003656040299,
+          "phase_b": -0.012028057513401748,
+          "phase_offset_cycles": 0.0014648431339520534,
+          "lowpass_hz": 1729.1269184015373,
+          "highpass_hz": 17.415984296262387,
+          "pole_hz": 1672.713089687274,
+          "zero_hz": 1101.4260485789168,
+          "gain": 1.13901389522151,
+          "dc": 0.00045731122735048757,
+          "fit": {
+            "time_nrmse": 0.057844192971226595,
+            "complex_harmonic_nrmse": 0.05772089815736253,
+            "minimum_phase_derivative": 0.8854619059261952,
+            "optimizer_cost": 3.666784151418897,
+            "optimizer_evaluations": 20,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 8,
+          "frequency_hz": 65.39509536784742,
+          "log2_frequency": 6.031110532540031,
+          "phase_a": 0.09984019463686303,
+          "phase_b": -0.019185563848634377,
+          "phase_offset_cycles": 0.0019448273517242449,
+          "lowpass_hz": 3156.511745421091,
+          "highpass_hz": 17.47086457688917,
+          "pole_hz": 3156.3670700491616,
+          "zero_hz": 2104.7503459346904,
+          "gain": 1.113828635525268,
+          "dc": 0.0006011699706220952,
+          "fit": {
+            "time_nrmse": 0.027310166386155722,
+            "complex_harmonic_nrmse": 0.02695274791445339,
+            "minimum_phase_derivative": 0.8809742415145027,
+            "optimizer_cost": 0.792964554093692,
+            "optimizer_evaluations": 240,
+            "optimizer_success": false
+          }
+        },
+        {
+          "pitch_index": 10,
+          "frequency_hz": 73.50689127105666,
+          "log2_frequency": 6.199807603836812,
+          "phase_a": 0.09741939545472134,
+          "phase_b": -0.018158859129787094,
+          "phase_offset_cycles": 0.001953114888478544,
+          "lowpass_hz": 2948.887180526742,
+          "highpass_hz": 17.25559074473036,
+          "pole_hz": 3090.273399690585,
+          "zero_hz": 2131.7224523622117,
+          "gain": 1.1092570069311616,
+          "dc": -0.00021897822779237686,
+          "fit": {
+            "time_nrmse": 0.05776686565523055,
+            "complex_harmonic_nrmse": 0.057631566503979235,
+            "minimum_phase_derivative": 0.8844217454154916,
+            "optimizer_cost": 3.687134320976922,
+            "optimizer_evaluations": 24,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 12,
+          "frequency_hz": 82.47422680412372,
+          "log2_frequency": 6.365871442474959,
+          "phase_a": 0.08278765478295559,
+          "phase_b": -0.0071004308801543865,
+          "phase_offset_cycles": 0.0019531145674948713,
+          "lowpass_hz": 2290.498434670108,
+          "highpass_hz": 17.241303034252596,
+          "pole_hz": 2202.7850175788117,
+          "zero_hz": 1460.4166143929233,
+          "gain": 1.1947649841464472,
+          "dc": 0.0007062338438572624,
+          "fit": {
+            "time_nrmse": 0.04979295606204331,
+            "complex_harmonic_nrmse": 0.0495643316368163,
+            "minimum_phase_derivative": 0.91011191433689,
+            "optimizer_cost": 2.749006158955894,
+            "optimizer_evaluations": 20,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 14,
+          "frequency_hz": 92.66409266409266,
+          "log2_frequency": 6.533938497696689,
+          "phase_a": 0.07615886594757533,
+          "phase_b": -0.010413810693749815,
+          "phase_offset_cycles": 0.0019531134095755888,
+          "lowpass_hz": 2757.0201899155763,
+          "highpass_hz": 17.222970686874092,
+          "pole_hz": 2694.6883198002615,
+          "zero_hz": 1789.1388837684453,
+          "gain": 1.204517292466852,
+          "dc": -0.0017666069803095041,
+          "fit": {
+            "time_nrmse": 0.04060821107258026,
+            "complex_harmonic_nrmse": 0.040246386322212946,
+            "minimum_phase_derivative": 0.9134273233586748,
+            "optimizer_cost": 1.8245223612834014,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 16,
+          "frequency_hz": 103.8961038961039,
+          "log2_frequency": 6.698997743967186,
+          "phase_a": 0.0764994733452167,
+          "phase_b": -0.016201841176434285,
+          "phase_offset_cycles": 0.0023265560718832745,
+          "lowpass_hz": 3742.0457949412603,
+          "highpass_hz": 17.570175358445184,
+          "pole_hz": 3741.2923919630534,
+          "zero_hz": 2514.9712617867035,
+          "gain": 1.1876960917496162,
+          "dc": 8.563295044439201e-05,
+          "fit": {
+            "time_nrmse": 0.024476175648649644,
+            "complex_harmonic_nrmse": 0.023926659281911927,
+            "minimum_phase_derivative": 0.907298685478349,
+            "optimizer_cost": 0.6516839264451939,
+            "optimizer_evaluations": 21,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 18,
+          "frequency_hz": 116.50485436893204,
+          "log2_frequency": 6.8642462582000245,
+          "phase_a": 0.06932655907425159,
+          "phase_b": -0.014271088467404765,
+          "phase_offset_cycles": 0.0019531236988130694,
+          "lowpass_hz": 3263.6058709359877,
+          "highpass_hz": 16.97922847715907,
+          "pole_hz": 3622.781635717026,
+          "zero_hz": 2556.655775765702,
+          "gain": 1.1704215728224117,
+          "dc": -0.0012349096125774395,
+          "fit": {
+            "time_nrmse": 0.05709377013452359,
+            "complex_harmonic_nrmse": 0.056788979014908786,
+            "minimum_phase_derivative": 0.9164023524583437,
+            "optimizer_cost": 3.6860521056149094,
+            "optimizer_evaluations": 31,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 20,
+          "frequency_hz": 130.79019073569484,
+          "log2_frequency": 7.031110532540031,
+          "phase_a": 0.07759017908048711,
+          "phase_b": -0.017925090362477265,
+          "phase_offset_cycles": 0.002128822423271017,
+          "lowpass_hz": 4285.876456084295,
+          "highpass_hz": 17.55112226607705,
+          "pole_hz": 4285.523106450093,
+          "zero_hz": 2909.233441659739,
+          "gain": 1.2041765918948588,
+          "dc": -0.00023963734244603074,
+          "fit": {
+            "time_nrmse": 0.021371021205579547,
+            "complex_harmonic_nrmse": 0.020621201427961325,
+            "minimum_phase_derivative": 0.9044847305570356,
+            "optimizer_cost": 0.49966628465135277,
+            "optimizer_evaluations": 21,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 22,
+          "frequency_hz": 146.78899082568807,
+          "log2_frequency": 7.197599959885161,
+          "phase_a": 0.07056603116244332,
+          "phase_b": -0.015675566089292093,
+          "phase_offset_cycles": 0.0019531142644856761,
+          "lowpass_hz": 3846.7340626586633,
+          "highpass_hz": 17.13686085536723,
+          "pole_hz": 4182.12045382762,
+          "zero_hz": 2939.375864481408,
+          "gain": 1.1901755014280735,
+          "dc": -0.0002419412686265332,
+          "fit": {
+            "time_nrmse": 0.04040846172869249,
+            "complex_harmonic_nrmse": 0.03994586079691337,
+            "minimum_phase_derivative": 0.9137584027482646,
+            "optimizer_cost": 1.8511225703713667,
+            "optimizer_evaluations": 24,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 24,
+          "frequency_hz": 165.51724137931035,
+          "log2_frequency": 7.370837695368309,
+          "phase_a": 0.1002137169969512,
+          "phase_b": -0.030391140644089827,
+          "phase_offset_cycles": 0.0019531250000252125,
+          "lowpass_hz": 6202.477712818402,
+          "highpass_hz": 18.312008507767498,
+          "pole_hz": 5846.867052138419,
+          "zero_hz": 4203.414208780023,
+          "gain": 1.1456643690461235,
+          "dc": 0.0005104854579940366,
+          "fit": {
+            "time_nrmse": 0.02482209097687593,
+            "complex_harmonic_nrmse": 0.02393752446790819,
+            "minimum_phase_derivative": 0.8693951423589589,
+            "optimizer_cost": 0.690737089648194,
+            "optimizer_evaluations": 45,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 26,
+          "frequency_hz": 185.32818532818533,
+          "log2_frequency": 7.533938497696689,
+          "phase_a": 0.09639306876317331,
+          "phase_b": -0.03212784777366402,
+          "phase_offset_cycles": 0.0014648441063488521,
+          "lowpass_hz": 6006.22506951301,
+          "highpass_hz": 18.01818770501268,
+          "pole_hz": 5728.962980294978,
+          "zero_hz": 4223.887427443535,
+          "gain": 1.1436275133469462,
+          "dc": -0.0010926049310420183,
+          "fit": {
+            "time_nrmse": 0.022922852504674508,
+            "complex_harmonic_nrmse": 0.021839654408770136,
+            "minimum_phase_derivative": 0.8714790834631626,
+            "optimizer_cost": 0.5979072480546095,
+            "optimizer_evaluations": 35,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 28,
+          "frequency_hz": 207.7922077922078,
+          "log2_frequency": 7.698997743967186,
+          "phase_a": 0.037244902052353764,
+          "phase_b": 0.02029994973546979,
+          "phase_offset_cycles": -0.0014648345643388531,
+          "lowpass_hz": 7421.108907302498,
+          "highpass_hz": 20.25631323627361,
+          "pole_hz": 4086.4451531360996,
+          "zero_hz": 4018.448792175348,
+          "gain": 0.9568515535603189,
+          "dc": -0.0024316590552899697,
+          "fit": {
+            "time_nrmse": 0.034174019041604956,
+            "complex_harmonic_nrmse": 0.03345064690920413,
+            "minimum_phase_derivative": 0.971158294194192,
+            "optimizer_cost": 1.3365644451771452,
+            "optimizer_evaluations": 34,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 30,
+          "frequency_hz": 233.0097087378641,
+          "log2_frequency": 7.8642462582000245,
+          "phase_a": 0.10558916648597813,
+          "phase_b": -0.05171626327941723,
+          "phase_offset_cycles": -0.0014648359183414537,
+          "lowpass_hz": 7722.325624881301,
+          "highpass_hz": 18.847927665102812,
+          "pole_hz": 4558.677762790387,
+          "zero_hz": 3852.7013194191913,
+          "gain": 1.0607090826874548,
+          "dc": 0.00017216860113222765,
+          "fit": {
+            "time_nrmse": 0.03067415827812522,
+            "complex_harmonic_nrmse": 0.029675522511578206,
+            "minimum_phase_derivative": 0.8426945702346046,
+            "optimizer_cost": 1.0754643090168032,
+            "optimizer_evaluations": 19,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 32,
+          "frequency_hz": 260.8695652173913,
+          "log2_frequency": 8.027184829326231,
+          "phase_a": 0.08476352552839211,
+          "phase_b": -0.03421386232381086,
+          "phase_offset_cycles": -0.002820986726821251,
+          "lowpass_hz": 4509.614416988957,
+          "highpass_hz": 17.476501119101368,
+          "pole_hz": 4509.256009766985,
+          "zero_hz": 3014.625262106713,
+          "gain": 1.2924099513583158,
+          "dc": -0.0009499549623797066,
+          "fit": {
+            "time_nrmse": 0.027074198167811394,
+            "complex_harmonic_nrmse": 0.02582811169378975,
+            "minimum_phase_derivative": 0.8810226121477971,
+            "optimizer_cost": 0.8376842095079926,
+            "optimizer_evaluations": 23,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 34,
+          "frequency_hz": 294.47852760736197,
+          "log2_frequency": 8.202018631152166,
+          "phase_a": 0.21027692819891472,
+          "phase_b": -0.1357537480757996,
+          "phase_offset_cycles": -0.0024413973837318363,
+          "lowpass_hz": 5808.20940708584,
+          "highpass_hz": 20.750541494152216,
+          "pole_hz": 6928.042111592122,
+          "zero_hz": 3776.4469506681967,
+          "gain": 1.3922264997594735,
+          "dc": -0.0007122692472520953,
+          "fit": {
+            "time_nrmse": 0.07013980571497908,
+            "complex_harmonic_nrmse": 0.06962107320797999,
+            "minimum_phase_derivative": 0.6539693237252857,
+            "optimizer_cost": 5.651745276341746,
+            "optimizer_evaluations": 34,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 36,
+          "frequency_hz": 331.0344827586207,
+          "log2_frequency": 8.370837695368309,
+          "phase_a": 0.286640359762579,
+          "phase_b": -0.2026682349859921,
+          "phase_offset_cycles": -0.0022875941056349283,
+          "lowpass_hz": 59999.52368365857,
+          "highpass_hz": 27.758600263292223,
+          "pole_hz": 59999.99903111607,
+          "zero_hz": 23695.65878756627,
+          "gain": 0.9339985478721599,
+          "dc": -0.00021563216208164704,
+          "fit": {
+            "time_nrmse": 0.12295403054774233,
+            "complex_harmonic_nrmse": 0.12262316575239936,
+            "minimum_phase_derivative": 0.5106914052514289,
+            "optimizer_cost": 17.375003824882942,
+            "optimizer_evaluations": 67,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 38,
+          "frequency_hz": 369.2307692307692,
+          "log2_frequency": 8.528378972354789,
+          "phase_a": 0.28657755493966947,
+          "phase_b": -0.20299368103782245,
+          "phase_offset_cycles": -0.0029296845005483702,
+          "lowpass_hz": 57272.23768321026,
+          "highpass_hz": 27.03275801696179,
+          "pole_hz": 57931.783473365555,
+          "zero_hz": 23785.023277831406,
+          "gain": 0.9367173993585628,
+          "dc": 0.0008503855556796225,
+          "fit": {
+            "time_nrmse": 0.08296998047436924,
+            "complex_harmonic_nrmse": 0.08241901348243015,
+            "minimum_phase_derivative": 0.5104287640225081,
+            "optimizer_cost": 7.911052108409969,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 40,
+          "frequency_hz": 413.7931034482759,
+          "log2_frequency": 8.69276579025567,
+          "phase_a": 0.07646873716116359,
+          "phase_b": -0.04029444018778752,
+          "phase_offset_cycles": 0.003956687703221036,
+          "lowpass_hz": 12801.698083237805,
+          "highpass_hz": 22.286586528705097,
+          "pole_hz": 12810.22788793624,
+          "zero_hz": 59582.70611784179,
+          "gain": 0.8083829203951813,
+          "dc": -0.00013559822330933002,
+          "fit": {
+            "time_nrmse": 0.03292654002084927,
+            "complex_harmonic_nrmse": 0.031270193495816244,
+            "minimum_phase_derivative": 0.8832368226510489,
+            "optimizer_cost": 1.2444195716372395,
+            "optimizer_evaluations": 240,
+            "optimizer_success": false
+          }
+        },
+        {
+          "pitch_index": 42,
+          "frequency_hz": 466.0194174757282,
+          "log2_frequency": 8.864246258200025,
+          "phase_a": 0.004769833223981446,
+          "phase_b": 0.03297517629993749,
+          "phase_offset_cycles": 0.0009765626686314758,
+          "lowpass_hz": 10486.339442599521,
+          "highpass_hz": 23.670186804457504,
+          "pole_hz": 7315.748102585678,
+          "zero_hz": 52060.86057799049,
+          "gain": 0.646775970352245,
+          "dc": -0.0007331914724062472,
+          "fit": {
+            "time_nrmse": 0.058648884803451866,
+            "complex_harmonic_nrmse": 0.057655438360682196,
+            "minimum_phase_derivative": 0.9669386070539068,
+            "optimizer_cost": 3.9525181572231434,
+            "optimizer_evaluations": 31,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 44,
+          "frequency_hz": 521.7391304347826,
+          "log2_frequency": 9.027184829326231,
+          "phase_a": 0.004769833223981446,
+          "phase_b": 0.03297517629993749,
+          "phase_offset_cycles": 0.0009765626686314758,
+          "lowpass_hz": 10486.339442599521,
+          "highpass_hz": 23.670186804457504,
+          "pole_hz": 7315.748102585678,
+          "zero_hz": 52060.86057799049,
+          "gain": 0.646775970352245,
+          "dc": -0.0002439928816642123,
+          "fit": {
+            "time_nrmse": 0.1122697228571277,
+            "complex_harmonic_nrmse": 0.11169860569696417,
+            "minimum_phase_derivative": 0.9669386070539068,
+            "optimizer_cost": 14.48733573625779,
+            "optimizer_evaluations": 14,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 46,
+          "frequency_hz": 585.3658536585366,
+          "log2_frequency": 9.19319478076516,
+          "phase_a": -0.009222518069556946,
+          "phase_b": 0.03474974905190054,
+          "phase_offset_cycles": -0.0019531138682408519,
+          "lowpass_hz": 9710.339483933962,
+          "highpass_hz": 24.162645753885826,
+          "pole_hz": 7027.722256861293,
+          "zero_hz": 52248.752813458384,
+          "gain": 0.6522710066318699,
+          "dc": 0.0008276106091216207,
+          "fit": {
+            "time_nrmse": 0.06361212217529127,
+            "complex_harmonic_nrmse": 0.0624469040614557,
+            "minimum_phase_derivative": 0.9649443793171602,
+            "optimizer_cost": 4.650350099618104,
+            "optimizer_evaluations": 30,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 48,
+          "frequency_hz": 666.6666666666666,
+          "log2_frequency": 9.380821783940931,
+          "phase_a": 0.2695469114712456,
+          "phase_b": -0.14610775031433296,
+          "phase_offset_cycles": -0.002441399555721607,
+          "lowpass_hz": 18845.56556682683,
+          "highpass_hz": 35.976927230159006,
+          "pole_hz": 18862.23813668758,
+          "zero_hz": 38693.57110062055,
+          "gain": 0.883384283348066,
+          "dc": -0.0006544990424117714,
+          "fit": {
+            "time_nrmse": 0.080280870857707,
+            "complex_harmonic_nrmse": 0.07921253693241644,
+            "minimum_phase_derivative": 0.5843453382144214,
+            "optimizer_cost": 7.407593658108416,
+            "optimizer_evaluations": 32,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 50,
+          "frequency_hz": 738.4615384615385,
+          "log2_frequency": 9.528378972354789,
+          "phase_a": 0.10433692249050852,
+          "phase_b": -0.05112266362812355,
+          "phase_offset_cycles": -0.002288289244195196,
+          "lowpass_hz": 12804.59154064657,
+          "highpass_hz": 31.474764214733096,
+          "pole_hz": 12804.348776059665,
+          "zero_hz": 59994.252195672714,
+          "gain": 0.8443473117836355,
+          "dc": 0.0003891374308864215,
+          "fit": {
+            "time_nrmse": 0.04387705905547357,
+            "complex_harmonic_nrmse": 0.04170622403018074,
+            "minimum_phase_derivative": 0.8445404138813679,
+            "optimizer_cost": 2.2124449427125934,
+            "optimizer_evaluations": 104,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 52,
+          "frequency_hz": 827.5862068965517,
+          "log2_frequency": 9.69276579025567,
+          "phase_a": 0.09414845840169335,
+          "phase_b": -0.048911413882014296,
+          "phase_offset_cycles": -0.0029296896494715647,
+          "lowpass_hz": 11537.641719798878,
+          "highpass_hz": 30.46981369360281,
+          "pole_hz": 12793.014093898628,
+          "zero_hz": 59835.45822433801,
+          "gain": 0.8362053472171329,
+          "dc": -0.001612564355809809,
+          "fit": {
+            "time_nrmse": 0.04469475317419234,
+            "complex_harmonic_nrmse": 0.04226639802748987,
+            "minimum_phase_derivative": 0.8569401277162924,
+            "optimizer_cost": 2.295743475548283,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 54,
+          "frequency_hz": 923.0769230769231,
+          "log2_frequency": 9.85030706724215,
+          "phase_a": 0.0834212739480979,
+          "phase_b": -0.05180732409428804,
+          "phase_offset_cycles": -0.0034179762282628133,
+          "lowpass_hz": 10500.062362682198,
+          "highpass_hz": 29.482740063177506,
+          "pole_hz": 11942.609101358321,
+          "zero_hz": 59837.67682628439,
+          "gain": 0.8285729691705573,
+          "dc": -0.0005242640508100749,
+          "fit": {
+            "time_nrmse": 0.05126078139417508,
+            "complex_harmonic_nrmse": 0.04881444377645941,
+            "minimum_phase_derivative": 0.864771401957614,
+            "optimizer_cost": 3.020033183894547,
+            "optimizer_evaluations": 26,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 56,
+          "frequency_hz": 1043.4782608695652,
+          "log2_frequency": 10.027184829326231,
+          "phase_a": 0.04696065936446946,
+          "phase_b": -0.029319136961755813,
+          "phase_offset_cycles": 0.018554679460421296,
+          "lowpass_hz": 10463.615716110638,
+          "highpass_hz": 39.41799593766236,
+          "pole_hz": 8613.512357762676,
+          "zero_hz": 30686.907380841083,
+          "gain": 0.7585613087060415,
+          "dc": -0.0006378751424520601,
+          "fit": {
+            "time_nrmse": 0.0629675683060646,
+            "complex_harmonic_nrmse": 0.060755351925666536,
+            "minimum_phase_derivative": 0.9237202036737747,
+            "optimizer_cost": 4.5571885129533865,
+            "optimizer_evaluations": 24,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 58,
+          "frequency_hz": 1170.7317073170732,
+          "log2_frequency": 10.19319478076516,
+          "phase_a": -0.04642765770343634,
+          "phase_b": 0.0611234374273943,
+          "phase_offset_cycles": 0.018512809087998443,
+          "lowpass_hz": 9846.485604117228,
+          "highpass_hz": 56.111635768382975,
+          "pole_hz": 9849.458006750625,
+          "zero_hz": 59999.499039449875,
+          "gain": 0.8196967946777195,
+          "dc": 0.0005024597971257094,
+          "fit": {
+            "time_nrmse": 0.05925284433008512,
+            "complex_harmonic_nrmse": 0.05654172861840825,
+            "minimum_phase_derivative": 0.934468501467647,
+            "optimizer_cost": 4.035342731537628,
+            "optimizer_evaluations": 240,
+            "optimizer_success": false
+          }
+        },
+        {
+          "pitch_index": 60,
+          "frequency_hz": 1297.2972972972973,
+          "log2_frequency": 10.341293419754294,
+          "phase_a": -0.04682885203343763,
+          "phase_b": 0.06066792040797859,
+          "phase_offset_cycles": 0.01806640669415714,
+          "lowpass_hz": 9890.202952841913,
+          "highpass_hz": 56.34876197510448,
+          "pole_hz": 9870.879910319894,
+          "zero_hz": 59631.15178748608,
+          "gain": 0.8196121775019519,
+          "dc": 0.0001679825584375294,
+          "fit": {
+            "time_nrmse": 0.06382618652172434,
+            "complex_harmonic_nrmse": 0.06091602548105094,
+            "minimum_phase_derivative": 0.934813846256925,
+            "optimizer_cost": 4.682402215715447,
+            "optimizer_evaluations": 34,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 62,
+          "frequency_hz": 1454.5454545454545,
+          "log2_frequency": 10.50635266602479,
+          "phase_a": -0.04682885203343763,
+          "phase_b": 0.06066792040797859,
+          "phase_offset_cycles": 0.01806640669415714,
+          "lowpass_hz": 9890.202952841913,
+          "highpass_hz": 56.34876197510448,
+          "pole_hz": 9870.879910319894,
+          "zero_hz": 59631.15178748608,
+          "gain": 0.8196121775019519,
+          "dc": -0.0005734940479533712,
+          "fit": {
+            "time_nrmse": 0.10821159671303691,
+            "complex_harmonic_nrmse": 0.10630204442241635,
+            "minimum_phase_derivative": 0.934813846256925,
+            "optimizer_cost": 13.459518508577903,
+            "optimizer_evaluations": 13,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 64,
+          "frequency_hz": 1655.1724137931035,
+          "log2_frequency": 10.69276579025567,
+          "phase_a": -0.04682885203343763,
+          "phase_b": 0.06066792040797859,
+          "phase_offset_cycles": 0.01806640669415714,
+          "lowpass_hz": 9890.202952841913,
+          "highpass_hz": 56.34876197510448,
+          "pole_hz": 9870.879910319894,
+          "zero_hz": 59631.15178748608,
+          "gain": 0.8196121775019519,
+          "dc": -0.0006297438734890193,
+          "fit": {
+            "time_nrmse": 0.12607239265441245,
+            "complex_harmonic_nrmse": 0.12424315661932986,
+            "minimum_phase_derivative": 0.934813846256925,
+            "optimizer_cost": 18.269383545412317,
+            "optimizer_evaluations": 13,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 66,
+          "frequency_hz": 1846.1538461538462,
+          "log2_frequency": 10.85030706724215,
+          "phase_a": -0.1429645717239381,
+          "phase_b": -0.029340180516233164,
+          "phase_offset_cycles": -0.01074218456852287,
+          "lowpass_hz": 10481.42600709946,
+          "highpass_hz": 96.95815899629913,
+          "pole_hz": 6204.817085103816,
+          "zero_hz": 43792.91296302852,
+          "gain": 0.7250417987323783,
+          "dc": -0.00025415435651154894,
+          "fit": {
+            "time_nrmse": 0.14030702699674938,
+            "complex_harmonic_nrmse": 0.1384145902244602,
+            "minimum_phase_derivative": 0.8276952477598287,
+            "optimizer_cost": 22.627861071699414,
+            "optimizer_evaluations": 33,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 68,
+          "frequency_hz": 2086.9565217391305,
+          "log2_frequency": 11.027184829326231,
+          "phase_a": 0.10068281654011318,
+          "phase_b": -0.09144861995752704,
+          "phase_offset_cycles": 0.02471760029446434,
+          "lowpass_hz": 11034.739237411552,
+          "highpass_hz": 140.0540111475997,
+          "pole_hz": 11035.003177329034,
+          "zero_hz": 58712.43910767704,
+          "gain": 0.8466458042770842,
+          "dc": -0.0018930537083576837,
+          "fit": {
+            "time_nrmse": 0.06760899422832545,
+            "complex_harmonic_nrmse": 0.0629903229693944,
+            "minimum_phase_derivative": 0.8078685635023597,
+            "optimizer_cost": 5.253993654608925,
+            "optimizer_evaluations": 240,
+            "optimizer_success": false
+          }
+        },
+        {
+          "pitch_index": 70,
+          "frequency_hz": 2285.714285714286,
+          "log2_frequency": 11.158429362604483,
+          "phase_a": -0.4748285568613479,
+          "phase_b": 0.18269544466054202,
+          "phase_offset_cycles": 0.008300787648605618,
+          "lowpass_hz": 7321.936545258592,
+          "highpass_hz": 320.7002918658875,
+          "pole_hz": 7186.230098339936,
+          "zero_hz": 32696.781673321697,
+          "gain": 1.0643628758531514,
+          "dc": 0.00022173831433747182,
+          "fit": {
+            "time_nrmse": 0.10952945108487865,
+            "complex_harmonic_nrmse": 0.10631377011653761,
+            "minimum_phase_derivative": 0.6630440581215056,
+            "optimizer_cost": 13.789425513631791,
+            "optimizer_evaluations": 57,
+            "optimizer_success": true
+          }
+        }
+      ],
+      "evaluation": [
+        {
+          "pitch_index": 0,
+          "frequency_hz": 41.02564102564103,
+          "split": "train",
+          "baseline_time_nrmse": 0.3437455052052817,
+          "model_time_nrmse": 0.03548821400021612,
+          "baseline_complex_harmonic_nrmse": 0.3437352459840395,
+          "model_complex_harmonic_nrmse": 0.03537549049890649,
+          "minimum_phase_derivative": 0.9330956375437738
+        },
+        {
+          "pitch_index": 1,
+          "frequency_hz": 43.596730245231605,
+          "split": "validation",
+          "baseline_time_nrmse": 0.312939714728048,
+          "model_time_nrmse": 0.1322677859710108,
+          "baseline_complex_harmonic_nrmse": 0.31291244217925007,
+          "model_complex_harmonic_nrmse": 0.1292862659475405,
+          "minimum_phase_derivative": 0.8860005585024116
+        },
+        {
+          "pitch_index": 2,
+          "frequency_hz": 46.51162790697674,
+          "split": "train",
+          "baseline_time_nrmse": 0.298822574205716,
+          "model_time_nrmse": 0.04409656648664973,
+          "baseline_complex_harmonic_nrmse": 0.29878533047992795,
+          "model_complex_harmonic_nrmse": 0.04381911949517774,
+          "minimum_phase_derivative": 0.8358564775952695
+        },
+        {
+          "pitch_index": 3,
+          "frequency_hz": 49.18032786885246,
+          "split": "test",
+          "baseline_time_nrmse": 0.2871218994492672,
+          "model_time_nrmse": 0.06741545498880208,
+          "baseline_complex_harmonic_nrmse": 0.2870925324368049,
+          "model_complex_harmonic_nrmse": 0.06713220414235799,
+          "minimum_phase_derivative": 0.8364274550283959
+        },
+        {
+          "pitch_index": 4,
+          "frequency_hz": 52.060737527114966,
+          "split": "train",
+          "baseline_time_nrmse": 0.26657977828317786,
+          "model_time_nrmse": 0.0451931361043057,
+          "baseline_complex_harmonic_nrmse": 0.26655072149202924,
+          "model_complex_harmonic_nrmse": 0.04500863764058758,
+          "minimum_phase_derivative": 0.8370099561533114
+        },
+        {
+          "pitch_index": 5,
+          "frequency_hz": 55.172413793103445,
+          "split": "validation",
+          "baseline_time_nrmse": 0.25177262875291384,
+          "model_time_nrmse": 0.044996336446246045,
+          "baseline_complex_harmonic_nrmse": 0.2517501394981197,
+          "model_complex_harmonic_nrmse": 0.04475305543723568,
+          "minimum_phase_derivative": 0.8620399079502176
+        },
+        {
+          "pitch_index": 6,
+          "frequency_hz": 58.25242718446602,
+          "split": "train",
+          "baseline_time_nrmse": 0.24989581342793188,
+          "model_time_nrmse": 0.057844192971226595,
+          "baseline_complex_harmonic_nrmse": 0.2498689935515139,
+          "model_complex_harmonic_nrmse": 0.05772089815736253,
+          "minimum_phase_derivative": 0.8854619059261952
+        },
+        {
+          "pitch_index": 7,
+          "frequency_hz": 61.77606177606177,
+          "split": "test",
+          "baseline_time_nrmse": 0.23970591542957148,
+          "model_time_nrmse": 0.08803989432033137,
+          "baseline_complex_harmonic_nrmse": 0.2396771177334094,
+          "model_complex_harmonic_nrmse": 0.08795465758710524,
+          "minimum_phase_derivative": 0.8831831758935457
+        },
+        {
+          "pitch_index": 8,
+          "frequency_hz": 65.39509536784742,
+          "split": "train",
+          "baseline_time_nrmse": 0.21797144691977388,
+          "model_time_nrmse": 0.027310166386155722,
+          "baseline_complex_harmonic_nrmse": 0.2179290361151014,
+          "model_complex_harmonic_nrmse": 0.02695274791445339,
+          "minimum_phase_derivative": 0.8809742415145027
+        },
+        {
+          "pitch_index": 9,
+          "frequency_hz": 69.26406926406926,
+          "split": "validation",
+          "baseline_time_nrmse": 0.20559143151610754,
+          "model_time_nrmse": 0.054008310191861766,
+          "baseline_complex_harmonic_nrmse": 0.20556305294401434,
+          "model_complex_harmonic_nrmse": 0.053889927111673494,
+          "minimum_phase_derivative": 0.8826688960894145
+        },
+        {
+          "pitch_index": 10,
+          "frequency_hz": 73.50689127105666,
+          "split": "train",
+          "baseline_time_nrmse": 0.19745624285888597,
+          "model_time_nrmse": 0.05776686565523055,
+          "baseline_complex_harmonic_nrmse": 0.19741811731152165,
+          "model_complex_harmonic_nrmse": 0.057631566503979235,
+          "minimum_phase_derivative": 0.8844217454154916
+        },
+        {
+          "pitch_index": 11,
+          "frequency_hz": 77.92207792207792,
+          "split": "test",
+          "baseline_time_nrmse": 0.19406879615052786,
+          "model_time_nrmse": 0.06695370573907593,
+          "baseline_complex_harmonic_nrmse": 0.19401111041559982,
+          "model_complex_harmonic_nrmse": 0.06675979238797068,
+          "minimum_phase_derivative": 0.8974402061254619
+        },
+        {
+          "pitch_index": 12,
+          "frequency_hz": 82.47422680412372,
+          "split": "train",
+          "baseline_time_nrmse": 0.17859723414184198,
+          "model_time_nrmse": 0.04979295606204331,
+          "baseline_complex_harmonic_nrmse": 0.17853550469742194,
+          "model_complex_harmonic_nrmse": 0.0495643316368163,
+          "minimum_phase_derivative": 0.91011191433689
+        },
+        {
+          "pitch_index": 13,
+          "frequency_hz": 87.27272727272727,
+          "split": "validation",
+          "baseline_time_nrmse": 0.22220687299448022,
+          "model_time_nrmse": 0.12070859637962732,
+          "baseline_complex_harmonic_nrmse": 0.22216312351399534,
+          "model_complex_harmonic_nrmse": 0.12062508878563158,
+          "minimum_phase_derivative": 0.9117213674660427
+        },
+        {
+          "pitch_index": 14,
+          "frequency_hz": 92.66409266409266,
+          "split": "train",
+          "baseline_time_nrmse": 0.1580416560218949,
+          "model_time_nrmse": 0.04060821107258026,
+          "baseline_complex_harmonic_nrmse": 0.15795123753904308,
+          "model_complex_harmonic_nrmse": 0.040246386322212946,
+          "minimum_phase_derivative": 0.9134273233586748
+        },
+        {
+          "pitch_index": 15,
+          "frequency_hz": 98.15950920245399,
+          "split": "test",
+          "baseline_time_nrmse": 0.15340183487058984,
+          "model_time_nrmse": 0.06731390884998993,
+          "baseline_complex_harmonic_nrmse": 0.15331946686956033,
+          "model_complex_harmonic_nrmse": 0.06711143572149868,
+          "minimum_phase_derivative": 0.9103411716646111
+        },
+        {
+          "pitch_index": 16,
+          "frequency_hz": 103.8961038961039,
+          "split": "train",
+          "baseline_time_nrmse": 0.15030348077558078,
+          "model_time_nrmse": 0.024476175648649644,
+          "baseline_complex_harmonic_nrmse": 0.15021692142310586,
+          "model_complex_harmonic_nrmse": 0.023926659281911927,
+          "minimum_phase_derivative": 0.907298685478349
+        },
+        {
+          "pitch_index": 17,
+          "frequency_hz": 110.09174311926606,
+          "split": "validation",
+          "baseline_time_nrmse": 0.17673581871768526,
+          "model_time_nrmse": 0.1207189752874738,
+          "baseline_complex_harmonic_nrmse": 0.17665389823617075,
+          "model_complex_harmonic_nrmse": 0.12059693970641687,
+          "minimum_phase_derivative": 0.9119023296024248
+        },
+        {
+          "pitch_index": 18,
+          "frequency_hz": 116.50485436893204,
+          "split": "train",
+          "baseline_time_nrmse": 0.1433068721459945,
+          "model_time_nrmse": 0.05709377013452359,
+          "baseline_complex_harmonic_nrmse": 0.14318781656594423,
+          "model_complex_harmonic_nrmse": 0.056788979014908786,
+          "minimum_phase_derivative": 0.9164023524583437
+        },
+        {
+          "pitch_index": 19,
+          "frequency_hz": 123.39331619537275,
+          "split": "test",
+          "baseline_time_nrmse": 0.1261963978374625,
+          "model_time_nrmse": 0.05186405098061396,
+          "baseline_complex_harmonic_nrmse": 0.1260812855157165,
+          "model_complex_harmonic_nrmse": 0.05154433035868533,
+          "minimum_phase_derivative": 0.9104833912384495
+        },
+        {
+          "pitch_index": 20,
+          "frequency_hz": 130.79019073569484,
+          "split": "train",
+          "baseline_time_nrmse": 0.12597693340482027,
+          "model_time_nrmse": 0.021371021205579547,
+          "baseline_complex_harmonic_nrmse": 0.12585383065470493,
+          "model_complex_harmonic_nrmse": 0.020621201427961325,
+          "minimum_phase_derivative": 0.9044847305570356
+        },
+        {
+          "pitch_index": 21,
+          "frequency_hz": 138.328530259366,
+          "split": "validation",
+          "baseline_time_nrmse": 0.11704712571980766,
+          "model_time_nrmse": 0.05144476856790202,
+          "baseline_complex_harmonic_nrmse": 0.11689157234077648,
+          "model_complex_harmonic_nrmse": 0.05100779531324744,
+          "minimum_phase_derivative": 0.908987866152544
+        },
+        {
+          "pitch_index": 22,
+          "frequency_hz": 146.78899082568807,
+          "split": "train",
+          "baseline_time_nrmse": 0.11585019820700047,
+          "model_time_nrmse": 0.04040846172869249,
+          "baseline_complex_harmonic_nrmse": 0.1156915526559623,
+          "model_complex_harmonic_nrmse": 0.03994586079691337,
+          "minimum_phase_derivative": 0.9137584027482646
+        },
+        {
+          "pitch_index": 23,
+          "frequency_hz": 155.3398058252427,
+          "split": "test",
+          "baseline_time_nrmse": 0.11589668608989716,
+          "model_time_nrmse": 0.032486442249602315,
+          "baseline_complex_harmonic_nrmse": 0.11572852236278942,
+          "model_complex_harmonic_nrmse": 0.03187124853543484,
+          "minimum_phase_derivative": 0.8928405607311627
+        },
+        {
+          "pitch_index": 24,
+          "frequency_hz": 165.51724137931035,
+          "split": "train",
+          "baseline_time_nrmse": 0.12302026672190591,
+          "model_time_nrmse": 0.02482209097687593,
+          "baseline_complex_harmonic_nrmse": 0.12284739093169447,
+          "model_complex_harmonic_nrmse": 0.02393752446790819,
+          "minimum_phase_derivative": 0.8693951423589589
+        },
+        {
+          "pitch_index": 25,
+          "frequency_hz": 174.54545454545453,
+          "split": "validation",
+          "baseline_time_nrmse": 0.11564558435661772,
+          "model_time_nrmse": 0.08152176553586017,
+          "baseline_complex_harmonic_nrmse": 0.11545995771003488,
+          "model_complex_harmonic_nrmse": 0.0812486627046015,
+          "minimum_phase_derivative": 0.8703741334853643
+        },
+        {
+          "pitch_index": 26,
+          "frequency_hz": 185.32818532818533,
+          "split": "train",
+          "baseline_time_nrmse": 0.09866923322272003,
+          "model_time_nrmse": 0.022922852504674508,
+          "baseline_complex_harmonic_nrmse": 0.09842549327901393,
+          "model_complex_harmonic_nrmse": 0.021839654408770136,
+          "minimum_phase_derivative": 0.8714790834631626
+        },
+        {
+          "pitch_index": 27,
+          "frequency_hz": 195.91836734693877,
+          "split": "test",
+          "baseline_time_nrmse": 0.11114434487585048,
+          "model_time_nrmse": 0.09056792360157374,
+          "baseline_complex_harmonic_nrmse": 0.11093313642574547,
+          "model_complex_harmonic_nrmse": 0.09023780118699556,
+          "minimum_phase_derivative": 0.925672254451029
+        },
+        {
+          "pitch_index": 28,
+          "frequency_hz": 207.7922077922078,
+          "split": "train",
+          "baseline_time_nrmse": 0.12333580122425551,
+          "model_time_nrmse": 0.034174019041604956,
+          "baseline_complex_harmonic_nrmse": 0.123140122878807,
+          "model_complex_harmonic_nrmse": 0.03345064690920413,
+          "minimum_phase_derivative": 0.971158294194192
+        },
+        {
+          "pitch_index": 29,
+          "frequency_hz": 220.1834862385321,
+          "split": "validation",
+          "baseline_time_nrmse": 0.09712434832581471,
+          "model_time_nrmse": 0.11555777339439235,
+          "baseline_complex_harmonic_nrmse": 0.09685302364920262,
+          "model_complex_harmonic_nrmse": 0.11529473346054948,
+          "minimum_phase_derivative": 0.9120759918061516
+        },
+        {
+          "pitch_index": 30,
+          "frequency_hz": 233.0097087378641,
+          "split": "train",
+          "baseline_time_nrmse": 0.11480787850157936,
+          "model_time_nrmse": 0.03067415827812522,
+          "baseline_complex_harmonic_nrmse": 0.11454833032424085,
+          "model_complex_harmonic_nrmse": 0.029675522511578213,
+          "minimum_phase_derivative": 0.8426945702346046
+        },
+        {
+          "pitch_index": 31,
+          "frequency_hz": 247.42268041237114,
+          "split": "test",
+          "baseline_time_nrmse": 0.09690929388073746,
+          "model_time_nrmse": 0.14856431366366424,
+          "baseline_complex_harmonic_nrmse": 0.09659961165898617,
+          "model_complex_harmonic_nrmse": 0.1483649808404928,
+          "minimum_phase_derivative": 0.8630625923472197
+        },
+        {
+          "pitch_index": 32,
+          "frequency_hz": 260.8695652173913,
+          "split": "train",
+          "baseline_time_nrmse": 0.1845726422451765,
+          "model_time_nrmse": 0.027074198167811394,
+          "baseline_complex_harmonic_nrmse": 0.1843999415221871,
+          "model_complex_harmonic_nrmse": 0.02582811169378975,
+          "minimum_phase_derivative": 0.8810226121477971
+        },
+        {
+          "pitch_index": 33,
+          "frequency_hz": 275.86206896551727,
+          "split": "validation",
+          "baseline_time_nrmse": 0.1498953111882281,
+          "model_time_nrmse": 0.21959556729125512,
+          "baseline_complex_harmonic_nrmse": 0.1496684212179967,
+          "model_complex_harmonic_nrmse": 0.2194426036787345,
+          "minimum_phase_derivative": 0.7763249718363754
+        },
+        {
+          "pitch_index": 34,
+          "frequency_hz": 294.47852760736197,
+          "split": "train",
+          "baseline_time_nrmse": 0.09637730057604015,
+          "model_time_nrmse": 0.07013980571497908,
+          "baseline_complex_harmonic_nrmse": 0.09600210344871184,
+          "model_complex_harmonic_nrmse": 0.06962107320797999,
+          "minimum_phase_derivative": 0.6539693237252857
+        },
+        {
+          "pitch_index": 35,
+          "frequency_hz": 309.6774193548387,
+          "split": "test",
+          "baseline_time_nrmse": 0.10106564178729321,
+          "model_time_nrmse": 0.12817879079750547,
+          "baseline_complex_harmonic_nrmse": 0.10068939944169211,
+          "model_complex_harmonic_nrmse": 0.1278776824305994,
+          "minimum_phase_derivative": 0.59235001507531
+        },
+        {
+          "pitch_index": 36,
+          "frequency_hz": 331.0344827586207,
+          "split": "train",
+          "baseline_time_nrmse": 0.10330380394645376,
+          "model_time_nrmse": 0.12295403054774233,
+          "baseline_complex_harmonic_nrmse": 0.10290799902965125,
+          "model_complex_harmonic_nrmse": 0.12262316575239936,
+          "minimum_phase_derivative": 0.5106914052514289
+        },
+        {
+          "pitch_index": 37,
+          "frequency_hz": 347.82608695652175,
+          "split": "validation",
+          "baseline_time_nrmse": 0.150976077923341,
+          "model_time_nrmse": 0.18761589908404677,
+          "baseline_complex_harmonic_nrmse": 0.1506945973679577,
+          "model_complex_harmonic_nrmse": 0.18739059338943165,
+          "minimum_phase_derivative": 0.5105723980416487
+        },
+        {
+          "pitch_index": 38,
+          "frequency_hz": 369.2307692307692,
+          "split": "train",
+          "baseline_time_nrmse": 0.1047378109255517,
+          "model_time_nrmse": 0.08296998047436924,
+          "baseline_complex_harmonic_nrmse": 0.10430369156100279,
+          "model_complex_harmonic_nrmse": 0.08241901348243015,
+          "minimum_phase_derivative": 0.5104287640225081
+        },
+        {
+          "pitch_index": 39,
+          "frequency_hz": 390.2439024390244,
+          "split": "test",
+          "baseline_time_nrmse": 0.097895715596011,
+          "model_time_nrmse": 0.09541932887001955,
+          "baseline_complex_harmonic_nrmse": 0.09740387922756878,
+          "model_complex_harmonic_nrmse": 0.0949133327653116,
+          "minimum_phase_derivative": 0.6915257460970295
+        },
+        {
+          "pitch_index": 40,
+          "frequency_hz": 413.7931034482759,
+          "split": "train",
+          "baseline_time_nrmse": 0.10343777442704663,
+          "model_time_nrmse": 0.03292654002084927,
+          "baseline_complex_harmonic_nrmse": 0.10292747280054228,
+          "model_complex_harmonic_nrmse": 0.031270193495816244,
+          "minimum_phase_derivative": 0.8832368226510489
+        },
+        {
+          "pitch_index": 41,
+          "frequency_hz": 436.3636363636364,
+          "split": "validation",
+          "baseline_time_nrmse": 0.12887835714677348,
+          "model_time_nrmse": 0.1141742587220039,
+          "baseline_complex_harmonic_nrmse": 0.12846063474181993,
+          "model_complex_harmonic_nrmse": 0.11368926989105994,
+          "minimum_phase_derivative": 0.9480119772805481
+        },
+        {
+          "pitch_index": 42,
+          "frequency_hz": 466.0194174757282,
+          "split": "train",
+          "baseline_time_nrmse": 0.1396572012419589,
+          "model_time_nrmse": 0.058648884803451866,
+          "baseline_complex_harmonic_nrmse": 0.13924961137744454,
+          "model_complex_harmonic_nrmse": 0.05765543836068219,
+          "minimum_phase_derivative": 0.9669386070539068
+        },
+        {
+          "pitch_index": 43,
+          "frequency_hz": 489.7959183673469,
+          "split": "test",
+          "baseline_time_nrmse": 0.14936885160616328,
+          "model_time_nrmse": 0.05953147364608745,
+          "baseline_complex_harmonic_nrmse": 0.14896928455182387,
+          "model_complex_harmonic_nrmse": 0.05850178407845445,
+          "minimum_phase_derivative": 0.9669386070539068
+        },
+        {
+          "pitch_index": 44,
+          "frequency_hz": 521.7391304347826,
+          "split": "train",
+          "baseline_time_nrmse": 0.10643375288994716,
+          "model_time_nrmse": 0.1122697228571277,
+          "baseline_complex_harmonic_nrmse": 0.10583036546332462,
+          "model_complex_harmonic_nrmse": 0.11169860569696417,
+          "minimum_phase_derivative": 0.9669386070539068
+        },
+        {
+          "pitch_index": 45,
+          "frequency_hz": 551.7241379310345,
+          "split": "validation",
+          "baseline_time_nrmse": 0.1254263742798857,
+          "model_time_nrmse": 0.11927679695184604,
+          "baseline_complex_harmonic_nrmse": 0.12488329943588385,
+          "model_complex_harmonic_nrmse": 0.1187044612971991,
+          "minimum_phase_derivative": 0.9661479063551563
+        },
+        {
+          "pitch_index": 46,
+          "frequency_hz": 585.3658536585366,
+          "split": "train",
+          "baseline_time_nrmse": 0.25192859457699196,
+          "model_time_nrmse": 0.06361212217529127,
+          "baseline_complex_harmonic_nrmse": 0.2516543148270062,
+          "model_complex_harmonic_nrmse": 0.0624469040614557,
+          "minimum_phase_derivative": 0.9649443793171602
+        },
+        {
+          "pitch_index": 47,
+          "frequency_hz": 623.3766233766233,
+          "split": "test",
+          "baseline_time_nrmse": 0.15575327324923646,
+          "model_time_nrmse": 0.06101503975612121,
+          "baseline_complex_harmonic_nrmse": 0.15526328795077343,
+          "model_complex_harmonic_nrmse": 0.05972375461487662,
+          "minimum_phase_derivative": 0.8216255327617331
+        },
+        {
+          "pitch_index": 48,
+          "frequency_hz": 666.6666666666666,
+          "split": "train",
+          "baseline_time_nrmse": 0.118795484354445,
+          "model_time_nrmse": 0.080280870857707,
+          "baseline_complex_harmonic_nrmse": 0.11808170821912135,
+          "model_complex_harmonic_nrmse": 0.07921253693241644,
+          "minimum_phase_derivative": 0.5843453382144214
+        },
+        {
+          "pitch_index": 49,
+          "frequency_hz": 695.6521739130435,
+          "split": "validation",
+          "baseline_time_nrmse": 0.13824320756327577,
+          "model_time_nrmse": 0.059130303749081785,
+          "baseline_complex_harmonic_nrmse": 0.13761744720147973,
+          "model_complex_harmonic_nrmse": 0.05761217245065429,
+          "minimum_phase_derivative": 0.6926160333707291
+        },
+        {
+          "pitch_index": 50,
+          "frequency_hz": 738.4615384615385,
+          "split": "train",
+          "baseline_time_nrmse": 0.17706967758936046,
+          "model_time_nrmse": 0.04387705905547357,
+          "baseline_complex_harmonic_nrmse": 0.17655979585626813,
+          "model_complex_harmonic_nrmse": 0.04170622403018074,
+          "minimum_phase_derivative": 0.8445404138813679
+        },
+        {
+          "pitch_index": 51,
+          "frequency_hz": 786.8852459016393,
+          "split": "test",
+          "baseline_time_nrmse": 0.12966026489810434,
+          "model_time_nrmse": 0.1880388614702311,
+          "baseline_complex_harmonic_nrmse": 0.12888163793198346,
+          "model_complex_harmonic_nrmse": 0.18750762404419336,
+          "minimum_phase_derivative": 0.8514521096538124
+        },
+        {
+          "pitch_index": 52,
+          "frequency_hz": 827.5862068965517,
+          "split": "train",
+          "baseline_time_nrmse": 0.21805037784225412,
+          "model_time_nrmse": 0.04469475317419234,
+          "baseline_complex_harmonic_nrmse": 0.21758775823014012,
+          "model_complex_harmonic_nrmse": 0.04226639802748987,
+          "minimum_phase_derivative": 0.8569401277162924
+        },
+        {
+          "pitch_index": 53,
+          "frequency_hz": 888.8888888888889,
+          "split": "validation",
+          "baseline_time_nrmse": 0.2485059924458394,
+          "model_time_nrmse": 0.05144382444602466,
+          "baseline_complex_harmonic_nrmse": 0.2480707310621811,
+          "model_complex_harmonic_nrmse": 0.04915753860395134,
+          "minimum_phase_derivative": 0.8620648380864322
+        },
+        {
+          "pitch_index": 54,
+          "frequency_hz": 923.0769230769231,
+          "split": "train",
+          "baseline_time_nrmse": 0.26096350421228603,
+          "model_time_nrmse": 0.05126078139417508,
+          "baseline_complex_harmonic_nrmse": 0.26052486300249217,
+          "model_complex_harmonic_nrmse": 0.04881444377645941,
+          "minimum_phase_derivative": 0.864771401957614
+        },
+        {
+          "pitch_index": 55,
+          "frequency_hz": 979.5918367346939,
+          "split": "test",
+          "baseline_time_nrmse": 0.1488271540160844,
+          "model_time_nrmse": 0.11361104584617801,
+          "baseline_complex_harmonic_nrmse": 0.14798599920544753,
+          "model_complex_harmonic_nrmse": 0.11249590974990005,
+          "minimum_phase_derivative": 0.8933429605614651
+        },
+        {
+          "pitch_index": 56,
+          "frequency_hz": 1043.4782608695652,
+          "split": "train",
+          "baseline_time_nrmse": 0.1635338304862871,
+          "model_time_nrmse": 0.0629675683060646,
+          "baseline_complex_harmonic_nrmse": 0.1627140779121681,
+          "model_complex_harmonic_nrmse": 0.060755351925666536,
+          "minimum_phase_derivative": 0.9237202036737747
+        },
+        {
+          "pitch_index": 57,
+          "frequency_hz": 1090.909090909091,
+          "split": "validation",
+          "baseline_time_nrmse": 0.313857834888651,
+          "model_time_nrmse": 0.31461020670572837,
+          "baseline_complex_harmonic_nrmse": 0.3134386474029037,
+          "model_complex_harmonic_nrmse": 0.31419211940475206,
+          "minimum_phase_derivative": 0.9917454309957241
+        },
+        {
+          "pitch_index": 58,
+          "frequency_hz": 1170.7317073170732,
+          "split": "train",
+          "baseline_time_nrmse": 0.16660009807409748,
+          "model_time_nrmse": 0.05925284433008512,
+          "baseline_complex_harmonic_nrmse": 0.16567829732747685,
+          "model_complex_harmonic_nrmse": 0.05654172861840825,
+          "minimum_phase_derivative": 0.934468501467647
+        },
+        {
+          "pitch_index": 59,
+          "frequency_hz": 1230.7692307692307,
+          "split": "test",
+          "baseline_time_nrmse": 0.21575175067676827,
+          "model_time_nrmse": 0.09336095096916328,
+          "baseline_complex_harmonic_nrmse": 0.21499988983370172,
+          "model_complex_harmonic_nrmse": 0.09153987314511507,
+          "minimum_phase_derivative": 0.934637001771806
+        },
+        {
+          "pitch_index": 60,
+          "frequency_hz": 1297.2972972972973,
+          "split": "train",
+          "baseline_time_nrmse": 0.1738172060935446,
+          "model_time_nrmse": 0.06382618652172434,
+          "baseline_complex_harmonic_nrmse": 0.17279736360569878,
+          "model_complex_harmonic_nrmse": 0.06091602548105094,
+          "minimum_phase_derivative": 0.934813846256925
+        },
+        {
+          "pitch_index": 61,
+          "frequency_hz": 1371.4285714285713,
+          "split": "validation",
+          "baseline_time_nrmse": 0.22199388878129508,
+          "model_time_nrmse": 0.11414481595911605,
+          "baseline_complex_harmonic_nrmse": 0.2211544057485815,
+          "model_complex_harmonic_nrmse": 0.11242092997728637,
+          "minimum_phase_derivative": 0.934813846256925
+        },
+        {
+          "pitch_index": 62,
+          "frequency_hz": 1454.5454545454545,
+          "split": "train",
+          "baseline_time_nrmse": 0.2086191969631294,
+          "model_time_nrmse": 0.10821159671303691,
+          "baseline_complex_harmonic_nrmse": 0.20766687219285493,
+          "model_complex_harmonic_nrmse": 0.10630204442241635,
+          "minimum_phase_derivative": 0.934813846256925
+        },
+        {
+          "pitch_index": 63,
+          "frequency_hz": 1548.3870967741937,
+          "split": "test",
+          "baseline_time_nrmse": 0.17809601858106752,
+          "model_time_nrmse": 0.07950442939872482,
+          "baseline_complex_harmonic_nrmse": 0.17692060189797149,
+          "model_complex_harmonic_nrmse": 0.07675545039349904,
+          "minimum_phase_derivative": 0.934813846256925
+        },
+        {
+          "pitch_index": 64,
+          "frequency_hz": 1655.1724137931035,
+          "split": "train",
+          "baseline_time_nrmse": 0.20998642351527128,
+          "model_time_nrmse": 0.12607239265441245,
+          "baseline_complex_harmonic_nrmse": 0.20892470605462407,
+          "model_complex_harmonic_nrmse": 0.12424315661932986,
+          "minimum_phase_derivative": 0.934813846256925
+        },
+        {
+          "pitch_index": 65,
+          "frequency_hz": 1714.2857142857142,
+          "split": "validation",
+          "baseline_time_nrmse": 0.17082250690830203,
+          "model_time_nrmse": 0.1462298028760447,
+          "baseline_complex_harmonic_nrmse": 0.16941422168927223,
+          "model_complex_harmonic_nrmse": 0.14455245171671952,
+          "minimum_phase_derivative": 0.944469179621543
+        },
+        {
+          "pitch_index": 66,
+          "frequency_hz": 1846.1538461538462,
+          "split": "train",
+          "baseline_time_nrmse": 0.41477284071050047,
+          "model_time_nrmse": 0.14030702699674938,
+          "baseline_complex_harmonic_nrmse": 0.4142354636048317,
+          "model_complex_harmonic_nrmse": 0.1384145902244602,
+          "minimum_phase_derivative": 0.8276952477598287
+        },
+        {
+          "pitch_index": 67,
+          "frequency_hz": 2000.0,
+          "split": "test",
+          "baseline_time_nrmse": 0.25854440208741003,
+          "model_time_nrmse": 0.251040357822534,
+          "baseline_complex_harmonic_nrmse": 0.25749966014023223,
+          "model_complex_harmonic_nrmse": 0.24995475083883992,
+          "minimum_phase_derivative": 0.9140072557502872
+        },
+        {
+          "pitch_index": 68,
+          "frequency_hz": 2086.9565217391305,
+          "split": "train",
+          "baseline_time_nrmse": 0.2160961235693146,
+          "model_time_nrmse": 0.06760899422832545,
+          "baseline_complex_harmonic_nrmse": 0.21475536439375664,
+          "model_complex_harmonic_nrmse": 0.0629903229693944,
+          "minimum_phase_derivative": 0.8078685635023597
+        },
+        {
+          "pitch_index": 69,
+          "frequency_hz": 2181.818181818182,
+          "split": "validation",
+          "baseline_time_nrmse": 0.37392113856107834,
+          "model_time_nrmse": 0.2298815424702135,
+          "baseline_complex_harmonic_nrmse": 0.37313775170126984,
+          "model_complex_harmonic_nrmse": 0.22847550162085106,
+          "minimum_phase_derivative": 0.8619763511180765
+        },
+        {
+          "pitch_index": 70,
+          "frequency_hz": 2285.714285714286,
+          "split": "train",
+          "baseline_time_nrmse": 0.31202904030317524,
+          "model_time_nrmse": 0.10952945108487865,
+          "baseline_complex_harmonic_nrmse": 0.31101126857415146,
+          "model_complex_harmonic_nrmse": 0.10631377011653761,
+          "minimum_phase_derivative": 0.6630440581215056
+        },
+        {
+          "pitch_index": 71,
+          "frequency_hz": 2400.0,
+          "split": "test",
+          "baseline_time_nrmse": 0.3419989721302266,
+          "model_time_nrmse": 0.5349592000069031,
+          "baseline_complex_harmonic_nrmse": 0.3409434027933394,
+          "model_complex_harmonic_nrmse": 0.5344140152426072,
+          "minimum_phase_derivative": 0.6630440581215056
+        }
+      ],
+      "metrics": {
+        "train": {
+          "baseline_time_nrmse": {
+            "median": 0.17020865208382102,
+            "maximum": 0.41477284071050047
+          },
+          "model_time_nrmse": {
+            "median": 0.05417727576434933,
+            "maximum": 0.14030702699674938
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.1692378304665878,
+            "maximum": 0.4142354636048317
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.05305303012761227,
+            "maximum": 0.1384145902244602
+          },
+          "time_nrmse_relative_improvement_median": 0.7143222298356471
+        },
+        "validation": {
+          "baseline_time_nrmse": {
+            "median": 0.17377916281299366,
+            "maximum": 0.37392113856107834
+          },
+          "model_time_nrmse": {
+            "median": 0.1174172851731192,
+            "maximum": 0.31461020670572837
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.17303405996272148,
+            "maximum": 0.37313775170126984
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.11699959737887429,
+            "maximum": 0.31419211940475206
+          },
+          "time_nrmse_relative_improvement_median": 0.35108312223041704
+        },
+        "test": {
+          "baseline_time_nrmse": {
+            "median": 0.15138534323837655,
+            "maximum": 0.3419989721302266
+          },
+          "model_time_nrmse": {
+            "median": 0.08930390896095255,
+            "maximum": 0.5349592000069031
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.1511443757106921,
+            "maximum": 0.3409434027933394
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.0890962293870504,
+            "maximum": 0.5344140152426072
+          },
+          "time_nrmse_relative_improvement_median": 0.5573894973426237
+        },
+        "held_out": {
+          "baseline_time_nrmse": {
+            "median": 0.15457755405991314,
+            "maximum": 0.37392113856107834
+          },
+          "model_time_nrmse": {
+            "median": 0.10451518735809878,
+            "maximum": 0.5349592000069031
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.15429137741016688,
+            "maximum": 0.37313775170126984
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.10366713137129899,
+            "maximum": 0.5344140152426072
+          },
+          "time_nrmse_relative_improvement_median": 0.42099381534014807
+        }
+      }
+    },
+    "triangle": {
+      "source_npz_sha256": "392ec0f2679ef3f234d6235ef413d7c8e806390a465c45f3c5a7d6b6b3f5b4e5",
+      "source_pickle_md5": "567811d4db81ef1cd0808aee4cbe3ae5",
+      "fit_knot_count": 36,
+      "knots": [
+        {
+          "pitch_index": 0,
+          "frequency_hz": 20.600858369098713,
+          "log2_frequency": 4.364632545841601,
+          "phase_a": -2.3127385121449146e-05,
+          "phase_b": 0.16936267098166322,
+          "phase_offset_cycles": -0.13964400631312968,
+          "lowpass_hz": 34826.409390358574,
+          "highpass_hz": 36.27999165639612,
+          "pole_hz": 36.15519973151623,
+          "zero_hz": 77.71307473751334,
+          "gain": 1.2981260358881348,
+          "dc": -0.0003139924583024367,
+          "fit": {
+            "time_nrmse": 0.003950144427083792,
+            "complex_harmonic_nrmse": 0.003950285015622417,
+            "minimum_phase_derivative": 0.8306373290183368,
+            "optimizer_cost": 0.017457770798388186,
+            "optimizer_evaluations": 134,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 2,
+          "frequency_hz": 23.21083172147002,
+          "log2_frequency": 4.536726315068308,
+          "phase_a": -0.0004255376566441879,
+          "phase_b": 0.1469662789249799,
+          "phase_offset_cycles": -0.12202632401194066,
+          "lowpass_hz": 1215.7029217891327,
+          "highpass_hz": 34.45833544557504,
+          "pole_hz": 34.457835830816144,
+          "zero_hz": 68.6041312046153,
+          "gain": 1.252363492180062,
+          "dc": -0.00018759554143343848,
+          "fit": {
+            "time_nrmse": 0.0037628556911457893,
+            "complex_harmonic_nrmse": 0.003757800651869507,
+            "minimum_phase_derivative": 0.8530337210750201,
+            "optimizer_cost": 0.01579180960520593,
+            "optimizer_evaluations": 34,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 4,
+          "frequency_hz": 25.98808879263671,
+          "log2_frequency": 4.699778634400805,
+          "phase_a": -0.00038203325063519635,
+          "phase_b": 0.13649472672412177,
+          "phase_offset_cycles": -0.11094349671173927,
+          "lowpass_hz": 1015.8988596903074,
+          "highpass_hz": 33.25380735651656,
+          "pole_hz": 33.26756970852908,
+          "zero_hz": 61.87684033189798,
+          "gain": 1.2180842436576258,
+          "dc": 0.0008140626075032742,
+          "fit": {
+            "time_nrmse": 0.0033655071723169634,
+            "complex_harmonic_nrmse": 0.0033166757728881075,
+            "minimum_phase_derivative": 0.8635052732758782,
+            "optimizer_cost": 0.01254763872397031,
+            "optimizer_evaluations": 15,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 6,
+          "frequency_hz": 29.16160388821385,
+          "log2_frequency": 4.865998164961617,
+          "phase_a": -0.0001225682425333997,
+          "phase_b": 0.12372695969336665,
+          "phase_offset_cycles": -0.09994222221288264,
+          "lowpass_hz": 1117.634126946296,
+          "highpass_hz": 33.65980698184221,
+          "pole_hz": 33.66050875725174,
+          "zero_hz": 63.02864191667172,
+          "gain": 1.1415352650603547,
+          "dc": 0.0003636296684135232,
+          "fit": {
+            "time_nrmse": 0.003135978388481517,
+            "complex_harmonic_nrmse": 0.003082882616771247,
+            "minimum_phase_derivative": 0.8762730403066333,
+            "optimizer_cost": 0.010883133292707913,
+            "optimizer_evaluations": 14,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 8,
+          "frequency_hz": 32.69754768392371,
+          "log2_frequency": 5.031110532540031,
+          "phase_a": -0.0007962766689596225,
+          "phase_b": 0.11557769382694319,
+          "phase_offset_cycles": -0.09021372118475417,
+          "lowpass_hz": 1190.854931452969,
+          "highpass_hz": 33.69377696786755,
+          "pole_hz": 33.695516176414166,
+          "zero_hz": 61.53037053745918,
+          "gain": 1.0978235508305918,
+          "dc": 2.2075695596868172e-05,
+          "fit": {
+            "time_nrmse": 0.002938243871563033,
+            "complex_harmonic_nrmse": 0.002879371591569115,
+            "minimum_phase_derivative": 0.884422038948089,
+            "optimizer_cost": 0.00949496044743558,
+            "optimizer_evaluations": 16,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 10,
+          "frequency_hz": 36.69724770642202,
+          "log2_frequency": 5.197599959885161,
+          "phase_a": -0.0010402959030127422,
+          "phase_b": 0.11069692075455245,
+          "phase_offset_cycles": -0.08106148190474043,
+          "lowpass_hz": 1294.471681458464,
+          "highpass_hz": 34.101210278776094,
+          "pole_hz": 34.09637854787879,
+          "zero_hz": 61.64802186903154,
+          "gain": 1.0614995392509325,
+          "dc": -0.0001494354877280557,
+          "fit": {
+            "time_nrmse": 0.002928553502790019,
+            "complex_harmonic_nrmse": 0.002869107803462548,
+            "minimum_phase_derivative": 0.8893019715008466,
+            "optimizer_cost": 0.009468445725595081,
+            "optimizer_evaluations": 12,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 12,
+          "frequency_hz": 41.201716738197426,
+          "log2_frequency": 5.364632545841601,
+          "phase_a": -0.0007964862777706371,
+          "phase_b": 0.10839697392697795,
+          "phase_offset_cycles": -0.07151571397431063,
+          "lowpass_hz": 1204.5928172931804,
+          "highpass_hz": 34.23409793777538,
+          "pole_hz": 34.23282815389452,
+          "zero_hz": 60.24850948450503,
+          "gain": 1.0439975872732825,
+          "dc": -0.00021814963150745825,
+          "fit": {
+            "time_nrmse": 0.002984149468494971,
+            "complex_harmonic_nrmse": 0.002924462950365267,
+            "minimum_phase_derivative": 0.8916026230299606,
+            "optimizer_cost": 0.009866361168247299,
+            "optimizer_evaluations": 16,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 14,
+          "frequency_hz": 46.3768115942029,
+          "log2_frequency": 5.535331732996555,
+          "phase_a": 0.002661691729757988,
+          "phase_b": 0.09954828407911764,
+          "phase_offset_cycles": -0.06463779566948176,
+          "lowpass_hz": 1480.048932536939,
+          "highpass_hz": 36.90495612062069,
+          "pole_hz": 36.90426220571683,
+          "zero_hz": 68.17823488677963,
+          "gain": 0.9963617334856597,
+          "dc": 2.451515664070314e-05,
+          "fit": {
+            "time_nrmse": 0.0029802846443638116,
+            "complex_harmonic_nrmse": 0.0029266504642377527,
+            "minimum_phase_derivative": 0.9004428798901645,
+            "optimizer_cost": 0.009860825094452118,
+            "optimizer_evaluations": 14,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 16,
+          "frequency_hz": 51.94805194805195,
+          "log2_frequency": 5.698997743967186,
+          "phase_a": -0.00015199627941714966,
+          "phase_b": 0.09943165668909844,
+          "phase_offset_cycles": -0.05595322788681146,
+          "lowpass_hz": 1432.1103579765293,
+          "highpass_hz": 36.99020113204667,
+          "pole_hz": 36.98877150891219,
+          "zero_hz": 66.01649650019249,
+          "gain": 0.9934418896462477,
+          "dc": -0.0003331500336472004,
+          "fit": {
+            "time_nrmse": 0.0029774006554949433,
+            "complex_harmonic_nrmse": 0.0029197659173335203,
+            "minimum_phase_derivative": 0.9005683433109015,
+            "optimizer_cost": 0.009834296481920666,
+            "optimizer_evaluations": 13,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 18,
+          "frequency_hz": 58.25242718446602,
+          "log2_frequency": 5.8642462582000245,
+          "phase_a": -2.2652959881432845e-05,
+          "phase_b": 0.09706490977657836,
+          "phase_offset_cycles": -0.04867260833865725,
+          "lowpass_hz": 1556.3485810342875,
+          "highpass_hz": 38.73106663996198,
+          "pole_hz": 38.73010991925366,
+          "zero_hz": 69.9373452405558,
+          "gain": 0.9798533799773176,
+          "dc": 0.0002778711927717836,
+          "fit": {
+            "time_nrmse": 0.002988402503421705,
+            "complex_harmonic_nrmse": 0.0029255778062796177,
+            "minimum_phase_derivative": 0.9029350902234217,
+            "optimizer_cost": 0.009921307659223175,
+            "optimizer_evaluations": 13,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 20,
+          "frequency_hz": 65.3061224489796,
+          "log2_frequency": 6.029146345659517,
+          "phase_a": -0.002149109044255906,
+          "phase_b": 0.09766895094067263,
+          "phase_offset_cycles": -0.04482614401355842,
+          "lowpass_hz": 1550.9739926481882,
+          "highpass_hz": 39.232519807421006,
+          "pole_hz": 39.23005684579912,
+          "zero_hz": 69.25946961279186,
+          "gain": 0.9868698256913582,
+          "dc": 0.0005808750048714728,
+          "fit": {
+            "time_nrmse": 0.0033939168767728404,
+            "complex_harmonic_nrmse": 0.003339884263342444,
+            "minimum_phase_derivative": 0.9023252166665119,
+            "optimizer_cost": 0.012913012061538356,
+            "optimizer_evaluations": 12,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 22,
+          "frequency_hz": 73.50689127105666,
+          "log2_frequency": 6.199807603836812,
+          "phase_a": 0.0022271574504083885,
+          "phase_b": 0.09560683227854949,
+          "phase_offset_cycles": -0.03880678737493049,
+          "lowpass_hz": 1876.8624885202023,
+          "highpass_hz": 44.056078608672316,
+          "pole_hz": 44.05526453735685,
+          "zero_hz": 82.21291759025604,
+          "gain": 0.9530804786537687,
+          "dc": -0.00017262647796911779,
+          "fit": {
+            "time_nrmse": 0.0029768196617027667,
+            "complex_harmonic_nrmse": 0.0029193731617560407,
+            "minimum_phase_derivative": 0.9043867011588751,
+            "optimizer_cost": 0.009899578878699099,
+            "optimizer_evaluations": 23,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 24,
+          "frequency_hz": 82.47422680412372,
+          "log2_frequency": 6.365871442474959,
+          "phase_a": 0.002853837548206254,
+          "phase_b": 0.09221212337622971,
+          "phase_offset_cycles": -0.033562657011789836,
+          "lowpass_hz": 2082.078700792355,
+          "highpass_hz": 47.836707866009284,
+          "pole_hz": 47.830064943015635,
+          "zero_hz": 91.60852006659437,
+          "gain": 0.9393272770960829,
+          "dc": -0.00016107552296684702,
+          "fit": {
+            "time_nrmse": 0.0029067670172669437,
+            "complex_harmonic_nrmse": 0.002848113326901575,
+            "minimum_phase_derivative": 0.9077772330151345,
+            "optimizer_cost": 0.009443761139978083,
+            "optimizer_evaluations": 19,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 26,
+          "frequency_hz": 92.3076923076923,
+          "log2_frequency": 6.528378972354789,
+          "phase_a": -0.001361972163416244,
+          "phase_b": 0.09403373013311814,
+          "phase_offset_cycles": -0.029254189189476823,
+          "lowpass_hz": 1859.1285181449857,
+          "highpass_hz": 46.77915142036971,
+          "pole_hz": 46.77641809854222,
+          "zero_hz": 85.39286159393139,
+          "gain": 0.9641747827773877,
+          "dc": -9.84588257182395e-05,
+          "fit": {
+            "time_nrmse": 0.0033782104484855083,
+            "complex_harmonic_nrmse": 0.00332207524613808,
+            "minimum_phase_derivative": 0.9059638615535679,
+            "optimizer_cost": 0.012886287766001425,
+            "optimizer_evaluations": 16,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 28,
+          "frequency_hz": 103.8961038961039,
+          "log2_frequency": 6.698997743967186,
+          "phase_a": 0.0010301762719201841,
+          "phase_b": 0.09762650574373503,
+          "phase_offset_cycles": -0.02478423942741093,
+          "lowpass_hz": 2264.668111726595,
+          "highpass_hz": 51.131645707530446,
+          "pole_hz": 51.1397712589878,
+          "zero_hz": 95.51213477139868,
+          "gain": 0.9525439661669268,
+          "dc": -0.0004365971927029477,
+          "fit": {
+            "time_nrmse": 0.003098408594188393,
+            "complex_harmonic_nrmse": 0.003049228932629943,
+            "minimum_phase_derivative": 0.9023721715113857,
+            "optimizer_cost": 0.010848886100722373,
+            "optimizer_evaluations": 17,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 30,
+          "frequency_hz": 116.50485436893204,
+          "log2_frequency": 6.8642462582000245,
+          "phase_a": -0.00041624417337976006,
+          "phase_b": 0.0920864544841221,
+          "phase_offset_cycles": -0.02134969354466019,
+          "lowpass_hz": 2233.657768423236,
+          "highpass_hz": 55.69651933918555,
+          "pole_hz": 55.70759935373573,
+          "zero_hz": 105.86461273556375,
+          "gain": 0.9481337322478722,
+          "dc": 0.0001321930541422489,
+          "fit": {
+            "time_nrmse": 0.003107398283962057,
+            "complex_harmonic_nrmse": 0.0030517014879106,
+            "minimum_phase_derivative": 0.9079135455158779,
+            "optimizer_cost": 0.01093541302736314,
+            "optimizer_evaluations": 19,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 32,
+          "frequency_hz": 130.79019073569484,
+          "log2_frequency": 7.031110532540031,
+          "phase_a": 0.000850429621033647,
+          "phase_b": 0.0993608238416415,
+          "phase_offset_cycles": -0.01887184083827677,
+          "lowpass_hz": 2426.7064331549723,
+          "highpass_hz": 57.5390591667477,
+          "pole_hz": 57.53759852261804,
+          "zero_hz": 107.88817137026322,
+          "gain": 0.9617310187006469,
+          "dc": -0.00036659753354228997,
+          "fit": {
+            "time_nrmse": 0.002996835206449348,
+            "complex_harmonic_nrmse": 0.002940636190411782,
+            "minimum_phase_derivative": 0.9006384375164806,
+            "optimizer_cost": 0.010190336127650149,
+            "optimizer_evaluations": 15,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 34,
+          "frequency_hz": 146.34146341463415,
+          "log2_frequency": 7.193194780765159,
+          "phase_a": -0.0052471582646554564,
+          "phase_b": 0.09332126539208858,
+          "phase_offset_cycles": -0.01632181536558997,
+          "lowpass_hz": 2333.0836345606426,
+          "highpass_hz": 58.678117557392326,
+          "pole_hz": 58.682209640870006,
+          "zero_hz": 108.60042863548055,
+          "gain": 0.9736838241598484,
+          "dc": 8.101353542144807e-05,
+          "fit": {
+            "time_nrmse": 0.004598103727777875,
+            "complex_harmonic_nrmse": 0.0045567109809999925,
+            "minimum_phase_derivative": 0.9066421627191492,
+            "optimizer_cost": 0.024171517448604074,
+            "optimizer_evaluations": 18,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 36,
+          "frequency_hz": 164.3835616438356,
+          "log2_frequency": 7.3609222265032255,
+          "phase_a": -0.005106961290005909,
+          "phase_b": 0.09051961246547596,
+          "phase_offset_cycles": -0.010007618380565617,
+          "lowpass_hz": 2474.075699089356,
+          "highpass_hz": 64.52072132346055,
+          "pole_hz": 64.50808728979116,
+          "zero_hz": 121.81945961171137,
+          "gain": 0.9693628123934233,
+          "dc": 0.00020355527595017353,
+          "fit": {
+            "time_nrmse": 0.004456357849192325,
+            "complex_harmonic_nrmse": 0.004415845254532957,
+            "minimum_phase_derivative": 0.9094446477472413,
+            "optimizer_cost": 0.02275243771053214,
+            "optimizer_evaluations": 21,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 38,
+          "frequency_hz": 184.6153846153846,
+          "log2_frequency": 7.528378972354789,
+          "phase_a": -0.0017666870339547156,
+          "phase_b": 0.0982670811577628,
+          "phase_offset_cycles": -0.010561615819113877,
+          "lowpass_hz": 2669.0238664738954,
+          "highpass_hz": 66.93507161346383,
+          "pole_hz": 66.92546131146436,
+          "zero_hz": 125.04657481647246,
+          "gain": 0.9812467025500243,
+          "dc": 4.591914335350111e-05,
+          "fit": {
+            "time_nrmse": 0.0034967864880682195,
+            "complex_harmonic_nrmse": 0.00344687517213242,
+            "minimum_phase_derivative": 0.9017293485728358,
+            "optimizer_cost": 0.01401156624674226,
+            "optimizer_evaluations": 17,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 40,
+          "frequency_hz": 207.7922077922078,
+          "log2_frequency": 7.698997743967186,
+          "phase_a": 0.003987371748680156,
+          "phase_b": 0.10561154969736417,
+          "phase_offset_cycles": -0.007416188792873352,
+          "lowpass_hz": 2925.6244582190943,
+          "highpass_hz": 71.2677861574138,
+          "pole_hz": 71.27324505557665,
+          "zero_hz": 132.92531206304668,
+          "gain": 0.9839800688803477,
+          "dc": 0.00024366053494873086,
+          "fit": {
+            "time_nrmse": 0.0036263474669463933,
+            "complex_harmonic_nrmse": 0.003557658145551457,
+            "minimum_phase_derivative": 0.894369644029926,
+            "optimizer_cost": 0.015084325909548238,
+            "optimizer_evaluations": 18,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 42,
+          "frequency_hz": 233.0097087378641,
+          "log2_frequency": 7.8642462582000245,
+          "phase_a": 0.0021699187491789084,
+          "phase_b": 0.1052545514664072,
+          "phase_offset_cycles": -0.0069999063514959116,
+          "lowpass_hz": 2936.3019484213232,
+          "highpass_hz": 74.69388774552414,
+          "pole_hz": 74.69281413023103,
+          "zero_hz": 138.45564896329333,
+          "gain": 0.9930955976320106,
+          "dc": 0.0003891634051420567,
+          "fit": {
+            "time_nrmse": 0.0036114290391457177,
+            "complex_harmonic_nrmse": 0.0035610486237889634,
+            "minimum_phase_derivative": 0.8947400596365969,
+            "optimizer_cost": 0.014981049634192728,
+            "optimizer_evaluations": 15,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 44,
+          "frequency_hz": 260.8695652173913,
+          "log2_frequency": 8.027184829326231,
+          "phase_a": -0.0043417948237912014,
+          "phase_b": 0.09051770022114976,
+          "phase_offset_cycles": -0.006004198010378059,
+          "lowpass_hz": 3107.712948743584,
+          "highpass_hz": 89.05930517984439,
+          "pole_hz": 89.0555926115833,
+          "zero_hz": 172.44444893758293,
+          "gain": 0.9811187337408391,
+          "dc": 0.0004479522489759802,
+          "fit": {
+            "time_nrmse": 0.004635816100566654,
+            "complex_harmonic_nrmse": 0.0045891155627745825,
+            "minimum_phase_derivative": 0.9094562815164106,
+            "optimizer_cost": 0.02469473052892799,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 46,
+          "frequency_hz": 292.6829268292683,
+          "log2_frequency": 8.19319478076516,
+          "phase_a": -0.0021533188566701883,
+          "phase_b": 0.10271349347562199,
+          "phase_offset_cycles": -0.004182561005041928,
+          "lowpass_hz": 3397.426772131702,
+          "highpass_hz": 85.75274216745937,
+          "pole_hz": 85.73037664131961,
+          "zero_hz": 160.90324538316023,
+          "gain": 0.9989336651425008,
+          "dc": 0.0002929284142396682,
+          "fit": {
+            "time_nrmse": 0.004182259822042166,
+            "complex_harmonic_nrmse": 0.004110767068372281,
+            "minimum_phase_derivative": 0.8972810281454143,
+            "optimizer_cost": 0.02009928940345482,
+            "optimizer_evaluations": 14,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 48,
+          "frequency_hz": 328.7671232876712,
+          "log2_frequency": 8.360922226503225,
+          "phase_a": 0.0010775778874331824,
+          "phase_b": 0.10445900343009995,
+          "phase_offset_cycles": 0.0013192869471998722,
+          "lowpass_hz": 3493.6214602869013,
+          "highpass_hz": 92.6437058561193,
+          "pole_hz": 92.66786607434618,
+          "zero_hz": 173.29012752096747,
+          "gain": 1.0071120149628088,
+          "dc": -0.000235966316182612,
+          "fit": {
+            "time_nrmse": 0.0038627121904537087,
+            "complex_harmonic_nrmse": 0.0037861535123321806,
+            "minimum_phase_derivative": 0.8955396570187519,
+            "optimizer_cost": 0.01714480974691906,
+            "optimizer_evaluations": 17,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 50,
+          "frequency_hz": 369.2307692307692,
+          "log2_frequency": 8.528378972354789,
+          "phase_a": 0.000552819190455617,
+          "phase_b": 0.10413470012469586,
+          "phase_offset_cycles": 0.00015096854924123823,
+          "lowpass_hz": 3651.3706416015116,
+          "highpass_hz": 94.35603006852904,
+          "pole_hz": 94.36410118189411,
+          "zero_hz": 174.83297885336134,
+          "gain": 1.015317615343345,
+          "dc": -0.00018003399648591767,
+          "fit": {
+            "time_nrmse": 0.004022217524861073,
+            "complex_harmonic_nrmse": 0.003972629108822344,
+            "minimum_phase_derivative": 0.8958652998753042,
+            "optimizer_cost": 0.018591150821329044,
+            "optimizer_evaluations": 11,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 52,
+          "frequency_hz": 413.7931034482759,
+          "log2_frequency": 8.69276579025567,
+          "phase_a": -0.0038979924770614453,
+          "phase_b": 0.09953899740280837,
+          "phase_offset_cycles": 0.008089471402406755,
+          "lowpass_hz": 3883.9963727054046,
+          "highpass_hz": 107.20330805609584,
+          "pole_hz": 107.19122333449408,
+          "zero_hz": 201.76023709726823,
+          "gain": 1.0155991553114416,
+          "dc": 0.0001662794918217969,
+          "fit": {
+            "time_nrmse": 0.005249601686057367,
+            "complex_harmonic_nrmse": 0.00519294983637972,
+            "minimum_phase_derivative": 0.900441990148476,
+            "optimizer_cost": 0.031672458770757,
+            "optimizer_evaluations": 21,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 54,
+          "frequency_hz": 466.0194174757282,
+          "log2_frequency": 8.864246258200025,
+          "phase_a": 0.0034149411703888574,
+          "phase_b": 0.11221910149855438,
+          "phase_offset_cycles": 0.0036882698453333646,
+          "lowpass_hz": 4042.0426246739726,
+          "highpass_hz": 107.9114791975423,
+          "pole_hz": 107.86093115248646,
+          "zero_hz": 198.63121810390308,
+          "gain": 1.0271393519264285,
+          "dc": 6.258684703652762e-05,
+          "fit": {
+            "time_nrmse": 0.004364085128033267,
+            "complex_harmonic_nrmse": 0.004326333374809996,
+            "minimum_phase_derivative": 0.8877683947082962,
+            "optimizer_cost": 0.02188861039768366,
+            "optimizer_evaluations": 13,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 56,
+          "frequency_hz": 521.7391304347826,
+          "log2_frequency": 9.027184829326231,
+          "phase_a": -0.0025349139827206906,
+          "phase_b": 0.09954508120130187,
+          "phase_offset_cycles": 0.005463859753059935,
+          "lowpass_hz": 4063.951669669769,
+          "highpass_hz": 122.711362457938,
+          "pole_hz": 122.77854885413961,
+          "zero_hz": 228.26392838856657,
+          "gain": 1.031612487756207,
+          "dc": 5.5056533184938417e-05,
+          "fit": {
+            "time_nrmse": 0.0050614701828113305,
+            "complex_harmonic_nrmse": 0.004992107970416552,
+            "minimum_phase_derivative": 0.9004468604204413,
+            "optimizer_cost": 0.02944356241078279,
+            "optimizer_evaluations": 24,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 58,
+          "frequency_hz": 585.3658536585366,
+          "log2_frequency": 9.19319478076516,
+          "phase_a": -0.0026381535131339362,
+          "phase_b": 0.09089150214717864,
+          "phase_offset_cycles": 0.005970782299254231,
+          "lowpass_hz": 4293.506056767575,
+          "highpass_hz": 164.5751261431976,
+          "pole_hz": 164.54773430561156,
+          "zero_hz": 320.844789902948,
+          "gain": 1.0224707576523235,
+          "dc": 3.382701392240506e-05,
+          "fit": {
+            "time_nrmse": 0.005320612206411252,
+            "complex_harmonic_nrmse": 0.005272532677593318,
+            "minimum_phase_derivative": 0.9090991544101271,
+            "optimizer_cost": 0.03253705627959266,
+            "optimizer_evaluations": 31,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 60,
+          "frequency_hz": 657.5342465753424,
+          "log2_frequency": 9.360922226503225,
+          "phase_a": -0.0006111339520349312,
+          "phase_b": 0.09996217109055688,
+          "phase_offset_cycles": 0.00861310079017613,
+          "lowpass_hz": 4604.896241005021,
+          "highpass_hz": 160.80034900950358,
+          "pole_hz": 160.7667233286685,
+          "zero_hz": 305.7398237515112,
+          "gain": 1.040761784694416,
+          "dc": -0.0003438977969807411,
+          "fit": {
+            "time_nrmse": 0.005664720775411339,
+            "complex_harmonic_nrmse": 0.005608148084299711,
+            "minimum_phase_derivative": 0.9000378289094431,
+            "optimizer_cost": 0.03688196356985538,
+            "optimizer_evaluations": 14,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 62,
+          "frequency_hz": 738.4615384615385,
+          "log2_frequency": 9.528378972354789,
+          "phase_a": 0.002076586352210388,
+          "phase_b": 0.10538760324859754,
+          "phase_offset_cycles": 0.01015435537390959,
+          "lowpass_hz": 4829.299042851711,
+          "highpass_hz": 170.3553099295453,
+          "pole_hz": 170.45072744725346,
+          "zero_hz": 320.89846842067396,
+          "gain": 1.0454611540909204,
+          "dc": 0.00036414727836842076,
+          "fit": {
+            "time_nrmse": 0.005976377240684298,
+            "complex_harmonic_nrmse": 0.005900770256272439,
+            "minimum_phase_derivative": 0.8946075905497829,
+            "optimizer_cost": 0.04105196026372564,
+            "optimizer_evaluations": 16,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 64,
+          "frequency_hz": 827.5862068965517,
+          "log2_frequency": 9.69276579025567,
+          "phase_a": 0.00026203649384868194,
+          "phase_b": 0.09880460450211619,
+          "phase_offset_cycles": 0.005009044882232383,
+          "lowpass_hz": 5013.736746110035,
+          "highpass_hz": 201.7264185915249,
+          "pole_hz": 201.75127471117156,
+          "zero_hz": 384.2075070695824,
+          "gain": 1.0504478294478359,
+          "dc": -0.0005455994262462127,
+          "fit": {
+            "time_nrmse": 0.006158967244107152,
+            "complex_harmonic_nrmse": 0.006087422379078244,
+            "minimum_phase_derivative": 0.9011953954978839,
+            "optimizer_cost": 0.04360001996100191,
+            "optimizer_evaluations": 23,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 66,
+          "frequency_hz": 923.0769230769231,
+          "log2_frequency": 9.85030706724215,
+          "phase_a": -0.014338825351998295,
+          "phase_b": 0.06341184847849066,
+          "phase_offset_cycles": 0.0061009514912695705,
+          "lowpass_hz": 4813.928410557921,
+          "highpass_hz": 273.92599928168033,
+          "pole_hz": 273.9033081295684,
+          "zero_hz": 536.8172611393476,
+          "gain": 1.0583889592908333,
+          "dc": 0.00015328154609051126,
+          "fit": {
+            "time_nrmse": 0.00954663612995518,
+            "complex_harmonic_nrmse": 0.009457102959945066,
+            "minimum_phase_derivative": 0.9361830868475038,
+            "optimizer_cost": 0.10475565618738775,
+            "optimizer_evaluations": 31,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 68,
+          "frequency_hz": 1043.4782608695652,
+          "log2_frequency": 10.027184829326231,
+          "phase_a": -0.000257722669144629,
+          "phase_b": 0.09587722392281321,
+          "phase_offset_cycles": 0.019723772628860763,
+          "lowpass_hz": 5306.177483568553,
+          "highpass_hz": 265.22406511416017,
+          "pole_hz": 265.15980668435714,
+          "zero_hz": 508.9288510960927,
+          "gain": 1.0686555394978858,
+          "dc": 0.00012250925615830965,
+          "fit": {
+            "time_nrmse": 0.007725520357595684,
+            "complex_harmonic_nrmse": 0.00762124702288202,
+            "minimum_phase_derivative": 0.9041227760771868,
+            "optimizer_cost": 0.06860024614738389,
+            "optimizer_evaluations": 15,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 70,
+          "frequency_hz": 1170.7317073170732,
+          "log2_frequency": 10.19319478076516,
+          "phase_a": 0.0026542732802727546,
+          "phase_b": 0.10036188962861652,
+          "phase_offset_cycles": 0.014272668678532243,
+          "lowpass_hz": 5476.992966972574,
+          "highpass_hz": 315.9139164086191,
+          "pole_hz": 316.32465204802594,
+          "zero_hz": 604.8877884462117,
+          "gain": 1.0774705601581889,
+          "dc": -0.00024125697740373653,
+          "fit": {
+            "time_nrmse": 0.007898429370013168,
+            "complex_harmonic_nrmse": 0.0077602953942053805,
+            "minimum_phase_derivative": 0.8996293811224174,
+            "optimizer_cost": 0.07170634414743209,
+            "optimizer_evaluations": 21,
+            "optimizer_success": true
+          }
+        }
+      ],
+      "evaluation": [
+        {
+          "pitch_index": 0,
+          "frequency_hz": 20.600858369098713,
+          "split": "train",
+          "baseline_time_nrmse": 0.21632973794847446,
+          "model_time_nrmse": 0.003950144427083792,
+          "baseline_complex_harmonic_nrmse": 0.21632974039197908,
+          "model_complex_harmonic_nrmse": 0.003950285015622417,
+          "minimum_phase_derivative": 0.8306373290183368
+        },
+        {
+          "pitch_index": 1,
+          "frequency_hz": 21.58273381294964,
+          "split": "validation",
+          "baseline_time_nrmse": 0.20944439372381896,
+          "model_time_nrmse": 0.037245792800077074,
+          "baseline_complex_harmonic_nrmse": 0.20944440613831175,
+          "model_complex_harmonic_nrmse": 0.022546504437179597,
+          "minimum_phase_derivative": 0.8393792874663853
+        },
+        {
+          "pitch_index": 2,
+          "frequency_hz": 23.21083172147002,
+          "split": "train",
+          "baseline_time_nrmse": 0.20524534105456388,
+          "model_time_nrmse": 0.0037628556911457893,
+          "baseline_complex_harmonic_nrmse": 0.20524525234064583,
+          "model_complex_harmonic_nrmse": 0.003757800651869507,
+          "minimum_phase_derivative": 0.8530337210750201
+        },
+        {
+          "pitch_index": 3,
+          "frequency_hz": 24.59016393442623,
+          "split": "test",
+          "baseline_time_nrmse": 0.20569090170219978,
+          "model_time_nrmse": 0.006804165944773861,
+          "baseline_complex_harmonic_nrmse": 0.20569026612153013,
+          "model_complex_harmonic_nrmse": 0.006779124089351897,
+          "minimum_phase_derivative": 0.8583823335672207
+        },
+        {
+          "pitch_index": 4,
+          "frequency_hz": 25.98808879263671,
+          "split": "train",
+          "baseline_time_nrmse": 0.19983156705437208,
+          "model_time_nrmse": 0.0033655071723169634,
+          "baseline_complex_harmonic_nrmse": 0.19983078320807424,
+          "model_complex_harmonic_nrmse": 0.0033166757728881075,
+          "minimum_phase_derivative": 0.8635052732758782
+        },
+        {
+          "pitch_index": 5,
+          "frequency_hz": 27.538726333907057,
+          "split": "validation",
+          "baseline_time_nrmse": 0.19325661242506378,
+          "model_time_nrmse": 0.0057451988419432625,
+          "baseline_complex_harmonic_nrmse": 0.19325578065197035,
+          "model_complex_harmonic_nrmse": 0.005715622630312374,
+          "minimum_phase_derivative": 0.8699276807739897
+        },
+        {
+          "pitch_index": 6,
+          "frequency_hz": 29.16160388821385,
+          "split": "train",
+          "baseline_time_nrmse": 0.19050094722817487,
+          "model_time_nrmse": 0.003135978388481517,
+          "baseline_complex_harmonic_nrmse": 0.19050011201955908,
+          "model_complex_harmonic_nrmse": 0.003082882616771247,
+          "minimum_phase_derivative": 0.8762730403066333
+        },
+        {
+          "pitch_index": 7,
+          "frequency_hz": 30.9079201545396,
+          "split": "test",
+          "baseline_time_nrmse": 0.18469225879935053,
+          "model_time_nrmse": 0.0045897644776938884,
+          "baseline_complex_harmonic_nrmse": 0.1846914109534113,
+          "model_complex_harmonic_nrmse": 0.004547348694980973,
+          "minimum_phase_derivative": 0.8804143195798025
+        },
+        {
+          "pitch_index": 8,
+          "frequency_hz": 32.69754768392371,
+          "split": "train",
+          "baseline_time_nrmse": 0.18133291188522527,
+          "model_time_nrmse": 0.002938243871563033,
+          "baseline_complex_harmonic_nrmse": 0.18133199854262677,
+          "model_complex_harmonic_nrmse": 0.002879371591569115,
+          "minimum_phase_derivative": 0.884422038948089
+        },
+        {
+          "pitch_index": 9,
+          "frequency_hz": 34.65703971119134,
+          "split": "validation",
+          "baseline_time_nrmse": 0.18022160807856893,
+          "model_time_nrmse": 0.008446007118593292,
+          "baseline_complex_harmonic_nrmse": 0.18022055644607973,
+          "model_complex_harmonic_nrmse": 0.008420072007312413,
+          "minimum_phase_derivative": 0.8868831464416026
+        },
+        {
+          "pitch_index": 10,
+          "frequency_hz": 36.69724770642202,
+          "split": "train",
+          "baseline_time_nrmse": 0.17145767489193708,
+          "model_time_nrmse": 0.002928553502790019,
+          "baseline_complex_harmonic_nrmse": 0.1714566993799364,
+          "model_complex_harmonic_nrmse": 0.002869107803462548,
+          "minimum_phase_derivative": 0.8893019715008466
+        },
+        {
+          "pitch_index": 11,
+          "frequency_hz": 38.897893030794165,
+          "split": "test",
+          "baseline_time_nrmse": 0.16246192950691685,
+          "model_time_nrmse": 0.007202182080388809,
+          "baseline_complex_harmonic_nrmse": 0.1624609122338538,
+          "model_complex_harmonic_nrmse": 0.007167179642689307,
+          "minimum_phase_derivative": 0.8904592371748861
+        },
+        {
+          "pitch_index": 12,
+          "frequency_hz": 41.201716738197426,
+          "split": "train",
+          "baseline_time_nrmse": 0.1590406068205286,
+          "model_time_nrmse": 0.002984149468494971,
+          "baseline_complex_harmonic_nrmse": 0.15903952612650854,
+          "model_complex_harmonic_nrmse": 0.002924462950365267,
+          "minimum_phase_derivative": 0.8916026230299606
+        },
+        {
+          "pitch_index": 13,
+          "frequency_hz": 43.67606915377616,
+          "split": "validation",
+          "baseline_time_nrmse": 0.1497752140379984,
+          "model_time_nrmse": 0.01037386711851307,
+          "baseline_complex_harmonic_nrmse": 0.1497739559795285,
+          "model_complex_harmonic_nrmse": 0.01035184813952205,
+          "minimum_phase_derivative": 0.895963766509107
+        },
+        {
+          "pitch_index": 14,
+          "frequency_hz": 46.3768115942029,
+          "split": "train",
+          "baseline_time_nrmse": 0.1504809001171355,
+          "model_time_nrmse": 0.0029802846443638116,
+          "baseline_complex_harmonic_nrmse": 0.15047987127113685,
+          "model_complex_harmonic_nrmse": 0.0029266504642377527,
+          "minimum_phase_derivative": 0.9004428798901645
+        },
+        {
+          "pitch_index": 15,
+          "frequency_hz": 49.02962206332993,
+          "split": "test",
+          "baseline_time_nrmse": 0.13973523004216257,
+          "model_time_nrmse": 0.007196065330154299,
+          "baseline_complex_harmonic_nrmse": 0.13973405409228715,
+          "model_complex_harmonic_nrmse": 0.007172684454850041,
+          "minimum_phase_derivative": 0.900506841158509
+        },
+        {
+          "pitch_index": 16,
+          "frequency_hz": 51.94805194805195,
+          "split": "train",
+          "baseline_time_nrmse": 0.13483987075232096,
+          "model_time_nrmse": 0.0029774006554949403,
+          "baseline_complex_harmonic_nrmse": 0.13483863333462745,
+          "model_complex_harmonic_nrmse": 0.0029197659173335186,
+          "minimum_phase_derivative": 0.9005683433109015
+        },
+        {
+          "pitch_index": 17,
+          "frequency_hz": 54.982817869415804,
+          "split": "validation",
+          "baseline_time_nrmse": 0.12979431735777228,
+          "model_time_nrmse": 0.0047803002681248265,
+          "baseline_complex_harmonic_nrmse": 0.1297929197221892,
+          "model_complex_harmonic_nrmse": 0.004637080253998055,
+          "minimum_phase_derivative": 0.9017415040824964
+        },
+        {
+          "pitch_index": 18,
+          "frequency_hz": 58.25242718446602,
+          "split": "train",
+          "baseline_time_nrmse": 0.12169699025886607,
+          "model_time_nrmse": 0.002988402503421705,
+          "baseline_complex_harmonic_nrmse": 0.12169548633125696,
+          "model_complex_harmonic_nrmse": 0.0029255778062796177,
+          "minimum_phase_derivative": 0.9029350902234217
+        },
+        {
+          "pitch_index": 19,
+          "frequency_hz": 61.696658097686374,
+          "split": "test",
+          "baseline_time_nrmse": 0.12373341192192039,
+          "model_time_nrmse": 0.005195887125895649,
+          "baseline_complex_harmonic_nrmse": 0.1237316518189355,
+          "model_complex_harmonic_nrmse": 0.00515266375287264,
+          "minimum_phase_derivative": 0.9026300007091468
+        },
+        {
+          "pitch_index": 20,
+          "frequency_hz": 65.3061224489796,
+          "split": "train",
+          "baseline_time_nrmse": 0.12083387086688308,
+          "model_time_nrmse": 0.0033939168767728404,
+          "baseline_complex_harmonic_nrmse": 0.1208323872647805,
+          "model_complex_harmonic_nrmse": 0.003339884263342444,
+          "minimum_phase_derivative": 0.9023252166665119
+        },
+        {
+          "pitch_index": 21,
+          "frequency_hz": 69.26406926406926,
+          "split": "validation",
+          "baseline_time_nrmse": 0.11059752200562337,
+          "model_time_nrmse": 0.006358585068115785,
+          "baseline_complex_harmonic_nrmse": 0.11059588645188337,
+          "model_complex_harmonic_nrmse": 0.006297278031308779,
+          "minimum_phase_derivative": 0.9033567709002993
+        },
+        {
+          "pitch_index": 22,
+          "frequency_hz": 73.50689127105666,
+          "split": "train",
+          "baseline_time_nrmse": 0.10655694987703118,
+          "model_time_nrmse": 0.0029768196617027645,
+          "baseline_complex_harmonic_nrmse": 0.10655537853339582,
+          "model_complex_harmonic_nrmse": 0.0029193731617560407,
+          "minimum_phase_derivative": 0.9043867011588751
+        },
+        {
+          "pitch_index": 23,
+          "frequency_hz": 77.79578606158833,
+          "split": "test",
+          "baseline_time_nrmse": 0.10469085514829828,
+          "model_time_nrmse": 0.007622033921834286,
+          "baseline_complex_harmonic_nrmse": 0.10468934021844926,
+          "model_complex_harmonic_nrmse": 0.00758195351172247,
+          "minimum_phase_derivative": 0.9060571077417194
+        },
+        {
+          "pitch_index": 24,
+          "frequency_hz": 82.47422680412372,
+          "split": "train",
+          "baseline_time_nrmse": 0.09597923402661943,
+          "model_time_nrmse": 0.0029067670172669437,
+          "baseline_complex_harmonic_nrmse": 0.09597749176765241,
+          "model_complex_harmonic_nrmse": 0.002848113326901575,
+          "minimum_phase_derivative": 0.9077772330151345
+        },
+        {
+          "pitch_index": 25,
+          "frequency_hz": 87.27272727272727,
+          "split": "validation",
+          "baseline_time_nrmse": 0.09100869281012412,
+          "model_time_nrmse": 0.006371344996680328,
+          "baseline_complex_harmonic_nrmse": 0.09100711524654835,
+          "model_complex_harmonic_nrmse": 0.006339484163451665,
+          "minimum_phase_derivative": 0.906872823058008
+        },
+        {
+          "pitch_index": 26,
+          "frequency_hz": 92.3076923076923,
+          "split": "train",
+          "baseline_time_nrmse": 0.09171706667535258,
+          "model_time_nrmse": 0.0033782104484855083,
+          "baseline_complex_harmonic_nrmse": 0.0917150334314199,
+          "model_complex_harmonic_nrmse": 0.00332207524613808,
+          "minimum_phase_derivative": 0.9059638615535679
+        },
+        {
+          "pitch_index": 27,
+          "frequency_hz": 97.95918367346938,
+          "split": "test",
+          "baseline_time_nrmse": 0.09032186979869018,
+          "model_time_nrmse": 0.008521877740802463,
+          "baseline_complex_harmonic_nrmse": 0.0903199144687348,
+          "model_complex_harmonic_nrmse": 0.00845326570767466,
+          "minimum_phase_derivative": 0.904161027702783
+        },
+        {
+          "pitch_index": 28,
+          "frequency_hz": 103.8961038961039,
+          "split": "train",
+          "baseline_time_nrmse": 0.07921628420096852,
+          "model_time_nrmse": 0.003098408594188393,
+          "baseline_complex_harmonic_nrmse": 0.07921438782338296,
+          "model_complex_harmonic_nrmse": 0.003049228932629943,
+          "minimum_phase_derivative": 0.9023721715113857
+        },
+        {
+          "pitch_index": 29,
+          "frequency_hz": 109.83981693363845,
+          "split": "validation",
+          "baseline_time_nrmse": 0.0800071107393318,
+          "model_time_nrmse": 0.006985996407903123,
+          "baseline_complex_harmonic_nrmse": 0.0800047580228818,
+          "model_complex_harmonic_nrmse": 0.006955251294136917,
+          "minimum_phase_derivative": 0.9050642424578477
+        },
+        {
+          "pitch_index": 30,
+          "frequency_hz": 116.50485436893204,
+          "split": "train",
+          "baseline_time_nrmse": 0.07505856569306711,
+          "model_time_nrmse": 0.003107398283962057,
+          "baseline_complex_harmonic_nrmse": 0.07505629334779036,
+          "model_complex_harmonic_nrmse": 0.0030517014879106,
+          "minimum_phase_derivative": 0.9079135455158779
+        },
+        {
+          "pitch_index": 31,
+          "frequency_hz": 123.39331619537275,
+          "split": "test",
+          "baseline_time_nrmse": 0.07279885203876066,
+          "model_time_nrmse": 0.003634831659984409,
+          "baseline_complex_harmonic_nrmse": 0.07279650962633415,
+          "model_complex_harmonic_nrmse": 0.0035206021250573528,
+          "minimum_phase_derivative": 0.9043006846210698
+        },
+        {
+          "pitch_index": 32,
+          "frequency_hz": 130.79019073569484,
+          "split": "train",
+          "baseline_time_nrmse": 0.07126451768470157,
+          "model_time_nrmse": 0.002996835206449348,
+          "baseline_complex_harmonic_nrmse": 0.07126218837812451,
+          "model_complex_harmonic_nrmse": 0.002940636190411782,
+          "minimum_phase_derivative": 0.9006384375164806
+        },
+        {
+          "pitch_index": 33,
+          "frequency_hz": 138.328530259366,
+          "split": "validation",
+          "baseline_time_nrmse": 0.07054921998669907,
+          "model_time_nrmse": 0.004706990106885743,
+          "baseline_complex_harmonic_nrmse": 0.07054596029149517,
+          "model_complex_harmonic_nrmse": 0.004637403233384938,
+          "minimum_phase_derivative": 0.9036453994165565
+        },
+        {
+          "pitch_index": 34,
+          "frequency_hz": 146.34146341463415,
+          "split": "train",
+          "baseline_time_nrmse": 0.0709837479423785,
+          "model_time_nrmse": 0.004598103727777875,
+          "baseline_complex_harmonic_nrmse": 0.07098109206278344,
+          "model_complex_harmonic_nrmse": 0.0045567109809999925,
+          "minimum_phase_derivative": 0.9066421627191492
+        },
+        {
+          "pitch_index": 35,
+          "frequency_hz": 155.84415584415584,
+          "split": "test",
+          "baseline_time_nrmse": 0.06014675745927052,
+          "model_time_nrmse": 0.009303153260660512,
+          "baseline_complex_harmonic_nrmse": 0.06014359609361522,
+          "model_complex_harmonic_nrmse": 0.009269891678867378,
+          "minimum_phase_derivative": 0.9081587234262727
+        },
+        {
+          "pitch_index": 36,
+          "frequency_hz": 164.3835616438356,
+          "split": "train",
+          "baseline_time_nrmse": 0.05332686973452279,
+          "model_time_nrmse": 0.004456357849192325,
+          "baseline_complex_harmonic_nrmse": 0.053323509025050154,
+          "model_complex_harmonic_nrmse": 0.004415845254532957,
+          "minimum_phase_derivative": 0.9094446477472413
+        },
+        {
+          "pitch_index": 37,
+          "frequency_hz": 174.54545454545453,
+          "split": "validation",
+          "baseline_time_nrmse": 0.05545459766735137,
+          "model_time_nrmse": 0.005231973847977067,
+          "baseline_complex_harmonic_nrmse": 0.05545098012014882,
+          "model_complex_harmonic_nrmse": 0.005193345372927038,
+          "minimum_phase_derivative": 0.9054616200822384
+        },
+        {
+          "pitch_index": 38,
+          "frequency_hz": 184.6153846153846,
+          "split": "train",
+          "baseline_time_nrmse": 0.059249429739728965,
+          "model_time_nrmse": 0.0034967864880682195,
+          "baseline_complex_harmonic_nrmse": 0.059246515252731,
+          "model_complex_harmonic_nrmse": 0.00344687517213242,
+          "minimum_phase_derivative": 0.9017293485728358
+        },
+        {
+          "pitch_index": 39,
+          "frequency_hz": 195.91836734693877,
+          "split": "test",
+          "baseline_time_nrmse": 0.05126435977821027,
+          "model_time_nrmse": 0.008430177576894564,
+          "baseline_complex_harmonic_nrmse": 0.0512612932506268,
+          "model_complex_harmonic_nrmse": 0.008393378279152562,
+          "minimum_phase_derivative": 0.8980410535358027
+        },
+        {
+          "pitch_index": 40,
+          "frequency_hz": 207.7922077922078,
+          "split": "train",
+          "baseline_time_nrmse": 0.051236028573852205,
+          "model_time_nrmse": 0.0036263474669463933,
+          "baseline_complex_harmonic_nrmse": 0.05123122532681186,
+          "model_complex_harmonic_nrmse": 0.003557658145551457,
+          "minimum_phase_derivative": 0.894369644029926
+        },
+        {
+          "pitch_index": 41,
+          "frequency_hz": 220.1834862385321,
+          "split": "validation",
+          "baseline_time_nrmse": 0.04623140501124677,
+          "model_time_nrmse": 0.016915008313522065,
+          "baseline_complex_harmonic_nrmse": 0.0462262100641553,
+          "model_complex_harmonic_nrmse": 0.016892395802599096,
+          "minimum_phase_derivative": 0.8945580931763054
+        },
+        {
+          "pitch_index": 42,
+          "frequency_hz": 233.0097087378641,
+          "split": "train",
+          "baseline_time_nrmse": 0.05588534981504258,
+          "model_time_nrmse": 0.0036114290391457177,
+          "baseline_complex_harmonic_nrmse": 0.055882126797514226,
+          "model_complex_harmonic_nrmse": 0.0035610486237889634,
+          "minimum_phase_derivative": 0.8947400596365969
+        },
+        {
+          "pitch_index": 43,
+          "frequency_hz": 247.42268041237114,
+          "split": "test",
+          "baseline_time_nrmse": 0.045995315234273804,
+          "model_time_nrmse": 0.026343571920742104,
+          "baseline_complex_harmonic_nrmse": 0.045990842104165,
+          "model_complex_harmonic_nrmse": 0.026332863260176448,
+          "minimum_phase_derivative": 0.9025746785715674
+        },
+        {
+          "pitch_index": 44,
+          "frequency_hz": 260.8695652173913,
+          "split": "train",
+          "baseline_time_nrmse": 0.0582124814598696,
+          "model_time_nrmse": 0.004635816100566654,
+          "baseline_complex_harmonic_nrmse": 0.05820879348602741,
+          "model_complex_harmonic_nrmse": 0.0045891155627745825,
+          "minimum_phase_derivative": 0.9094562815164106
+        },
+        {
+          "pitch_index": 45,
+          "frequency_hz": 277.4566473988439,
+          "split": "validation",
+          "baseline_time_nrmse": 0.04566296795193661,
+          "model_time_nrmse": 0.0232406086749405,
+          "baseline_complex_harmonic_nrmse": 0.04565726120563922,
+          "model_complex_harmonic_nrmse": 0.023220025425713105,
+          "minimum_phase_derivative": 0.9029361237570454
+        },
+        {
+          "pitch_index": 46,
+          "frequency_hz": 292.6829268292683,
+          "split": "train",
+          "baseline_time_nrmse": 0.05347040237219178,
+          "model_time_nrmse": 0.004182259822042166,
+          "baseline_complex_harmonic_nrmse": 0.05346487373313937,
+          "model_complex_harmonic_nrmse": 0.004110767068372281,
+          "minimum_phase_derivative": 0.8972810281454143
+        },
+        {
+          "pitch_index": 47,
+          "frequency_hz": 311.68831168831167,
+          "split": "test",
+          "baseline_time_nrmse": 0.042485094837197805,
+          "model_time_nrmse": 0.017104405157893115,
+          "baseline_complex_harmonic_nrmse": 0.042480458313465405,
+          "model_complex_harmonic_nrmse": 0.017060688718048368,
+          "minimum_phase_derivative": 0.8963419263448876
+        },
+        {
+          "pitch_index": 48,
+          "frequency_hz": 328.7671232876712,
+          "split": "train",
+          "baseline_time_nrmse": 0.03966167683360135,
+          "model_time_nrmse": 0.003862712190453709,
+          "baseline_complex_harmonic_nrmse": 0.03965430537329987,
+          "model_complex_harmonic_nrmse": 0.003786153512332182,
+          "minimum_phase_derivative": 0.8955396570187519
+        },
+        {
+          "pitch_index": 49,
+          "frequency_hz": 347.82608695652175,
+          "split": "validation",
+          "baseline_time_nrmse": 0.03775653870700821,
+          "model_time_nrmse": 0.014146233303459457,
+          "baseline_complex_harmonic_nrmse": 0.03775089587765343,
+          "model_complex_harmonic_nrmse": 0.014128609516338915,
+          "minimum_phase_derivative": 0.8956978846459405
+        },
+        {
+          "pitch_index": 50,
+          "frequency_hz": 369.2307692307692,
+          "split": "train",
+          "baseline_time_nrmse": 0.04609040559377708,
+          "model_time_nrmse": 0.004022217524861073,
+          "baseline_complex_harmonic_nrmse": 0.04608611365487542,
+          "model_complex_harmonic_nrmse": 0.003972629108822344,
+          "minimum_phase_derivative": 0.8958652998753042
+        },
+        {
+          "pitch_index": 51,
+          "frequency_hz": 390.2439024390244,
+          "split": "test",
+          "baseline_time_nrmse": 0.046383487276432975,
+          "model_time_nrmse": 0.02468539571413797,
+          "baseline_complex_harmonic_nrmse": 0.04637843313600216,
+          "model_complex_harmonic_nrmse": 0.024675529871444175,
+          "minimum_phase_derivative": 0.8980947111129114
+        },
+        {
+          "pitch_index": 52,
+          "frequency_hz": 413.7931034482759,
+          "split": "train",
+          "baseline_time_nrmse": 0.0412258308479788,
+          "model_time_nrmse": 0.005249601686057367,
+          "baseline_complex_harmonic_nrmse": 0.0412186672324441,
+          "model_complex_harmonic_nrmse": 0.00519294983637972,
+          "minimum_phase_derivative": 0.900441990148476
+        },
+        {
+          "pitch_index": 53,
+          "frequency_hz": 440.3669724770642,
+          "split": "validation",
+          "baseline_time_nrmse": 0.0417534038336426,
+          "model_time_nrmse": 0.01579317907133892,
+          "baseline_complex_harmonic_nrmse": 0.04174657551368464,
+          "model_complex_harmonic_nrmse": 0.015774588721283112,
+          "minimum_phase_derivative": 0.893820997813282
+        },
+        {
+          "pitch_index": 54,
+          "frequency_hz": 466.0194174757282,
+          "split": "train",
+          "baseline_time_nrmse": 0.042341789710217355,
+          "model_time_nrmse": 0.004364085128033267,
+          "baseline_complex_harmonic_nrmse": 0.04233792223622222,
+          "model_complex_harmonic_nrmse": 0.004326333374809997,
+          "minimum_phase_derivative": 0.8877683947082962
+        },
+        {
+          "pitch_index": 55,
+          "frequency_hz": 494.8453608247423,
+          "split": "test",
+          "baseline_time_nrmse": 0.040357873772234536,
+          "model_time_nrmse": 0.019081586102611226,
+          "baseline_complex_harmonic_nrmse": 0.04035124001046124,
+          "model_complex_harmonic_nrmse": 0.019059283845571623,
+          "minimum_phase_derivative": 0.8945160384351484
+        },
+        {
+          "pitch_index": 56,
+          "frequency_hz": 521.7391304347826,
+          "split": "train",
+          "baseline_time_nrmse": 0.0411303024590057,
+          "model_time_nrmse": 0.0050614701828113305,
+          "baseline_complex_harmonic_nrmse": 0.04112183852650273,
+          "model_complex_harmonic_nrmse": 0.004992107970416552,
+          "minimum_phase_derivative": 0.9004468604204413
+        },
+        {
+          "pitch_index": 57,
+          "frequency_hz": 551.7241379310345,
+          "split": "validation",
+          "baseline_time_nrmse": 0.044969301371667235,
+          "model_time_nrmse": 0.008712091745700748,
+          "baseline_complex_harmonic_nrmse": 0.044960734224171975,
+          "model_complex_harmonic_nrmse": 0.008665335817400909,
+          "minimum_phase_derivative": 0.9046486243067133
+        },
+        {
+          "pitch_index": 58,
+          "frequency_hz": 585.3658536585366,
+          "split": "train",
+          "baseline_time_nrmse": 0.04314665957258638,
+          "model_time_nrmse": 0.005320612206411252,
+          "baseline_complex_harmonic_nrmse": 0.04314076787241447,
+          "model_complex_harmonic_nrmse": 0.005272532677593318,
+          "minimum_phase_derivative": 0.9090991544101271
+        },
+        {
+          "pitch_index": 59,
+          "frequency_hz": 615.3846153846154,
+          "split": "test",
+          "baseline_time_nrmse": 0.04511045939386249,
+          "model_time_nrmse": 0.044780042806723624,
+          "baseline_complex_harmonic_nrmse": 0.0450968688708302,
+          "model_complex_harmonic_nrmse": 0.04476193312530211,
+          "minimum_phase_derivative": 0.9052029514228991
+        },
+        {
+          "pitch_index": 60,
+          "frequency_hz": 657.5342465753424,
+          "split": "train",
+          "baseline_time_nrmse": 0.039195083174216404,
+          "model_time_nrmse": 0.005664720775411339,
+          "baseline_complex_harmonic_nrmse": 0.039186959154773084,
+          "model_complex_harmonic_nrmse": 0.005608148084299711,
+          "minimum_phase_derivative": 0.9000378289094431
+        },
+        {
+          "pitch_index": 61,
+          "frequency_hz": 695.6521739130435,
+          "split": "validation",
+          "baseline_time_nrmse": 0.038673231697854915,
+          "model_time_nrmse": 0.007840116894808737,
+          "baseline_complex_harmonic_nrmse": 0.03866173262053659,
+          "model_complex_harmonic_nrmse": 0.007731521513550465,
+          "minimum_phase_derivative": 0.8974035893360166
+        },
+        {
+          "pitch_index": 62,
+          "frequency_hz": 738.4615384615385,
+          "split": "train",
+          "baseline_time_nrmse": 0.03994949886985636,
+          "model_time_nrmse": 0.005976377240684298,
+          "baseline_complex_harmonic_nrmse": 0.03993827569875874,
+          "model_complex_harmonic_nrmse": 0.005900770256272439,
+          "minimum_phase_derivative": 0.8946075905497829
+        },
+        {
+          "pitch_index": 63,
+          "frequency_hz": 786.8852459016393,
+          "split": "test",
+          "baseline_time_nrmse": 0.0453456930266105,
+          "model_time_nrmse": 0.02453392154320345,
+          "baseline_complex_harmonic_nrmse": 0.045327686880112766,
+          "model_complex_harmonic_nrmse": 0.024485489514319392,
+          "minimum_phase_derivative": 0.8982804578428141
+        },
+        {
+          "pitch_index": 64,
+          "frequency_hz": 827.5862068965517,
+          "split": "train",
+          "baseline_time_nrmse": 0.060185786571437035,
+          "model_time_nrmse": 0.006158967244107152,
+          "baseline_complex_harmonic_nrmse": 0.060178533378406604,
+          "model_complex_harmonic_nrmse": 0.006087422379078244,
+          "minimum_phase_derivative": 0.9011953954978839
+        },
+        {
+          "pitch_index": 65,
+          "frequency_hz": 872.7272727272727,
+          "split": "validation",
+          "baseline_time_nrmse": 0.04021646021991859,
+          "model_time_nrmse": 0.05666492066424904,
+          "baseline_complex_harmonic_nrmse": 0.0402014763640899,
+          "model_complex_harmonic_nrmse": 0.05665331013986083,
+          "minimum_phase_derivative": 0.9183372891904874
+        },
+        {
+          "pitch_index": 66,
+          "frequency_hz": 923.0769230769231,
+          "split": "train",
+          "baseline_time_nrmse": 0.0654458004930153,
+          "model_time_nrmse": 0.00954663612995518,
+          "baseline_complex_harmonic_nrmse": 0.0654328546709139,
+          "model_complex_harmonic_nrmse": 0.009457102959945066,
+          "minimum_phase_derivative": 0.9361830868475038
+        },
+        {
+          "pitch_index": 67,
+          "frequency_hz": 979.5918367346939,
+          "split": "test",
+          "baseline_time_nrmse": 0.04508348390483127,
+          "model_time_nrmse": 0.031377416929495215,
+          "baseline_complex_harmonic_nrmse": 0.04506051210078079,
+          "model_complex_harmonic_nrmse": 0.03134323837386212,
+          "minimum_phase_derivative": 0.9207636289772354
+        },
+        {
+          "pitch_index": 68,
+          "frequency_hz": 1043.4782608695652,
+          "split": "train",
+          "baseline_time_nrmse": 0.05455937996048364,
+          "model_time_nrmse": 0.007725520357595684,
+          "baseline_complex_harmonic_nrmse": 0.05454475548905901,
+          "model_complex_harmonic_nrmse": 0.007621247022882018,
+          "minimum_phase_derivative": 0.9041227760771868
+        },
+        {
+          "pitch_index": 69,
+          "frequency_hz": 1090.909090909091,
+          "split": "validation",
+          "baseline_time_nrmse": 0.09219229285062164,
+          "model_time_nrmse": 0.10214435697016,
+          "baseline_complex_harmonic_nrmse": 0.09216762449970027,
+          "model_complex_harmonic_nrmse": 0.10211920990339914,
+          "minimum_phase_derivative": 0.9023895079513911
+        },
+        {
+          "pitch_index": 70,
+          "frequency_hz": 1170.7317073170732,
+          "split": "train",
+          "baseline_time_nrmse": 0.045643583685199704,
+          "model_time_nrmse": 0.007898429370013168,
+          "baseline_complex_harmonic_nrmse": 0.045619930965695665,
+          "model_complex_harmonic_nrmse": 0.0077602953942053805,
+          "minimum_phase_derivative": 0.8996293811224174
+        },
+        {
+          "pitch_index": 71,
+          "frequency_hz": 1263.157894736842,
+          "split": "test",
+          "baseline_time_nrmse": 0.07658242574174003,
+          "model_time_nrmse": 0.07234795872325299,
+          "baseline_complex_harmonic_nrmse": 0.0765305077455419,
+          "model_complex_harmonic_nrmse": 0.07228798761253552,
+          "minimum_phase_derivative": 0.8996293811224174
+        }
+      ],
+      "metrics": {
+        "train": {
+          "baseline_time_nrmse": {
+            "median": 0.0682147742176969,
+            "maximum": 0.21632973794847446
+          },
+          "model_time_nrmse": {
+            "median": 0.003694601579046091,
+            "maximum": 0.00954663612995518
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.06820697336684867,
+            "maximum": 0.21632974039197908
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.0036594246378292353,
+            "maximum": 0.009457102959945066
+          },
+          "time_nrmse_relative_improvement_median": 0.9381799158974164
+        },
+        "validation": {
+          "baseline_time_nrmse": {
+            "median": 0.07527816536301543,
+            "maximum": 0.20944439372381896
+          },
+          "model_time_nrmse": {
+            "median": 0.00857904943214702,
+            "maximum": 0.10214435697016
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.07527535915718848,
+            "maximum": 0.20944440613831175
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.008542703912356661,
+            "maximum": 0.10211920990339914
+          },
+          "time_nrmse_relative_improvement_median": 0.8639108024588498
+        },
+        "test": {
+          "baseline_time_nrmse": {
+            "median": 0.0664728047490156,
+            "maximum": 0.20569090170219978
+          },
+          "model_time_nrmse": {
+            "median": 0.008912515500731487,
+            "maximum": 0.07234795872325299
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.06647005285997468,
+            "maximum": 0.20569026612153013
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.008861578693271019,
+            "maximum": 0.07228798761253552
+          },
+          "time_nrmse_relative_improvement_median": 0.8404402892516697
+        },
+        "held_out": {
+          "baseline_time_nrmse": {
+            "median": 0.07167403601272987,
+            "maximum": 0.20944439372381896
+          },
+          "model_time_nrmse": {
+            "median": 0.008616984743251606,
+            "maximum": 0.10214435697016
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.07167123495891466,
+            "maximum": 0.20944440613831175
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.008559300762537785,
+            "maximum": 0.10211920990339914
+          },
+          "time_nrmse_relative_improvement_median": 0.8404402892516697
+        }
+      }
+    },
+    "square": {
+      "source_npz_sha256": "9fffe0f3ad348c7f9f0f02d7207919a4a08236a8fe9ffd8f7c970c9879b1d193",
+      "source_pickle_md5": "bd9186d765316b5fd2165c03a7611fa5",
+      "fit_knot_count": 36,
+      "knots": [
+        {
+          "pitch_index": 0,
+          "frequency_hz": 20.58319039451115,
+          "log2_frequency": 4.363394712182747,
+          "phase_a": 0.0,
+          "phase_b": -0.494199009370079,
+          "phase_offset_cycles": -1.0315622996464569e-07,
+          "lowpass_hz": 800.0000000000006,
+          "highpass_hz": 32.15603482427761,
+          "pole_hz": 30.61338930569802,
+          "zero_hz": 156.11721720831474,
+          "gain": 0.20000000000000004,
+          "dc": -0.0012569053914290862,
+          "fit": {
+            "time_nrmse": 0.3416680278993989,
+            "complex_harmonic_nrmse": 0.3416680293799843,
+            "minimum_phase_derivative": 0.505800990629921,
+            "optimizer_cost": 134.08591676692376,
+            "optimizer_evaluations": 57,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 2,
+          "frequency_hz": 23.19961333977767,
+          "log2_frequency": 4.5360288555232335,
+          "phase_a": 0.0,
+          "phase_b": -0.494199009370079,
+          "phase_offset_cycles": -1.0315622996464569e-07,
+          "lowpass_hz": 988.8351981843821,
+          "highpass_hz": 22.401634862214994,
+          "pole_hz": 63.35808721916503,
+          "zero_hz": 81.31333005037494,
+          "gain": 0.512817865586255,
+          "dc": -0.00017247532974806745,
+          "fit": {
+            "time_nrmse": 0.09427656938421516,
+            "complex_harmonic_nrmse": 0.09427590507378539,
+            "minimum_phase_derivative": 0.505800990629921,
+            "optimizer_cost": 10.118307168272047,
+            "optimizer_evaluations": 240,
+            "optimizer_success": false
+          }
+        },
+        {
+          "pitch_index": 4,
+          "frequency_hz": 26.016260162601625,
+          "log2_frequency": 4.7013416844354845,
+          "phase_a": 0.0,
+          "phase_b": -0.494199009370078,
+          "phase_offset_cycles": -1.0315622913359546e-07,
+          "lowpass_hz": 1727.556955998669,
+          "highpass_hz": 30.273936298590336,
+          "pole_hz": 30.275186223952666,
+          "zero_hz": 50.131565476933616,
+          "gain": 0.5334863178968438,
+          "dc": 0.00018389324293366371,
+          "fit": {
+            "time_nrmse": 0.06366238664011552,
+            "complex_harmonic_nrmse": 0.06365643652648707,
+            "minimum_phase_derivative": 0.505800990629922,
+            "optimizer_cost": 4.562703552406241,
+            "optimizer_evaluations": 31,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 6,
+          "frequency_hz": 29.143897996357012,
+          "log2_frequency": 4.865121945656888,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937007655,
+          "phase_offset_cycles": -1.0315622773518765e-07,
+          "lowpass_hz": 1918.6927170045003,
+          "highpass_hz": 29.639188084411906,
+          "pole_hz": 29.638497988514157,
+          "zero_hz": 47.43270851823318,
+          "gain": 0.5544355744182642,
+          "dc": -0.00013977305343360058,
+          "fit": {
+            "time_nrmse": 0.06239158200768284,
+            "complex_harmonic_nrmse": 0.06238511004700845,
+            "minimum_phase_derivative": 0.5058009906299235,
+            "optimizer_cost": 4.384826852179831,
+            "optimizer_evaluations": 26,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 8,
+          "frequency_hz": 32.69754768392371,
+          "log2_frequency": 5.031110532540031,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937007955,
+          "phase_offset_cycles": -1.0315622985421838e-07,
+          "lowpass_hz": 2637.627768622887,
+          "highpass_hz": 29.30474026832418,
+          "pole_hz": 29.303513859505234,
+          "zero_hz": 45.84254066795415,
+          "gain": 0.5747654829765544,
+          "dc": 0.00011689156144711887,
+          "fit": {
+            "time_nrmse": 0.05129658851288784,
+            "complex_harmonic_nrmse": 0.05128688400372919,
+            "minimum_phase_derivative": 0.5058009906299205,
+            "optimizer_cost": 2.9546030005368795,
+            "optimizer_evaluations": 24,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 10,
+          "frequency_hz": 36.69724770642202,
+          "log2_frequency": 5.197599959885161,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093700784,
+          "phase_offset_cycles": -1.0315623957199025e-07,
+          "lowpass_hz": 3337.819369619503,
+          "highpass_hz": 29.090404653854524,
+          "pole_hz": 29.091347627845153,
+          "zero_hz": 44.64292799772342,
+          "gain": 0.5949737502007826,
+          "dc": -0.00017419751247871318,
+          "fit": {
+            "time_nrmse": 0.04713626156414785,
+            "complex_harmonic_nrmse": 0.04712528282277058,
+            "minimum_phase_derivative": 0.5058009906299217,
+            "optimizer_cost": 2.4855579140968445,
+            "optimizer_evaluations": 29,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 12,
+          "frequency_hz": 41.201716738197426,
+          "log2_frequency": 5.364632545841601,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937051775,
+          "phase_offset_cycles": -1.0315620704165532e-07,
+          "lowpass_hz": 3612.0712684022715,
+          "highpass_hz": 28.94060432033333,
+          "pole_hz": 28.93584990038263,
+          "zero_hz": 43.63577120009591,
+          "gain": 0.6179325038881146,
+          "dc": 0.0001765445840646862,
+          "fit": {
+            "time_nrmse": 0.04888563917214011,
+            "complex_harmonic_nrmse": 0.04887031817382217,
+            "minimum_phase_derivative": 0.5058009906294822,
+            "optimizer_cost": 2.687183760578682,
+            "optimizer_evaluations": 20,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 14,
+          "frequency_hz": 46.33204633204633,
+          "log2_frequency": 5.533938497696689,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093705637,
+          "phase_offset_cycles": -1.0315621023658547e-07,
+          "lowpass_hz": 3852.647154005794,
+          "highpass_hz": 29.05439103519204,
+          "pole_hz": 29.044608023513167,
+          "zero_hz": 43.38779782696683,
+          "gain": 0.6369199995572712,
+          "dc": -0.0028691602037724806,
+          "fit": {
+            "time_nrmse": 0.05248019568434366,
+            "complex_harmonic_nrmse": 0.05246328513614362,
+            "minimum_phase_derivative": 0.5058009906294363,
+            "optimizer_cost": 3.103002558120122,
+            "optimizer_evaluations": 22,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 16,
+          "frequency_hz": 51.94805194805195,
+          "log2_frequency": 5.698997743967186,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093705755,
+          "phase_offset_cycles": -1.0315619730987716e-07,
+          "lowpass_hz": 4369.947909119949,
+          "highpass_hz": 28.97366989910275,
+          "pole_hz": 28.971896407169723,
+          "zero_hz": 42.70522987410453,
+          "gain": 0.6614934787053866,
+          "dc": -0.0002693931255635107,
+          "fit": {
+            "time_nrmse": 0.04739844900395182,
+            "complex_harmonic_nrmse": 0.047376779768704705,
+            "minimum_phase_derivative": 0.5058009906294245,
+            "optimizer_cost": 2.527105050630553,
+            "optimizer_evaluations": 27,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 18,
+          "frequency_hz": 58.3232077764277,
+          "log2_frequency": 5.865998164961617,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937089184,
+          "phase_offset_cycles": -1.0315637580905408e-07,
+          "lowpass_hz": 5227.710733830922,
+          "highpass_hz": 29.28620353091766,
+          "pole_hz": 29.286314349920733,
+          "zero_hz": 43.04075312725959,
+          "gain": 0.685591549218733,
+          "dc": 0.00047306187479989603,
+          "fit": {
+            "time_nrmse": 0.04392528179058491,
+            "complex_harmonic_nrmse": 0.043893291171983644,
+            "minimum_phase_derivative": 0.5058009906291081,
+            "optimizer_cost": 2.1646962538214196,
+            "optimizer_evaluations": 27,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 20,
+          "frequency_hz": 65.39509536784742,
+          "log2_frequency": 6.031110532540031,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937075356,
+          "phase_offset_cycles": -1.0315628212833252e-07,
+          "lowpass_hz": 6036.921664020815,
+          "highpass_hz": 30.459979591477158,
+          "pole_hz": 30.46243605517232,
+          "zero_hz": 45.36949095398595,
+          "gain": 0.7034389492294114,
+          "dc": -0.0019775648011091107,
+          "fit": {
+            "time_nrmse": 0.04844116185401753,
+            "complex_harmonic_nrmse": 0.04841471552341164,
+            "minimum_phase_derivative": 0.5058009906292464,
+            "optimizer_cost": 2.637744936672978,
+            "optimizer_evaluations": 29,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 22,
+          "frequency_hz": 73.50689127105666,
+          "log2_frequency": 6.199807603836812,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093708111,
+          "phase_offset_cycles": -1.0315629996035596e-07,
+          "lowpass_hz": 6013.538178225233,
+          "highpass_hz": 30.889024628272924,
+          "pole_hz": 30.898258153193286,
+          "zero_hz": 45.88667581241165,
+          "gain": 0.7253363644821833,
+          "dc": 0.003844117534754332,
+          "fit": {
+            "time_nrmse": 0.050949099974995714,
+            "complex_harmonic_nrmse": 0.05091122671015804,
+            "minimum_phase_derivative": 0.5058009906291889,
+            "optimizer_cost": 2.9271863790215873,
+            "optimizer_evaluations": 19,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 24,
+          "frequency_hz": 82.47422680412372,
+          "log2_frequency": 6.365871442474959,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093706199,
+          "phase_offset_cycles": -1.0315670994258748e-07,
+          "lowpass_hz": 5567.106906096578,
+          "highpass_hz": 31.036573519910732,
+          "pole_hz": 31.04271325949669,
+          "zero_hz": 45.82818418967638,
+          "gain": 0.7468808982292825,
+          "dc": 0.000277025585546653,
+          "fit": {
+            "time_nrmse": 0.044314618866170455,
+            "complex_harmonic_nrmse": 0.044247188230511075,
+            "minimum_phase_derivative": 0.5058009906293801,
+            "optimizer_cost": 2.2077743709694717,
+            "optimizer_evaluations": 27,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 26,
+          "frequency_hz": 92.48554913294798,
+          "log2_frequency": 6.531156057025362,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093707475,
+          "phase_offset_cycles": -1.0315684260842481e-07,
+          "lowpass_hz": 5522.497215773873,
+          "highpass_hz": 31.881789476284258,
+          "pole_hz": 31.89805824602293,
+          "zero_hz": 47.364900412492595,
+          "gain": 0.7698664134782538,
+          "dc": 0.0004066301730745181,
+          "fit": {
+            "time_nrmse": 0.04590899034208173,
+            "complex_harmonic_nrmse": 0.04578968752723394,
+            "minimum_phase_derivative": 0.5058009906292524,
+            "optimizer_cost": 2.3855415645271565,
+            "optimizer_evaluations": 21,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 28,
+          "frequency_hz": 103.67170626349892,
+          "log2_frequency": 6.6958784021230064,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937066025,
+          "phase_offset_cycles": -1.0315702458044191e-07,
+          "lowpass_hz": 6484.770173693655,
+          "highpass_hz": 33.72568321498012,
+          "pole_hz": 33.74368575379167,
+          "zero_hz": 51.00626588045874,
+          "gain": 0.7834464986095768,
+          "dc": 0.0002790725393424509,
+          "fit": {
+            "time_nrmse": 0.04250893633129178,
+            "complex_harmonic_nrmse": 0.042379455984447326,
+            "minimum_phase_derivative": 0.5058009906293397,
+            "optimizer_cost": 2.0332503617206816,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 30,
+          "frequency_hz": 116.50485436893204,
+          "log2_frequency": 6.8642462582000245,
+          "phase_a": 0.0,
+          "phase_b": -0.494199009370653,
+          "phase_offset_cycles": -1.031569402705572e-07,
+          "lowpass_hz": 10266.8386676497,
+          "highpass_hz": 38.21820974776058,
+          "pole_hz": 38.19786911102255,
+          "zero_hz": 60.44925752101205,
+          "gain": 0.7932194985442991,
+          "dc": 0.0004492454702358373,
+          "fit": {
+            "time_nrmse": 0.04548819768964301,
+            "complex_harmonic_nrmse": 0.04539105891741826,
+            "minimum_phase_derivative": 0.505800990629347,
+            "optimizer_cost": 2.3269144558318358,
+            "optimizer_evaluations": 30,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 32,
+          "frequency_hz": 130.79019073569484,
+          "log2_frequency": 7.031110532540031,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093706073,
+          "phase_offset_cycles": -1.0315697656149817e-07,
+          "lowpass_hz": 7596.034500291791,
+          "highpass_hz": 37.21603548173619,
+          "pole_hz": 37.20903608964715,
+          "zero_hz": 57.75060640018578,
+          "gain": 0.8180180049785272,
+          "dc": -0.00016549618737826677,
+          "fit": {
+            "time_nrmse": 0.041682665595591396,
+            "complex_harmonic_nrmse": 0.0415769954237393,
+            "minimum_phase_derivative": 0.5058009906293928,
+            "optimizer_cost": 1.9716781628814588,
+            "optimizer_evaluations": 25,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 34,
+          "frequency_hz": 146.78899082568807,
+          "log2_frequency": 7.197599959885161,
+          "phase_a": 0.0,
+          "phase_b": -0.49419900937064126,
+          "phase_offset_cycles": -1.0315688303787185e-07,
+          "lowpass_hz": 10842.465090746058,
+          "highpass_hz": 44.98929124669868,
+          "pole_hz": 44.99047429660455,
+          "zero_hz": 74.17900780676098,
+          "gain": 0.8164870237913205,
+          "dc": 0.0001695349524197809,
+          "fit": {
+            "time_nrmse": 0.05229015539362027,
+            "complex_harmonic_nrmse": 0.05218826431848556,
+            "minimum_phase_derivative": 0.5058009906293588,
+            "optimizer_cost": 3.1106130832320273,
+            "optimizer_evaluations": 26,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 36,
+          "frequency_hz": 164.3835616438356,
+          "log2_frequency": 7.3609222265032255,
+          "phase_a": 0.0,
+          "phase_b": -0.4941990093706958,
+          "phase_offset_cycles": -1.0315706365072833e-07,
+          "lowpass_hz": 6934.494822962221,
+          "highpass_hz": 42.129351244721256,
+          "pole_hz": 42.137136184900854,
+          "zero_hz": 67.18427923007233,
+          "gain": 0.8358607907682637,
+          "dc": 0.00020811156150557508,
+          "fit": {
+            "time_nrmse": 0.04644711871570155,
+            "complex_harmonic_nrmse": 0.04610718198261469,
+            "minimum_phase_derivative": 0.5058009906293042,
+            "optimizer_cost": 2.4657951961398643,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 38,
+          "frequency_hz": 185.32818532818533,
+          "log2_frequency": 7.533938497696689,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116427918,
+          "phase_offset_cycles": 0.0005376927165391424,
+          "lowpass_hz": 9995.523867304124,
+          "highpass_hz": 44.28323233470544,
+          "pole_hz": 44.27032300648057,
+          "zero_hz": 71.55926276994279,
+          "gain": 0.8628201703200341,
+          "dc": -0.0007291715746760019,
+          "fit": {
+            "time_nrmse": 0.029972068342623195,
+            "complex_harmonic_nrmse": 0.02935261988391758,
+            "minimum_phase_derivative": 0.5048289883572081,
+            "optimizer_cost": 1.0281352565456512,
+            "optimizer_evaluations": 54,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 40,
+          "frequency_hz": 206.89655172413794,
+          "log2_frequency": 7.692765790255671,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116426919,
+          "phase_offset_cycles": 0.0005376927164506287,
+          "lowpass_hz": 8231.821358580264,
+          "highpass_hz": 53.134657551484416,
+          "pole_hz": 53.16214366387553,
+          "zero_hz": 89.33220830602578,
+          "gain": 0.8561643742551766,
+          "dc": 0.000773034970052322,
+          "fit": {
+            "time_nrmse": 0.05041521135402648,
+            "complex_harmonic_nrmse": 0.05004798301350494,
+            "minimum_phase_derivative": 0.504828988357308,
+            "optimizer_cost": 2.9183583375963176,
+            "optimizer_evaluations": 23,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 42,
+          "frequency_hz": 233.0097087378641,
+          "log2_frequency": 7.8642462582000245,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116427414,
+          "phase_offset_cycles": 0.0005376927164312899,
+          "lowpass_hz": 8964.79628881585,
+          "highpass_hz": 54.056737176374135,
+          "pole_hz": 54.05333883117029,
+          "zero_hz": 90.87361043084324,
+          "gain": 0.8759150706144873,
+          "dc": 3.8709094951627776e-07,
+          "fit": {
+            "time_nrmse": 0.03656491386913673,
+            "complex_harmonic_nrmse": 0.036240410033351926,
+            "minimum_phase_derivative": 0.5048289883572585,
+            "optimizer_cost": 1.5343546289252916,
+            "optimizer_evaluations": 25,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 44,
+          "frequency_hz": 262.2950819672131,
+          "log2_frequency": 8.0350469470992,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116426579,
+          "phase_offset_cycles": 0.0005376927165003964,
+          "lowpass_hz": 9543.547224289186,
+          "highpass_hz": 50.50745258471546,
+          "pole_hz": 50.52764424202998,
+          "zero_hz": 82.99921950262674,
+          "gain": 0.8986086526125721,
+          "dc": -0.0003151656865156838,
+          "fit": {
+            "time_nrmse": 0.02758585946654125,
+            "complex_harmonic_nrmse": 0.02640482946665636,
+            "minimum_phase_derivative": 0.504828988357342,
+            "optimizer_cost": 0.8712542182654358,
+            "optimizer_evaluations": 25,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 46,
+          "frequency_hz": 292.6829268292683,
+          "log2_frequency": 8.19319478076516,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116426653,
+          "phase_offset_cycles": 0.0005376927164893846,
+          "lowpass_hz": 9176.19440658706,
+          "highpass_hz": 73.70709277009433,
+          "pole_hz": 73.65626417796797,
+          "zero_hz": 130.6232700884267,
+          "gain": 0.8883144849701656,
+          "dc": -0.00010714729023675318,
+          "fit": {
+            "time_nrmse": 0.05282515976746847,
+            "complex_harmonic_nrmse": 0.05229840008816854,
+            "minimum_phase_derivative": 0.5048289883573347,
+            "optimizer_cost": 3.2058864561286846,
+            "optimizer_evaluations": 23,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 48,
+          "frequency_hz": 328.7671232876712,
+          "log2_frequency": 8.360922226503225,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116428903,
+          "phase_offset_cycles": 0.0005376927155577978,
+          "lowpass_hz": 6654.607328107188,
+          "highpass_hz": 32.09565216943435,
+          "pole_hz": 32.14087849595291,
+          "zero_hz": 43.28469831496798,
+          "gain": 0.9186609757932691,
+          "dc": -0.00010333515945148974,
+          "fit": {
+            "time_nrmse": 0.038180227594069985,
+            "complex_harmonic_nrmse": 0.03758452872102914,
+            "minimum_phase_derivative": 0.5048289883571098,
+            "optimizer_cost": 1.6745531416158466,
+            "optimizer_evaluations": 77,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 50,
+          "frequency_hz": 369.2307692307692,
+          "log2_frequency": 8.528378972354789,
+          "phase_a": 0.0,
+          "phase_b": -0.49517101164288363,
+          "phase_offset_cycles": 0.0005376927155945671,
+          "lowpass_hz": 11836.70741547041,
+          "highpass_hz": 91.41596849791686,
+          "pole_hz": 91.37817384162972,
+          "zero_hz": 166.5678204147536,
+          "gain": 0.9030918652930103,
+          "dc": 0.0005115177987136121,
+          "fit": {
+            "time_nrmse": 0.04599767329636286,
+            "complex_harmonic_nrmse": 0.04541869399523123,
+            "minimum_phase_derivative": 0.5048289883571164,
+            "optimizer_cost": 2.430912805022575,
+            "optimizer_evaluations": 37,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 52,
+          "frequency_hz": 413.7931034482759,
+          "log2_frequency": 8.69276579025567,
+          "phase_a": 0.0,
+          "phase_b": -0.49517101164282895,
+          "phase_offset_cycles": 0.0005376927156806907,
+          "lowpass_hz": 8696.103126217418,
+          "highpass_hz": 74.85088838817727,
+          "pole_hz": 74.87409551554923,
+          "zero_hz": 129.22381343272528,
+          "gain": 0.9179538792076845,
+          "dc": -0.001492636498369393,
+          "fit": {
+            "time_nrmse": 0.03813683593848578,
+            "complex_harmonic_nrmse": 0.03736418895383481,
+            "minimum_phase_derivative": 0.504828988357171,
+            "optimizer_cost": 1.6707457933248921,
+            "optimizer_evaluations": 29,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 54,
+          "frequency_hz": 466.0194174757282,
+          "log2_frequency": 8.864246258200025,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116428277,
+          "phase_offset_cycles": 0.0005376927156843477,
+          "lowpass_hz": 11787.05507478241,
+          "highpass_hz": 114.95949710149668,
+          "pole_hz": 114.90292571970647,
+          "zero_hz": 213.78573854470605,
+          "gain": 0.906943681882406,
+          "dc": 0.0009558714746162877,
+          "fit": {
+            "time_nrmse": 0.04682607549723609,
+            "complex_harmonic_nrmse": 0.04601055317604768,
+            "minimum_phase_derivative": 0.5048289883571724,
+            "optimizer_cost": 2.5196077770071508,
+            "optimizer_evaluations": 35,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 56,
+          "frequency_hz": 521.7391304347826,
+          "log2_frequency": 9.027184829326231,
+          "phase_a": 0.0,
+          "phase_b": -0.49517101164282995,
+          "phase_offset_cycles": 0.0005376927156843191,
+          "lowpass_hz": 14769.097159720912,
+          "highpass_hz": 162.88767084166025,
+          "pole_hz": 162.82736054908213,
+          "zero_hz": 318.74821218202123,
+          "gain": 0.8919576169967592,
+          "dc": -0.000789857671406935,
+          "fit": {
+            "time_nrmse": 0.07377954839406534,
+            "complex_harmonic_nrmse": 0.07325761181987162,
+            "minimum_phase_derivative": 0.50482898835717,
+            "optimizer_cost": 6.256421821928841,
+            "optimizer_evaluations": 25,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 58,
+          "frequency_hz": 585.3658536585366,
+          "log2_frequency": 9.19319478076516,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116428339,
+          "phase_offset_cycles": 0.0005376927156825675,
+          "lowpass_hz": 16475.60367481855,
+          "highpass_hz": 191.6996007532949,
+          "pole_hz": 191.7666024560312,
+          "zero_hz": 381.15976090037407,
+          "gain": 0.9075823308772911,
+          "dc": 0.0003987331699590868,
+          "fit": {
+            "time_nrmse": 0.07607021985044847,
+            "complex_harmonic_nrmse": 0.07545182221127754,
+            "minimum_phase_derivative": 0.5048289883571662,
+            "optimizer_cost": 6.6509003290259665,
+            "optimizer_evaluations": 20,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 60,
+          "frequency_hz": 657.5342465753424,
+          "log2_frequency": 9.360922226503225,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116428367,
+          "phase_offset_cycles": 0.0005376927156789922,
+          "lowpass_hz": 10362.454095339084,
+          "highpass_hz": 148.35121675642128,
+          "pole_hz": 148.30966315521565,
+          "zero_hz": 275.55570108149914,
+          "gain": 0.9307616100721511,
+          "dc": 0.00016752535975683713,
+          "fit": {
+            "time_nrmse": 0.049210151301603736,
+            "complex_harmonic_nrmse": 0.04808755499396283,
+            "minimum_phase_derivative": 0.5048289883571633,
+            "optimizer_cost": 2.783065443167819,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 62,
+          "frequency_hz": 750.0,
+          "log2_frequency": 9.550746785383243,
+          "phase_a": 0.0,
+          "phase_b": -0.49517101164283617,
+          "phase_offset_cycles": 0.0005376927156781832,
+          "lowpass_hz": 13251.033032129102,
+          "highpass_hz": 158.58295543102636,
+          "pole_hz": 158.60735496620967,
+          "zero_hz": 298.0714858872166,
+          "gain": 0.9305599778386703,
+          "dc": -5.196681286179228e-05,
+          "fit": {
+            "time_nrmse": 0.04882995865688892,
+            "complex_harmonic_nrmse": 0.04262890317403865,
+            "minimum_phase_derivative": 0.5048289883571638,
+            "optimizer_cost": 2.7398277407045306,
+            "optimizer_evaluations": 28,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 64,
+          "frequency_hz": 827.5862068965517,
+          "log2_frequency": 9.69276579025567,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116428398,
+          "phase_offset_cycles": 0.0005376927156702227,
+          "lowpass_hz": 58174.77049286339,
+          "highpass_hz": 358.8196279376904,
+          "pole_hz": 358.84212768502243,
+          "zero_hz": 776.4020481458011,
+          "gain": 0.8530102170785226,
+          "dc": -0.00038388437542380416,
+          "fit": {
+            "time_nrmse": 0.11880343373421823,
+            "complex_harmonic_nrmse": 0.11821431056963241,
+            "minimum_phase_derivative": 0.5048289883571602,
+            "optimizer_cost": 16.223235732116134,
+            "optimizer_evaluations": 127,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 66,
+          "frequency_hz": 941.1764705882352,
+          "log2_frequency": 9.878321443411748,
+          "phase_a": 0.0,
+          "phase_b": -0.49517101164284016,
+          "phase_offset_cycles": 0.0005376927156688278,
+          "lowpass_hz": 13427.241190123132,
+          "highpass_hz": 240.26076653825314,
+          "pole_hz": 240.23114356438796,
+          "zero_hz": 466.81816071882156,
+          "gain": 0.9362772797411714,
+          "dc": 0.0002641975820552034,
+          "fit": {
+            "time_nrmse": 0.052526549934463575,
+            "complex_harmonic_nrmse": 0.04812796494266117,
+            "minimum_phase_derivative": 0.5048289883571598,
+            "optimizer_cost": 3.1709428359984115,
+            "optimizer_evaluations": 26,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 68,
+          "frequency_hz": 1043.4782608695652,
+          "log2_frequency": 10.027184829326231,
+          "phase_a": 0.0,
+          "phase_b": -0.49517101164287225,
+          "phase_offset_cycles": 0.0005376927156804476,
+          "lowpass_hz": 5358.172806313092,
+          "highpass_hz": 32.86262523936553,
+          "pole_hz": 5358.02623290561,
+          "zero_hz": 3767.1870496658435,
+          "gain": 1.2257244053131073,
+          "dc": 0.0003658803780126618,
+          "fit": {
+            "time_nrmse": 0.05170007259275183,
+            "complex_harmonic_nrmse": 0.04977361717170453,
+            "minimum_phase_derivative": 0.5048289883571278,
+            "optimizer_cost": 3.072157821567816,
+            "optimizer_evaluations": 87,
+            "optimizer_success": true
+          }
+        },
+        {
+          "pitch_index": 70,
+          "frequency_hz": 1200.0,
+          "log2_frequency": 10.228818690495881,
+          "phase_a": 0.0,
+          "phase_b": -0.4951710116429058,
+          "phase_offset_cycles": 0.0005376927156429007,
+          "lowpass_hz": 4203.001148937599,
+          "highpass_hz": 0.10056900206624088,
+          "pole_hz": 4201.093731290464,
+          "zero_hz": 2669.31598148528,
+          "gain": 1.3388523351342279,
+          "dc": 0.00022332567095872946,
+          "fit": {
+            "time_nrmse": 0.08837804903535032,
+            "complex_harmonic_nrmse": 0.08254213112903558,
+            "minimum_phase_derivative": 0.5048289883570942,
+            "optimizer_cost": 8.977519694703055,
+            "optimizer_evaluations": 234,
+            "optimizer_success": true
+          }
+        }
+      ],
+      "evaluation": [
+        {
+          "pitch_index": 0,
+          "frequency_hz": 20.58319039451115,
+          "split": "train",
+          "baseline_time_nrmse": 0.6402662836424704,
+          "model_time_nrmse": 0.3416680278993989,
+          "baseline_complex_harmonic_nrmse": 0.6402662841702864,
+          "model_complex_harmonic_nrmse": 0.3416680293799843,
+          "minimum_phase_derivative": 0.505800990629921
+        },
+        {
+          "pitch_index": 1,
+          "frequency_hz": 21.85792349726776,
+          "split": "validation",
+          "baseline_time_nrmse": 0.6180139689909927,
+          "model_time_nrmse": 0.29855102273338546,
+          "baseline_complex_harmonic_nrmse": 0.6180139715438221,
+          "model_complex_harmonic_nrmse": 0.29854739187100254,
+          "minimum_phase_derivative": 0.505800990629921
+        },
+        {
+          "pitch_index": 2,
+          "frequency_hz": 23.19961333977767,
+          "split": "train",
+          "baseline_time_nrmse": 0.5915861382701805,
+          "model_time_nrmse": 0.09427656938421516,
+          "baseline_complex_harmonic_nrmse": 0.5915860688376067,
+          "model_complex_harmonic_nrmse": 0.09427590507378539,
+          "minimum_phase_derivative": 0.505800990629921
+        },
+        {
+          "pitch_index": 3,
+          "frequency_hz": 24.59016393442623,
+          "split": "test",
+          "baseline_time_nrmse": 0.564589652487422,
+          "model_time_nrmse": 0.0741898742154742,
+          "baseline_complex_harmonic_nrmse": 0.5645892877912955,
+          "model_complex_harmonic_nrmse": 0.07418531126954958,
+          "minimum_phase_derivative": 0.5058009906299215
+        },
+        {
+          "pitch_index": 4,
+          "frequency_hz": 26.016260162601625,
+          "split": "train",
+          "baseline_time_nrmse": 0.5392588440278204,
+          "model_time_nrmse": 0.06366238664011552,
+          "baseline_complex_harmonic_nrmse": 0.5392583438514181,
+          "model_complex_harmonic_nrmse": 0.06365643652648707,
+          "minimum_phase_derivative": 0.505800990629922
+        },
+        {
+          "pitch_index": 5,
+          "frequency_hz": 27.538726333907057,
+          "split": "validation",
+          "baseline_time_nrmse": 0.5147953274132793,
+          "model_time_nrmse": 0.06960443846659158,
+          "baseline_complex_harmonic_nrmse": 0.5147947295916772,
+          "model_complex_harmonic_nrmse": 0.06959674661298347,
+          "minimum_phase_derivative": 0.5058009906299228
+        },
+        {
+          "pitch_index": 6,
+          "frequency_hz": 29.143897996357012,
+          "split": "train",
+          "baseline_time_nrmse": 0.49072783616300447,
+          "model_time_nrmse": 0.06239158200768284,
+          "baseline_complex_harmonic_nrmse": 0.4907272090567867,
+          "model_complex_harmonic_nrmse": 0.06238511004700845,
+          "minimum_phase_derivative": 0.5058009906299235
+        },
+        {
+          "pitch_index": 7,
+          "frequency_hz": 30.888030888030887,
+          "split": "test",
+          "baseline_time_nrmse": 0.4669999114011197,
+          "model_time_nrmse": 0.05843650229887575,
+          "baseline_complex_harmonic_nrmse": 0.4669990203644366,
+          "model_complex_harmonic_nrmse": 0.058427384882298164,
+          "minimum_phase_derivative": 0.5058009906299219
+        },
+        {
+          "pitch_index": 8,
+          "frequency_hz": 32.69754768392371,
+          "split": "train",
+          "baseline_time_nrmse": 0.44430738688510646,
+          "model_time_nrmse": 0.05129658851288784,
+          "baseline_complex_harmonic_nrmse": 0.44430648536291756,
+          "model_complex_harmonic_nrmse": 0.05128688400372919,
+          "minimum_phase_derivative": 0.5058009906299205
+        },
+        {
+          "pitch_index": 9,
+          "frequency_hz": 34.65703971119134,
+          "split": "validation",
+          "baseline_time_nrmse": 0.42248724199495263,
+          "model_time_nrmse": 0.05119875013153267,
+          "baseline_complex_harmonic_nrmse": 0.42248622221743365,
+          "model_complex_harmonic_nrmse": 0.05118785360220843,
+          "minimum_phase_derivative": 0.505800990629921
+        },
+        {
+          "pitch_index": 10,
+          "frequency_hz": 36.69724770642202,
+          "split": "train",
+          "baseline_time_nrmse": 0.4015221082241056,
+          "model_time_nrmse": 0.04713626156414785,
+          "baseline_complex_harmonic_nrmse": 0.40152102489029284,
+          "model_complex_harmonic_nrmse": 0.04712528282277058,
+          "minimum_phase_derivative": 0.5058009906299217
+        },
+        {
+          "pitch_index": 11,
+          "frequency_hz": 38.8663967611336,
+          "split": "test",
+          "baseline_time_nrmse": 0.3825269411664655,
+          "model_time_nrmse": 0.052059601663128424,
+          "baseline_complex_harmonic_nrmse": 0.3825249108806096,
+          "model_complex_harmonic_nrmse": 0.05203659969376308,
+          "minimum_phase_derivative": 0.5058009906297036
+        },
+        {
+          "pitch_index": 12,
+          "frequency_hz": 41.201716738197426,
+          "split": "train",
+          "baseline_time_nrmse": 0.3627204679207617,
+          "model_time_nrmse": 0.04888563917214011,
+          "baseline_complex_harmonic_nrmse": 0.3627186706844438,
+          "model_complex_harmonic_nrmse": 0.04887031817382217,
+          "minimum_phase_derivative": 0.5058009906294822
+        },
+        {
+          "pitch_index": 13,
+          "frequency_hz": 43.63636363636363,
+          "split": "validation",
+          "baseline_time_nrmse": 0.34556156362549656,
+          "model_time_nrmse": 0.0570473525969725,
+          "baseline_complex_harmonic_nrmse": 0.34555868309028953,
+          "model_complex_harmonic_nrmse": 0.05695352124786268,
+          "minimum_phase_derivative": 0.5058009906294598
+        },
+        {
+          "pitch_index": 14,
+          "frequency_hz": 46.33204633204633,
+          "split": "train",
+          "baseline_time_nrmse": 0.32707091671276517,
+          "model_time_nrmse": 0.05248019568434366,
+          "baseline_complex_harmonic_nrmse": 0.32706848728471155,
+          "model_complex_harmonic_nrmse": 0.05246328513614362,
+          "minimum_phase_derivative": 0.5058009906294363
+        },
+        {
+          "pitch_index": 15,
+          "frequency_hz": 49.12998976458547,
+          "split": "test",
+          "baseline_time_nrmse": 0.3098381000075773,
+          "model_time_nrmse": 0.046393254467815566,
+          "baseline_complex_harmonic_nrmse": 0.30983506383806847,
+          "model_complex_harmonic_nrmse": 0.04621856283457724,
+          "minimum_phase_derivative": 0.5058009906294303
+        },
+        {
+          "pitch_index": 16,
+          "frequency_hz": 51.94805194805195,
+          "split": "train",
+          "baseline_time_nrmse": 0.29546190687396173,
+          "model_time_nrmse": 0.04739844900395182,
+          "baseline_complex_harmonic_nrmse": 0.29545872769345977,
+          "model_complex_harmonic_nrmse": 0.047376779768704705,
+          "minimum_phase_derivative": 0.5058009906294245
+        },
+        {
+          "pitch_index": 17,
+          "frequency_hz": 54.982817869415804,
+          "split": "validation",
+          "baseline_time_nrmse": 0.2803596467516591,
+          "model_time_nrmse": 0.04033849972760835,
+          "baseline_complex_harmonic_nrmse": 0.28035569215148654,
+          "model_complex_harmonic_nrmse": 0.04029857938057771,
+          "minimum_phase_derivative": 0.5058009906292693
+        },
+        {
+          "pitch_index": 18,
+          "frequency_hz": 58.3232077764277,
+          "split": "train",
+          "baseline_time_nrmse": 0.26604448642270084,
+          "model_time_nrmse": 0.04392528179058491,
+          "baseline_complex_harmonic_nrmse": 0.2660395707130704,
+          "model_complex_harmonic_nrmse": 0.043893291171983644,
+          "minimum_phase_derivative": 0.5058009906291081
+        },
+        {
+          "pitch_index": 19,
+          "frequency_hz": 61.617458279845955,
+          "split": "test",
+          "baseline_time_nrmse": 0.2533716256241813,
+          "model_time_nrmse": 0.049332852211705,
+          "baseline_complex_harmonic_nrmse": 0.25336653761457206,
+          "model_complex_harmonic_nrmse": 0.049151515399983595,
+          "minimum_phase_derivative": 0.5058009906291745
+        },
+        {
+          "pitch_index": 20,
+          "frequency_hz": 65.39509536784742,
+          "split": "train",
+          "baseline_time_nrmse": 0.24043373836578014,
+          "model_time_nrmse": 0.04844116185401753,
+          "baseline_complex_harmonic_nrmse": 0.24042870764669835,
+          "model_complex_harmonic_nrmse": 0.04841471552341164,
+          "minimum_phase_derivative": 0.5058009906292464
+        },
+        {
+          "pitch_index": 21,
+          "frequency_hz": 69.164265129683,
+          "split": "validation",
+          "baseline_time_nrmse": 0.22991410571798232,
+          "model_time_nrmse": 0.04867603084947968,
+          "baseline_complex_harmonic_nrmse": 0.22990599684129862,
+          "model_complex_harmonic_nrmse": 0.048632377839842596,
+          "minimum_phase_derivative": 0.5058009906292189
+        },
+        {
+          "pitch_index": 22,
+          "frequency_hz": 73.50689127105666,
+          "split": "train",
+          "baseline_time_nrmse": 0.21833247982173715,
+          "model_time_nrmse": 0.050949099974995714,
+          "baseline_complex_harmonic_nrmse": 0.2183240442493397,
+          "model_complex_harmonic_nrmse": 0.05091122671015804,
+          "minimum_phase_derivative": 0.5058009906291889
+        },
+        {
+          "pitch_index": 23,
+          "frequency_hz": 77.79578606158833,
+          "split": "test",
+          "baseline_time_nrmse": 0.20737523101234315,
+          "model_time_nrmse": 0.05384920265883829,
+          "baseline_complex_harmonic_nrmse": 0.207363579198537,
+          "model_complex_harmonic_nrmse": 0.05373645930433656,
+          "minimum_phase_derivative": 0.5058009906292831
+        },
+        {
+          "pitch_index": 24,
+          "frequency_hz": 82.47422680412372,
+          "split": "train",
+          "baseline_time_nrmse": 0.19710846038283084,
+          "model_time_nrmse": 0.044314618866170455,
+          "baseline_complex_harmonic_nrmse": 0.1970938712789687,
+          "model_complex_harmonic_nrmse": 0.044247188230511075,
+          "minimum_phase_derivative": 0.5058009906293801
+        },
+        {
+          "pitch_index": 25,
+          "frequency_hz": 87.43169398907104,
+          "split": "validation",
+          "baseline_time_nrmse": 0.18334006705121142,
+          "model_time_nrmse": 0.04462548226084389,
+          "baseline_complex_harmonic_nrmse": 0.1833268732270994,
+          "model_complex_harmonic_nrmse": 0.04434502871607814,
+          "minimum_phase_derivative": 0.505800990629315
+        },
+        {
+          "pitch_index": 26,
+          "frequency_hz": 92.48554913294798,
+          "split": "train",
+          "baseline_time_nrmse": 0.17987011972048128,
+          "model_time_nrmse": 0.04590899034208173,
+          "baseline_complex_harmonic_nrmse": 0.17984062844961293,
+          "model_complex_harmonic_nrmse": 0.04578968752723394,
+          "minimum_phase_derivative": 0.5058009906292524
+        },
+        {
+          "pitch_index": 27,
+          "frequency_hz": 97.95918367346938,
+          "split": "test",
+          "baseline_time_nrmse": 0.1696045537870287,
+          "model_time_nrmse": 0.05295045471549514,
+          "baseline_complex_harmonic_nrmse": 0.16958273501240978,
+          "model_complex_harmonic_nrmse": 0.052877994263282706,
+          "minimum_phase_derivative": 0.5058009906292964
+        },
+        {
+          "pitch_index": 28,
+          "frequency_hz": 103.67170626349892,
+          "split": "train",
+          "baseline_time_nrmse": 0.1627170255359267,
+          "model_time_nrmse": 0.04250893633129178,
+          "baseline_complex_harmonic_nrmse": 0.162684082402008,
+          "model_complex_harmonic_nrmse": 0.042379455984447326,
+          "minimum_phase_derivative": 0.5058009906293397
+        },
+        {
+          "pitch_index": 29,
+          "frequency_hz": 110.09174311926606,
+          "split": "validation",
+          "baseline_time_nrmse": 0.1508767858331186,
+          "model_time_nrmse": 0.05077876333210859,
+          "baseline_complex_harmonic_nrmse": 0.15084792460605598,
+          "model_complex_harmonic_nrmse": 0.050682729931167354,
+          "minimum_phase_derivative": 0.5058009906293435
+        },
+        {
+          "pitch_index": 30,
+          "frequency_hz": 116.50485436893204,
+          "split": "train",
+          "baseline_time_nrmse": 0.14517791591223136,
+          "model_time_nrmse": 0.04548819768964301,
+          "baseline_complex_harmonic_nrmse": 0.14514808821681807,
+          "model_complex_harmonic_nrmse": 0.04539105891741826,
+          "minimum_phase_derivative": 0.505800990629347
+        },
+        {
+          "pitch_index": 31,
+          "frequency_hz": 123.39331619537275,
+          "split": "test",
+          "baseline_time_nrmse": 0.1392950027184722,
+          "model_time_nrmse": 0.041475198265088886,
+          "baseline_complex_harmonic_nrmse": 0.13926710836914785,
+          "model_complex_harmonic_nrmse": 0.0412542680976724,
+          "minimum_phase_derivative": 0.5058009906293697
+        },
+        {
+          "pitch_index": 32,
+          "frequency_hz": 130.79019073569484,
+          "split": "train",
+          "baseline_time_nrmse": 0.13582598634723944,
+          "model_time_nrmse": 0.041682665595591396,
+          "baseline_complex_harmonic_nrmse": 0.13579413752834618,
+          "model_complex_harmonic_nrmse": 0.0415769954237393,
+          "minimum_phase_derivative": 0.5058009906293928
+        },
+        {
+          "pitch_index": 33,
+          "frequency_hz": 138.72832369942196,
+          "split": "validation",
+          "baseline_time_nrmse": 0.13016671654388318,
+          "model_time_nrmse": 0.06024821542949697,
+          "baseline_complex_harmonic_nrmse": 0.13012688397820016,
+          "model_complex_harmonic_nrmse": 0.06013103788934182,
+          "minimum_phase_derivative": 0.5058009906293754
+        },
+        {
+          "pitch_index": 34,
+          "frequency_hz": 146.78899082568807,
+          "split": "train",
+          "baseline_time_nrmse": 0.12428991170020945,
+          "model_time_nrmse": 0.05229015539362027,
+          "baseline_complex_harmonic_nrmse": 0.12424762551413104,
+          "model_complex_harmonic_nrmse": 0.05218826431848556,
+          "minimum_phase_derivative": 0.5058009906293588
+        },
+        {
+          "pitch_index": 35,
+          "frequency_hz": 155.84415584415584,
+          "split": "test",
+          "baseline_time_nrmse": 0.115922074467336,
+          "model_time_nrmse": 0.042879219874994115,
+          "baseline_complex_harmonic_nrmse": 0.115819604394915,
+          "model_complex_harmonic_nrmse": 0.04259419339195135,
+          "minimum_phase_derivative": 0.5058009906293299
+        },
+        {
+          "pitch_index": 36,
+          "frequency_hz": 164.3835616438356,
+          "split": "train",
+          "baseline_time_nrmse": 0.12327576988936269,
+          "model_time_nrmse": 0.04644711871570155,
+          "baseline_complex_harmonic_nrmse": 0.12314976240893646,
+          "model_complex_harmonic_nrmse": 0.04610718198261469,
+          "minimum_phase_derivative": 0.5058009906293042
+        },
+        {
+          "pitch_index": 37,
+          "frequency_hz": 174.54545454545453,
+          "split": "validation",
+          "baseline_time_nrmse": 0.10729091210652308,
+          "model_time_nrmse": 0.036784165002531594,
+          "baseline_complex_harmonic_nrmse": 0.1072221687025834,
+          "model_complex_harmonic_nrmse": 0.03658094351631352,
+          "minimum_phase_derivative": 0.5053148287354287
+        },
+        {
+          "pitch_index": 38,
+          "frequency_hz": 185.32818532818533,
+          "split": "train",
+          "baseline_time_nrmse": 0.09924489009789236,
+          "model_time_nrmse": 0.029972068342623195,
+          "baseline_complex_harmonic_nrmse": 0.09906123795122432,
+          "model_complex_harmonic_nrmse": 0.02935261988391758,
+          "minimum_phase_derivative": 0.5048289883572081
+        },
+        {
+          "pitch_index": 39,
+          "frequency_hz": 196.72131147540983,
+          "split": "test",
+          "baseline_time_nrmse": 0.11086025177650598,
+          "model_time_nrmse": 0.06709843135776837,
+          "baseline_complex_harmonic_nrmse": 0.11054949672758382,
+          "model_complex_harmonic_nrmse": 0.06657945565585713,
+          "minimum_phase_derivative": 0.5048289883572623
+        },
+        {
+          "pitch_index": 40,
+          "frequency_hz": 206.89655172413794,
+          "split": "train",
+          "baseline_time_nrmse": 0.10912368001537065,
+          "model_time_nrmse": 0.05041521135402648,
+          "baseline_complex_harmonic_nrmse": 0.10895609683788052,
+          "model_complex_harmonic_nrmse": 0.05004798301350494,
+          "minimum_phase_derivative": 0.504828988357308
+        },
+        {
+          "pitch_index": 41,
+          "frequency_hz": 220.1834862385321,
+          "split": "validation",
+          "baseline_time_nrmse": 0.11276140447064324,
+          "model_time_nrmse": 0.05671227060047001,
+          "baseline_complex_harmonic_nrmse": 0.11263442262392825,
+          "model_complex_harmonic_nrmse": 0.056448993756466746,
+          "minimum_phase_derivative": 0.5048289883572822
+        },
+        {
+          "pitch_index": 42,
+          "frequency_hz": 233.0097087378641,
+          "split": "train",
+          "baseline_time_nrmse": 0.09356552530533857,
+          "model_time_nrmse": 0.03656491386913673,
+          "baseline_complex_harmonic_nrmse": 0.09344012733664613,
+          "model_complex_harmonic_nrmse": 0.036240410033351926,
+          "minimum_phase_derivative": 0.5048289883572585
+        },
+        {
+          "pitch_index": 43,
+          "frequency_hz": 246.15384615384616,
+          "split": "test",
+          "baseline_time_nrmse": 0.10432458318737432,
+          "model_time_nrmse": 0.05278425008841966,
+          "baseline_complex_harmonic_nrmse": 0.10406259716589165,
+          "model_complex_harmonic_nrmse": 0.05226015668612301,
+          "minimum_phase_derivative": 0.5048289883572973
+        },
+        {
+          "pitch_index": 44,
+          "frequency_hz": 262.2950819672131,
+          "split": "train",
+          "baseline_time_nrmse": 0.0813035029126974,
+          "model_time_nrmse": 0.02758585946654125,
+          "baseline_complex_harmonic_nrmse": 0.08091271978933237,
+          "model_complex_harmonic_nrmse": 0.02640482946665636,
+          "minimum_phase_derivative": 0.504828988357342
+        },
+        {
+          "pitch_index": 45,
+          "frequency_hz": 277.4566473988439,
+          "split": "validation",
+          "baseline_time_nrmse": 0.08411004507671313,
+          "model_time_nrmse": 0.043418334350700784,
+          "baseline_complex_harmonic_nrmse": 0.08385179811499051,
+          "model_complex_harmonic_nrmse": 0.042911149007721604,
+          "minimum_phase_derivative": 0.5048289883573382
+        },
+        {
+          "pitch_index": 46,
+          "frequency_hz": 292.6829268292683,
+          "split": "train",
+          "baseline_time_nrmse": 0.09872382581331883,
+          "model_time_nrmse": 0.05282515976746847,
+          "baseline_complex_harmonic_nrmse": 0.09844493481195551,
+          "model_complex_harmonic_nrmse": 0.05229840008816854,
+          "minimum_phase_derivative": 0.5048289883573347
+        },
+        {
+          "pitch_index": 47,
+          "frequency_hz": 311.68831168831167,
+          "split": "test",
+          "baseline_time_nrmse": 0.10995572557420777,
+          "model_time_nrmse": 0.050833695018596574,
+          "baseline_complex_harmonic_nrmse": 0.10970647345534632,
+          "model_complex_harmonic_nrmse": 0.05028177134711784,
+          "minimum_phase_derivative": 0.504828988357213
+        },
+        {
+          "pitch_index": 48,
+          "frequency_hz": 328.7671232876712,
+          "split": "train",
+          "baseline_time_nrmse": 0.10795766850104077,
+          "model_time_nrmse": 0.038180227594069985,
+          "baseline_complex_harmonic_nrmse": 0.10775057358030744,
+          "model_complex_harmonic_nrmse": 0.03758452872102914,
+          "minimum_phase_derivative": 0.5048289883571098
+        },
+        {
+          "pitch_index": 49,
+          "frequency_hz": 347.82608695652175,
+          "split": "validation",
+          "baseline_time_nrmse": 0.09687001297657484,
+          "model_time_nrmse": 0.04628940015282651,
+          "baseline_complex_harmonic_nrmse": 0.09658120827666247,
+          "model_complex_harmonic_nrmse": 0.04567722512393935,
+          "minimum_phase_derivative": 0.5048289883571129
+        },
+        {
+          "pitch_index": 50,
+          "frequency_hz": 369.2307692307692,
+          "split": "train",
+          "baseline_time_nrmse": 0.08282110838654493,
+          "model_time_nrmse": 0.04599767329636286,
+          "baseline_complex_harmonic_nrmse": 0.0825024812339148,
+          "model_complex_harmonic_nrmse": 0.04541869399523123,
+          "minimum_phase_derivative": 0.5048289883571164
+        },
+        {
+          "pitch_index": 51,
+          "frequency_hz": 390.2439024390244,
+          "split": "test",
+          "baseline_time_nrmse": 0.09348355978823328,
+          "model_time_nrmse": 0.05262089583736022,
+          "baseline_complex_harmonic_nrmse": 0.09314996267173213,
+          "model_complex_harmonic_nrmse": 0.05202221276278563,
+          "minimum_phase_derivative": 0.5048289883571428
+        },
+        {
+          "pitch_index": 52,
+          "frequency_hz": 413.7931034482759,
+          "split": "train",
+          "baseline_time_nrmse": 0.09043607461586793,
+          "model_time_nrmse": 0.03813683593848578,
+          "baseline_complex_harmonic_nrmse": 0.09011515293428614,
+          "model_complex_harmonic_nrmse": 0.03736418895383481,
+          "minimum_phase_derivative": 0.504828988357171
+        },
+        {
+          "pitch_index": 53,
+          "frequency_hz": 440.3669724770642,
+          "split": "validation",
+          "baseline_time_nrmse": 0.07551410981292582,
+          "model_time_nrmse": 0.04436576702648038,
+          "baseline_complex_harmonic_nrmse": 0.0747740395179361,
+          "model_complex_harmonic_nrmse": 0.04308155510540971,
+          "minimum_phase_derivative": 0.5048289883571717
+        },
+        {
+          "pitch_index": 54,
+          "frequency_hz": 466.0194174757282,
+          "split": "train",
+          "baseline_time_nrmse": 0.08177411026808172,
+          "model_time_nrmse": 0.04682607549723609,
+          "baseline_complex_harmonic_nrmse": 0.0813119657969165,
+          "model_complex_harmonic_nrmse": 0.04601055317604768,
+          "minimum_phase_derivative": 0.5048289883571724
+        },
+        {
+          "pitch_index": 55,
+          "frequency_hz": 494.8453608247423,
+          "split": "test",
+          "baseline_time_nrmse": 0.08582951900189414,
+          "model_time_nrmse": 0.06185726268522523,
+          "baseline_complex_harmonic_nrmse": 0.08507116035617521,
+          "model_complex_harmonic_nrmse": 0.060794343605326366,
+          "minimum_phase_derivative": 0.504828988357171
+        },
+        {
+          "pitch_index": 56,
+          "frequency_hz": 521.7391304347826,
+          "split": "train",
+          "baseline_time_nrmse": 0.10146632903850403,
+          "model_time_nrmse": 0.07377954839406534,
+          "baseline_complex_harmonic_nrmse": 0.10108929842803809,
+          "model_complex_harmonic_nrmse": 0.07325761181987162,
+          "minimum_phase_derivative": 0.50482898835717
+        },
+        {
+          "pitch_index": 57,
+          "frequency_hz": 551.7241379310345,
+          "split": "validation",
+          "baseline_time_nrmse": 0.1055862460090138,
+          "model_time_nrmse": 0.078915910339236,
+          "baseline_complex_harmonic_nrmse": 0.10511658528377286,
+          "model_complex_harmonic_nrmse": 0.07827116813566115,
+          "minimum_phase_derivative": 0.5048289883571682
+        },
+        {
+          "pitch_index": 58,
+          "frequency_hz": 585.3658536585366,
+          "split": "train",
+          "baseline_time_nrmse": 0.10256396508176233,
+          "model_time_nrmse": 0.07607021985044847,
+          "baseline_complex_harmonic_nrmse": 0.10210833510703891,
+          "model_complex_harmonic_nrmse": 0.07545182221127754,
+          "minimum_phase_derivative": 0.5048289883571662
+        },
+        {
+          "pitch_index": 59,
+          "frequency_hz": 623.3766233766233,
+          "split": "test",
+          "baseline_time_nrmse": 0.09555473973198292,
+          "model_time_nrmse": 0.05689598995059273,
+          "baseline_complex_harmonic_nrmse": 0.09479609898456863,
+          "model_complex_harmonic_nrmse": 0.055569330357373985,
+          "minimum_phase_derivative": 0.5048289883571646
+        },
+        {
+          "pitch_index": 60,
+          "frequency_hz": 657.5342465753424,
+          "split": "train",
+          "baseline_time_nrmse": 0.0943762586557117,
+          "model_time_nrmse": 0.049210151301603736,
+          "baseline_complex_harmonic_nrmse": 0.09379958543940595,
+          "model_complex_harmonic_nrmse": 0.04808755499396283,
+          "minimum_phase_derivative": 0.5048289883571633
+        },
+        {
+          "pitch_index": 61,
+          "frequency_hz": 695.6521739130435,
+          "split": "validation",
+          "baseline_time_nrmse": 0.10245449614030278,
+          "model_time_nrmse": 0.07246580186600317,
+          "baseline_complex_harmonic_nrmse": 0.10190195365785022,
+          "model_complex_harmonic_nrmse": 0.07167168087706673,
+          "minimum_phase_derivative": 0.5048289883571635
+        },
+        {
+          "pitch_index": 62,
+          "frequency_hz": 750.0,
+          "split": "train",
+          "baseline_time_nrmse": 0.07619012365341274,
+          "model_time_nrmse": 0.04882995865688892,
+          "baseline_complex_harmonic_nrmse": 0.07238603490642076,
+          "model_complex_harmonic_nrmse": 0.04262890317403865,
+          "minimum_phase_derivative": 0.5048289883571638
+        },
+        {
+          "pitch_index": 63,
+          "frequency_hz": 774.1935483870968,
+          "split": "test",
+          "baseline_time_nrmse": 0.13542860520834857,
+          "model_time_nrmse": 0.11769380134752457,
+          "baseline_complex_harmonic_nrmse": 0.13440715401114547,
+          "model_complex_harmonic_nrmse": 0.11650907523279395,
+          "minimum_phase_derivative": 0.5048289883571626
+        },
+        {
+          "pitch_index": 64,
+          "frequency_hz": 827.5862068965517,
+          "split": "train",
+          "baseline_time_nrmse": 0.14838360881887444,
+          "model_time_nrmse": 0.11880343373421823,
+          "baseline_complex_harmonic_nrmse": 0.14791613197976142,
+          "model_complex_harmonic_nrmse": 0.11821431056963241,
+          "minimum_phase_derivative": 0.5048289883571602
+        },
+        {
+          "pitch_index": 65,
+          "frequency_hz": 872.7272727272727,
+          "split": "validation",
+          "baseline_time_nrmse": 0.12114180757731889,
+          "model_time_nrmse": 0.10083412544449029,
+          "baseline_complex_harmonic_nrmse": 0.12037991759795078,
+          "model_complex_harmonic_nrmse": 0.09988913757533,
+          "minimum_phase_derivative": 0.5048289883571601
+        },
+        {
+          "pitch_index": 66,
+          "frequency_hz": 941.1764705882352,
+          "split": "train",
+          "baseline_time_nrmse": 0.08369772432035856,
+          "model_time_nrmse": 0.052526549934463575,
+          "baseline_complex_harmonic_nrmse": 0.08102133547516518,
+          "model_complex_harmonic_nrmse": 0.04812796494266117,
+          "minimum_phase_derivative": 0.5048289883571598
+        },
+        {
+          "pitch_index": 67,
+          "frequency_hz": 979.5918367346939,
+          "split": "test",
+          "baseline_time_nrmse": 0.13013809052113143,
+          "model_time_nrmse": 0.26560415815340743,
+          "baseline_complex_harmonic_nrmse": 0.12941077978406926,
+          "model_complex_harmonic_nrmse": 0.2652588358366118,
+          "minimum_phase_derivative": 0.5048289883571474
+        },
+        {
+          "pitch_index": 68,
+          "frequency_hz": 1043.4782608695652,
+          "split": "train",
+          "baseline_time_nrmse": 0.14326295224979643,
+          "model_time_nrmse": 0.05170007259275183,
+          "baseline_complex_harmonic_nrmse": 0.14259133202312024,
+          "model_complex_harmonic_nrmse": 0.04977361717170453,
+          "minimum_phase_derivative": 0.5048289883571278
+        },
+        {
+          "pitch_index": 69,
+          "frequency_hz": 1116.2790697674418,
+          "split": "validation",
+          "baseline_time_nrmse": 0.1295414026078264,
+          "model_time_nrmse": 0.071595714952246,
+          "baseline_complex_harmonic_nrmse": 0.12823816736641214,
+          "model_complex_harmonic_nrmse": 0.06911647669628154,
+          "minimum_phase_derivative": 0.5048289883571115
+        },
+        {
+          "pitch_index": 70,
+          "frequency_hz": 1200.0,
+          "split": "train",
+          "baseline_time_nrmse": 0.21055137666160612,
+          "model_time_nrmse": 0.08837804903535032,
+          "baseline_complex_harmonic_nrmse": 0.20825734531526505,
+          "model_complex_harmonic_nrmse": 0.08254213112903558,
+          "minimum_phase_derivative": 0.5048289883570942
+        },
+        {
+          "pitch_index": 71,
+          "frequency_hz": 1263.157894736842,
+          "split": "test",
+          "baseline_time_nrmse": 0.17942779305696274,
+          "model_time_nrmse": 0.073606534970967,
+          "baseline_complex_harmonic_nrmse": 0.17740983586676848,
+          "model_complex_harmonic_nrmse": 0.06830335422761749,
+          "minimum_phase_derivative": 0.5048289883570942
+        }
+      ],
+      "metrics": {
+        "train": {
+          "baseline_time_nrmse": {
+            "median": 0.1442204340810139,
+            "maximum": 0.6402662836424704
+          },
+          "model_time_nrmse": {
+            "median": 0.048857798914514514,
+            "maximum": 0.3416680278993989
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.14386971011996916,
+            "maximum": 0.6402662841702864
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.048107759968312,
+            "maximum": 0.3416680293799843
+          },
+          "time_nrmse_relative_improvement_median": 0.6535229544278802
+        },
+        "validation": {
+          "baseline_time_nrmse": {
+            "median": 0.12985405957585477,
+            "maximum": 0.6180139689909927
+          },
+          "model_time_nrmse": {
+            "median": 0.05395551036600134,
+            "maximum": 0.29855102273338546
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.12918252567230615,
+            "maximum": 0.6180139715438221
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.05381842367933759,
+            "maximum": 0.29854739187100254
+          },
+          "time_nrmse_relative_improvement_median": 0.5296475520511692
+        },
+        "test": {
+          "baseline_time_nrmse": {
+            "median": 0.13736180396341038,
+            "maximum": 0.564589652487422
+          },
+          "model_time_nrmse": {
+            "median": 0.053399828687166716,
+            "maximum": 0.26560415815340743
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.13683713119014668,
+            "maximum": 0.5645892877912955
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.053307226783809634,
+            "maximum": 0.2652588358366118
+          },
+          "time_nrmse_relative_improvement_median": 0.609936891521476
+        },
+        "held_out": {
+          "baseline_time_nrmse": {
+            "median": 0.13279766087611589,
+            "maximum": 0.6180139689909927
+          },
+          "model_time_nrmse": {
+            "median": 0.053399828687166716,
+            "maximum": 0.29855102273338546
+          },
+          "baseline_complex_harmonic_nrmse": {
+            "median": 0.1322670189946728,
+            "maximum": 0.6180139715438221
+          },
+          "model_complex_harmonic_nrmse": {
+            "median": 0.053307226783809634,
+            "maximum": 0.29854739187100254
+          },
+          "time_nrmse_relative_improvement_median": 0.5637300694095206
+        }
+      }
+    }
+  },
+  "profile_content_sha256": "a962e0e4685dd866ab3f215a01cdf4604878bd546b0eb53ef8e5968a1dc3f37d"
+}

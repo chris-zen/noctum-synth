@@ -94,6 +94,25 @@ impl<const PACKS: usize> VoicePool<PACKS> {
         }
     }
 
+    /// Stops current notes, then reconstructs every research oscillator source.
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_experimental_oscillator_model(
+        &mut self,
+        model: crate::dsp::ExperimentalOscillatorModel,
+    ) {
+        for block in &mut self.blocks {
+            block.all_notes_off();
+            block.set_experimental_oscillator_model(model);
+        }
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_measured_wavetable_bank(&mut self, bank: crate::dsp::MeasuredWavetableBank) {
+        for block in &mut self.blocks {
+            block.set_measured_wavetable_bank(bank);
+        }
+    }
+
     fn set_region_pan_positions(&mut self, region: VoiceRegion) {
         let voice_count = region.voice_capacity();
         for (block_index, block) in self.region_mut(region).iter_mut().enumerate() {
@@ -314,6 +333,8 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             ControlMessage::SetMidiClockMode(_)
             | ControlMessage::SetMasterVolume(_)
             | ControlMessage::MidiRealtime(_) => {}
+            #[cfg(feature = "experimental-oscillators")]
+            ControlMessage::SetExperimentalOscillatorModel(_) => {}
             ControlMessage::SetModulation {
                 route,
                 enabled,
@@ -1196,7 +1217,6 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             block.set_filter_type(filter_type);
         }
     }
-
     pub(crate) fn effects_mut(&mut self) -> &mut EffectsState {
         &mut self.effects
     }

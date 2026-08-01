@@ -14,6 +14,8 @@ sequencer-benchmark = []
 fast-math = ["dep:micromath"]
 downsampling = []
 oscillator-polyblep = []
+experimental-oscillators = []
+oscillator-research = ["experimental-oscillators"]
 wide-8 = []
 wide-4 = []
 wide-1 = []
@@ -25,12 +27,14 @@ filter-scalar-feedback = []
 filter-gain-limited = []
 filter-huovilainen = []
 filter-cascaded-svf = []
+filter-pass-through = []
 filter-all = [
     "filter-distributed-newton",
     "filter-scalar-feedback",
     "filter-gain-limited",
     "filter-huovilainen",
     "filter-cascaded-svf",
+    "filter-pass-through",
 ]
 
 [dependencies]

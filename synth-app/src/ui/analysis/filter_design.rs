@@ -957,6 +957,7 @@ fn draw_model_curve(
 
 fn model_color(filter_type: FilterType) -> egui::Color32 {
     match filter_type {
+        FilterType::PassThrough => egui::Color32::from_rgb(210, 210, 210),
         FilterType::DistributedNewtonTpt => egui::Color32::from_rgb(255, 214, 102),
         FilterType::ScalarFeedbackTpt => egui::Color32::from_rgb(100, 205, 255),
         FilterType::GainLimitedTpt => egui::Color32::from_rgb(130, 225, 145),

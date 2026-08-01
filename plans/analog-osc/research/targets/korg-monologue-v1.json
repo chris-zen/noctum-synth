@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "target_id": "korg-monologue-v1",
+  "display_name": "Korg Monologue VCO — Simionato/Fasciani dataset",
+  "source_kind": "hardware_public_dataset",
+  "status": "published",
+  "provenance": {
+    "doi": "10.5281/zenodo.15196138",
+    "record_url": "https://zenodo.org/records/15196138",
+    "published": "2025-04-11",
+    "version": "v1",
+    "authors": ["Riccardo Simionato", "Stefano Fasciani"],
+    "license": "CC-BY-4.0",
+    "companion_code": "https://github.com/RiccardoVib/NeuralOSC"
+  },
+  "capture": {
+    "device": "Korg Monologue",
+    "unit_id": "not published",
+    "interface": "MOTU M4",
+    "original_sample_rate_hz": 96000,
+    "published_sample_rate_hz": 48000,
+    "original_duration_seconds_per_pitch": 8.0,
+    "record_description_max_samples_per_pitch": 262144,
+    "post_processing_and_modulation_disabled": true,
+    "phase_aligned_to_zero": true,
+    "normalization": "each pitch example independently normalized to [-1, 1]",
+    "important_limitations": [
+      "The independent normalization removes absolute level relationships between pitches.",
+      "The published data includes the MOTU M4 capture path and is not de-embedded.",
+      "Only one hardware unit is represented.",
+      "Square is fixed-width; there are no PWM, hard-sync, or dynamic sweep captures."
+    ]
+  },
+  "pitch_grid": {
+    "count": 72,
+    "description": "chromatic pitches reported as E0 through E6",
+    "default_nominal_first_midi": 16,
+    "mapping_policy": "Treat MIDI mapping as nominal only; use measured fundamental from each recording for fitting. The published saw file is empirically one octave above triangle and square, so every file declares its own first MIDI note."
+  },
+  "files": {
+    "saw": {
+      "name": "OSCMonoSaw.pickle",
+      "url": "https://zenodo.org/records/15196138/files/OSCMonoSaw.pickle?download=1",
+      "md5": "f92638eb45e9ce6a0d5187d552dcca3f",
+      "published_size_bytes": 113200000,
+      "expected_samples_per_pitch": 131072,
+      "nominal_first_midi": 28
+    },
+    "triangle": {
+      "name": "OSCMonoTri.pickle",
+      "url": "https://zenodo.org/records/15196138/files/OSCMonoTri.pickle?download=1",
+      "md5": "567811d4db81ef1cd0808aee4cbe3ae5",
+      "published_size_bytes": 113200000,
+      "expected_samples_per_pitch": 131072,
+      "nominal_first_midi": 16
+    },
+    "square": {
+      "name": "OSCMonoSquare.pickle",
+      "url": "https://zenodo.org/records/15196138/files/OSCMonoSquare.pickle?download=1",
+      "md5": "bd9186d765316b5fd2165c03a7611fa5",
+      "published_size_bytes": 113200000,
+      "expected_samples_per_pitch": 131072,
+      "nominal_first_midi": 16
+    }
+  },
+  "identification_split": {
+    "train": "pitch_index modulo 4 is 0 or 2",
+    "validation": "pitch_index modulo 4 is 1",
+    "test": "pitch_index modulo 4 is 3",
+    "note": "Dynamic behavior is unavailable and cannot be used as a test split for this target."
+  }
+}

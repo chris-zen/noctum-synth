@@ -6,6 +6,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
+#[cfg(feature = "experimental-oscillators")]
+use synth_core::ExperimentalOscillatorModel;
 use synth_core::{
     ChordMemory, ControlMessage, LayerId, LayerMode, LayerPlaybackStatus, LayerTarget,
     ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SequenceClear,
@@ -515,6 +517,12 @@ impl SynthEngineControl {
 
     pub fn set_filter_type(&self, filter_type: FilterType) {
         self.send(ControlMessage::SetFilterType(filter_type));
+    }
+
+    #[cfg(feature = "experimental-oscillators")]
+    pub fn set_experimental_oscillator_model(&self, model: ExperimentalOscillatorModel) {
+        self.all_notes_off();
+        self.send(ControlMessage::SetExperimentalOscillatorModel(model));
     }
 
     pub fn set_midi_clock_mode(&self, mode: MidiClockMode) {

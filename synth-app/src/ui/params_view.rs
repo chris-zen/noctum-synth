@@ -32,6 +32,8 @@ use crate::{
         },
     },
 };
+#[cfg(feature = "experimental-oscillators")]
+use synth_core::ExperimentalOscillatorModel;
 
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
 const OSC_GRID_WIDTH: f32 = 840.0;
@@ -86,6 +88,10 @@ impl Default for EffectRuntimeParams {
 
 #[derive(Clone)]
 pub struct UiState {
+    #[cfg(feature = "experimental-oscillators")]
+    pub experimental_oscillator_model: ExperimentalOscillatorModel,
+    #[cfg(feature = "experimental-oscillators")]
+    pub measured_wavetable_available: bool,
     pub osc1_enabled: bool,
     pub osc2_enabled: bool,
     pub osc1_waveform: usize,
@@ -191,6 +197,10 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "experimental-oscillators")]
+            experimental_oscillator_model: ExperimentalOscillatorModel::Baseline,
+            #[cfg(feature = "experimental-oscillators")]
+            measured_wavetable_available: false,
             osc1_enabled: true,
             osc2_enabled: false,
             osc1_waveform: 0,
@@ -852,6 +862,28 @@ pub fn show(
 
         ui.add_space(8.0);
 
+        #[cfg(feature = "experimental-oscillators")]
+        {
+            let mut oscillator_model = state.experimental_oscillator_model;
+            let measured_wavetable_available = state.measured_wavetable_available;
+            module_panel_with_header(
+                ui,
+                "Oscillators",
+                0.0,
+                |ui| {
+                    oscillator_model_combo(
+                        ui,
+                        &mut oscillator_model,
+                        measured_wavetable_available,
+                        control,
+                    )
+                },
+                |ui| oscillators_module(ui, state, control),
+            );
+            state.experimental_oscillator_model = oscillator_model;
+        }
+
+        #[cfg(not(feature = "experimental-oscillators"))]
         module_panel(ui, "Oscillators", |ui| {
             oscillators_module(ui, state, control);
         });
@@ -2268,6 +2300,34 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                 ui.end_row();
             });
     });
+}
+
+#[cfg(feature = "experimental-oscillators")]
+fn oscillator_model_combo(
+    ui: &mut egui::Ui,
+    selected: &mut ExperimentalOscillatorModel,
+    measured_wavetable_available: bool,
+    control: &SynthEngineControl,
+) {
+    egui::ComboBox::from_id_salt("oscillator_model")
+        .selected_text(selected.name())
+        .show_ui(ui, |ui| {
+            for candidate in ExperimentalOscillatorModel::ALL {
+                if candidate == ExperimentalOscillatorModel::MeasuredWavetable
+                    && !measured_wavetable_available
+                {
+                    continue;
+                }
+                if ui
+                    .selectable_label(*selected == candidate, candidate.name())
+                    .clicked()
+                {
+                    *selected = candidate;
+                    control.set_experimental_oscillator_model(candidate);
+                    ui.close();
+                }
+            }
+        });
 }
 
 fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {
