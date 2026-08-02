@@ -56,8 +56,9 @@ pub const SELF_OSC_PITCH_TUNING_CENTS: f32 = 133.0;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum FilterType {
+    /// Exact unity-gain path for raw oscillator audition.
+    PassThrough,
     /// Existing Rev2-inspired distributed-Newton TPT model.
-    #[cfg_attr(feature = "serde", serde(alias = "pass_through"))]
     DistributedNewtonTpt,
     /// Rev2-inspired scalar-feedback TPT candidate (introduced in Phase 1).
     ScalarFeedbackTpt,
@@ -98,7 +99,8 @@ impl Default for FilterType {
 }
 
 impl FilterType {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::PassThrough,
         Self::DistributedNewtonTpt,
         Self::ScalarFeedbackTpt,
         Self::GainLimitedTpt,
@@ -108,6 +110,7 @@ impl FilterType {
 
     pub const fn name(self) -> &'static str {
         match self {
+            Self::PassThrough => "Pass Through (Raw)",
             Self::DistributedNewtonTpt => "Distributed Newton TPT",
             Self::ScalarFeedbackTpt => "Scalar Feedback TPT",
             Self::GainLimitedTpt => "Gain-Limited TPT",
@@ -118,6 +121,9 @@ impl FilterType {
 
     /// Whether this model has its own implementation in the current phase.
     pub const fn is_implemented(self) -> bool {
+        if matches!(self, Self::PassThrough) {
+            return cfg!(feature = "filter-pass-through");
+        }
         matches!(
             self,
             Self::DistributedNewtonTpt
@@ -219,6 +225,7 @@ macro_rules! with_filter_algorithm {
 impl FilterAlgorithmState {
     fn new(filter_type: FilterType) -> Self {
         match filter_type {
+            FilterType::PassThrough => Self::DistributedNewtonTpt(DistributedNewtonTpt::default()),
             FilterType::ScalarFeedbackTpt => Self::ScalarFeedbackTpt(ScalarFeedbackTpt::default()),
             FilterType::GainLimitedTpt => Self::GainLimitedTpt(GainLimitedTpt::default()),
             FilterType::HuovilainenLadder => Self::HuovilainenLadder(HuovilainenLadder::default()),
@@ -356,6 +363,7 @@ impl Default for Filter {
 
 impl Filter {
     pub fn new(filter_type: FilterType) -> Self {
+        let filter_type = available_filter_type(filter_type);
         Self {
             filter_type,
             cutoff: MAX_CUTOFF_HZ,
@@ -378,6 +386,7 @@ impl Filter {
 
     /// Selects a fresh model state while retaining all common controls.
     pub fn set_filter_type(&mut self, filter_type: FilterType) {
+        let filter_type = available_filter_type(filter_type);
         if self.filter_type == filter_type {
             return;
         }
@@ -541,6 +550,11 @@ impl Filter {
         env_amount: f32,
         env_velocity_amount: f32,
     ) -> WideF32 {
+        #[cfg(feature = "filter-pass-through")]
+        if self.filter_type == FilterType::PassThrough {
+            return input;
+        }
+
         let resonance_control = (WideF32::splat(self.resonance) + resonance_mod)
             .clamp(WideF32::ZERO, WideF32::splat(1.0));
         let shaped_resonance = if resonance_mod == WideF32::ZERO {
@@ -594,6 +608,15 @@ impl Filter {
     }
 }
 
+#[inline]
+const fn available_filter_type(filter_type: FilterType) -> FilterType {
+    if matches!(filter_type, FilterType::PassThrough) && !cfg!(feature = "filter-pass-through") {
+        FilterType::DistributedNewtonTpt
+    } else {
+        filter_type
+    }
+}
+
 /// Compatibility alias for existing callers.
 pub type LadderFilter = Filter;
 
@@ -613,9 +636,84 @@ fn all_lanes_near_zero(value: WideF32) -> bool {
     value.abs().simd_lt(WideF32::splat(f32::EPSILON)).all()
 }
 
+#[cfg(all(test, feature = "filter-pass-through"))]
+mod pass_through_tests {
+    use super::{Filter, FilterOversampling, FilterType};
+    use crate::math::WideF32;
+
+    #[test]
+    fn pass_through_is_bit_exact_under_ignored_controls_and_modulation() {
+        let mut filter = Filter::new(FilterType::PassThrough);
+        filter.set_cutoff(317.0);
+        filter.set_resonance(1.0);
+        filter.set_poles(2);
+        filter.set_key_track(1.0);
+        filter.set_env_amount(-1.0);
+        filter.set_env_velocity_amount(1.0);
+        filter.set_audio_mod(1.0);
+        filter.set_oversampling(FilterOversampling::X4);
+        filter.reset();
+        filter.reset_lane(0);
+
+        let mut random = 0x6d2b_79f5_u32;
+        for frame in 0..1_024 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            let input = WideF32::new(core::array::from_fn(|lane| {
+                if frame == 0 && lane == 0 {
+                    -0.0
+                } else if frame == 0 && lane == 1 {
+                    f32::MAX
+                } else {
+                    let bits = random.wrapping_add((lane as u32).wrapping_mul(0x9e37_79b9));
+                    (bits as i32 as f32) * (0.75 / i32::MAX as f32)
+                }
+            }));
+            let output = filter.process(
+                input,
+                WideF32::new(core::array::from_fn(|lane| 12.0 + lane as f32 * 31.0)),
+                WideF32::new(core::array::from_fn(|lane| {
+                    lane as f32 / WideF32::LANES as f32
+                })),
+                WideF32::splat(0.73),
+                WideF32::splat(-0.91),
+                WideF32::splat(47.0),
+                WideF32::splat(-0.31),
+                WideF32::splat(0.88),
+                48_000.0,
+            );
+            assert_eq!(
+                output.to_array().map(f32::to_bits),
+                input.to_array().map(f32::to_bits)
+            );
+        }
+    }
+
+    #[test]
+    fn pass_through_impulse_has_zero_latency_and_no_tail() {
+        let mut filter = Filter::new(FilterType::PassThrough);
+        for frame in 0..64 {
+            let input = WideF32::splat(if frame == 0 { 1.0 } else { 0.0 });
+            let output = filter.process(
+                input,
+                WideF32::splat(60.0),
+                WideF32::ZERO,
+                WideF32::splat(1.0),
+                WideF32::ZERO,
+                WideF32::ZERO,
+                WideF32::ZERO,
+                WideF32::ZERO,
+                48_000.0,
+            );
+            assert_eq!(output.to_array(), input.to_array());
+        }
+    }
+}
+
 #[cfg(all(test, not(feature = "filter-all")))]
 mod embedded_tests {
-    use super::LadderFilter;
+    use super::{FilterType, LadderFilter};
     use crate::math::WideF32;
 
     #[test]
@@ -633,6 +731,13 @@ mod embedded_tests {
             44_100.0,
         );
         assert!(out.to_array().iter().all(|sample| sample.is_finite()));
+    }
+
+    #[cfg(not(feature = "filter-pass-through"))]
+    #[test]
+    fn unavailable_pass_through_falls_back_to_the_normal_default() {
+        let filter = LadderFilter::new(FilterType::PassThrough);
+        assert_eq!(filter.filter_type(), FilterType::DistributedNewtonTpt);
     }
 }
 

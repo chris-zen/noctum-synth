@@ -45,6 +45,7 @@
 //! - [`patch`] — parameter bundles and LFO destinations
 
 #![no_std]
+#![cfg_attr(feature = "osc-wavetable", allow(long_running_const_eval))]
 
 #[cfg(not(any(
     all(feature = "wide-8", not(feature = "wide-4"), not(feature = "wide-1")),
@@ -52,6 +53,11 @@
     all(feature = "wide-1", not(feature = "wide-8"), not(feature = "wide-4")),
 )))]
 compile_error!("Exactly one of the `wide-8`, `wide-4`, or `wide-1` features must be enabled.");
+
+#[cfg(not(any(feature = "osc-blep", feature = "osc-wavetable")))]
+compile_error!(
+    "At least one oscillator engine is required; enable `osc-blep`, `osc-wavetable`, or `osc-all`."
+);
 
 pub(crate) mod arp;
 pub mod dsp;
@@ -70,6 +76,13 @@ pub mod sequencer;
 pub mod tuning;
 pub mod voice;
 
+#[cfg(feature = "oscillator-research")]
+pub use dsp::{
+    OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics, ResearchError,
+    ResearchEvent, ResearchModelCapabilities, ResearchModelDescriptor, ResearchModelFamily,
+    ResearchModelId, ResearchParameterDescriptor, ResearchParameterScale, ResearchRegistry,
+    ResearchRenderCase, ResearchRenderSummary, ResearchSignalMetrics, render_research_case,
+};
 pub use effects::{EffectModulation, Effects};
 pub use engine::{LayerPlaybackStatus, SynthEngine, SynthEngineWithMemory};
 pub use patch::{
@@ -87,6 +100,7 @@ pub use sequencer::model::{
     PolyLaneStep, PolyNote, PolySequence, PolyStep, PolyVelocity, SequenceClear, SequenceUpdate,
     SequencerFeedback, SequencerRecordCommand, SequencerType,
 };
+pub use voice::{BankId, OscillatorEngineType, OscillatorPreview};
 pub use voice::{PerformanceModulation, VoiceBlock, glide_seconds};
 
 use crate::{
@@ -405,6 +419,12 @@ pub enum ControlMessage {
     SetFilterOversampling(FilterOversampling),
     /// Selects a filter model and resets its per-voice DSP state.
     SetFilterType(FilterType),
+    /// Selects the complete pre-filter oscillator engine outside patch state.
+    SetOscillatorEngine(OscillatorEngineType),
+    /// Selects the BLEP kernel without making it part of patch state.
+    SetBlepMethod(dsp::SawMethod),
+    /// Selects a compiled wavetable bank without making it part of patch state.
+    SetWavetableBank(BankId),
     NoteOn {
         note: u8,
         velocity: f32,

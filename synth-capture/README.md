@@ -20,7 +20,7 @@ cargo test -p synth-capture --locked
 synth-capture MIDI out  ->  virtual MIDI port (exact name match)
                          ->  synth / plugin standalone
                          ->  virtual audio cable (e.g. BlackHole)
-synth-capture audio in  <-  float32 @ protocol rate (Arturia: 96 kHz)
+synth-capture audio in  <-  float32 @ protocol rate (Prophet5: 96 kHz)
 ```
 
 Use a dedicated virtual MIDI bus and a loopback audio device so the capture
@@ -32,8 +32,8 @@ required for the loopback input.
 ```bash
 cargo run --release -p synth-capture --locked -- devices
 cargo run --release -p synth-capture --locked -- new \
-  --project target/analog-osc/captures/arturia-prophet5-v1 \
-  --target arturia-prophet5-v1 \
+  --project target/analog-osc/captures/prophet5-v1 \
+  --target prophet5-v1 \
   --protocol oscillator-static-v1 \
   --midi-port "IAC Driver Bus 2" \
   --audio-device "BlackHole 2ch" \
@@ -41,15 +41,15 @@ cargo run --release -p synth-capture --locked -- new \
   --sample-rate 96000 \
   --plugin-version "3.0.0"
 
-cargo run --release -p synth-capture --locked -- doctor --project target/analog-osc/captures/arturia-prophet5-v1
-cargo run --release -p synth-capture --locked -- run --project target/analog-osc/captures/arturia-prophet5-v1
-cargo run --release -p synth-capture --locked -- status --project target/analog-osc/captures/arturia-prophet5-v1
-cargo run --release -p synth-capture --locked -- verify --project target/analog-osc/captures/arturia-prophet5-v1
-cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/arturia-prophet5-v1 --failed
-cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/arturia-prophet5-v1 --all
-cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/arturia-prophet5-v1 --complete
-cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/arturia-prophet5-v1 --session session-…
-cargo run --release -p synth-capture --locked -- extract --project target/analog-osc/captures/arturia-prophet5-v1
+cargo run --release -p synth-capture --locked -- doctor --project target/analog-osc/captures/prophet5-v1
+cargo run --release -p synth-capture --locked -- run --project target/analog-osc/captures/prophet5-v1
+cargo run --release -p synth-capture --locked -- status --project target/analog-osc/captures/prophet5-v1
+cargo run --release -p synth-capture --locked -- verify --project target/analog-osc/captures/prophet5-v1
+cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/prophet5-v1 --failed
+cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/prophet5-v1 --all
+cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/prophet5-v1 --complete
+cargo run --release -p synth-capture --locked -- retry --project target/analog-osc/captures/prophet5-v1 --session session-…
+cargo run --release -p synth-capture --locked -- extract --project target/analog-osc/captures/prophet5-v1
 ```
 
 `--dry-run` works on `doctor` and `run` (no ports opened, no audio written).
@@ -81,17 +81,17 @@ equivalent). It writes under `<project>/derived/`:
 
 Parity fixtures live under `tests/fixtures/extraction/`.
 
-## Arturia Prophet-5 V (v1)
+## Prophet-5 V (v1)
 
-**Identity:** this target is Arturia’s software Prophet-5 V, not Sequential
+**Identity:** this target is Prophet-5 V software, not Sequential
 hardware. Do not treat derived cycles as Prophet-5 / Rev2 hardware references.
-See [`docs/arturia-prophet5-v1-target.json`](docs/arturia-prophet5-v1-target.json).
+See [`docs/prophet5-v1-target.json`](docs/prophet5-v1-target.json).
 
 ### Absolute MIDI Learn
 
 Import [`docs/Noctum-Characterisation.promidi`](docs/Noctum-Characterisation.promidi)
 (absolute CC). Full CC / neutral table:
-[`docs/arturia-prophet5-v1-mapping.md`](docs/arturia-prophet5-v1-mapping.md).
+[`docs/prophet5-v1-mapping.md`](docs/prophet5-v1-mapping.md).
 
 Fine Tune, Pulse Width, and Filter Env Amount are **not** MIDI-mapped (7-bit
 cannot center). Confirm once per `doctor` / `run` session when prompted:
@@ -164,7 +164,7 @@ Novation Peak and Prophet Rev2 adapters must document:
 - Whether the take is single-voice / unison / stacked, and any factory init
 - Mapping fingerprint + adapter revision in project metadata
 
-Software-model captures (Arturia, etc.) must keep an explicit identity warning
+Software-model captures (Prophet-5 V, etc.) must keep an explicit identity warning
 so research consumers never confuse them with hardware measurements.
 
 ## Attribution (prior work)
@@ -178,7 +178,7 @@ Riccardo Simionato and Stefano Fasciani:
 - Paper: <https://dafx.de/paper-archive/2025/DAFx25_paper_33.pdf>
 - Companion code: <https://github.com/RiccardoVib/NeuralOSC>
 
-`synth-capture` does **not** redistribute those pickle files. Arturia (and
+`synth-capture` does **not** redistribute those pickle files. Prophet5 (and
 future) takes are separate capture projects. The Monologue set remains the
 hardware reference that this protocol is designed to be comparable with; use
 their DOI/authors when discussing that dataset or methods derived from it.

@@ -8,8 +8,8 @@ use crate::{
     protocols::TargetCapabilities,
 };
 
-pub mod arturia_prophet5_v1;
 pub mod fake_render;
+pub mod prophet5_v1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetDescriptor {
@@ -143,7 +143,7 @@ pub trait SynthTarget {
 
 pub fn resolve_target(target_id: &str) -> Option<TargetDescriptor> {
     match target_id {
-        arturia_prophet5_v1::TARGET_ID => Some(arturia_prophet5_v1::descriptor()),
+        prophet5_v1::TARGET_ID => Some(prophet5_v1::descriptor()),
         fake_render::TARGET_ID => Some(fake_render::descriptor()),
         _ => None,
     }
@@ -193,8 +193,8 @@ mod tests {
         domain::MidiChannel,
         targets::{
             OperatorConfirmer, OperatorSetupError, OperatorSetupStep, SkipOperatorConfirmer,
-            SynthTarget, arturia_prophet5_v1::ArturiaProphet5V1, confirm_target_setup,
-            fake_render::FakeRenderTarget,
+            SynthTarget, confirm_target_setup, fake_render::FakeRenderTarget,
+            prophet5_v1::Prophet5V1,
         },
     };
 
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn confirm_target_setup_asks_once_for_target_steps() {
-        let target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         assert!(!target.operator_setup_steps().is_empty());
         let mut confirmer = RecordingConfirmer {
             seen: Vec::new(),
@@ -242,6 +242,7 @@ mod tests {
         assert_eq!(
             confirmer.seen,
             vec![
+                "init_preset_and_mapping".to_string(),
                 "osc2_fine_tune_zero".to_string(),
                 "osc2_pulse_width_50".to_string(),
                 "filter_env_amount_center".to_string(),

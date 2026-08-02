@@ -7,6 +7,7 @@ mod lanes;
 mod layer_engine;
 mod lfo;
 mod modulation;
+mod osc_engine;
 mod oscillators;
 mod pan;
 
@@ -35,9 +36,9 @@ use modulation::ModSignalContext;
 use pan::Pan;
 
 pub use modulation::PatchModulation;
+pub use osc_engine::{BankId, OscillatorEngineType, OscillatorEngines, OscillatorPreview};
 pub use oscillators::{
-    OscillatorModulation, OscillatorParams, Oscillators, OscillatorsOutput, OscillatorsParams,
-    glide_seconds,
+    OscillatorModulation, OscillatorParams, OscillatorsOutput, OscillatorsParams, glide_seconds,
 };
 
 const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
@@ -137,7 +138,7 @@ pub(crate) enum IdleAdvance {
 /// evaluated per lane each sample step.
 pub struct VoiceBlock {
     lanes: Lanes,
-    oscillators: Oscillators,
+    oscillators: OscillatorEngines,
     filter: Filter,
     amplifier: Amplifier,
     dc_blocker: DcBlocker,
@@ -157,7 +158,7 @@ impl VoiceBlock {
     pub fn new(sample_rate: f32) -> Self {
         let block = Self {
             lanes: Lanes::new(sample_rate),
-            oscillators: Oscillators::new(sample_rate),
+            oscillators: OscillatorEngines::new(sample_rate),
             filter: Filter::new(sample_rate),
             amplifier: Amplifier::new(sample_rate),
             dc_blocker: DcBlocker::new(sample_rate),
@@ -769,6 +770,18 @@ impl VoiceBlock {
         self.filter.set_filter_type(filter_type);
     }
 
+    pub fn set_oscillator_engine(&mut self, engine: OscillatorEngineType) {
+        self.oscillators.select(engine);
+    }
+
+    pub fn set_blep_method(&mut self, method: crate::dsp::SawMethod) {
+        self.oscillators.set_blep_method(method);
+    }
+
+    pub fn set_wavetable_bank(&mut self, bank: BankId) {
+        self.oscillators.set_wavetable_bank(bank);
+    }
+
     pub fn set_filter_cutoff(&mut self, cutoff: f32) {
         self.filter.set_cutoff(cutoff);
     }
@@ -1138,7 +1151,7 @@ impl VoiceBlock {
         &self.lfos
     }
 
-    pub(crate) fn oscillators(&self) -> &Oscillators {
+    pub(crate) fn oscillators(&self) -> &OscillatorEngines {
         &self.oscillators
     }
 

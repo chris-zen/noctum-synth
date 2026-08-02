@@ -40,6 +40,6 @@ pub use protocols::{
 pub use targets::{
     AudioRequirements, OperatorConfirmer, OperatorSetupError, OperatorSetupStep, SettlePolicy,
     SkipOperatorConfirmer, StdinOperatorConfirmer, SynthTarget, TargetDescriptor, TargetError,
-    arturia_prophet5_v1, confirm_target_setup, resolve_target,
+    confirm_target_setup, prophet5_v1, resolve_target,
 };
 pub use terminal::{ColorChoice, MemoryTerm, ReporterConfig, TerminalReporter};

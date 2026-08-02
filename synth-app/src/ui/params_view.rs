@@ -2,13 +2,13 @@ use eframe::egui;
 use std::path::PathBuf;
 
 use synth_core::{
-    ArpMode, ArpSustainMode, ChordMemory, ClockDivision, DedicatedModSlot, DedicatedModSource,
-    EffectParams, EffectType, GlideMode, KeyMode, LayerId, LayerMode, LayerPatch,
-    LayerPlaybackStatus, LayerSequence, LfoSyncDivision, MAX_SPLIT_POINT, ModDestination,
-    ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam, OscillatorPatch, PanModMode,
-    ParamId, Patch, UnisonMode,
+    ArpMode, ArpSustainMode, BankId, ChordMemory, ClockDivision, DedicatedModSlot,
+    DedicatedModSource, EffectParams, EffectType, GlideMode, KeyMode, LayerId, LayerMode,
+    LayerPatch, LayerPlaybackStatus, LayerSequence, LfoSyncDivision, MAX_SPLIT_POINT,
+    ModDestination, ModMatrix, ModMatrixSlot, ModRoute, ModSource, ModulationParam,
+    OscillatorEngineType, OscillatorPatch, PanModMode, ParamId, Patch, UnisonMode,
     dsp::{
-        FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ,
+        FilterType, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ, SawMethod,
         envelope::{
             DEFAULT_ATTACK_SECONDS, DEFAULT_DECAY_SECONDS, DEFAULT_RELEASE_SECONDS,
             DEFAULT_SUSTAIN_LEVEL,
@@ -32,7 +32,6 @@ use crate::{
         },
     },
 };
-
 const WIDE_LAYOUT_MIN_WIDTH: f32 = 860.0;
 const OSC_GRID_WIDTH: f32 = 840.0;
 const LFO_PANEL_WIDTH: f32 = 400.0;
@@ -86,6 +85,9 @@ impl Default for EffectRuntimeParams {
 
 #[derive(Clone)]
 pub struct UiState {
+    pub oscillator_engine: OscillatorEngineType,
+    pub blep_method: SawMethod,
+    pub wavetable_bank: BankId,
     pub osc1_enabled: bool,
     pub osc2_enabled: bool,
     pub osc1_waveform: usize,
@@ -191,6 +193,9 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            oscillator_engine: OscillatorEngineType::default_engine(),
+            blep_method: SawMethod::Blep,
+            wavetable_bank: BankId::Monologue,
             osc1_enabled: true,
             osc2_enabled: false,
             osc1_waveform: 0,
@@ -852,9 +857,27 @@ pub fn show(
 
         ui.add_space(8.0);
 
-        module_panel(ui, "Oscillators", |ui| {
-            oscillators_module(ui, state, control);
-        });
+        let mut oscillator_engine = state.oscillator_engine;
+        let mut blep_method = state.blep_method;
+        let mut wavetable_bank = state.wavetable_bank;
+        module_panel_with_header(
+            ui,
+            "Oscillators",
+            0.0,
+            |ui| {
+                oscillator_engine_combo(
+                    ui,
+                    &mut oscillator_engine,
+                    &mut blep_method,
+                    &mut wavetable_bank,
+                    control,
+                )
+            },
+            |ui| oscillators_module(ui, state, control),
+        );
+        state.oscillator_engine = oscillator_engine;
+        state.blep_method = blep_method;
+        state.wavetable_bank = wavetable_bank;
 
         ui.add_space(8.0);
 
@@ -2268,6 +2291,61 @@ fn oscillators_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEng
                 ui.end_row();
             });
     });
+}
+
+fn oscillator_engine_combo(
+    ui: &mut egui::Ui,
+    selected: &mut OscillatorEngineType,
+    blep_method: &mut SawMethod,
+    wavetable_bank: &mut BankId,
+    control: &SynthEngineControl,
+) {
+    egui::ComboBox::from_id_salt("oscillator_engine")
+        .selected_text(selected.selection_name(*blep_method, *wavetable_bank))
+        .show_ui(ui, |ui| {
+            for &(_, candidate) in OscillatorEngineType::ALL {
+                for &method in candidate.blep_methods() {
+                    if ui
+                        .selectable_label(
+                            *selected == candidate && *blep_method == method,
+                            method.name(),
+                        )
+                        .clicked()
+                    {
+                        *selected = candidate;
+                        *blep_method = method;
+                        control.set_oscillator_engine(candidate);
+                        control.set_blep_method(method);
+                        ui.close();
+                    }
+                }
+                for &(_, bank) in candidate.wavetable_banks() {
+                    if ui
+                        .selectable_label(
+                            *selected == candidate && *wavetable_bank == bank,
+                            bank.name(),
+                        )
+                        .clicked()
+                    {
+                        *selected = candidate;
+                        *wavetable_bank = bank;
+                        control.set_wavetable_bank(bank);
+                        control.set_oscillator_engine(candidate);
+                        ui.close();
+                    }
+                }
+                if candidate.blep_methods().is_empty()
+                    && candidate.wavetable_banks().is_empty()
+                    && ui
+                        .selectable_label(*selected == candidate, candidate.name())
+                        .clicked()
+                {
+                    *selected = candidate;
+                    control.set_oscillator_engine(candidate);
+                    ui.close();
+                }
+            }
+        });
 }
 
 fn lfo_module(ui: &mut egui::Ui, state: &mut UiState, control: &SynthEngineControl) {

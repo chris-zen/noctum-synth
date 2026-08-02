@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "model_id": "korg-monologue-measured-wavetable-v1",
+  "method": "48 kHz dynamic renders compared with Kaiser-filtered 192 kHz renders; disagreement is an alias/implementation proxy, not a pure alias measurement",
+  "boundary_samples_excluded_per_side": 2048,
+  "summary": {
+    "all_source_cases_deterministic": true,
+    "measured_maximum_peak_48khz": 1.4428364,
+    "measured_maximum_adjacent_step_48khz": 1.9201728,
+    "measured_maximum_high_rate_nrmse": 0.18150275473006172,
+    "measured_minimum_high_rate_correlation": 0.9834917285963909,
+    "note": "The first run exposed and then corrected the measured PWM DC-compensation sign; neutral 50% pulse and the prior blind set were unaffected."
+  },
+  "sample_rate_comparisons": [
+    {
+      "model_id": "baseline-v1",
+      "scenario": "audio-rate-pwm",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 1.0289574,
+      "maximum_adjacent_step_48khz": 1.3087647,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.042146156950853456,
+      "maximum_absolute_error": 0.5710634292535474,
+      "correlation": 0.9988766437666301,
+      "low_48khz_high_band_dbc": -40.010142918219636,
+      "reference_high_band_dbc": -29.594869128106097
+    },
+    {
+      "model_id": "baseline-v1",
+      "scenario": "combined-pitch-pwm-sync",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 1.0578091,
+      "maximum_adjacent_step_48khz": 1.8423926,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.14392511495781424,
+      "maximum_absolute_error": 1.2995253908916962,
+      "correlation": 0.9878854629830782,
+      "low_48khz_high_band_dbc": -34.53304790682145,
+      "reference_high_band_dbc": -27.88182735296367
+    },
+    {
+      "model_id": "baseline-v1",
+      "scenario": "hard-sync-ratios",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 0.82762456,
+      "maximum_adjacent_step_48khz": 1.054002,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.2222452651697165,
+      "maximum_absolute_error": 0.6855436895446239,
+      "correlation": 0.9749169003315679,
+      "low_48khz_high_band_dbc": -39.72963503684397,
+      "reference_high_band_dbc": -22.996915685926655
+    },
+    {
+      "model_id": "baseline-v1",
+      "scenario": "pitch-shape-sweep",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 0.9921438,
+      "maximum_adjacent_step_48khz": 0.10054073,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.007079985007625859,
+      "maximum_absolute_error": 0.037166605012694975,
+      "correlation": 0.999975154166744,
+      "low_48khz_high_band_dbc": -73.27031744873398,
+      "reference_high_band_dbc": -63.71453236206153
+    },
+    {
+      "model_id": "korg-monologue-measured-wavetable-v1",
+      "scenario": "audio-rate-pwm",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 1.2649868,
+      "maximum_adjacent_step_48khz": 1.2357134,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.014890741164681347,
+      "maximum_absolute_error": 0.21148126928536182,
+      "correlation": 0.9998546094116221,
+      "low_48khz_high_band_dbc": -38.002130373592124,
+      "reference_high_band_dbc": -38.940271845165086
+    },
+    {
+      "model_id": "korg-monologue-measured-wavetable-v1",
+      "scenario": "combined-pitch-pwm-sync",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 1.4428364,
+      "maximum_adjacent_step_48khz": 1.9201728,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.12232289822076359,
+      "maximum_absolute_error": 1.1079346350763906,
+      "correlation": 0.9910366127971557,
+      "low_48khz_high_band_dbc": -36.804295972046724,
+      "reference_high_band_dbc": -36.95943293629873
+    },
+    {
+      "model_id": "korg-monologue-measured-wavetable-v1",
+      "scenario": "hard-sync-ratios",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 0.87415695,
+      "maximum_adjacent_step_48khz": 1.0609114,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.18150275473006172,
+      "maximum_absolute_error": 0.6931249310587916,
+      "correlation": 0.9834917285963909,
+      "low_48khz_high_band_dbc": -36.125648090507376,
+      "reference_high_band_dbc": -40.89825187783237
+    },
+    {
+      "model_id": "korg-monologue-measured-wavetable-v1",
+      "scenario": "pitch-shape-sweep",
+      "deterministic_48khz": true,
+      "deterministic_192khz": true,
+      "peak_48khz": 0.99744374,
+      "maximum_adjacent_step_48khz": 0.11524247,
+      "comparison_samples": 91904,
+      "normalized_rms_error": 0.0060164006338950075,
+      "maximum_absolute_error": 0.016277834248448697,
+      "correlation": 0.9999819013566341,
+      "low_48khz_high_band_dbc": -69.14457051034796,
+      "reference_high_band_dbc": -69.21149115029645
+    }
+  ],
+  "desktop_runtime": {
+    "combined-one": {
+      "baseline_median_ns_per_frame": 163.40625,
+      "measured_median_ns_per_frame": 591.796875,
+      "measured_to_baseline_median_ratio": 3.6216293746414228,
+      "baseline_p99_ns_per_frame": 446.609375,
+      "measured_p99_ns_per_frame": 1554.6875,
+      "measured_p99_realtime_budget_fraction": 0.07462500000000001,
+      "measured_peak": 0.6139331,
+      "measured_finite": true
+    },
+    "steady-four": {
+      "baseline_median_ns_per_frame": 193.359375,
+      "measured_median_ns_per_frame": 451.171875,
+      "measured_to_baseline_median_ratio": 2.3333333333333335,
+      "baseline_p99_ns_per_frame": 289.0625,
+      "measured_p99_ns_per_frame": 850.921875,
+      "measured_p99_realtime_budget_fraction": 0.040844250000000006,
+      "measured_peak": 0.95000005,
+      "measured_finite": true
+    },
+    "steady-one": {
+      "baseline_median_ns_per_frame": 111.984375,
+      "measured_median_ns_per_frame": 230.46875,
+      "measured_to_baseline_median_ratio": 2.058043811915725,
+      "baseline_p99_ns_per_frame": 119.796875,
+      "measured_p99_ns_per_frame": 384.109375,
+      "measured_p99_realtime_budget_fraction": 0.018437250000000002,
+      "measured_peak": 0.4175736,
+      "measured_finite": true
+    }
+  },
+  "raw_runtime_artifact": "target/analog-osc/dynamic-characterization-v1/runtime.json"
+}

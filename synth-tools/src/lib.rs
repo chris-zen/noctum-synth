@@ -1,1 +1,1 @@
-pub mod measured_wavetable_bank;
+pub mod wavetable_bank;

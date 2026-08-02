@@ -26,7 +26,7 @@ fn extract_writes_npz_for_completed_fake_project() {
     let mut project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),
@@ -75,7 +75,7 @@ fn extract_writes_npz_for_completed_fake_project() {
     let saw_summary: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(output.join("saw-summary-v1.json")).unwrap())
             .unwrap();
-    assert_eq!(saw_summary["extractor_revision"], 1);
+    assert_eq!(saw_summary["extractor_revision"], 2);
     assert_eq!(saw_summary["pitches"].as_array().unwrap().len(), 1);
     assert!(saw_summary["npz_sha256"].as_str().unwrap().len() == 64);
 }
@@ -87,7 +87,7 @@ fn extract_refuses_incomplete_project() {
     let project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),

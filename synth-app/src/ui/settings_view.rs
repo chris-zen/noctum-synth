@@ -1,6 +1,8 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+
 use synth_core::{
+    BankId, OscillatorEngineType,
     dsp::{FilterOversampling, FilterType},
     midi::clock::{MidiClockMode, MidiTransportState},
 };
@@ -58,6 +60,12 @@ pub struct Settings {
     pub sample_rate: Option<u32>,
     #[serde(default)]
     pub filter_oversampling: FilterOversampling,
+    #[serde(default = "default_oscillator_engine_id")]
+    pub oscillator_engine_id: String,
+    #[serde(default = "default_wavetable_bank_id")]
+    pub wavetable_bank_id: String,
+    #[serde(default)]
+    pub blep_method_id: Option<String>,
     pub dark_theme: bool,
 }
 
@@ -102,6 +110,9 @@ impl Default for Settings {
             audio_input: None,
             sample_rate: None,
             filter_oversampling: FilterOversampling::Auto,
+            oscillator_engine_id: default_oscillator_engine_id(),
+            wavetable_bank_id: default_wavetable_bank_id(),
+            blep_method_id: None,
             dark_theme: true,
         }
     }
@@ -551,6 +562,24 @@ mod tests {
         assert_eq!(settings.midi_clock_mode, MidiClockMode::Slave);
         assert_eq!(settings.midi_output_clock_mode, MidiClockMode::Off);
     }
+
+    #[test]
+    fn legacy_settings_default_missing_oscillator_ids() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("oscillator_engine_id");
+        object.remove("wavetable_bank_id");
+        object.remove("blep_method_id");
+
+        let settings: Settings = serde_json::from_value(value).unwrap();
+
+        assert_eq!(
+            settings.oscillator_engine_id,
+            OscillatorEngineType::default_engine().id()
+        );
+        assert_eq!(settings.wavetable_bank_id, BankId::ALL[0].0);
+        assert_eq!(settings.blep_method_id, None);
+    }
 }
 
 fn audio_column_widths(content_width: f32, spacing: f32) -> (f32, f32, f32) {
@@ -762,4 +791,12 @@ fn general_panel(ui: &mut egui::Ui, width: f32, settings: &mut Settings) {
         ui.checkbox(&mut settings.dark_theme, "Dark theme");
         ui.add_space(8.0);
     });
+}
+
+fn default_oscillator_engine_id() -> String {
+    OscillatorEngineType::default_engine().id().to_owned()
+}
+
+fn default_wavetable_bank_id() -> String {
+    BankId::ALL[0].0.to_owned()
 }

@@ -4,7 +4,7 @@ use std::{fs, io::Write, path::Path};
 
 use synth_core::{
     dsp::{
-        AnalogOscillator, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
+        AnalogOscillator, MipWavetableBank, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform,
         WavetableOscillator, generate_wavetable_bank,
     },
     math::WideF32,
@@ -13,12 +13,12 @@ use synth_core::{
 const SAMPLE_RATE: u32 = 48_000;
 const SAMPLES: usize = SAMPLE_RATE as usize * 3;
 
-fn reference_wavetable_bank() -> WavetableBank {
-    static BANK: std::sync::OnceLock<WavetableBank> = std::sync::OnceLock::new();
+fn reference_wavetable_bank() -> MipWavetableBank {
+    static BANK: std::sync::OnceLock<MipWavetableBank> = std::sync::OnceLock::new();
     *BANK.get_or_init(|| {
         let mut samples = vec![0.0; WAVETABLE_BANK_SAMPLES];
         generate_wavetable_bank(&mut samples).expect("generate listening bank");
-        WavetableBank::new(Box::leak(samples.into_boxed_slice()))
+        MipWavetableBank::new(Box::leak(samples.into_boxed_slice()))
             .expect("validate generated wavetable bank")
     })
 }

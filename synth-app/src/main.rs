@@ -33,7 +33,6 @@ fn main() -> eframe::Result {
     let sample_rate = config.settings.sample_rate;
     let filter_oversampling = config.settings.filter_oversampling;
     let filter_type = config.filter_type;
-
     let audio_config = AudioConfig {
         output_device: audio_device,
         input_device: audio_input,

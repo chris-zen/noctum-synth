@@ -17,7 +17,7 @@ use crate::{
     rate_adapter::RateAdapter,
     sequencer::model::SequencerTransportCommand,
     sequencer::recorder::RecorderEvent,
-    voice::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion},
+    voice::{ActiveNotes, BankId, LayerEngine, OscillatorEngineType, VoicePool, VoiceRegion},
 };
 
 /// Fixed headroom between the polyphonic voice sum and global effects.
@@ -150,6 +150,9 @@ pub struct SynthEngineWithMemory<Memory, const PACKS: usize, const LAYERS: usize
     rate_adapter: RateAdapter,
     has_rendered_audio: bool,
     sequencer_feedback: heapless::Deque<SequencerFeedback, 32>,
+    oscillator_engine: OscillatorEngineType,
+    blep_method: crate::dsp::SawMethod,
+    wavetable_bank: BankId,
 }
 
 impl<const PACKS: usize, const FX_SAMPLES: usize>
@@ -223,6 +226,9 @@ where
             rate_adapter: RateAdapter::default(),
             has_rendered_audio: false,
             sequencer_feedback: heapless::Deque::new(),
+            oscillator_engine: OscillatorEngineType::default_engine(),
+            blep_method: default_blep_method(),
+            wavetable_bank: BankId::Monologue,
         }
     }
 
@@ -254,6 +260,9 @@ where
             ControlMessage::SetMasterVolume(volume) => {
                 self.master_volume.set_target(volume.clamp(0.0, 1.0));
             }
+            ControlMessage::SetOscillatorEngine(engine) => self.set_oscillator_engine(engine),
+            ControlMessage::SetBlepMethod(method) => self.set_blep_method(method),
+            ControlMessage::SetWavetableBank(bank) => self.set_wavetable_bank(bank),
             ControlMessage::MidiRealtime(event) => self.handle_midi_realtime(event),
             ControlMessage::SetModulation {
                 target,
@@ -784,6 +793,10 @@ where
             layer.clear_note_state();
         }
         self.voice_pool.reset();
+        self.voice_pool
+            .set_oscillator_engine(self.oscillator_engine);
+        self.voice_pool.set_blep_method(self.blep_method);
+        self.voice_pool.set_wavetable_bank(self.wavetable_bank);
         self.output_limiter.reset();
         self.rate_adapter = RateAdapter::default();
         self.applied_mode = self.patch.mode;
@@ -981,6 +994,30 @@ where
             .unwrap_or(0)
     }
 
+    pub fn set_oscillator_engine(&mut self, engine: OscillatorEngineType) {
+        if self.oscillator_engine == engine {
+            return;
+        }
+        self.oscillator_engine = engine;
+        self.voice_pool.set_oscillator_engine(engine);
+    }
+
+    pub fn set_blep_method(&mut self, method: crate::dsp::SawMethod) {
+        if self.blep_method == method {
+            return;
+        }
+        self.blep_method = method;
+        self.voice_pool.set_blep_method(method);
+    }
+
+    pub fn set_wavetable_bank(&mut self, bank: BankId) {
+        if self.wavetable_bank == bank {
+            return;
+        }
+        self.wavetable_bank = bank;
+        self.voice_pool.set_wavetable_bank(bank);
+    }
+
     pub fn note_on(&mut self, note: u8, velocity: f32) {
         self.handle_control(ControlMessage::NoteOn { note, velocity });
     }
@@ -1174,6 +1211,13 @@ where
             .map(|index| self.layers[index].active_voice_count(&self.voice_pool))
             .sum()
     }
+}
+
+const fn default_blep_method() -> crate::dsp::SawMethod {
+    #[cfg(feature = "oscillator-polyblep")]
+    return crate::dsp::SawMethod::PolyBlep;
+    #[cfg(not(feature = "oscillator-polyblep"))]
+    crate::dsp::SawMethod::Blep
 }
 
 #[cfg(test)]

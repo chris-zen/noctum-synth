@@ -54,8 +54,9 @@ fn doctor_passes_and_gates_run_with_fake_devices() {
     )
     .unwrap();
     assert!(record.ok);
-    assert_eq!(record.probes.len(), 4);
-    assert_eq!(record.distinctness.len(), 3);
+    assert_eq!(record.probes.len(), 10);
+    assert_eq!(record.distinctness.len(), 9);
+    assert_eq!(record.coherence.len(), 6);
     assert_eq!(record.audio_format.sample_rate_hz, SAMPLE_RATE);
     assert_eq!(record.target, fake_render::descriptor());
     let saw = record
@@ -151,7 +152,7 @@ fn doctor_fails_on_silent_probe() {
     .unwrap_err();
     match err {
         DoctorError::Probe { probe, reason } => {
-            assert_eq!(probe, "saw");
+            assert_eq!(probe, "saw-48");
             assert!(reason.contains("RMS too low"), "{reason}");
         }
         other => panic!("unexpected error {other}"),
@@ -442,7 +443,7 @@ fn project_with_cases(root: std::path::PathBuf, cases: Vec<CaptureCase>) -> Capt
 
 fn passing_record(project: &CaptureProject) -> DoctorRecord {
     DoctorRecord {
-        schema_id: "synth-capture-doctor-v1".to_string(),
+        schema_id: "synth-capture-doctor-v2".to_string(),
         ok: true,
         created_at_unix_ms: 1,
         project_id: project.document().project_id.clone(),
@@ -461,6 +462,7 @@ fn passing_record(project: &CaptureProject) -> DoctorRecord {
         target_settle_secs: 0.0,
         probes: vec![],
         distinctness: vec![],
+        coherence: vec![],
     }
 }
 

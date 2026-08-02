@@ -1,11 +1,11 @@
 //! Dual-oscillator mixer with sub oscillator, noise, sync, and glide.
 
+use crate::dsp::analog_oscillator::{EngineOscillator, OscillatorStep};
+#[cfg(feature = "osc-wavetable")]
+use crate::dsp::live_wavetable::LiveWavetable;
 use crate::{
     GlideMode, ParamId,
-    dsp::{
-        Waveform, analog_oscillator::EngineOscillator, analog_sub_oscillator::AnalogSubOscillator,
-        noise::WhiteNoise,
-    },
+    dsp::{SawMethod, Waveform, analog_sub_oscillator::AnalogSubOscillator, noise::WhiteNoise},
     math::{F32, WideF32},
     patch::{LayerPatch, OscillatorPatch},
     profiling::{RenderContext, RenderStage},
@@ -46,6 +46,95 @@ const MAX_GLIDE_SECONDS: f32 = 2.0;
 const MIDI_GLIDE_STEP: f32 = 1.0 / 127.0;
 const GLIDE_PITCH_SCALE: f32 = 65_536.0;
 
+trait VoiceOscillatorSource {
+    fn set_waveform(&mut self, waveform: Waveform);
+    fn set_shape(&mut self, shape: f32);
+    fn set_enabled(&mut self, enabled: bool);
+    fn set_frequency(&mut self, frequency: WideF32);
+    fn frequency_hz(&self) -> WideF32;
+    fn set_slop_amount(&mut self, amount: f32);
+    fn trigger_lane(&mut self, lane: usize, reset_phase: bool);
+    fn hard_sync_reset(&mut self, reset: WideF32, subsample_offset: WideF32);
+    fn next(&mut self, context: &mut RenderContext<'_>) -> OscillatorStep;
+}
+
+impl VoiceOscillatorSource for EngineOscillator {
+    fn set_waveform(&mut self, waveform: Waveform) {
+        self.set_waveform(waveform);
+    }
+
+    fn set_shape(&mut self, shape: f32) {
+        self.set_shape(shape);
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.set_enabled(enabled);
+    }
+
+    fn set_frequency(&mut self, frequency: WideF32) {
+        self.set_frequency(frequency);
+    }
+
+    fn frequency_hz(&self) -> WideF32 {
+        self.frequency_hz()
+    }
+
+    fn set_slop_amount(&mut self, amount: f32) {
+        self.set_slop_amount(amount);
+    }
+
+    fn trigger_lane(&mut self, lane: usize, reset_phase: bool) {
+        self.trigger_lane(lane, reset_phase);
+    }
+
+    fn hard_sync_reset(&mut self, reset: WideF32, subsample_offset: WideF32) {
+        self.hard_sync_reset(reset, subsample_offset);
+    }
+
+    fn next(&mut self, context: &mut RenderContext<'_>) -> OscillatorStep {
+        self.next(context)
+    }
+}
+
+#[cfg(feature = "osc-wavetable")]
+impl VoiceOscillatorSource for LiveWavetable {
+    fn set_waveform(&mut self, waveform: Waveform) {
+        self.set_waveform(waveform);
+    }
+
+    fn set_shape(&mut self, shape: f32) {
+        self.set_shape(shape);
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.set_enabled(enabled);
+    }
+
+    fn set_frequency(&mut self, frequency: WideF32) {
+        self.set_frequency(frequency);
+    }
+
+    fn frequency_hz(&self) -> WideF32 {
+        self.frequency_hz()
+    }
+
+    fn set_slop_amount(&mut self, amount: f32) {
+        self.set_slop_amount(amount);
+    }
+
+    fn trigger_lane(&mut self, lane: usize, reset_phase: bool) {
+        self.trigger_lane(lane, reset_phase);
+    }
+
+    fn hard_sync_reset(&mut self, reset: WideF32, subsample_offset: WideF32) {
+        self.hard_sync_reset(reset, subsample_offset);
+    }
+
+    fn next(&mut self, context: &mut RenderContext<'_>) -> OscillatorStep {
+        self.next(context)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GlideState {
     current: [f32; WideF32::LANES],
@@ -78,9 +167,9 @@ impl Default for GlideState {
 }
 
 /// Oscillator section for one voice block: two analog oscillators, sub, and noise.
-pub struct Oscillators {
-    osc1: EngineOscillator,
-    osc2: EngineOscillator,
+pub struct Oscillators<Source = EngineOscillator> {
+    osc1: Source,
+    osc2: Source,
     sub_osc: AnalogSubOscillator,
     noise: WhiteNoise,
     params: OscillatorsParams,
@@ -90,11 +179,43 @@ pub struct Oscillators {
     sample_rate: f32,
 }
 
-impl Oscillators {
+impl Oscillators<EngineOscillator> {
     pub fn new(sample_rate: f32) -> Self {
+        Self::with_sources(
+            sample_rate,
+            EngineOscillator::new_engine(sample_rate),
+            EngineOscillator::new_engine(sample_rate),
+        )
+    }
+
+    pub fn set_saw_method(&mut self, method: SawMethod) {
+        self.osc1.set_saw_method(method);
+        self.osc2.set_saw_method(method);
+    }
+}
+
+#[cfg(feature = "osc-wavetable")]
+impl Oscillators<LiveWavetable> {
+    pub fn new_wavetable(sample_rate: f32, bank: crate::dsp::WavetableBank) -> Self {
+        Self::with_sources(
+            sample_rate,
+            LiveWavetable::new(bank, sample_rate),
+            LiveWavetable::new(bank, sample_rate),
+        )
+    }
+
+    pub fn set_wavetable_bank(&mut self, bank: crate::dsp::WavetableBank) {
+        self.osc1.set_bank(bank);
+        self.osc2.set_bank(bank);
+    }
+}
+
+#[allow(private_bounds)]
+impl<Source: VoiceOscillatorSource> Oscillators<Source> {
+    fn with_sources(sample_rate: f32, osc1: Source, osc2: Source) -> Self {
         let mut oscillators = Self {
-            osc1: EngineOscillator::new_engine(sample_rate),
-            osc2: EngineOscillator::new_engine(sample_rate),
+            osc1,
+            osc2,
             sub_osc: AnalogSubOscillator::default(),
             noise: WhiteNoise::default(),
             params: OscillatorsParams::default(),
@@ -118,6 +239,28 @@ impl Oscillators {
 
     pub(crate) fn current_keyboard_semitones(&self) -> WideF32 {
         WideF32::new(self.glide[0].current)
+    }
+
+    /// Copies note/glide control state when activating another retained engine.
+    ///
+    /// Dormant engines intentionally do not render, so their phase remains their
+    /// own, but they must resume at the currently audible pitch and glide
+    /// position rather than at stale note state.
+    #[cfg(all(feature = "osc-blep", feature = "osc-wavetable"))]
+    pub(crate) fn synchronize_runtime_from<OtherSource: VoiceOscillatorSource>(
+        &mut self,
+        other: &Oscillators<OtherSource>,
+    ) {
+        self.glide = other.glide;
+        self.last_frequency_modulation = other.last_frequency_modulation;
+        self.update_frequencies_modulated(
+            self.last_frequency_modulation[0],
+            self.last_frequency_modulation[1],
+        );
+
+        // The dormant source did not receive the latest per-sample shape
+        // modulation. Force the first rendered sample to apply it.
+        self.last_shape_modulation = [f32::NAN; 2];
     }
 
     pub fn apply_params(&mut self, patch: &LayerPatch) {
@@ -753,7 +896,7 @@ impl Default for OscillatorParams {
     }
 }
 
-fn apply_shape_mod(osc: &mut EngineOscillator, params: &OscillatorParams) {
+fn apply_shape_mod(osc: &mut impl VoiceOscillatorSource, params: &OscillatorParams) {
     let shape_mod = params.shape_mod.clamp(0.0, 1.0);
     osc.set_shape(shape_mod);
 }

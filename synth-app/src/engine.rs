@@ -7,10 +7,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use synth_core::{
-    ChordMemory, ControlMessage, LayerId, LayerMode, LayerPlaybackStatus, LayerTarget,
-    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SequenceClear,
-    SequenceUpdate, SequencerFeedback, SequencerRecordCommand,
-    dsp::{FilterOversampling, FilterType},
+    BankId, ChordMemory, ControlMessage, LayerId, LayerMode, LayerPlaybackStatus, LayerTarget,
+    ModDestination, ModRoute, ModSource, ModulationParam, OscillatorEngineType, ParamId, Patch,
+    SequenceClear, SequenceUpdate, SequencerFeedback, SequencerRecordCommand,
+    dsp::{FilterOversampling, FilterType, SawMethod},
     midi::{
         clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent},
         program::ProgramData,
@@ -515,6 +515,18 @@ impl SynthEngineControl {
 
     pub fn set_filter_type(&self, filter_type: FilterType) {
         self.send(ControlMessage::SetFilterType(filter_type));
+    }
+
+    pub fn set_oscillator_engine(&self, engine: OscillatorEngineType) {
+        self.send(ControlMessage::SetOscillatorEngine(engine));
+    }
+
+    pub fn set_blep_method(&self, method: SawMethod) {
+        self.send(ControlMessage::SetBlepMethod(method));
+    }
+
+    pub fn set_wavetable_bank(&self, bank: BankId) {
+        self.send(ControlMessage::SetWavetableBank(bank));
     }
 
     pub fn set_midi_clock_mode(&self, mode: MidiClockMode) {

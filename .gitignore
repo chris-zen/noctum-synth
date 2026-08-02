@@ -1,5 +1,7 @@
 .DS_Store
 target/
+__pycache__/
+*.py[cod]
 *.wav
 Prophet_08_Manual_v1.0.pdf
 Prophet_08_Programs+Readme

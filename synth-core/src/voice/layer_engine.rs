@@ -94,6 +94,24 @@ impl<const PACKS: usize> VoicePool<PACKS> {
         }
     }
 
+    pub fn set_oscillator_engine(&mut self, engine: crate::OscillatorEngineType) {
+        for block in &mut self.blocks {
+            block.set_oscillator_engine(engine);
+        }
+    }
+
+    pub fn set_blep_method(&mut self, method: crate::dsp::SawMethod) {
+        for block in &mut self.blocks {
+            block.set_blep_method(method);
+        }
+    }
+
+    pub fn set_wavetable_bank(&mut self, bank: crate::BankId) {
+        for block in &mut self.blocks {
+            block.set_wavetable_bank(bank);
+        }
+    }
+
     fn set_region_pan_positions(&mut self, region: VoiceRegion) {
         let voice_count = region.voice_capacity();
         for (block_index, block) in self.region_mut(region).iter_mut().enumerate() {
@@ -314,6 +332,9 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             ControlMessage::SetMidiClockMode(_)
             | ControlMessage::SetMasterVolume(_)
             | ControlMessage::MidiRealtime(_) => {}
+            ControlMessage::SetOscillatorEngine(_)
+            | ControlMessage::SetBlepMethod(_)
+            | ControlMessage::SetWavetableBank(_) => {}
             ControlMessage::SetModulation {
                 route,
                 enabled,
@@ -1196,7 +1217,6 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             block.set_filter_type(filter_type);
         }
     }
-
     pub(crate) fn effects_mut(&mut self) -> &mut EffectsState {
         &mut self.effects
     }

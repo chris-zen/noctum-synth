@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["fast-math", "wide-4", "downsampling", "filter-gain-limited"]
+default = ["fast-math", "wide-4", "downsampling", "filter-gain-limited", "osc-blep"]
 audio-profiling = ["diagnostics", "synth-core/profiling"]
 diagnostics = []
 fast-math = ["synth-core/fast-math"]
@@ -20,6 +20,7 @@ filter-gain-limited = ["synth-core/filter-gain-limited"]
 filter-huovilainen = ["synth-core/filter-huovilainen"]
 filter-cascaded-svf = ["synth-core/filter-cascaded-svf"]
 oscillator-polyblep = ["synth-core/oscillator-polyblep"]
+osc-blep = ["synth-core/osc-blep"]
 usb-audio-test-tone = []
 usb-audio-raw-test = []
 bench-factory-banks = ["dep:tools-micro"]

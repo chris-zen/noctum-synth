@@ -20,6 +20,28 @@ pub enum SawMethod {
     Blep,
 }
 
+impl SawMethod {
+    pub const ALL: &'static [Self] = &[Self::Blep, Self::PolyBlep];
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|method| method.id() == id)
+    }
+
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Blep => "table-blep",
+            Self::PolyBlep => "polyblep",
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Blep => "Table BLEP",
+            Self::PolyBlep => "PolyBLEP / PolyBLAMP",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct PulseBlepState {
     width: WideF32,
@@ -263,6 +285,33 @@ pub(crate) fn table_points_per_side_lane(phase_inc: f32) -> u32 {
     }
 }
 
+/// Returns the causal, post-edge half of the table BLEP for an arbitrary
+/// amplitude step. `samples_since_edge` may include a fractional sample so
+/// hard-sync events retain their sub-sample timing.
+#[cfg(feature = "osc-wavetable")]
+pub(crate) fn table_blep_post_step_correction_lane(
+    samples_since_edge: f32,
+    step: f32,
+    points: u32,
+) -> f32 {
+    if !samples_since_edge.is_finite()
+        || !step.is_finite()
+        || samples_since_edge < 0.0
+        || points == 0
+    {
+        return 0.0;
+    }
+    let points = points as f32;
+    if samples_since_edge >= points {
+        return 0.0;
+    }
+
+    // table_blep_falling_correction_lane() is normalized for the saw's -2
+    // step. Scale that residual by `step / -2` for an arbitrary reset edge.
+    let falling_correction = -blep_table_lookup(samples_since_edge / points, false);
+    falling_correction * (-0.5 * step)
+}
+
 fn table_blep_falling_correction(
     phi: WideF32,
     dt: WideF32,
@@ -326,6 +375,14 @@ fn blep_pulse_reference(phi: WideF32, dt: WideF32, width: WideF32, method: SawMe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stable_method_ids_round_trip() {
+        for &method in SawMethod::ALL {
+            assert_eq!(SawMethod::from_id(method.id()), Some(method));
+        }
+        assert_eq!(SawMethod::from_id("unknown"), None);
+    }
 
     #[test]
     fn direct_pulse_matches_two_saw_reference() {

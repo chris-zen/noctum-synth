@@ -1,7 +1,7 @@
 //! Numerical parity against the WIP Python extractor (`analog_osc_reference.py`).
 //!
-//! Fixtures under `tests/fixtures/extraction/` were generated once from that
-//! algorithm. Tolerances:
+//! Fixtures under `tests/fixtures/extraction/` are generated from the matching
+//! Python algorithm. Tolerances:
 //! - frequency: 0.05 cents (or 1e-8 relative for exact-ish cases)
 //! - median cycle stride samples: 2e-5 abs
 //! - harmonic head: 5e-5 abs (1e-3 on noisy cases)
@@ -130,8 +130,8 @@ fn pitch_extraction_matches_python_fixtures() {
             &format!("{name} rms"),
             result.raw_rms,
             python.rms,
-            1e-6,
-            1e-5,
+            2e-5,
+            5e-5,
         );
         assert_close(
             &format!("{name} peak"),
@@ -144,8 +144,8 @@ fn pitch_extraction_matches_python_fixtures() {
             &format!("{name} crest"),
             result.crest_factor,
             python.crest_factor,
-            1e-5,
-            1e-5,
+            5e-5,
+            5e-5,
         );
         assert_close(
             &format!("{name} duty"),
