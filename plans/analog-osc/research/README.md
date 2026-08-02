@@ -8,7 +8,7 @@ The initial targets are deliberately separate:
 
 - `korg-monologue-v1.json` describes the public real-hardware dataset from
   Simionato and Fasciani.
-- `arturia-prophet5-v1.capture.json` is a capture specification for the
+- `prophet5-v1.capture.json` is a capture specification for the
   software reference. It is not evidence about Prophet Rev2 hardware.
 
 Import and inspect one Monologue waveform:

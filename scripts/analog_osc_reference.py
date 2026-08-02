@@ -201,8 +201,16 @@ def estimate_frequency(np, samples, sample_rate: float, expected_frequency: floa
 
 
 def phase_landmarks(np, samples, period: float):
-    centered = samples - np.median(samples)
-    crossings = upward_crossings(np, samples)
+    window = max(1, min(samples.size, int(round(period * 0.5))))
+    left = window // 2
+    right = window - left
+    prefix = np.concatenate(([0.0], np.cumsum(samples, dtype=np.float64)))
+    indices = np.arange(samples.size)
+    begin = np.maximum(0, indices - left)
+    end = np.minimum(samples.size, indices + right)
+    proxy = ((prefix[end] - prefix[begin]) / (end - begin)).astype(np.float32)
+    centered = proxy - np.median(proxy)
+    crossings = upward_crossings(np, proxy)
     crossing_indices = np.floor(crossings).astype(int)
     slopes = centered[crossing_indices + 1] - centered[crossing_indices]
     first_window = crossings < period * 1.25
@@ -218,7 +226,7 @@ def phase_landmarks(np, samples, period: float):
             & (crossings <= predicted + period * 0.3)
         )
         if candidates.size:
-            selected = candidates[int(np.argmax(slopes[candidates]))]
+            selected = candidates[int(np.argmin(np.abs(crossings[candidates] - predicted)))]
             landmark = float(crossings[selected])
         else:
             landmark = predicted
@@ -259,7 +267,7 @@ def robust_cycle_set(
         period = periods[crossing_index]
         cycles[output_index] = np.interp(begin + phase * period, source_index, working)
         accepted_periods[output_index] = period
-    return cycles, accepted_periods
+    return cycles, accepted_periods, int(periods.size - np.count_nonzero(valid))
 
 
 def extract_pitch(
@@ -271,7 +279,7 @@ def extract_pitch(
     max_cycles: int,
     expected_frequency: float | None = None,
 ):
-    cycles, periods = robust_cycle_set(
+    cycles, periods, cycles_rejected = robust_cycle_set(
         np, samples, sample_rate, phase_bins, max_cycles, expected_frequency
     )
     median_cycle = np.median(cycles, axis=0).astype(np.float32)
@@ -297,6 +305,7 @@ def extract_pitch(
             np.std(cycle_peak_to_peak) / max(np.mean(cycle_peak_to_peak), sys.float_info.min)
         ),
         "cycles_used": int(cycles.shape[0]),
+        "cycles_rejected": cycles_rejected,
     }
 
 

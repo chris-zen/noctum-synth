@@ -12,9 +12,9 @@ use crate::{
     },
 };
 
-pub const TARGET_ID: &str = "arturia-prophet5-v1";
-pub const TARGET_REVISION: &str = "arturia-prophet5-v1";
-pub const ADAPTER_REVISION: &str = "5";
+pub const TARGET_ID: &str = "prophet5-v1";
+pub const TARGET_REVISION: &str = "prophet5-v1";
+pub const ADAPTER_REVISION: &str = "7";
 pub const REQUIRED_SAMPLE_RATE_HZ: u32 = 96_000;
 
 const MAPPING_ROWS: &[(u8, &str, u8)] = &[
@@ -25,7 +25,7 @@ const MAPPING_ROWS: &[(u8, &str, u8)] = &[
     (106, "osc2_saw", 0),
     (107, "osc2_triangle", 0),
     (108, "osc2_pulse", 0),
-    (109, "osc2_level", 100),
+    (109, "osc2_level", 127),
     (111, "osc2_keyboard_tracking", 127),
     (112, "osc2_lo_freq", 0),
     (114, "noise_level", 0),
@@ -42,8 +42,8 @@ const MAPPING_ROWS: &[(u8, &str, u8)] = &[
     (19, "filter_sustain", 0),
     (20, "filter_release", 0),
     (21, "unison", 0),
-    (22, "voice_dispersion", 0),
-    (23, "master_level", 100),
+    (22, "oscillator_detune", 0),
+    (23, "master_level", 110),
     (24, "polymod_osc2_amount", 0),
     (25, "polymod_noise_amount", 0),
     (26, "lfo_amount", 0),
@@ -52,13 +52,30 @@ const MAPPING_ROWS: &[(u8, &str, u8)] = &[
     (29, "polymod_dest_filter", 0),
     (30, "lfo_dest_freq", 0),
     (31, "lfo_dest_pw", 0),
+    (80, "modulations_enable", 0),
+    (81, "keyboard_modulations_enable", 0),
+    (82, "pitch_dispersion", 0),
+    (83, "pulse_width_dispersion", 0),
+    (84, "filter_cutoff_dispersion", 0),
+    (85, "filter_resonance_dispersion", 0),
+    (86, "envelope_time_dispersion", 0),
+    (87, "modulation_dispersion", 0),
+    (88, "level_dispersion", 0),
+    (89, "fx1_dry_wet", 0),
+    (90, "fx2_dry_wet", 0),
+    (91, "fx3_dry_wet", 0),
+    (92, "arpeggiator_enable", 0),
+    (93, "chord_enable", 0),
+    (94, "fx1_bypass", 127),
+    (95, "fx2_bypass", 127),
+    (96, "fx3_bypass", 127),
 ];
 
-pub struct ArturiaProphet5V1 {
+pub struct Prophet5V1 {
     channel: MidiChannel,
 }
 
-impl ArturiaProphet5V1 {
+impl Prophet5V1 {
     pub fn new(channel: MidiChannel) -> Self {
         Self { channel }
     }
@@ -120,7 +137,7 @@ pub fn mapping_rows() -> &'static [(u8, &'static str, u8)] {
     MAPPING_ROWS
 }
 
-impl SynthTarget for ArturiaProphet5V1 {
+impl SynthTarget for Prophet5V1 {
     fn descriptor(&self) -> TargetDescriptor {
         descriptor()
     }
@@ -149,32 +166,24 @@ impl SynthTarget for ArturiaProphet5V1 {
     fn operator_setup_steps(&self) -> Vec<OperatorSetupStep> {
         vec![
             OperatorSetupStep {
+                id: "init_preset_and_mapping".to_string(),
+                title: "Load Init preset and revision-7 MIDI mapping".to_string(),
+                instructions: String::new(),
+            },
+            OperatorSetupStep {
                 id: "osc2_fine_tune_zero".to_string(),
-                title: "Set VCO 2 Fine Tune to 0.000".to_string(),
-                instructions: "\
-7-bit MIDI cannot center Fine Tune (CC 63 = -0.005, CC 64 = +0.005).
-On Prophet-5 V, set Oscillator 2 Fine Tune to exactly 0.000 manually.
-Leave it untouched for the rest of the session; automated reset will not change Fine Tune."
-                    .to_string(),
+                title: "VCO 2 Fine Tune = 0.000".to_string(),
+                instructions: String::new(),
             },
             OperatorSetupStep {
                 id: "osc2_pulse_width_50".to_string(),
-                title: "Set VCO 2 Pulse Width to exactly 50%".to_string(),
-                instructions: "\
-7-bit MIDI cannot center Pulse Width (CC 63/64 are off exact 50%).
-On Prophet-5 V, set Oscillator 2 Pulse Width to exactly 50% manually.
-Leave it untouched for the rest of the session; automated reset will not change Pulse Width."
-                    .to_string(),
+                title: "VCO 2 Pulse Width = 50%".to_string(),
+                instructions: String::new(),
             },
             OperatorSetupStep {
                 id: "filter_env_amount_center".to_string(),
-                title: "Set Filter Envelope Amount to exactly 5.0".to_string(),
-                instructions: "\
-7-bit MIDI cannot center Filter Env Amount (CC 64 ≈ 5.04 / 10).
-On Prophet-5 V, set Filter Envelope Amount to exactly 5.0 (bipolar center / no
-filter-envelope modulation). Leave it untouched for the rest of the session;
-automated reset will not change Filter Env Amount."
-                    .to_string(),
+                title: "Filter Envelope Amount = 5.0".to_string(),
+                instructions: String::new(),
             },
         ]
     }
@@ -222,8 +231,26 @@ automated reset will not change Filter Env Amount."
         self.cc_neutral(midi, "filter_release")?;
 
         self.cc_neutral(midi, "unison")?;
-        self.cc_neutral(midi, "voice_dispersion")?;
+        self.cc_neutral(midi, "oscillator_detune")?;
         self.cc_neutral(midi, "master_level")?;
+
+        self.cc_neutral(midi, "modulations_enable")?;
+        self.cc_neutral(midi, "keyboard_modulations_enable")?;
+        self.cc_neutral(midi, "pitch_dispersion")?;
+        self.cc_neutral(midi, "pulse_width_dispersion")?;
+        self.cc_neutral(midi, "filter_cutoff_dispersion")?;
+        self.cc_neutral(midi, "filter_resonance_dispersion")?;
+        self.cc_neutral(midi, "envelope_time_dispersion")?;
+        self.cc_neutral(midi, "modulation_dispersion")?;
+        self.cc_neutral(midi, "level_dispersion")?;
+        self.cc_neutral(midi, "arpeggiator_enable")?;
+        self.cc_neutral(midi, "chord_enable")?;
+        self.cc_neutral(midi, "fx1_dry_wet")?;
+        self.cc_neutral(midi, "fx2_dry_wet")?;
+        self.cc_neutral(midi, "fx3_dry_wet")?;
+        self.cc_neutral(midi, "fx1_bypass")?;
+        self.cc_neutral(midi, "fx2_bypass")?;
+        self.cc_neutral(midi, "fx3_bypass")?;
 
         midi.flush()?;
         Ok(())
@@ -243,7 +270,7 @@ automated reset will not change Filter Env Amount."
                 oscillator: OscillatorId::One,
                 ..
             } => Err(TargetError::UnsupportedParameter(
-                "oscillator 1 waveform is disabled for arturia-prophet5-v1 capture",
+                "oscillator 1 waveform is disabled for prophet5-v1 capture",
             )),
             ParameterSetting::OscillatorPulseWidth {
                 oscillator: OscillatorId::Two,
@@ -286,7 +313,7 @@ automated reset will not change Filter Env Amount."
             | ParameterSetting::UnisonEnabled(_)
             | ParameterSetting::OscillatorSyncEnabled(_)
             | ParameterSetting::VoiceDispersion(_) => Err(TargetError::UnsupportedParameter(
-                "parameter is owned by reset() for arturia-prophet5-v1",
+                "parameter is owned by reset() for prophet5-v1",
             )),
         }
     }
@@ -343,15 +370,14 @@ mod tests {
         },
         midi::{FakeMidiTransport, TranscriptTransport},
         targets::{
-            SynthTarget, TargetError,
-            arturia_prophet5_v1::{ArturiaProphet5V1, MAPPING_ROWS, mapping_fingerprint},
-            fingerprint_mapping_table,
+            SynthTarget, TargetError, fingerprint_mapping_table,
+            prophet5_v1::{MAPPING_ROWS, Prophet5V1, mapping_fingerprint},
         },
     };
 
     #[test]
     fn reset_sends_complete_osc2_initialization_and_is_idempotent() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = FakeMidiTransport::default();
         target.reset(&mut midi).unwrap();
         let first = midi.sent.clone();
@@ -360,10 +386,23 @@ mod tests {
         assert_eq!(first[1], vec![0xB0, 64, 0]);
         assert_eq!(first[2], vec![0xB0, 1, 0]);
         assert!(first.iter().any(|msg| msg == &vec![0xB0, 105, 0]));
-        assert!(first.iter().any(|msg| msg == &vec![0xB0, 109, 100]));
+        assert!(first.iter().any(|msg| msg == &vec![0xB0, 109, 127]));
+        assert!(first.iter().any(|msg| msg == &vec![0xB0, 23, 110]));
         assert!(first.iter().any(|msg| msg == &vec![0xB0, 106, 0]));
         assert!(first.iter().any(|msg| msg == &vec![0xB0, 107, 0]));
         assert!(first.iter().any(|msg| msg == &vec![0xB0, 108, 0]));
+        for controller in 80..=93 {
+            assert!(
+                first.iter().any(|msg| msg == &vec![0xB0, controller, 0]),
+                "missing neutral CC {controller}"
+            );
+        }
+        for controller in 94..=96 {
+            assert!(
+                first.iter().any(|msg| msg == &vec![0xB0, controller, 127]),
+                "missing bypass CC {controller}"
+            );
+        }
         assert!(first.iter().all(|msg| msg.get(1) != Some(&110)));
         assert!(first.iter().all(|msg| msg.get(1) != Some(&113)));
         assert!(first.iter().all(|msg| msg.get(1) != Some(&118)));
@@ -378,20 +417,26 @@ mod tests {
 
     #[test]
     fn operator_setup_requests_manual_center_controls() {
-        let target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let steps = target.operator_setup_steps();
-        assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0].id, "osc2_fine_tune_zero");
-        assert_eq!(steps[1].id, "osc2_pulse_width_50");
-        assert_eq!(steps[2].id, "filter_env_amount_center");
-        assert!(steps[0].instructions.contains("0.000"));
-        assert!(steps[1].instructions.contains("50%"));
-        assert!(steps[2].instructions.contains("5.0"));
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps[0].id, "init_preset_and_mapping");
+        assert_eq!(steps[1].id, "osc2_fine_tune_zero");
+        assert_eq!(steps[2].id, "osc2_pulse_width_50");
+        assert_eq!(steps[3].id, "filter_env_amount_center");
+        assert_eq!(
+            steps[0].title,
+            "Load Init preset and revision-7 MIDI mapping"
+        );
+        assert_eq!(steps[1].title, "VCO 2 Fine Tune = 0.000");
+        assert_eq!(steps[2].title, "VCO 2 Pulse Width = 50%");
+        assert_eq!(steps[3].title, "Filter Envelope Amount = 5.0");
+        assert!(steps.iter().all(|step| step.instructions.is_empty()));
     }
 
     #[test]
     fn waveform_selection_sets_all_three_osc2_switches() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = FakeMidiTransport::default();
         target
             .set_parameter(
@@ -425,7 +470,7 @@ mod tests {
 
     #[test]
     fn oscillator_one_waveform_is_rejected() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = FakeMidiTransport::default();
         let err = target
             .set_parameter(
@@ -442,7 +487,7 @@ mod tests {
 
     #[test]
     fn panic_sends_all_notes_off_and_all_sound_off() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = FakeMidiTransport::default();
         target.panic(&mut midi).unwrap();
         assert_eq!(midi.sent, vec![vec![0xB0, 123, 0], vec![0xB0, 64, 0]]);
@@ -451,7 +496,7 @@ mod tests {
 
     #[test]
     fn prepare_session_sends_per_note_offs_once() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = FakeMidiTransport::default();
         target.prepare_session(&mut midi).unwrap();
         assert_eq!(midi.sent[0], vec![0xB0, 123, 0]);
@@ -464,7 +509,7 @@ mod tests {
 
     #[test]
     fn notes_and_transcript_decorator() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = TranscriptTransport::new(FakeMidiTransport::default());
         target
             .note_on(
@@ -484,7 +529,7 @@ mod tests {
 
     #[test]
     fn pulse_width_fifty_percent_is_manual_noop() {
-        let mut target = ArturiaProphet5V1::new(MidiChannel::try_new(1).unwrap());
+        let mut target = Prophet5V1::new(MidiChannel::try_new(1).unwrap());
         let mut midi = FakeMidiTransport::default();
         target
             .set_parameter(
@@ -510,6 +555,10 @@ mod tests {
 
         let original = mapping_fingerprint();
         assert_eq!(original, fingerprint_mapping_table(MAPPING_ROWS));
+        assert_eq!(
+            original,
+            "9816d98209944039c6414c0a48c37ccad474d445fe03d3333a6af414c0012681"
+        );
         let mut altered = MAPPING_ROWS.to_vec();
         altered[0].2 = 1;
         assert_ne!(original, fingerprint_mapping_table(&altered));

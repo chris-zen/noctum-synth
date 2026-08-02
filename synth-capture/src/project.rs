@@ -414,11 +414,9 @@ impl CaptureProject {
         if request.protocol_id != "oscillator-static-v1" {
             return Err(ProjectError::UnknownProtocol(request.protocol_id));
         }
-        if target.id == crate::targets::arturia_prophet5_v1::TARGET_ID
-            && request.sample_rate_hz != 96_000
-        {
+        if target.id == crate::targets::prophet5_v1::TARGET_ID && request.sample_rate_hz != 96_000 {
             return Err(ProjectError::Invalid(
-                "arturia-prophet5-v1 requires sample rate 96000".to_string(),
+                "prophet5-v1 requires sample rate 96000".to_string(),
             ));
         }
 
@@ -1097,9 +1095,9 @@ impl CaptureProject {
 }
 
 fn write_mapping_instructions(project: &CaptureProject) -> Result<(), ProjectError> {
-    let path = project.root.join("ARTURIA_MIDI_LEARN.txt");
+    let path = project.root.join("PROPHET5_MIDI_LEARN.txt");
     let body = format!(
-        "Arturia Prophet-5 V absolute MIDI Learn\n\
+        "Prophet-5 V absolute MIDI Learn\n\
          target: {}\n\
          adapter_revision: {}\n\
          mapping_fingerprint: {}\n\
@@ -1281,10 +1279,10 @@ mod tests {
     #[test]
     fn create_open_and_status_round_trip() {
         let dir = tempdir().unwrap();
-        let root = dir.path().join("arturia-prophet5-v1");
+        let root = dir.path().join("prophet5-v1");
         let project = CaptureProject::create(NewProjectRequest {
             root: root.clone(),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "Noctum Capture".to_string(),
             audio_device: "BlackHole 2ch".to_string(),
@@ -1312,7 +1310,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let a = CaptureProject::create(NewProjectRequest {
             root: dir.path().join("a"),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "port-a".to_string(),
             audio_device: "dev-a".to_string(),
@@ -1323,7 +1321,7 @@ mod tests {
         .unwrap();
         let b = CaptureProject::create(NewProjectRequest {
             root: dir.path().join("b"),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "port-b".to_string(),
             audio_device: "dev-b".to_string(),
@@ -1340,7 +1338,7 @@ mod tests {
             a.document().scientific_fingerprint,
             CaptureProject::create(NewProjectRequest {
                 root: dir.path().join("c"),
-                target_id: "arturia-prophet5-v1".to_string(),
+                target_id: "prophet5-v1".to_string(),
                 protocol_id: "oscillator-static-v1".to_string(),
                 midi_port: "other-port".to_string(),
                 audio_device: "other-dev".to_string(),
@@ -1360,7 +1358,7 @@ mod tests {
         let root = dir.path().join("proj");
         let mut project = CaptureProject::create(NewProjectRequest {
             root: root.clone(),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "midi".to_string(),
             audio_device: "audio".to_string(),
@@ -1392,7 +1390,7 @@ mod tests {
         let root = dir.path().join("proj");
         let mut project = CaptureProject::create(NewProjectRequest {
             root: root.clone(),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "midi".to_string(),
             audio_device: "audio".to_string(),
@@ -1445,7 +1443,7 @@ mod tests {
         let root = dir.path().join("proj");
         let mut project = CaptureProject::create(NewProjectRequest {
             root: root.clone(),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "midi".to_string(),
             audio_device: "audio".to_string(),
@@ -1501,7 +1499,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let err = CaptureProject::create(NewProjectRequest {
             root: dir.path().join("proj"),
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "midi".to_string(),
             audio_device: "audio".to_string(),
@@ -1519,7 +1517,7 @@ mod tests {
         let root = dir.path().join("proj");
         let project = CaptureProject::create(NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "midi".to_string(),
             audio_device: "audio".to_string(),
@@ -1538,7 +1536,7 @@ mod tests {
         let root = dir.path().join("proj");
         let mut project = CaptureProject::create(NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "midi".to_string(),
             audio_device: "audio".to_string(),

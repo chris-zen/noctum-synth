@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub const EXTRACTOR_ID: &str = "oscillator-static-v1";
-pub const EXTRACTOR_REVISION: u32 = 1;
+pub const EXTRACTOR_REVISION: u32 = 2;
 pub const PHASE_BINS: usize = 2048;
 pub const HARMONICS: usize = 256;
 pub const MAX_CYCLES: usize = 1024;
@@ -525,14 +525,20 @@ fn robust_cycle_set(
 }
 
 fn phase_landmarks(samples: &[f32], period: f64) -> Result<Vec<f64>, ExtractionError> {
+    // A raw analogue-like waveform can cross its midpoint several times per
+    // period.  Using the steepest raw crossing can therefore jump between
+    // different intra-cycle features as pitch changes.  A half-period moving
+    // average strongly suppresses the second and higher harmonics while
+    // retaining the fundamental, giving one stable phase landmark per cycle.
+    let phase_proxy = fundamental_phase_proxy(samples, period);
     let centered: Vec<f64> = {
-        let median = median_f32(samples);
-        samples
+        let median = median_f32(&phase_proxy);
+        phase_proxy
             .iter()
             .map(|sample| f64::from(*sample) - median)
             .collect()
     };
-    let crossings = upward_crossings(samples)?;
+    let crossings = upward_crossings(&phase_proxy)?;
     let crossing_indices: Vec<usize> = crossings
         .iter()
         .map(|value| value.floor() as usize)
@@ -578,9 +584,10 @@ fn phase_landmarks(samples: &[f32], period: f64) -> Result<Vec<f64>, ExtractionE
             let selected = candidates
                 .iter()
                 .copied()
-                .max_by(|&left, &right| {
-                    slopes[left]
-                        .partial_cmp(&slopes[right])
+                .min_by(|&left, &right| {
+                    (crossings[left] - predicted)
+                        .abs()
+                        .partial_cmp(&(crossings[right] - predicted).abs())
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .unwrap();
@@ -597,6 +604,25 @@ fn phase_landmarks(samples: &[f32], period: f64) -> Result<Vec<f64>, ExtractionE
         ));
     }
     Ok(landmarks)
+}
+
+fn fundamental_phase_proxy(samples: &[f32], period: f64) -> Vec<f32> {
+    let mut window = (period * 0.5).round().max(1.0) as usize;
+    window = window.min(samples.len().max(1));
+    let left = window / 2;
+    let right = window - left;
+    let mut prefix = Vec::with_capacity(samples.len() + 1);
+    prefix.push(0.0f64);
+    for sample in samples {
+        prefix.push(prefix.last().copied().unwrap() + f64::from(*sample));
+    }
+    (0..samples.len())
+        .map(|index| {
+            let begin = index.saturating_sub(left);
+            let end = (index + right).min(samples.len());
+            ((prefix[end] - prefix[begin]) / (end - begin) as f64) as f32
+        })
+        .collect()
 }
 
 fn upward_crossings(samples: &[f32]) -> Result<Vec<f64>, ExtractionError> {
@@ -994,6 +1020,32 @@ mod tests {
             .fold(0.0f32, f32::max);
         assert!((recon_peak - 1.0).abs() < 1e-3);
         assert!(result.cycles_accepted >= 3);
+    }
+
+    #[test]
+    fn extracts_harmonic_rich_wave_without_switching_phase_landmarks() {
+        let sample_rate = 48_000.0;
+        let frequency = 200.0;
+        let samples: Vec<f32> = (0..96_000)
+            .map(|index| {
+                let phase = 2.0 * std::f64::consts::PI * frequency * index as f64 / sample_rate;
+                // The strong upper partials create several raw upward midpoint
+                // crossings in each fundamental period.
+                (phase.sin() + 0.9 * (3.0 * phase).sin() + 0.7 * (5.0 * phase).sin()) as f32
+            })
+            .collect();
+        let result =
+            extract_pitch(&samples, sample_rate, 2048, 256, 1024, Some(frequency)).unwrap();
+        assert!(
+            result.period_jitter_ppm < 100.0,
+            "jitter={}",
+            result.period_jitter_ppm
+        );
+        assert!(
+            result.cycles_rejected <= 1,
+            "rejected={}",
+            result.cycles_rejected
+        );
     }
 
     #[test]

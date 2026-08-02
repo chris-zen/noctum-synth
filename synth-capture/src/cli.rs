@@ -28,7 +28,7 @@ use crate::{
     runner::{RunConfig, RunSummary, install_ctrlc_flag, run_capture_with_reporter},
     targets::{
         StdinOperatorConfirmer, SynthTarget,
-        arturia_prophet5_v1::{self, ArturiaProphet5V1},
+        prophet5_v1::{self, Prophet5V1},
     },
     terminal::{ColorChoice, Palette, ReporterConfig, TerminalReporter, format_duration},
 };
@@ -578,7 +578,7 @@ fn extract_project(
     extractor.extract(&project, &output)
 }
 
-fn print_operator_setup_plan(target: &ArturiaProphet5V1, reporter: &mut TerminalReporter) {
+fn print_operator_setup_plan(target: &Prophet5V1, reporter: &mut TerminalReporter) {
     let steps = target.operator_setup_steps();
     if steps.is_empty() {
         return;
@@ -596,7 +596,7 @@ fn print_operator_setup_plan(target: &ArturiaProphet5V1, reporter: &mut Terminal
 }
 
 fn print_doctor_plan(
-    target: &mut ArturiaProphet5V1,
+    target: &mut Prophet5V1,
     reporter: &mut TerminalReporter,
 ) -> Result<(), CommandFailure> {
     reporter.line("doctor dry run: no ports opened, no audio written");
@@ -626,7 +626,7 @@ fn print_doctor_plan(
 
 fn print_run_plan(
     project: &CaptureProject,
-    target: &mut ArturiaProphet5V1,
+    target: &mut Prophet5V1,
     reporter: &mut TerminalReporter,
 ) -> Result<usize, CommandFailure> {
     reporter.line("run dry run: no ports opened, no audio written");
@@ -670,7 +670,7 @@ fn print_run_plan(
     Ok(pending.len())
 }
 
-fn render_reset_sequence(target: &mut ArturiaProphet5V1) -> Result<Vec<String>, CommandFailure> {
+fn render_reset_sequence(target: &mut Prophet5V1) -> Result<Vec<String>, CommandFailure> {
     let mut midi = TranscriptTransport::new(FakeMidiTransport::default());
     target
         .reset(&mut midi)
@@ -683,7 +683,7 @@ fn render_reset_sequence(target: &mut ArturiaProphet5V1) -> Result<Vec<String>, 
 }
 
 fn render_waveform_ops(
-    target: &mut ArturiaProphet5V1,
+    target: &mut Prophet5V1,
     waveform: OscillatorWaveform,
 ) -> Result<Vec<String>, CommandFailure> {
     let mut midi = TranscriptTransport::new(FakeMidiTransport::default());
@@ -704,7 +704,7 @@ fn render_waveform_ops(
 }
 
 fn render_case_ops(
-    target: &mut ArturiaProphet5V1,
+    target: &mut Prophet5V1,
     case: &CaptureCase,
 ) -> Result<Vec<String>, CommandFailure> {
     let mut midi = TranscriptTransport::new(FakeMidiTransport::default());
@@ -728,23 +728,21 @@ fn render_case_ops(
         .collect())
 }
 
-fn build_live_target(document: &ProjectDocument) -> Result<ArturiaProphet5V1, CommandFailure> {
-    if document.target.id != arturia_prophet5_v1::TARGET_ID {
+fn build_live_target(document: &ProjectDocument) -> Result<Prophet5V1, CommandFailure> {
+    if document.target.id != prophet5_v1::TARGET_ID {
         return Err(CommandFailure::Error(format!(
             "no live adapter for target `{}`",
             document.target.id
         )));
     }
-    let live = arturia_prophet5_v1::descriptor();
+    let live = prophet5_v1::descriptor();
     if live != document.target {
         return Err(CommandFailure::Error(
             "target adapter revision or MIDI mapping changed since the project was created"
                 .to_string(),
         ));
     }
-    Ok(ArturiaProphet5V1::new(
-        document.protocol_config.midi_channel,
-    ))
+    Ok(Prophet5V1::new(document.protocol_config.midi_channel))
 }
 
 fn finish_command(

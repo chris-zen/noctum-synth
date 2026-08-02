@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn builds_exact_226_case_matrix() {
         let protocol = OscillatorStaticV1;
-        let config = OscillatorStaticV1::default_config("arturia-prophet5-v1").unwrap();
+        let config = OscillatorStaticV1::default_config("prophet5-v1").unwrap();
         let cases = protocol.build_cases(&config).unwrap();
 
         assert_eq!(cases.len(), 226);
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn role_split_and_guards() {
         let protocol = OscillatorStaticV1;
-        let config = OscillatorStaticV1::default_config("arturia-prophet5-v1").unwrap();
+        let config = OscillatorStaticV1::default_config("prophet5-v1").unwrap();
         let cases = protocol.build_cases(&config).unwrap();
 
         let stimulated: Vec<_> = cases
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn case_ids_and_order_are_stable() {
         let protocol = OscillatorStaticV1;
-        let config = OscillatorStaticV1::default_config("arturia-prophet5-v1").unwrap();
+        let config = OscillatorStaticV1::default_config("prophet5-v1").unwrap();
         let first = protocol.build_cases(&config).unwrap();
         let second = protocol.build_cases(&config).unwrap();
 
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn stimulated_frames_and_pulse_settings() {
         let protocol = OscillatorStaticV1;
-        let config = OscillatorStaticV1::default_config("arturia-prophet5-v1").unwrap();
+        let config = OscillatorStaticV1::default_config("prophet5-v1").unwrap();
         let cases = protocol.build_cases(&config).unwrap();
 
         let saw = cases

@@ -28,7 +28,7 @@ Included:
 - External MIDI output through `midir`.
 - Input-only audio capture through `cpal`.
 - A reusable target adapter trait with mandatory reset, semantic parameter,
-  note, and panic operations.
+  note, panic, optional operator-setup steps, and session-prepare operations.
 - A reusable protocol trait that produces complete capture cases.
 - Exact float WAV recording, validation, checksums, transactional state, and
   interruption/resume.
@@ -81,7 +81,7 @@ synth-capture/
       oscillator_static_v1.rs
     targets/
       mod.rs
-      arturia_prophet5_v1.rs
+      prophet5_v1.rs
   tests/
     extraction_parity.rs
     project_resume.rs
@@ -222,8 +222,8 @@ reset.
 - An optional MIDI-note stimulus.
 - Parameter-settle, attack-discard, stored-capture, and post-note durations.
 - Expected fundamental and permitted pitch error.
-- Scientific role: `Training`, `Validation`, `Test`, `GuardValidation`, or
-  `GuardTraining`.
+- Scientific role: `Training`, `Validation`, `Test`, `GuardValidation`,
+  `GuardTraining`, or `NoiseFloor` (silence / oscillator-off reference only).
 - Typed tags for waveform, note, pulse width, oscillator, protocol revision,
   and target revision.
 
@@ -249,6 +249,10 @@ The synth-specific contract is:
 pub trait SynthTarget {
     fn descriptor(&self) -> TargetDescriptor;
     fn capabilities(&self) -> TargetCapabilities;
+    fn audio_requirements(&self) -> AudioRequirements;
+    fn operator_setup_steps(&self) -> Vec<OperatorSetupStep> {
+        Vec::new()
+    }
     fn reset(&mut self, midi: &mut dyn MidiTransport) -> Result<(), TargetError>;
     fn set_parameter(
         &mut self,
@@ -267,6 +271,9 @@ pub trait SynthTarget {
         note: MidiNote,
     ) -> Result<(), TargetError>;
     fn panic(&mut self, midi: &mut dyn MidiTransport) -> Result<(), TargetError>;
+    fn prepare_session(&mut self, midi: &mut dyn MidiTransport) -> Result<(), TargetError> {
+        self.panic(midi)
+    }
     fn settle_policy(&self) -> SettlePolicy;
 }
 ```
@@ -282,6 +289,15 @@ Rules:
   1.0, MPE, SysEx, or another target-specific trigger.
 - Adding a synth requires one adapter module, adapter tests, and one target
   registry entry. Protocols and runner code do not change.
+- `operator_setup_steps()` declares one-time manual operator actions that MIDI
+  cannot establish. The shared `confirm_target_setup` helper asks once per
+  `doctor`/`run` session through an `OperatorConfirmer` (stdin in the CLI;
+  skip in tests). Targets must not re-implement that prompt.
+- `prepare_session()` runs once at session start before operator setup. Default
+  is `panic()`. Targets may strengthen it (for example Arturia sends all-notes
+  off for every MIDI note) without flooding that sequence on every case.
+- Per-case and error paths continue to call the lighter `panic()` (channel-mode
+  all-notes-off / all-sound-off / sustain-off as appropriate).
 
 ## Capture protocol interface
 
@@ -331,7 +347,7 @@ mapping fingerprint.
 
 ### Reset contract
 
-`ArturiaProphet5V1::reset()` must send an absolute value for every relevant
+`Prophet5V1::reset()` must send an absolute value for every relevant
 switch and knob in this order:
 
 1. All-notes-off, sustain-off, and modulation-wheel zero.
@@ -339,20 +355,27 @@ switch and knob in this order:
 3. Oscillator 2 mixer level to the documented nominal capture level.
 4. Oscillator 2 keyboard tracking on.
 5. Oscillator 2 low-frequency mode off.
-6. Oscillator 2 tuning to the neutral keyboard pitch.
-7. Oscillator 2 triangle, saw, and pulse switches all off.
-8. Oscillator 2 pulse width to exactly 50 percent.
-9. Noise level zero.
-10. Oscillator sync off.
-11. Poly-mod oscillator-2/noise source amounts zero and all destinations off.
-12. LFO/modulation amounts and destinations off.
-13. Filter cutoff fully open, resonance zero, and filter-envelope amount
+6. Oscillator 2 triangle, saw, and pulse switches all off.
+7. Oscillator 2 pulse width to exactly 50 percent.
+8. Noise level zero.
+9. Oscillator sync off.
+10. Poly-mod oscillator-2/noise source amounts zero and all destinations off.
+11. LFO/modulation amounts and destinations off.
+12. Filter cutoff fully open, resonance zero, and filter-envelope amount
     neutral.
-14. Amplifier attack/decay/release minimum and sustain maximum.
-15. Filter envelope set to its neutral capture values.
-16. Unison, voice dispersion, effects, and other voice variation off.
-17. Master output to the documented non-clipping nominal value.
-18. Flush MIDI and wait the adapter reset-settle duration.
+13. Amplifier attack/decay/release minimum and sustain maximum.
+14. Filter envelope set to its neutral capture values.
+15. Unison, voice dispersion, effects, and other voice variation off.
+16. Master output to the documented non-clipping nominal value.
+17. Flush MIDI and wait the adapter reset-settle duration.
+
+Oscillator 2 Fine Tune, Pulse Width, and Filter Envelope Amount are **not**
+MIDI-mapped and are **not** part of `reset()`. 7-bit CC cannot center them.
+The adapter declares `operator_setup_steps` that ask once per session to set
+VCO 2 Fine Tune to exactly `0.000`, Pulse Width to exactly `50%`, and Filter
+Env Amount to exactly `5.0` (bipolar center), then leave them untouched.
+Protocol pulse cases still request 50% width semantically; the adapter treats
+that request as a no-op so MIDI cannot overwrite the manual setting.
 
 For each waveform, `set_parameter(OscillatorWaveform { oscillator: Two, ... })`
 must explicitly send all three oscillator-2 switches: one selected switch is
@@ -360,9 +383,12 @@ must explicitly send all three oscillator-2 switches: one selected switch is
 protocol fail as unsupported. This makes retries deterministic even when the
 previous capture was interrupted.
 
-The adapter owns all neutral values. An operator is never asked to restore an
-init preset manually between runs. If an Arturia MIDI mapping cannot control a
-required state, `doctor` must fail rather than accepting an unknown state.
+The adapter owns all MIDI-reachable neutral values. An operator is never asked
+to restore an init preset manually between runs. The only allowed manual state
+is declared via `operator_setup_steps` (Fine Tune, 50% Pulse Width, and centered
+Filter Env Amount for Arturia v1). If a required state is neither MIDI-owned nor
+declared as operator setup, `doctor` must fail rather than accepting an unknown
+state.
 
 ### Automated doctor
 
@@ -370,7 +396,8 @@ Before `run`, `doctor` must:
 
 - Open the exact MIDI output and audio input.
 - Require native float32 input at exactly 96 kHz for Arturia v1.
-- Run `reset()`.
+- Call `prepare_session()` once, then confirm any `operator_setup_steps`.
+- Run `reset()` for each probe.
 - Capture short oscillator-off silence.
 - Capture short A4 oscillator-2 saw, triangle, and pulse probes.
 - Confirm all probes are non-silent and spectrally distinct.
@@ -424,9 +451,11 @@ Default capture settings:
 
 Keep the input stream open across cases and delimit files using audio frames,
 not wall-clock duration. Generate the execution order once and persist it by
-sorting cases by SHA-256 of `capture_order_seed || case_id`. The fixed seed is
-stored in `project.json`, distributing notes, waves, and data roles throughout
-the session instead of aligning them with slow temporal drift.
+sorting cases by SHA-256 of a length-prefixed encoding of
+`capture_order_seed` and `case_id` (8-byte little-endian length of the seed,
+seed bytes, 8-byte little-endian length of the case id, case id bytes). The
+fixed seed is stored in `project.json`, distributing notes, waves, and data
+roles throughout the session instead of aligning them with slow temporal drift.
 
 ## Project schema and storage
 
@@ -458,7 +487,10 @@ target and adapter revisions, mapping fingerprint, Arturia/plugin/OS metadata,
 protocol revision, explicit cases/order/roles, pitch and guard policy, exact
 audio and MIDI settings, timings, validation thresholds, device names,
 creation time, and a SHA-256 fingerprint of all scientific configuration.
-Changing scientific settings creates a new project.
+The fingerprint is computed from a canonical integer/string material (frame
+counts, milli-scaled widths/cents, case ids/roles/tags) so JSON float
+round-trips cannot change it. Changing scientific settings creates a new
+project.
 
 `state.json` is mutable and atomically replaced after every transition. Status
 is one of `Pending`, `Recording`, `Validating`, `Complete`, `Failed`, or
@@ -485,6 +517,10 @@ For every case:
 12. Atomically write per-case metadata.
 13. Rename the WAV to its final path.
 14. Mark `Complete`.
+
+Before the first case of a `run` session (and before doctor probes), call
+`prepare_session()` once, then confirm any `operator_setup_steps` once. Do not
+repeat those prompts between cases.
 
 A case is complete only when final WAV, metadata, checksum, case fingerprint,
 and state agree.
@@ -613,16 +649,20 @@ synth-capture extract
 - `devices`: enumerate exact MIDI outputs and audio input formats/rates.
 - `new`: require a new/empty project path and write immutable config, cases,
   order, initial state, and Arturia mapping instructions.
-- `doctor`: perform and store automated routing/state probes.
-- `run`: start or resume; accept no scientific overrides.
+- `doctor`: perform and store automated routing/state probes; confirm any
+  one-time operator setup steps first.
+- `run`: start or resume; accept no scientific overrides; confirm any one-time
+  operator setup steps once at session start.
 - `status`: show counts, last/current case, failures, elapsed captured duration,
   and estimated remaining duration; support `--json`.
 - `verify`: rehash completed audio, verify metadata/header/frame agreement, and
   report missing, corrupt, or orphaned artifacts.
-- `retry --failed` or `retry --case <id>`: archive and reset selected cases.
+- `retry --failed`, `--complete`, `--all`, `--session <id>`, or `--case <id>`:
+  archive WAV/metadata under `superseded/<stamp>/` and reset those cases to
+  pending (project config and doctor record unchanged).
 - `extract`: run the registered Rust extractor and refuse incomplete projects.
-- `--dry-run`: print cases and MIDI operations without opening ports or writing
-  audio for `doctor` and `run`.
+- `--dry-run`: print cases, MIDI operations, and operator-setup steps without
+  opening ports or writing audio for `doctor` and `run`.
 
 ### Terminal colors and progress
 
@@ -679,8 +719,8 @@ Representative creation:
 
 ```text
 cargo run --release -p synth-capture -- new \
-  --project target/analog-osc/captures/arturia-prophet5-v1 \
-  --target arturia-prophet5-v1 \
+  --project target/analog-osc/captures/prophet5-v1 \
+  --target prophet5-v1 \
   --protocol oscillator-static-v1 \
   --midi-port "Noctum Capture" \
   --audio-device "BlackHole 2ch" \
@@ -693,9 +733,11 @@ cargo run --release -p synth-capture -- new \
 
 Unit tests must cover validated values, exact 226-case generation, 75 cases per
 wave, split/guard counts, stable IDs/order, complete oscillator-2 reset bytes,
-reset idempotence, explicit three-switch waveform selection, oscillator-1
-rejection, unsupported parameters, project fingerprints, atomic state recovery,
-retry archival, WAV format/frame counts, overflow failure, and Ctrl-C cleanup.
+reset idempotence, Fine Tune excluded from reset/MIDI map, session
+`prepare_session` note-off flood, explicit three-switch waveform selection,
+oscillator-1 rejection, unsupported parameters, project fingerprints, atomic
+state recovery, retry archival, WAV format/frame counts, overflow failure, and
+Ctrl-C cleanup.
 
 Use fake MIDI and audio backends for an end-to-end shortened project. The fake
 target renders deterministic saw/triangle/pulse from received operations.
@@ -711,8 +753,10 @@ reports or banks.
 
 Manual Arturia acceptance requires:
 
-1. Install the documented absolute MIDI Learn table once.
-2. Run `devices`, `new`, and a successful `doctor`.
+1. Install the documented absolute MIDI Learn table once (no Fine Tune, Pulse
+   Width, or Filter Env Amount CC; those are set manually at session start).
+2. Run `devices`, `new`, and a successful `doctor` (confirm Fine Tune `0.000`,
+   Pulse Width `50%`, and Filter Env Amount `5.0` when prompted).
 3. Confirm doctor is using oscillator 2 for all three waves.
 4. Capture several cases, interrupt one, and resume without repeating completed
    files.
@@ -759,8 +803,10 @@ files, and generated banks under ignored `target/analog-osc/` paths.
   validation, or extraction infrastructure.
 - A new filter protocol can reuse the same target/transport/recording project
   and add only protocol and extractor behavior.
-- Arturia initialization is entirely adapter-owned and repeatable after process
-  restart.
+- Arturia initialization is adapter-owned for every MIDI-reachable control and
+  repeatable after process restart. Oscillator 2 Fine Tune (`0.000`), Pulse
+  Width (`50%`), and Filter Env Amount (`5.0`) are the declared one-time manual
+  exceptions.
 - Prophet-5 V oscillator 2 supplies triangle, saw, and pulse while oscillator 1
   remains disabled.
 - Every completed take is immutable, checksummed, attributable, and resumable.

@@ -28,7 +28,7 @@ fn simulated_capture_completes_and_skips_on_resume() {
     let mut project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),
@@ -105,7 +105,7 @@ fn overflow_fails_case_without_overwriting_completed() {
     let mut project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),
@@ -169,7 +169,7 @@ fn resume_rejects_complete_case_with_missing_metadata() {
     let mut project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),
@@ -227,7 +227,7 @@ fn stop_flag_marks_case_interrupted() {
     let mut project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),
@@ -274,7 +274,7 @@ fn reporter_receives_phase_and_frame_events() {
     let mut project = CaptureProject::create_with_cases(
         NewProjectRequest {
             root,
-            target_id: "arturia-prophet5-v1".to_string(),
+            target_id: "prophet5-v1".to_string(),
             protocol_id: "oscillator-static-v1".to_string(),
             midi_port: "fake".to_string(),
             audio_device: "fake".to_string(),

@@ -2,22 +2,22 @@
 
 **Start here** for the end-to-end oscillator characterisation loop:
 
-virtual routing → MIDI Learn → capture → extract → measured wavetable bank.
+virtual routing → MIDI Learn → capture → extract → wavetable bank.
 
 This covers the **`oscillator-static-v1`** protocol only. Broader full-voice
 protocols (filter, envelopes, control laws) are catalogued in
 [`plans/analog-osc/16-full-voice-characterisation.md`](../../plans/analog-osc/16-full-voice-characterisation.md)
 and are not required for a static wavetable bank.
 
-Worked example: **Arturia Prophet-5 V** (`arturia-prophet5-v1`).
+Worked example: **Prophet-5 V** (`prophet5-v1`).
 
 ```text
-devices → new → doctor → run → verify → extract → measured_wavetable_bank
+devices → new → doctor → run → verify → extract → wavetable_bank
 ```
 
 ## Identity and attribution
 
-- Arturia Prophet-5 V is **software**, not Sequential/Prophet hardware. Do not
+- Prophet-5 V is **software**, not Sequential/Prophet hardware. Do not
   label banks or papers as hardware Prophet references.
 - Static chromatic capture / cycle extraction follows the public Korg Monologue
   dataset by Simionato & Fasciani
@@ -28,7 +28,7 @@ devices → new → doctor → run → verify → extract → measured_wavetable
 
 ## 1. Prerequisites
 
-| Need | Arturia example |
+| Need | Prophet5 example |
 | --- | --- |
 | Virtual MIDI port (exact name) | IAC Driver Bus 2 |
 | Virtual audio loopback | BlackHole 2ch |
@@ -37,20 +37,22 @@ devices → new → doctor → run → verify → extract → measured_wavetable
 | OS permission | mic access for the loopback device (incl. IDE sandboxes) |
 
 Mapping table:
-[`arturia-prophet5-v1-mapping.md`](arturia-prophet5-v1-mapping.md).  
+[`prophet5-v1-mapping.md`](prophet5-v1-mapping.md).  
 Target identity JSON:
-[`arturia-prophet5-v1-target.json`](arturia-prophet5-v1-target.json).
+[`prophet5-v1-target.json`](prophet5-v1-target.json).
 
-Durable project location (gitignored under `plans/` in `~/dev/analog-synth`):
+Durable project location (kept under this checkout's `plans/` tree):
 
 ```text
-~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1
+plans/analog-osc/research/captures/arturia-prophet5-v1-r7
 ```
 
 ## 2. Operator setup (once per session)
 
 When `doctor` / `run` prompts, set manually (not MIDI-mapped):
 
+- Load the factory Init preset and import the current `.promidi`
+- After reset, verify all three FX slots are bypassed with Dry/Wet at zero
 - Osc 2 Fine Tune `0.000`
 - Osc 2 Pulse Width `50%`
 - Filter Env Amount `5.0`
@@ -63,8 +65,8 @@ From the repo root (use `--locked`):
 cargo run --release -p synth-capture --locked -- devices
 
 cargo run --release -p synth-capture --locked -- new \
-  --project ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1 \
-  --target arturia-prophet5-v1 \
+  --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7 \
+  --target prophet5-v1 \
   --protocol oscillator-static-v1 \
   --midi-port "IAC Driver Bus 2" \
   --audio-device "BlackHole 2ch" \
@@ -73,18 +75,21 @@ cargo run --release -p synth-capture --locked -- new \
   --plugin-version "YOUR_PLUGIN_VERSION"
 
 cargo run --release -p synth-capture --locked -- doctor \
-  --project ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1
+  --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7
 
 cargo run --release -p synth-capture --locked -- run \
-  --project ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1
+  --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7
 ```
+
+Doctor now probes every waveform at MIDI 48, 64, and 80. It rejects
+pitch-dependent spectral corruption before the 226-case capture begins.
 
 Interrupt with Ctrl-C, then `run` again to resume. Completed WAVs are never
 overwritten. Prefer `retry --failed` for bad takes.
 
 ```bash
 cargo run --release -p synth-capture --locked -- verify \
-  --project ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1
+  --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7
 ```
 
 Expect **226** complete cases (1 silence + 75 notes × 3 waves).
@@ -93,7 +98,7 @@ Expect **226** complete cases (1 silence + 75 notes × 3 waves).
 
 ```bash
 cargo run --release -p synth-capture --locked -- extract \
-  --project ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1
+  --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7
 ```
 
 Writes under `…/derived/`:
@@ -103,15 +108,16 @@ Writes under `…/derived/`:
 
 Fitting inputs: `median_cycles` (normalized) and `measured_frequency_hz`.
 
-## 5. Build measured wavetable bank
+## 5. Build wavetable bank
 
 ```bash
-cargo run --release -p synth-tools --locked --bin measured_wavetable_bank -- \
-  --derived-root ~/dev/analog-synth/plans/analog-osc/research/captures/arturia-prophet5-v1/derived \
-  --output-dir ~/dev/analog-synth/plans/analog-osc/research/banks
+cargo run --release -p synth-tools --locked --bin wavetable_bank -- \
+  --derived-root plans/analog-osc/research/captures/arturia-prophet5-v1-r7/derived \
+  --output-dir plans/analog-osc/research/banks
 ```
 
-Defaults (if args omitted) use the same research tree under `~/dev/analog-synth/…`.
+Defaults (if args are omitted) resolve from the current repository checkout,
+never from a hard-coded `~/dev/analog-synth` path.
 
 Outputs:
 
@@ -119,13 +125,31 @@ Outputs:
   layout: waveform × training pitch × 2048 samples (`saw`, `triangle`, `pulse50`)
 - `arturia-prophet5-measured-bank-v1.json` — manifest (freqs, Nyquist limits,
   checksums, identity warning, prior-work DOI)
+- `synth-core/src/dsp/wavetable_bank_profile_prophet5.rs` — regenerated
+  compile-time metadata, including the 48 kHz playback reference
 
 Policy notes:
 
-- Reference sample rate **96 kHz**, Nyquist guard **0.45**
+- Source capture rate **96 kHz**; generated playback-bank reference **48 kHz**
+  with Nyquist guard **0.45**
 - Training rows: NPZ `role == 0` (scientific Training)
 - Phase: extraction landmark (no Monologue “align to production source”)
-- Does **not** install into `synth-core` / `synth-app` (offline research bank)
+- Adjacent training cycles must pass the phase-invariant spectral-coherence gate
+  (`cosine >= 0.90`), otherwise generation stops with the failing pitches.
+
+Harness install (desktop app + research binaries):
+
+```bash
+mkdir -p target/analog-osc/banks
+cp plans/analog-osc/research/banks/arturia-prophet5-measured-bank-v1.f32le \
+  target/analog-osc/banks/
+```
+
+Keep the existing Monologue bank beside it
+(`korg-monologue-measured-bank-v1.f32le`). `synth-app` loads both and exposes
+two combo entries: **Wavetable (Monologue)** and
+**Wavetable (Prophet-5 V)**. Compile-time profile metadata for
+each bank lives in `synth-core` (`wavetable_bank_profile*.rs`).
 
 ## 6. What “done” means
 

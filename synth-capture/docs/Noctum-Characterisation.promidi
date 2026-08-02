@@ -19,6 +19,23 @@
 		<assignment controller="29" paramid="44" channel="0"/>
 		<assignment controller="30" paramid="18" channel="0"/>
 		<assignment controller="31" paramid="16" channel="0"/>
+		<assignment controller="80" paramid="94" channel="0"/>
+		<assignment controller="81" paramid="95" channel="0"/>
+		<assignment controller="82" paramid="69" channel="0"/>
+		<assignment controller="83" paramid="70" channel="0"/>
+		<assignment controller="84" paramid="71" channel="0"/>
+		<assignment controller="85" paramid="72" channel="0"/>
+		<assignment controller="86" paramid="73" channel="0"/>
+		<assignment controller="87" paramid="74" channel="0"/>
+		<assignment controller="88" paramid="75" channel="0"/>
+		<assignment controller="89" paramid="108" channel="0"/>
+		<assignment controller="90" paramid="241" channel="0"/>
+		<assignment controller="91" paramid="374" channel="0"/>
+		<assignment controller="92" paramid="52" channel="0"/>
+		<assignment controller="93" paramid="106" channel="0"/>
+		<assignment controller="94" paramid="109" channel="0"/>
+		<assignment controller="95" paramid="242" channel="0"/>
+		<assignment controller="96" paramid="375" channel="0"/>
 		<assignment controller="102" paramid="2" channel="0"/>
 		<assignment controller="104" paramid="3" channel="0"/>
 		<assignment controller="105" paramid="13" channel="0"/>

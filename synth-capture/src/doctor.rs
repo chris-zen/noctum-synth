@@ -23,10 +23,11 @@ use crate::{
     validation::{SignalMetrics, ValidationInput, validate_take},
 };
 
-pub const DOCTOR_SCHEMA_ID: &str = "synth-capture-doctor-v1";
-pub const DOCTOR_PROBE_NOTE: u8 = 69;
+pub const DOCTOR_SCHEMA_ID: &str = "synth-capture-doctor-v2";
+pub const DOCTOR_PROBE_NOTES: [u8; 3] = [48, 64, 80];
 pub const HARMONIC_COUNT: usize = 8;
 pub const MIN_SPECTRAL_DISTANCE: f64 = 0.03;
+pub const MIN_PITCH_COHERENCE: f64 = 0.90;
 
 const SILENCE_LABEL: &str = "silence";
 
@@ -51,6 +52,15 @@ pub enum DoctorError {
         left: String,
         right: String,
         distance: f64,
+        threshold: f64,
+    },
+    #[error(
+        "probes `{left}` and `{right}` are not pitch-coherent (spectral cosine {similarity:.4} < {threshold:.4})"
+    )]
+    NotCoherent {
+        left: String,
+        right: String,
+        similarity: f64,
         threshold: f64,
     },
     #[error("no doctor record at {0}; run `synth-capture doctor --project <path>` first")]
@@ -94,6 +104,7 @@ pub struct DoctorRecord {
     pub target_settle_secs: f64,
     pub probes: Vec<DoctorProbe>,
     pub distinctness: Vec<DoctorDistinctness>,
+    pub coherence: Vec<DoctorCoherence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -111,6 +122,13 @@ pub struct DoctorDistinctness {
     pub left: String,
     pub right: String,
     pub distance: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DoctorCoherence {
+    pub left: String,
+    pub right: String,
+    pub similarity: f64,
 }
 
 pub fn run_doctor<T, M, A>(
@@ -213,6 +231,17 @@ where
             return Err(err);
         }
     };
+    let coherence = match pitch_coherence(&probes) {
+        Ok(coherence) => coherence,
+        Err(err) => {
+            reporter.event(&CaptureEvent::DoctorProbeFailed {
+                label: "pitch-coherence".to_string(),
+                reason: err.to_string(),
+            });
+            reporter.event(&CaptureEvent::DoctorFinished { ok: false });
+            return Err(err);
+        }
+    };
     reporter.event(&CaptureEvent::DoctorFinished { ok: true });
 
     Ok(DoctorRecord {
@@ -230,6 +259,7 @@ where
         target_settle_secs: timing.settle_secs,
         probes,
         distinctness,
+        coherence,
     })
 }
 
@@ -347,29 +377,31 @@ pub fn check_audio_format(
 }
 
 pub fn probe_plans() -> Vec<ProbePlan> {
-    let note = MidiNote::try_new(DOCTOR_PROBE_NOTE).expect("A4 is a valid note");
-    vec![
-        ProbePlan {
-            label: SILENCE_LABEL,
-            waveform: None,
-            note: None,
-        },
-        ProbePlan {
-            label: "saw",
-            waveform: Some(OscillatorWaveform::Saw),
-            note: Some(note),
-        },
-        ProbePlan {
-            label: "triangle",
-            waveform: Some(OscillatorWaveform::Triangle),
-            note: Some(note),
-        },
-        ProbePlan {
-            label: "pulse",
-            waveform: Some(OscillatorWaveform::Pulse),
-            note: Some(note),
-        },
-    ]
+    let mut plans = vec![ProbePlan {
+        label: SILENCE_LABEL,
+        waveform: None,
+        note: None,
+    }];
+    for (waveform, labels) in [
+        (OscillatorWaveform::Saw, ["saw-48", "saw-64", "saw-80"]),
+        (
+            OscillatorWaveform::Triangle,
+            ["triangle-48", "triangle-64", "triangle-80"],
+        ),
+        (
+            OscillatorWaveform::Pulse,
+            ["pulse-48", "pulse-64", "pulse-80"],
+        ),
+    ] {
+        for (note, label) in DOCTOR_PROBE_NOTES.into_iter().zip(labels) {
+            plans.push(ProbePlan {
+                label,
+                waveform: Some(waveform),
+                note: Some(MidiNote::try_new(note).expect("doctor note is valid")),
+            });
+        }
+    }
+    plans
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -436,10 +468,12 @@ where
         (Some(expected), Some(measured)) => Some(1200.0 * (measured / expected.get()).log2()),
         _ => None,
     };
-    let harmonics = match expected {
-        Some(expected) => harmonic_profile(&samples, sample_rate.get(), expected.get()),
-        None => Vec::new(),
-    };
+    let analysis_frequency_hz = metrics
+        .estimated_frequency_hz
+        .or_else(|| expected.map(|frequency| frequency.get()));
+    let harmonics = analysis_frequency_hz
+        .map(|frequency| harmonic_profile(&samples, sample_rate.get(), frequency))
+        .unwrap_or_default();
 
     Ok(DoctorProbe {
         label: plan.label.to_string(),
@@ -546,6 +580,9 @@ fn spectral_distinctness(probes: &[DoctorProbe]) -> Result<Vec<DoctorDistinctnes
     let mut distinctness = Vec::new();
     for (index, left) in stimulated.iter().enumerate() {
         for right in stimulated.iter().skip(index + 1) {
+            if left.note != right.note || left.waveform == right.waveform {
+                continue;
+            }
             let distance = spectral_distance(&left.harmonics, &right.harmonics);
             distinctness.push(DoctorDistinctness {
                 left: left.label.clone(),
@@ -563,6 +600,63 @@ fn spectral_distinctness(probes: &[DoctorProbe]) -> Result<Vec<DoctorDistinctnes
         }
     }
     Ok(distinctness)
+}
+
+fn pitch_coherence(probes: &[DoctorProbe]) -> Result<Vec<DoctorCoherence>, DoctorError> {
+    let mut coherence = Vec::new();
+    for waveform in [
+        OscillatorWaveform::Saw,
+        OscillatorWaveform::Triangle,
+        OscillatorWaveform::Pulse,
+    ] {
+        let matching: Vec<&DoctorProbe> = probes
+            .iter()
+            .filter(|probe| probe.waveform == Some(waveform))
+            .collect();
+        for pair in matching.windows(2) {
+            let similarity = spectral_cosine(&pair[0].harmonics, &pair[1].harmonics);
+            coherence.push(DoctorCoherence {
+                left: pair[0].label.clone(),
+                right: pair[1].label.clone(),
+                similarity,
+            });
+            if similarity < MIN_PITCH_COHERENCE {
+                return Err(DoctorError::NotCoherent {
+                    left: pair[0].label.clone(),
+                    right: pair[1].label.clone(),
+                    similarity,
+                    threshold: MIN_PITCH_COHERENCE,
+                });
+            }
+        }
+    }
+    Ok(coherence)
+}
+
+fn spectral_cosine(left: &[f32], right: &[f32]) -> f64 {
+    if left.is_empty() || left.len() != right.len() {
+        return 0.0;
+    }
+    let dot = left
+        .iter()
+        .zip(right)
+        .map(|(left, right)| f64::from(*left) * f64::from(*right))
+        .sum::<f64>();
+    let left_norm = left
+        .iter()
+        .map(|value| f64::from(*value).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let right_norm = right
+        .iter()
+        .map(|value| f64::from(*value).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    if left_norm <= 1e-20 || right_norm <= 1e-20 {
+        0.0
+    } else {
+        (dot / (left_norm * right_norm)).clamp(0.0, 1.0)
+    }
 }
 
 pub fn spectral_distance(left: &[f32], right: &[f32]) -> f64 {
