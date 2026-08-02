@@ -11,7 +11,8 @@ use std::time::Instant;
 use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::Serialize;
 use synth_core::dsp::{
-    MeasuredWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, generate_wavetable_bank,
+    MONOLOGUE_WAVETABLE_BANK_PROFILE, MipWavetableBank, PROPHET5_WAVETABLE_BANK_PROFILE,
+    WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableProfile, generate_wavetable_bank,
 };
 use synth_core::{
     OscillatorResearchModel, ResearchComparisonMetrics, ResearchModelFamily, ResearchModelId,
@@ -249,8 +250,11 @@ fn render(
     ),
     Box<dyn std::error::Error>,
 > {
-    let mut model = if id == ResearchModelId::MeasuredWavetable {
-        ResearchRegistry::create_measured_wavetable(case.sample_rate_hz, measured_wavetable_bank()?)
+    let mut model = if matches!(
+        id,
+        ResearchModelId::WavetableMonologue | ResearchModelId::WavetableProphet5
+    ) {
+        ResearchRegistry::create_wavetable(case.sample_rate_hz, wavetable_bank(id)?)
     } else {
         let bank = (id == ResearchModelId::Wavetable).then(reference_wavetable_bank);
         ResearchRegistry::create(id, case.sample_rate_hz, bank)
@@ -473,26 +477,34 @@ fn case_id(case: ResearchRenderCase) -> String {
     .replace('.', "p")
 }
 
-fn reference_wavetable_bank() -> WavetableBank {
-    static BANK: OnceLock<WavetableBank> = OnceLock::new();
+fn reference_wavetable_bank() -> MipWavetableBank {
+    static BANK: OnceLock<MipWavetableBank> = OnceLock::new();
     *BANK.get_or_init(|| {
         let mut samples = vec![0.0; WAVETABLE_BANK_SAMPLES];
         generate_wavetable_bank(&mut samples).expect("generate research wavetable bank");
-        WavetableBank::new(Box::leak(samples.into_boxed_slice()))
+        MipWavetableBank::new(Box::leak(samples.into_boxed_slice()))
             .expect("validate research wavetable bank")
     })
 }
 
-fn measured_wavetable_bank() -> Result<MeasuredWavetableBank, Box<dyn std::error::Error>> {
-    static BANK: OnceLock<MeasuredWavetableBank> = OnceLock::new();
-    if let Some(bank) = BANK.get() {
-        return Ok(*bank);
-    }
+fn wavetable_bank(id: ResearchModelId) -> Result<WavetableBank, Box<dyn std::error::Error>> {
+    let (file_name, profile): (&str, &'static WavetableProfile) = match id {
+        ResearchModelId::WavetableMonologue => (
+            "korg-monologue-measured-bank-v1.f32le",
+            &MONOLOGUE_WAVETABLE_BANK_PROFILE,
+        ),
+        ResearchModelId::WavetableProphet5 => (
+            "arturia-prophet5-measured-bank-v1.f32le",
+            &PROPHET5_WAVETABLE_BANK_PROFILE,
+        ),
+        _ => return Err("model does not use a wavetable bank".into()),
+    };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le");
+        .join("../target/analog-osc/banks")
+        .join(file_name);
     let bytes = fs::read(&path).map_err(|error| {
         format!(
-            "could not read measured bank {}: {error}; run scripts/generate_measured_wavetable_bank.py",
+            "could not read measured bank {}: {error}; copy {file_name} into target/analog-osc/banks/",
             path.display()
         )
     })?;
@@ -505,10 +517,8 @@ fn measured_wavetable_bank() -> Result<MeasuredWavetableBank, Box<dyn std::error
             chunk.try_into().expect("four-byte chunk"),
         ));
     }
-    let bank = MeasuredWavetableBank::new(Box::leak(samples.into_boxed_slice()))
-        .map_err(|error| format!("invalid measured bank {}: {error:?}", path.display()))?;
-    let _ = BANK.set(bank);
-    Ok(*BANK.get().expect("measured bank was initialized"))
+    WavetableBank::new(Box::leak(samples.into_boxed_slice()), profile)
+        .map_err(|error| format!("invalid measured bank {}: {error:?}", path.display()).into())
 }
 
 fn spectrum_metrics(samples: &[f32], sample_rate_hz: f32, expected_hz: f32) -> SpectrumMetrics {

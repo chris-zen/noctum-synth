@@ -6,11 +6,10 @@ Started on 2026-07-26. The first playable infrastructure slice now provides:
 
 - An exact, zero-latency `FilterType::PassThrough`, feature-gated out of fixed
   firmware builds and exposed by the existing desktop filter selectors.
-- A desktop-only closed oscillator source facade whose default variant wraps
-  the unchanged production `EngineOscillator`.
-- One shared engine selector for production-baseline, table-BLEP, and
-  PolyBLEP/PolyBLAMP sources, controlled outside patch/MIDI/SysEx state and
-  applied consistently to Osc 1 and Osc 2.
+- A temporary desktop-only closed oscillator source facade whose default
+  variant wraps the unchanged production `EngineOscillator`.
+- One shared experimental selector for production-baseline, table-BLEP, and
+  PolyBLEP/PolyBLAMP sources.
 - Block-boundary control messages that stop notes, reconstruct the selected
   source, and reapply common oscillator controls.
 - A right-aligned oscillator-engine selector in the Oscillators header; raw
@@ -38,9 +37,7 @@ production firmware defaults.
 
 The playable comparison path is:
 
-    one selected engine used by Osc 1 and Osc 2
-      + existing sub oscillator and noise
-      -> existing oscillator mixer
+    one selected complete oscillator engine
       -> selected filter model or Pass Through
       -> existing VCA/envelope
       -> pan
@@ -68,64 +65,72 @@ centers pan, and leaves master processing unchanged.
 
 ## Phase-0 oscillator source architecture
 
-### Feature isolation
+### Complete-engine boundary and feature isolation
 
-Add a desktop research feature such as experimental-oscillators:
+Replace the temporary per-source facade with `OscillatorEngines`, one retained
+owner per voice. It selects and renders a complete pre-filter source engine:
+Osc 1, Osc 2, sub oscillator, noise source, source mix, timing/sync behavior,
+and engine-private state. The voice receives its rendered source mix, then
+continues through the unchanged filter, VCA, pan, effects, and output path.
 
-- Enabled by synth-app research builds.
-- Disabled by normal synth-core defaults unless explicitly requested.
-- Disabled by Daisy firmware and benchmarks unless a later qualification plan
-  opts in.
-- When disabled, Oscillators stores the existing EngineOscillator fields and
-  compiles the current direct typed calls without runtime model dispatch.
+The pattern follows `FilterType` and its private algorithm state in
+`synth-core/src/dsp/filter/mod.rs`, with one intentional difference:
+oscillator engines retain all enabled complete source sections so switching does
+not discard their private state.
 
-Use a conditional internal source type:
+```rust
+pub struct OscillatorEngines {
+    selected: OscillatorEngineType,
+    params: OscillatorEngineParams,
+    #[cfg(feature = "osc-blep")]
+    blep: BlepEngine,
+    #[cfg(feature = "osc-wavetable")]
+    wavetable: WavetableEngine,
+}
+```
 
-- Production: EngineOscillator.
-- Desktop research: a closed ExperimentalOscillatorSource enum whose Baseline
-  variant wraps EngineOscillator and whose other variants wrap concrete
-  research models.
+Each `OscillatorEngineType` variant is feature-gated. `ALL` contains only the
+variants compiled into this build. UI and application code enumerate `ALL` and
+do not name variants or carry matching `#[cfg]` attributes. The
+`OscillatorEngines` module is the sole owner of feature-gated fields and
+dispatch. At least one engine feature is required.
 
-The enum implements the semantic operations Oscillators already needs:
-
-- Apply waveform, shape, enabled mask, frequency, slop, note trigger/reset.
-- Render one sample and report wrap/sub-sample metadata for sync.
-- Reset one lane.
-- Report capabilities and model diagnostics.
-
-Do not expose the enum as a general plugin ABI. New models are added
-deliberately and remain feature-gated.
+A firmware build enables one engine feature and retains only that concrete
+engine. A desktop all-engine build retains every enabled engine and makes a
+closed match on selection. This is an accepted desktop cost, equivalent to the
+existing multi-filter build, while avoiding feature-gate leakage through the
+rest of the program.
 
 ### Selection and configuration
 
-Add application/session state for one research engine ID, applied to both Osc 1
-and Osc 2. Future engines may own a target/profile ID and model-specific
-settings, but Phase 0 exposes only the common engine choice.
+Add application/session state for one complete-engine ID. It is stored as a
+stable string in desktop configuration, resolved against the build's enabled
+`ALL` descriptors at startup, and falls back to the build default with a
+visible warning when unavailable.
 
-Model selection is not serialized into Patch, ParamId, MIDI, SysEx, or factory
-programs. It may be saved in a clearly separate desktop research preference;
-loading or saving a synth patch never changes it.
+Engine selection and engine-specific settings are not serialized into Patch,
+ParamId, MIDI, SysEx, or factory programs. A wavetable bank selection is owned
+by `WavetableEngine`, not the app, renderer, UI state, or a public synth
+parameter. Initial modulation applies only common controls shared by every
+engine; engine-specific settings are not modulatable.
 
-The baseline model is the default and fallback. Missing/disabled models fall
-back to baseline with a visible warning.
-
-Model/config changes are delivered at an audio-block boundary through a typed
-control message. Preload and validate large immutable assets outside the audio
-thread. The render callback performs no allocation, file I/O, table generation,
-or model fitting.
+Compiled generated `static [f32]` data provides the initial wavetable banks.
+`WavetableEngine` owns its validated registry, so there is no disk loading,
+host asset injection, allocation, or table generation in the render path.
 
 ### Safe switching
 
 For Phase 0:
 
 1. Send all-notes-off.
-2. Reconstruct the selected source state at a block boundary.
-3. Reapply the current OscillatorsParams, sample rate, glide target, modulation
+2. Select the retained engine at a block boundary.
+3. Synchronize current common parameters, sample rate, glide target, modulation
    settings, and free-run/note-reset policy.
 4. Resume on the next played note.
 
-Do not attempt to translate live phase/history among unrelated models.
-A later optional short output fade may hide the control transition, but
+Do not reconstruct or reset the selected engine. Its inactive state, including
+phase, BLEP correction history, wavetable position, and noise state, remains
+intact. A later optional short output fade may hide the control transition, but
 cross-model sustaining-note morphing is out of scope.
 
 ### Capabilities
@@ -214,13 +219,15 @@ Live playing remains essential, but recorded comparisons provide repeatability.
 
 1. Freeze baseline oscillator and full-voice regression vectors.
 2. Add PassThrough and its exactness/feature-isolation tests.
-3. Add the desktop feature-gated source facade with Baseline only.
-4. Prove the baseline facade is bit-identical to the current playable engine.
-5. Add session selection/control messages and safe all-notes-off switching.
-6. Register live-capable models in the global Params-view selector; Oscillator Lab
-   may reuse metadata but has no control-path connection.
-7. Add one simple alternate source, initially existing PolyBLEP or wavetable,
-   and play it through PassThrough and an existing filter.
+3. Add the complete retained-engine owner with the BLEP engine only.
+4. Prove that single-engine BLEP output is bit-identical to the current playable
+   source section.
+5. Add engine features, the feature-gated engine enum, session selection, and
+   safe all-notes-off switching.
+6. Register live-capable complete engines in the global Params-view selector;
+   Oscillator Lab may reuse descriptors but has no control-path connection.
+7. Add the wavetable engine with compiled banks and play it through PassThrough
+   and an existing filter.
 8. Add repeatable event recording/export without expanding the engine-selection
    UI.
 9. Require every later oscillator plan to provide a live-audition adapter when
@@ -233,14 +240,13 @@ phase.
 
 ### Baseline preservation
 
-- With experimental-oscillators disabled, production source types and output
-  remain unchanged.
-- With it enabled and Baseline selected, oscillator, voice, and engine golden
-  vectors are bit-identical.
+- A BLEP-only build retains no other engine implementation or asset and remains
+  bit-identical through oscillator, voice, and engine golden vectors.
+- A desktop all-engine build exposes exactly its feature-enabled descriptors
+  without feature gates in UI, renderer, or engine APIs.
 - Existing patches load/save identically and always use their existing synth
   parameters.
-- Firmware without the research features contains no experimental models,
-  assets, or pass-through dispatch.
+- Firmware without a non-BLEP engine contains no such engine or asset.
 
 ### Pass-through filter
 
@@ -254,7 +260,8 @@ phase.
 
 ### Audition
 
-- Osc 1 and Osc 2 can independently select supported models.
+- One selection chooses the complete source engine for both Osc 1 and Osc 2,
+  sub oscillator, and noise.
 - MIDI note, velocity, pitch bend, glide, waveform, shape, PWM, sync, mix, sub,
   noise, slop, VCA, pan, effects, and master routing remain correct or are
   explicitly reported unsupported.
@@ -265,7 +272,7 @@ phase.
 
 ## Completion criteria
 
-- The current oscillator and at least one alternate model can be played from
+- The BLEP engine and at least one alternate complete engine can be played from
   MIDI through the complete desktop synth.
 - Either can be heard through PassThrough and every implemented filter.
 - Raw and filtered A/B recordings can be reproduced.
@@ -288,7 +295,5 @@ phase.
 - Oscillator Lab research UI: plans/analog-osc/12-osc-designer-view.md
 - Common comparison protocol:
   plans/analog-osc/13-evaluation-and-hardware-selection.md
-- Broader deferred architecture:
-  plans/OSCILLATOR_ENGINE_ARCHITECTURE_PLAN.md
 - Existing multi-filter architecture:
   plans/MULTI_MODEL_FILTER_EXPERIMENT_PLAN.md

@@ -6,16 +6,16 @@ use eframe::egui::epaint::PathShape;
 use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::{Deserialize, Serialize};
 
-use synth_core::{
-    dsp::{AnalogOscillator, SawMethod, Waveform},
-    math::WideF32,
-};
+use synth_core::dsp::{SawMethod, Waveform};
+use synth_core::{BankId, OscillatorEngineType, OscillatorPreview};
 
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
 pub struct OscillatorViewState {
     pub waveform: usize,
     pub saw_method: SawMethod,
+    pub oscillator_engine: OscillatorEngineType,
+    pub wavetable_bank: BankId,
     pub shape: f32,
 
     pub note: f32,
@@ -36,6 +36,8 @@ pub struct OscillatorViewState {
     pub needs_render: bool,
     pub rendered_waveform: usize,
     pub rendered_method: SawMethod,
+    pub rendered_engine: OscillatorEngineType,
+    pub rendered_bank: BankId,
 
     pub zoom_ms: f32,
     pub offset_ms: f32,
@@ -54,6 +56,8 @@ impl Default for OscillatorViewState {
         Self {
             waveform: 0,
             saw_method: SawMethod::Blep,
+            oscillator_engine: OscillatorEngineType::default_engine(),
+            wavetable_bank: BankId::Monologue,
             shape: 0.0,
             note: 60.0,
             sample_rate: 44100.0,
@@ -71,6 +75,8 @@ impl Default for OscillatorViewState {
             needs_render: true,
             rendered_waveform: 0,
             rendered_method: SawMethod::PolyBlep,
+            rendered_engine: OscillatorEngineType::default_engine(),
+            rendered_bank: BankId::Monologue,
             zoom_ms: 7.0,
             offset_ms: 0.0,
             show_dots: true,
@@ -116,6 +122,14 @@ impl From<SawMethodConfig> for SawMethod {
 pub struct OscDesignViewConfig {
     pub waveform: usize,
     pub saw_method: SawMethodConfig,
+    #[serde(default)]
+    pub oscillator_engine_id: Option<String>,
+    #[serde(default)]
+    pub blep_method_id: Option<String>,
+    #[serde(default)]
+    pub wavetable_bank_id: Option<String>,
+    #[serde(default, skip_serializing, rename = "oscillator_model")]
+    legacy_oscillator_model: Option<String>,
     pub shape: f32,
     pub note: f32,
     pub sample_rate: f32,
@@ -143,6 +157,10 @@ impl OscDesignViewConfig {
         Self {
             waveform: state.waveform,
             saw_method: state.saw_method.into(),
+            oscillator_engine_id: Some(state.oscillator_engine.id().to_owned()),
+            blep_method_id: Some(state.saw_method.id().to_owned()),
+            wavetable_bank_id: Some(state.wavetable_bank.id().to_owned()),
+            legacy_oscillator_model: None,
             shape: state.shape,
             note: state.note,
             sample_rate: state.sample_rate,
@@ -162,7 +180,36 @@ impl OscDesignViewConfig {
 
     pub fn apply_to(&self, state: &mut OscillatorViewState) {
         state.waveform = self.waveform;
-        state.saw_method = self.saw_method.into();
+        let legacy = self.legacy_oscillator_model.as_deref();
+        let legacy_engine_id = match legacy {
+            Some("wavetable" | "wavetable_monologue" | "wavetable_prophet5") => "wavetable",
+            _ => "blep",
+        };
+        let legacy_method = match legacy {
+            Some("poly_blep") => SawMethod::PolyBlep,
+            _ => self.saw_method.into(),
+        };
+        let legacy_bank_id = match legacy {
+            Some("wavetable_prophet5") => "prophet5",
+            _ => "monologue",
+        };
+        state.oscillator_engine = self
+            .oscillator_engine_id
+            .as_deref()
+            .and_then(OscillatorEngineType::from_id)
+            .or_else(|| OscillatorEngineType::from_id(legacy_engine_id))
+            .unwrap_or_else(OscillatorEngineType::default_engine);
+        state.saw_method = self
+            .blep_method_id
+            .as_deref()
+            .and_then(SawMethod::from_id)
+            .unwrap_or(legacy_method);
+        state.wavetable_bank = self
+            .wavetable_bank_id
+            .as_deref()
+            .and_then(BankId::from_id)
+            .or_else(|| BankId::from_id(legacy_bank_id))
+            .unwrap_or(BankId::Monologue);
         state.shape = self.shape;
         state.note = self.note;
         state.sample_rate = self.sample_rate;
@@ -182,6 +229,13 @@ impl OscDesignViewConfig {
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
+    ui.horizontal(|ui| {
+        ui.strong("Oscillator");
+        ui.add_space(8.0);
+        oscillator_model_combo(ui, state);
+    });
+    ui.add_space(4.0);
+
     // --- Synth params ---
     ui.horizontal(|ui| {
         ui.label("Wave:");
@@ -194,18 +248,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
             }
         }
         ui.separator();
-        if state.waveform == 0 || state.waveform == 2 || state.waveform == 3 {
-            ui.label("Method:");
-            for (method, name) in [(SawMethod::PolyBlep, "PolyBLEP"), (SawMethod::Blep, "BLEP")] {
-                if ui
-                    .selectable_label(state.saw_method == method, name)
-                    .clicked()
-                {
-                    state.saw_method = method;
-                }
-            }
-            ui.separator();
-        }
         ui.label(format!("Shape: {:.2}", state.shape));
         ui.add(egui::Slider::new(&mut state.shape, 0.0..=1.0).text(""));
     });
@@ -252,8 +294,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     // --- Render scheduling ---
     let current_hash = param_hash(state);
     let params_changed = current_hash != state.last_params_hash;
-    let waveform_changed =
-        state.waveform != state.rendered_waveform || state.saw_method != state.rendered_method;
+    let waveform_changed = state.waveform != state.rendered_waveform
+        || state.saw_method != state.rendered_method
+        || state.oscillator_engine != state.rendered_engine
+        || state.wavetable_bank != state.rendered_bank;
 
     let should_render = if state.samples.is_empty() || waveform_changed || state.needs_render {
         // First render, waveform/method switch, or an explicit request: render now.
@@ -374,11 +418,64 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
     });
 }
 
+fn oscillator_model_combo(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
+    let previous = (
+        state.oscillator_engine,
+        state.saw_method,
+        state.wavetable_bank,
+    );
+    egui::ComboBox::from_id_salt("osc_design_oscillator_model")
+        .selected_text(
+            state
+                .oscillator_engine
+                .selection_name(state.saw_method, state.wavetable_bank),
+        )
+        .show_ui(ui, |ui| {
+            for &(_, engine) in OscillatorEngineType::ALL {
+                for &method in engine.blep_methods() {
+                    let selected = state.oscillator_engine == engine && state.saw_method == method;
+                    if ui
+                        .selectable_label(
+                            selected,
+                            engine.selection_name(method, state.wavetable_bank),
+                        )
+                        .clicked()
+                    {
+                        state.oscillator_engine = engine;
+                        state.saw_method = method;
+                    }
+                }
+                for &(_, bank) in engine.wavetable_banks() {
+                    let selected =
+                        state.oscillator_engine == engine && state.wavetable_bank == bank;
+                    if ui
+                        .selectable_label(selected, engine.selection_name(state.saw_method, bank))
+                        .clicked()
+                    {
+                        state.oscillator_engine = engine;
+                        state.wavetable_bank = bank;
+                    }
+                }
+            }
+        });
+    if previous
+        != (
+            state.oscillator_engine,
+            state.saw_method,
+            state.wavetable_bank,
+        )
+    {
+        state.needs_render = true;
+    }
+}
+
 fn param_hash(state: &OscillatorViewState) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     state.waveform.hash(&mut hasher);
     state.saw_method.hash(&mut hasher);
+    state.oscillator_engine.id().hash(&mut hasher);
+    state.wavetable_bank.id().hash(&mut hasher);
     state.shape.to_bits().hash(&mut hasher);
     state.note.to_bits().hash(&mut hasher);
     state.sample_rate.to_bits().hash(&mut hasher);
@@ -391,33 +488,40 @@ fn param_hash(state: &OscillatorViewState) -> u64 {
 fn render_oscillator(state: &mut OscillatorViewState) {
     state.rendered_waveform = state.waveform;
     state.rendered_method = state.saw_method;
+    state.rendered_engine = state.oscillator_engine;
+    state.rendered_bank = state.wavetable_bank;
     let freq = midi_to_hz(state.note);
     let sr = state.sample_rate;
     let samples_per_cycle = (sr / freq).round() as usize;
     let total_samples = samples_per_cycle * state.cycles;
     let length_changed = total_samples != state.samples.len();
+    let fft_total = total_samples.max(state.fft_size);
 
-    let mut osc = AnalogOscillator::new(sr);
-    osc.set_waveform(int_to_waveform(state.waveform));
-    osc.set_saw_method(state.saw_method);
-    osc.set_shape(state.shape);
-    osc.start_phase_lane(0);
-    osc.set_frequency(WideF32::splat(freq));
+    let fft_samples = {
+        let mut oscillator = OscillatorPreview::new(
+            sr,
+            state.oscillator_engine,
+            state.saw_method,
+            state.wavetable_bank,
+        );
+        oscillator.set_waveform(int_to_waveform(state.waveform));
+        oscillator.set_shape(state.shape);
+        oscillator.set_frequency(freq);
+        oscillator.reset();
+
+        let mut samples = Vec::with_capacity(fft_total);
+        let mut context = synth_core::create_render_context!();
+        for _ in 0..fft_total {
+            samples.push(oscillator.next_sample(&mut context));
+        }
+        samples
+    };
 
     state.samples.clear();
     state.samples.reserve(total_samples);
-    let mut ctx = synth_core::create_render_context!();
-    for _ in 0..total_samples {
-        state.samples.push(osc.next(&mut ctx).output.to_array()[0]);
-    }
-
-    // Generate extra samples for the FFT — as many as needed to fill fft_size
-    let fft_total = total_samples.max(state.fft_size);
-    let mut fft_samples = Vec::with_capacity(fft_total);
-    fft_samples.extend_from_slice(&state.samples);
-    while fft_samples.len() < fft_total {
-        fft_samples.push(osc.next(&mut ctx).output.to_array()[0]);
-    }
+    state
+        .samples
+        .extend_from_slice(&fft_samples[..total_samples]);
 
     let total_ms = state.samples.len() as f32 / sr * 1000.0;
     if length_changed || state.zoom_ms > total_ms || state.zoom_ms <= 0.0 {
@@ -809,6 +913,10 @@ fn int_to_waveform(value: usize) -> Waveform {
 }
 
 fn save_wav(state: &OscillatorViewState) {
+    let model_id = match state.oscillator_engine.id() {
+        "blep" => state.saw_method.id(),
+        _ => state.wavetable_bank.id(),
+    };
     let path = format!(
         "osc_{}_{}hz_{}pt_{:.0}cyc.wav",
         match state.waveform {
@@ -819,10 +927,7 @@ fn save_wav(state: &OscillatorViewState) {
             _ => "mixed",
         },
         state.sample_rate as u32,
-        match state.saw_method {
-            SawMethod::PolyBlep => "poly",
-            SawMethod::Blep => "blep",
-        },
+        model_id,
         state.cycles,
     );
     let sr = state.sample_rate as u32;
@@ -859,4 +964,93 @@ fn save_wav(state: &OscillatorViewState) {
         data.len(),
         data.len() as f32 / sr as f32 * 1000.0
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_config_without_model_defaults_to_build_selection() {
+        let mut value = serde_json::to_value(OscDesignViewConfig::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("oscillator_engine_id");
+        object.remove("blep_method_id");
+        object.remove("wavetable_bank_id");
+
+        let decoded: OscDesignViewConfig = serde_json::from_value(value).unwrap();
+        let mut state = OscillatorViewState::default();
+        decoded.apply_to(&mut state);
+
+        assert_eq!(
+            state.oscillator_engine,
+            OscillatorEngineType::default_engine()
+        );
+        assert_eq!(state.saw_method, SawMethod::Blep);
+        assert_eq!(state.wavetable_bank, BankId::Monologue);
+    }
+
+    #[cfg(all(feature = "osc-blep", feature = "osc-wavetable"))]
+    #[test]
+    fn render_oscillator_changes_samples_when_model_changes() {
+        let mut state = OscillatorViewState::default();
+        state.sample_rate = 96_000.0;
+        state.oscillator_engine = OscillatorEngineType::from_id("blep").unwrap();
+        state.saw_method = SawMethod::Blep;
+        render_oscillator(&mut state);
+        let baseline = state.samples.clone();
+
+        state.saw_method = SawMethod::PolyBlep;
+        render_oscillator(&mut state);
+        let poly = state.samples.clone();
+
+        state.oscillator_engine = OscillatorEngineType::from_id("wavetable").unwrap();
+        state.wavetable_bank = BankId::Monologue;
+        render_oscillator(&mut state);
+        let mono = state.samples.clone();
+
+        state.wavetable_bank = BankId::Prophet5;
+        render_oscillator(&mut state);
+        let art = state.samples.clone();
+
+        let max_diff = |a: &[f32], b: &[f32]| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(max_diff(&baseline, &poly) > 1e-3, "poly should differ");
+        assert!(max_diff(&baseline, &mono) > 0.05, "monologue should differ");
+        assert!(max_diff(&baseline, &art) > 0.05, "prophet5 should differ");
+        assert!(max_diff(&mono, &art) > 0.05, "measured banks should differ");
+    }
+
+    #[cfg(feature = "osc-wavetable")]
+    #[test]
+    fn legacy_wavetable_alias_maps_to_monologue() {
+        let value = serde_json::json!({
+            "waveform": 0,
+            "saw_method": "Blep",
+            "oscillator_model": "wavetable",
+            "shape": 0.0,
+            "note": 60.0,
+            "sample_rate": 44100.0,
+            "cycles": 1,
+            "live_mode": true,
+            "fft_size": 4096,
+            "window_type": 0,
+            "show_harmonics": true,
+            "log_scale": true,
+            "db_top": 12.0,
+            "db_floor": -96.0,
+            "zoom_ms": 7.0,
+            "offset_ms": 0.0,
+            "show_dots": true
+        });
+        let decoded: OscDesignViewConfig = serde_json::from_value(value).unwrap();
+        let mut state = OscillatorViewState::default();
+        decoded.apply_to(&mut state);
+        assert_eq!(state.oscillator_engine.id(), "wavetable");
+        assert_eq!(state.wavetable_bank, BankId::Monologue);
+    }
 }

@@ -3,11 +3,12 @@
 use std::sync::OnceLock;
 
 use synth_core::dsp::{
-    FilterType, MeasuredWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
+    FilterType, MONOLOGUE_WAVETABLE_BANK_PROFILE, MipWavetableBank, WAVETABLE_BANK_SAMPLES,
+    Waveform, WavetableBank,
 };
 use synth_core::{
-    ExperimentalOscillatorCapabilities, ExperimentalOscillatorModel, OscillatorResearchModel,
-    ParamId, ResearchComparisonMetrics, ResearchError, ResearchEvent, ResearchModelDescriptor,
+    BankId, OscillatorEngineType, OscillatorResearchModel, ParamId, ResearchComparisonMetrics,
+    ResearchError, ResearchEvent, ResearchModelCapabilities, ResearchModelDescriptor,
     ResearchModelFamily, ResearchModelId, ResearchParameterDescriptor, ResearchParameterScale,
     ResearchRegistry, ResearchRenderCase, ResearchSignalMetrics, SynthEngineWithMemory,
     render_research_case,
@@ -26,17 +27,17 @@ fn static_case(waveform: Waveform) -> ResearchRenderCase {
     }
 }
 
-fn zero_wavetable_bank() -> WavetableBank {
-    static BANK: OnceLock<WavetableBank> = OnceLock::new();
+fn zero_wavetable_bank() -> MipWavetableBank {
+    static BANK: OnceLock<MipWavetableBank> = OnceLock::new();
     *BANK.get_or_init(|| {
-        WavetableBank::new(Box::leak(
+        MipWavetableBank::new(Box::leak(
             vec![0.0; WAVETABLE_BANK_SAMPLES].into_boxed_slice(),
         ))
         .unwrap()
     })
 }
 
-fn generated_measured_bank() -> Option<MeasuredWavetableBank> {
+fn generated_measured_bank() -> Option<WavetableBank> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le");
     let bytes = std::fs::read(path).ok()?;
@@ -48,20 +49,16 @@ fn generated_measured_bank() -> Option<MeasuredWavetableBank> {
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    MeasuredWavetableBank::new(Box::leak(samples)).ok()
+    WavetableBank::new(Box::leak(samples), &MONOLOGUE_WAVETABLE_BANK_PROFILE).ok()
 }
 
 #[test]
-fn measured_wavetable_live_engine_smoke_test() {
-    let Some(bank) = generated_measured_bank() else {
-        eprintln!("generated measured bank is absent; skipping live asset smoke test");
-        return;
-    };
+fn wavetable_live_engine_smoke_test() {
     let effects = vec![0.0; 96_000].into_boxed_slice();
     let mut engine =
         SynthEngineWithMemory::<_, 1>::new_with_effects_memory(48_000.0, effects).unwrap();
-    engine.set_measured_wavetable_bank(bank);
-    engine.set_experimental_oscillator_model(ExperimentalOscillatorModel::MeasuredWavetable);
+    engine.set_wavetable_bank(BankId::Monologue);
+    engine.set_oscillator_engine(OscillatorEngineType::Wavetable);
     engine.set_filter_type(FilterType::PassThrough);
     engine.set_param(ParamId::Osc1Waveform, Waveform::Triangle.index() as f32);
     engine.note_on(57, 1.0);
@@ -91,25 +88,82 @@ fn measured_wavetable_live_engine_smoke_test() {
         );
     }
 
-    engine.set_experimental_oscillator_model(ExperimentalOscillatorModel::Baseline);
+    engine.set_oscillator_engine(OscillatorEngineType::Blep);
     let mut after_switch = vec![0.0; 1_024];
     engine.process(&mut after_switch);
     assert!(after_switch.iter().all(|sample| sample.is_finite()));
 }
 
 #[test]
-fn measured_wavetable_live_engine_slop_changes_the_audible_output() {
-    let Some(bank) = generated_measured_bank() else {
-        eprintln!("generated measured bank is absent; skipping live slop test");
-        return;
-    };
+fn oscillator_selection_changes_preserve_held_voices() {
+    let effects = vec![0.0; 96_000].into_boxed_slice();
+    let mut engine =
+        SynthEngineWithMemory::<_, 1>::new_with_effects_memory(48_000.0, effects).unwrap();
+    engine.set_filter_type(FilterType::PassThrough);
+    engine.set_param(ParamId::AmpEgAttack, 0.0);
+    engine.set_param(ParamId::AmpEgDecay, 0.0);
+    engine.set_param(ParamId::AmpEgSustain, 1.0);
+    engine.set_param(ParamId::AmpEgRelease, 1.0);
+    engine.note_on(57, 1.0);
+    let mut warmup = vec![0.0; 2_048];
+    engine.process(&mut warmup);
+    assert_eq!(engine.active_voice_count(), 1);
 
-    fn render(bank: MeasuredWavetableBank, slop: f32) -> Vec<f32> {
+    engine.set_oscillator_engine(OscillatorEngineType::Wavetable);
+    assert_eq!(engine.active_voice_count(), 1);
+    engine.set_wavetable_bank(BankId::Monologue);
+    assert_eq!(engine.active_voice_count(), 1);
+    engine.set_oscillator_engine(OscillatorEngineType::Blep);
+    assert_eq!(engine.active_voice_count(), 1);
+    engine.set_blep_method(synth_core::dsp::SawMethod::PolyBlep);
+    assert_eq!(engine.active_voice_count(), 1);
+
+    let mut after_switch = vec![0.0; 2_048];
+    engine.process(&mut after_switch);
+    assert!(after_switch.iter().all(|sample| sample.is_finite()));
+    assert!(after_switch.iter().any(|sample| sample.abs() > 1.0e-4));
+}
+
+#[test]
+fn measured_banks_survive_initial_patch_apply() {
+    fn render(engine_type: OscillatorEngineType) -> Vec<f32> {
         let effects = vec![0.0; 96_000].into_boxed_slice();
         let mut engine =
             SynthEngineWithMemory::<_, 1>::new_with_effects_memory(48_000.0, effects).unwrap();
-        engine.set_measured_wavetable_bank(bank);
-        engine.set_experimental_oscillator_model(ExperimentalOscillatorModel::MeasuredWavetable);
+        engine.set_wavetable_bank(BankId::Monologue);
+        engine.apply_patch(&synth_core::Patch::default());
+        engine.set_oscillator_engine(engine_type);
+        engine.set_filter_type(FilterType::PassThrough);
+        engine.set_param(ParamId::Osc1Waveform, Waveform::Saw.index() as f32);
+        engine.set_param(ParamId::Osc1Enabled, 1.0);
+        engine.set_param(ParamId::Osc2Enabled, 0.0);
+        engine.note_on(57, 1.0);
+        let mut output = vec![0.0; 8_192];
+        engine.process(&mut output);
+        output
+    }
+
+    let measured = render(OscillatorEngineType::Wavetable);
+    let baseline = render(OscillatorEngineType::Blep);
+    let maximum_difference = measured
+        .iter()
+        .zip(&baseline)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        maximum_difference > 1.0e-3,
+        "measured output collapsed to baseline after patch apply: {maximum_difference}"
+    );
+}
+
+#[test]
+fn wavetable_live_engine_slop_changes_the_audible_output() {
+    fn render(slop: f32) -> Vec<f32> {
+        let effects = vec![0.0; 96_000].into_boxed_slice();
+        let mut engine =
+            SynthEngineWithMemory::<_, 1>::new_with_effects_memory(48_000.0, effects).unwrap();
+        engine.set_wavetable_bank(BankId::Monologue);
+        engine.set_oscillator_engine(OscillatorEngineType::Wavetable);
         engine.set_filter_type(FilterType::PassThrough);
         engine.set_param(ParamId::Osc1Waveform, Waveform::Saw.index() as f32);
         engine.set_param(ParamId::Osc1Enabled, 1.0);
@@ -121,8 +175,8 @@ fn measured_wavetable_live_engine_slop_changes_the_audible_output() {
         output
     }
 
-    let stable = render(bank, 0.0);
-    let sloppy = render(bank, 1.0);
+    let stable = render(0.0);
+    let sloppy = render(1.0);
     assert!(stable.iter().all(|sample| sample.is_finite()));
     assert!(sloppy.iter().all(|sample| sample.is_finite()));
     let maximum_difference = stable
@@ -137,18 +191,13 @@ fn measured_wavetable_live_engine_slop_changes_the_audible_output() {
 }
 
 #[test]
-fn measured_wavetable_live_engine_hard_sync_changes_the_audible_output() {
-    let Some(bank) = generated_measured_bank() else {
-        eprintln!("generated measured bank is absent; skipping live hard-sync test");
-        return;
-    };
-
-    fn render(bank: MeasuredWavetableBank, hard_sync: bool) -> Vec<f32> {
+fn wavetable_live_engine_hard_sync_changes_the_audible_output() {
+    fn render(hard_sync: bool) -> Vec<f32> {
         let effects = vec![0.0; 96_000].into_boxed_slice();
         let mut engine =
             SynthEngineWithMemory::<_, 1>::new_with_effects_memory(48_000.0, effects).unwrap();
-        engine.set_measured_wavetable_bank(bank);
-        engine.set_experimental_oscillator_model(ExperimentalOscillatorModel::MeasuredWavetable);
+        engine.set_wavetable_bank(BankId::Monologue);
+        engine.set_oscillator_engine(OscillatorEngineType::Wavetable);
         engine.set_filter_type(FilterType::PassThrough);
         engine.set_param(ParamId::Osc1Waveform, Waveform::Saw.index() as f32);
         engine.set_param(ParamId::Osc2Waveform, Waveform::Saw.index() as f32);
@@ -164,8 +213,8 @@ fn measured_wavetable_live_engine_hard_sync_changes_the_audible_output() {
         output
     }
 
-    let free = render(bank, false);
-    let synced = render(bank, true);
+    let free = render(false);
+    let synced = render(true);
     assert!(free.iter().all(|sample| sample.is_finite()));
     assert!(synced.iter().all(|sample| sample.is_finite()));
     let maximum_difference = free
@@ -188,25 +237,17 @@ fn registry_order_and_descriptors_are_stable() {
     assert_eq!(descriptors[2].id, "polyblep-v1");
     assert_eq!(descriptors[3].id, "wavetable-prototype-v1");
     assert_eq!(descriptors[4].id, "korg-monologue-measured-wavetable-v1");
-    assert_eq!(descriptors[5].id, "target-conditioned-phase-filter-v1");
-    assert_eq!(descriptors[6].id, "target-conditioned-phase-filter-v2");
+    assert_eq!(descriptors[5].id, "prophet5-wavetable-v1");
+    assert_eq!(descriptors[6].id, "target-conditioned-phase-filter-v1");
+    assert_eq!(descriptors[7].id, "target-conditioned-phase-filter-v2");
     assert!(
-        descriptors[..6]
+        descriptors[..7]
             .iter()
             .all(|descriptor| descriptor.revision == 1)
     );
-    assert_eq!(descriptors[6].revision, 2);
+    assert_eq!(descriptors[7].revision, 2);
     assert!(!descriptors[0].requires_external_asset);
     assert!(descriptors[3].requires_external_asset);
-    assert_eq!(
-        ResearchModelId::PolyBlep.live_model().unwrap().id(),
-        ResearchModelId::PolyBlep.as_str()
-    );
-    assert!(ResearchModelId::Wavetable.live_model().is_none());
-    assert_eq!(
-        ResearchModelId::MeasuredWavetable.live_model(),
-        Some(synth_core::ExperimentalOscillatorModel::MeasuredWavetable)
-    );
     assert!(!descriptors[3].capabilities.real_time_safe);
     assert!(descriptors[4].capabilities.real_time_safe);
     assert!(descriptors[4].capabilities.saw_triangle);
@@ -215,10 +256,10 @@ fn registry_order_and_descriptors_are_stable() {
     assert!(descriptors[4].capabilities.hard_sync);
     assert!(descriptors[4].capabilities.slop);
     assert!(descriptors[4].requires_external_asset);
-    assert!(!descriptors[5].requires_external_asset);
+    assert!(descriptors[5].capabilities.real_time_safe);
+    assert!(descriptors[5].requires_external_asset);
     assert!(!descriptors[6].requires_external_asset);
-    assert!(ResearchModelId::TargetConditioned.live_model().is_none());
-    assert!(ResearchModelId::TargetConditionedV2.live_model().is_none());
+    assert!(!descriptors[7].requires_external_asset);
     let profile = ResearchRegistry::target_profile_metadata(ResearchModelId::TargetConditioned)
         .expect("fitted model has profile provenance");
     assert_eq!(profile.0, "korg-monologue-phase-filter-v1");
@@ -230,11 +271,16 @@ fn registry_order_and_descriptors_are_stable() {
     assert_eq!(v2_profile.0, "korg-monologue-phase-filter-v2");
     assert_eq!(v2_profile.1, "korg-monologue-v1");
     assert_eq!(v2_profile.2.len(), 64);
-    let measured = ResearchRegistry::target_profile_metadata(ResearchModelId::MeasuredWavetable)
+    let measured = ResearchRegistry::target_profile_metadata(ResearchModelId::WavetableMonologue)
         .expect("measured bank has target provenance");
     assert_eq!(measured.0, "korg-monologue-measured-bank-v1");
     assert_eq!(measured.1, "korg-monologue-v1");
     assert_eq!(measured.2.len(), 64);
+    let arturia = ResearchRegistry::target_profile_metadata(ResearchModelId::WavetableProphet5)
+        .expect("prophet5 wavetable bank has target provenance");
+    assert_eq!(arturia.0, "prophet5-wavetable-bank-v1");
+    assert_eq!(arturia.1, "prophet5-v1");
+    assert_eq!(arturia.2.len(), 64);
 }
 
 #[test]
@@ -395,7 +441,7 @@ fn target_conditioned_triangle_remains_continuous_during_dense_pitch_sweep() {
 }
 
 #[test]
-fn measured_wavetable_triangle_remains_continuous_during_dense_pitch_sweep() {
+fn wavetable_triangle_remains_continuous_during_dense_pitch_sweep() {
     let Some(bank) = generated_measured_bank() else {
         eprintln!("generated measured bank is absent; skipping pitch-continuity test");
         return;
@@ -404,7 +450,7 @@ fn measured_wavetable_triangle_remains_continuous_during_dense_pitch_sweep() {
     case.frequency_hz = 20.7;
     case.shape = 0.4;
     case.warmup_samples = 0;
-    let mut model = ResearchRegistry::create_measured_wavetable(48_000.0, bank).unwrap();
+    let mut model = ResearchRegistry::create_wavetable(48_000.0, bank).unwrap();
     model.configure(case).unwrap();
     for _ in 0..8_192 {
         let _ = model.next_sample();
@@ -492,7 +538,7 @@ fn built_in_hard_sync_event_uses_a_real_lane_mask() {
 }
 
 #[test]
-fn measured_wavetable_hard_sync_preserves_subsample_timing() {
+fn wavetable_hard_sync_preserves_subsample_timing() {
     let Some(bank) = generated_measured_bank() else {
         eprintln!("generated measured bank is absent; skipping hard-sync timing test");
         return;
@@ -502,9 +548,9 @@ fn measured_wavetable_hard_sync_preserves_subsample_timing() {
     case.shape = 0.35;
     case.warmup_samples = 0;
 
-    let mut at_start = ResearchRegistry::create_measured_wavetable(48_000.0, bank).unwrap();
-    let mut at_end = ResearchRegistry::create_measured_wavetable(48_000.0, bank).unwrap();
-    let mut repeated = ResearchRegistry::create_measured_wavetable(48_000.0, bank).unwrap();
+    let mut at_start = ResearchRegistry::create_wavetable(48_000.0, bank).unwrap();
+    let mut at_end = ResearchRegistry::create_wavetable(48_000.0, bank).unwrap();
+    let mut repeated = ResearchRegistry::create_wavetable(48_000.0, bank).unwrap();
     for model in [&mut at_start, &mut at_end, &mut repeated] {
         model.configure(case).unwrap();
         for _ in 0..137 {
@@ -552,7 +598,7 @@ fn measured_wavetable_hard_sync_preserves_subsample_timing() {
 }
 
 #[test]
-fn measured_wavetable_hard_sync_is_bounded_for_every_shape_path() {
+fn wavetable_hard_sync_is_bounded_for_every_shape_path() {
     let Some(bank) = generated_measured_bank() else {
         eprintln!("generated measured bank is absent; skipping hard-sync waveform test");
         return;
@@ -569,7 +615,7 @@ fn measured_wavetable_hard_sync_is_bounded_for_every_shape_path() {
         case.frequency_hz = 440.0;
         case.shape = shape;
         case.warmup_samples = 0;
-        let mut model = ResearchRegistry::create_measured_wavetable(48_000.0, bank).unwrap();
+        let mut model = ResearchRegistry::create_wavetable(48_000.0, bank).unwrap();
         model.configure(case).unwrap();
 
         for offset in [0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -649,7 +695,7 @@ impl OscillatorResearchModel for StatefulProbe {
             name: "Stateful Test Probe",
             revision: 1,
             family: ResearchModelFamily::Stateful,
-            capabilities: ExperimentalOscillatorCapabilities {
+            capabilities: ResearchModelCapabilities {
                 saw: true,
                 saw_triangle: false,
                 triangle: false,
@@ -785,11 +831,11 @@ fn invalid_cases_and_assets_fail_before_rendering() {
     assert_eq!(invalid.validate(), Err(ResearchError::InvalidFrequency));
     assert!(matches!(
         ResearchRegistry::create(ResearchModelId::Wavetable, 48_000.0, None),
-        Err(ResearchError::MissingWavetableBank)
+        Err(ResearchError::MissingMipWavetableBank)
     ));
     assert!(matches!(
-        ResearchRegistry::create(ResearchModelId::MeasuredWavetable, 48_000.0, None),
-        Err(ResearchError::MissingMeasuredWavetableBank)
+        ResearchRegistry::create(ResearchModelId::WavetableMonologue, 48_000.0, None),
+        Err(ResearchError::MissingWavetableBank)
     ));
     assert!(matches!(
         ResearchRegistry::create(
@@ -797,6 +843,6 @@ fn invalid_cases_and_assets_fail_before_rendering() {
             48_000.0,
             Some(zero_wavetable_bank())
         ),
-        Err(ResearchError::UnexpectedWavetableBank)
+        Err(ResearchError::UnexpectedMipWavetableBank)
     ));
 }

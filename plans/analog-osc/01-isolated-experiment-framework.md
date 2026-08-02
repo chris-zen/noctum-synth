@@ -171,7 +171,8 @@ reference.
 - Current BLEP implementation: synth-core/src/dsp/blep.rs
 - Existing wavetable adapter pattern: synth-core/src/dsp/wavetable.rs
 - Existing quality harness: synth-core/examples/sample_rate_quality.rs
-- Prior architecture direction: plans/OSCILLATOR_ENGINE_ARCHITECTURE_PLAN.md
+- Complete live-engine architecture:
+  plans/analog-osc/02-replaceable-model-architecture.md
 - Prior wavetable report: plans/DAISY_WAVETABLE_PROTOTYPE_REPORT.md
 - Playable audition and pass-through filter:
   plans/analog-osc/14-desktop-audition-and-pass-through-filter.md

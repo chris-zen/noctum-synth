@@ -3,7 +3,10 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use synth_core::{LayerId, LayerTarget, Patch, SequencerFeedback, dsp::FilterType};
+use synth_core::{
+    BankId, LayerId, LayerTarget, OscillatorEngineType, Patch, SequencerFeedback,
+    dsp::{FilterType, SawMethod},
+};
 
 use crate::{
     audio::AudioManager,
@@ -63,7 +66,6 @@ impl App {
         audio_manager: AudioManager,
         midi_port: Option<String>,
         mut config: Config,
-        #[cfg(feature = "experimental-oscillators")] measured_wavetable_available: bool,
     ) -> Self {
         let theme_dark = config.settings.dark_theme;
 
@@ -116,11 +118,12 @@ impl App {
 
         let mut patch_mgr = PatchManager::new();
         let mut ui_state = UiState::default();
+        let (oscillator_engine, blep_method, wavetable_bank) =
+            restore_oscillator_selection(&config);
+        ui_state.oscillator_engine = oscillator_engine;
+        ui_state.blep_method = blep_method;
+        ui_state.wavetable_bank = wavetable_bank;
         let mut patch = Patch::default();
-        #[cfg(feature = "experimental-oscillators")]
-        {
-            ui_state.measured_wavetable_available = measured_wavetable_available;
-        }
         if let Some((restored, loaded_name, baseline, save_name)) = patch_mgr.load_autosave() {
             patch_mgr.restore_autosave_metadata(loaded_name, baseline, save_name, &restored);
             patch = restored;
@@ -128,6 +131,9 @@ impl App {
         ui_state.apply_from_patch(&patch.layer_a);
         let muted = config.muted;
         engine.control.load_program_respecting_mute(&patch, muted);
+        engine.control.set_blep_method(blep_method);
+        engine.control.set_wavetable_bank(wavetable_bank);
+        engine.control.set_oscillator_engine(oscillator_engine);
 
         Self {
             engine,
@@ -188,10 +194,15 @@ impl App {
             self.engine
                 .control
                 .set_filter_type(*self.filter_type.lock());
-            #[cfg(feature = "experimental-oscillators")]
             self.engine
                 .control
-                .set_experimental_oscillator_model(self.ui_state.experimental_oscillator_model);
+                .set_oscillator_engine(self.ui_state.oscillator_engine);
+            self.engine
+                .control
+                .set_blep_method(self.ui_state.blep_method);
+            self.engine
+                .control
+                .set_wavetable_bank(self.ui_state.wavetable_bank);
             self.engine
                 .control
                 .set_midi_clock_mode(self.config.settings.midi_clock_mode);
@@ -207,6 +218,9 @@ impl App {
         self.config.filter_type = *self.filter_type.lock();
         self.config.muted = self.muted;
         self.config.input_enabled = self.engine.control.input_enabled();
+        self.config.settings.oscillator_engine_id = self.ui_state.oscillator_engine.id().to_owned();
+        self.config.settings.wavetable_bank_id = self.ui_state.wavetable_bank.id().to_owned();
+        self.config.settings.blep_method_id = Some(self.ui_state.blep_method.id().to_owned());
         self.config.save();
         self.sync_current_layer();
         self.patch_mgr.save_program_autosave(&self.patch);
@@ -518,4 +532,41 @@ fn metrics_text(metrics: &AudioMetrics) -> String {
         metrics.render_overruns,
         metrics.callbacks,
     )
+}
+
+fn restore_oscillator_selection(config: &Config) -> (OscillatorEngineType, SawMethod, BankId) {
+    let engine = OscillatorEngineType::from_id(&config.settings.oscillator_engine_id)
+        .unwrap_or_else(|| {
+            let fallback = OscillatorEngineType::default_engine();
+            eprintln!(
+                "Unknown or unavailable oscillator engine {:?}; using {}",
+                config.settings.oscillator_engine_id,
+                fallback.id()
+            );
+            fallback
+        });
+    let bank = BankId::from_id(&config.settings.wavetable_bank_id).unwrap_or_else(|| {
+        let fallback = BankId::ALL[0].1;
+        eprintln!(
+            "Unknown wavetable bank {:?}; using {}",
+            config.settings.wavetable_bank_id,
+            fallback.id()
+        );
+        fallback
+    });
+    let blep_method = config
+        .settings
+        .blep_method_id
+        .as_deref()
+        .and_then(SawMethod::from_id)
+        .unwrap_or_else(|| {
+            if let Some(id) = config.settings.blep_method_id.as_deref() {
+                eprintln!(
+                    "Unknown BLEP method {id:?}; using {}",
+                    SawMethod::ALL[0].id()
+                );
+            }
+            SawMethod::ALL[0]
+        });
+    (engine, blep_method, bank)
 }

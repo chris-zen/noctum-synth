@@ -10,8 +10,9 @@ approaches while preserving the existing production path. Support both:
 - Fully stateful models such as capacitor/comparator cores, WDF circuits, and
   autoregressive neural models.
 
-Do not force every experiment into the current phase-sampling trait, and do not
-replace the production engine with dynamic dispatch.
+Do not force every experiment into the current phase-sampling trait. Live
+runtime selection is confined to one closed, feature-gated engine owner; it
+does not leak dynamic dispatch or feature gates through the voice and app.
 
 ## Implementation status
 
@@ -19,10 +20,12 @@ The minimum two-tier seam is implemented. Existing phase kernels keep their
 typed production path. The feature-gated `OscillatorResearchModel` interface
 accepts semantic cases/events and lets stateful models own their complete
 history. `RegisteredResearchModel` adapts existing phase models without
-changing production voice code. Stable live models derive their IDs, names,
-revisions, and capabilities from `ExperimentalOscillatorModel`; analysis-only
-models cannot enter the Params selector merely by appearing in the research
-registry.
+changing production voice code. Stable live selection now comes from
+`OscillatorEngineType::ALL`, `SawMethod`, and `BankId`, while research metadata
+remains independent. Analysis-only models cannot enter the Params selector
+merely by appearing in the research registry. The temporary per-source facade
+has been removed; live audio and Osc Design both use the complete retained
+engine boundary below.
 
 The integration test's stateful probe demonstrates independent phase/history,
 reset, hard-sync event handling, and deterministic rendering. A real gray-box
@@ -91,37 +94,81 @@ Stateful candidates can remain Tier 2 indefinitely. A winner intended for
 hardware is later adapted to a statically selected production type in a
 separate promotion change.
 
-### Phase-0 playable facade
+### Live oscillator engines
 
-Before implementing the experimental models, execute only the minimal playable
-subset described in plan 14:
+The live boundary is one retained `OscillatorEngines` owner per voice. It is a
+complete pre-filter source section, not an adapter for an individual Osc 1 or
+Osc 2 waveform. Each concrete engine owns its own Osc 1, Osc 2, sub oscillator,
+noise source, mix, timing/sync behavior, and all private state. A BLEP engine
+therefore produces the complete source section with BLEP techniques; a
+wavetable engine produces the complete section with wavetable techniques.
+Future physical-model and granular engines use the same boundary.
 
-- Under an experimental-oscillators desktop feature, replace each internal
-  EngineOscillator field in Oscillators with a closed source enum whose default
-  Baseline variant wraps EngineOscillator.
-- With that feature disabled, retain the existing direct EngineOscillator
-  fields and calls so production firmware pays no dispatch or storage cost.
-- Share model IDs, capabilities, parameters, and immutable profiles with the
-  offline registry.
-- Keep selection in application research state rather than patches.
-- Switch at an audio-block boundary after all-notes-off; do not translate live
-  state among unrelated models.
-- Use the real oscillator mixer, filter or Pass Through model, VCA, pan,
-  effects, and output path for listening.
+```rust
+pub struct OscillatorEngines {
+    selected: OscillatorEngineType,
+    params: OscillatorEngineParams,
 
-This is deliberately narrower than the full multi-engine plan. It provides
-playability without committing to patch persistence, engine-specific public
-parameters, voice-lifetime migration, or firmware deployment.
+    #[cfg(feature = "osc-blep")]
+    blep: BlepEngine,
+    #[cfg(feature = "osc-wavetable")]
+    wavetable: WavetableEngine,
+}
+```
+
+`OscillatorEngineType` variants are feature-gated. The UI and application do
+not name variants or use `#[cfg]`; they enumerate the enabled descriptors:
+
+```rust
+pub enum OscillatorEngineType {
+    #[cfg(feature = "osc-blep")]
+    Blep,
+    #[cfg(feature = "osc-wavetable")]
+    Wavetable,
+}
+
+impl OscillatorEngineType {
+    pub const ALL: &'static [(&'static str, Self)] = &[
+        #[cfg(feature = "osc-blep")]
+        ("blep", Self::Blep),
+        #[cfg(feature = "osc-wavetable")]
+        ("wavetable", Self::Wavetable),
+    ];
+}
+```
+
+The `OscillatorEngines` module owns every feature-gated field and match. At
+least one `osc-*` engine feature is required. A single-engine build retains one
+concrete engine and dispatches directly; a desktop all-engine build retains all
+enabled engines and uses a closed match to render the selected one.
+
+Selection remains application/session state, applies one engine to the complete
+source section, and is never serialized into patches, MIDI, SysEx, or factory
+programs. It is deliberately narrower than patch-owned engine selection:
+playability does not yet commit to per-note engine identity, engine-specific
+public parameters, or firmware deployment.
 
 ## Common controls versus model parameters
 
-Common controls must preserve synth semantics:
+`OscillatorEngineParams` contains controls every complete engine understands:
 
-- Waveform: Saw, SawTri, Triangle, Pulse.
-- Shape: existing normalized synth control.
-- Frequency and sample rate.
-- Phase reset/free run and sync events.
-- Slop amount only when evaluating compatibility behavior.
+- Osc 1/Osc 2 waveform, enable state, base shape, pitch/tuning, and level/mix.
+- Sub oscillator and noise controls.
+- Sample rate, reset/free-run, hard sync, glide, and slop.
+
+Effective frequency and common modulation are supplied at render time, not
+written into retained base parameters every sample:
+
+```rust
+pub struct OscillatorRenderContext {
+    frequency_hz: WideF32,
+    shape_modulation: f32,
+    reset_mask: u8,
+    hard_sync: Option<SyncEvent>,
+}
+```
+
+Initial modulation support is limited to controls common to every engine.
 
 Research parameters belong to namespaced model configurations, for example:
 
@@ -132,8 +179,11 @@ Research parameters belong to namespaced model configurations, for example:
 - Wavetable target, interpolation, and residual amount.
 - Nonlinear drive and ADAA order.
 
-Do not add these to ParamId, MIDI, SysEx, factory presets, or the main parameter
-view during exploration.
+Engine-specific settings are experimental session state. For example, the
+wavetable bank is owned by `WavetableEngine`; it is neither modulatable nor a
+`ParamId`, MIDI, SysEx, or factory-preset value. Application configuration may
+store a stable engine or bank ID and resolve it through the enabled registry at
+startup, falling back to the build default when the feature is absent.
 
 ## State, assets, and real-time contract
 
@@ -147,12 +197,13 @@ Every model reports:
 - Whether its cost is bounded independently of pitch and parameters.
 - Whether it is no_std compatible.
 
-Immutable banks and fitted profiles use validated handles, following the
-existing WavetableBank ownership pattern. Models never read blocking storage or
-perform file I/O during rendering.
-
-Heavy desktop assets may use Arc-owned immutable data in the app adapter.
-Promotable core kernels use static slices or explicit caller-owned storage.
+Immutable banks and fitted profiles use validated handles. `WavetableEngine`
+owns a `WavetableBankRegistry`; no bank is loaded from disk or threaded through
+`main`, renderer constructors, UI state, or engine APIs. The initial registry
+uses generated Rust `static [f32]` data, so it is valid in `no_std`, allocation
+free, and directly available to validated bank handles. A raw byte blob is
+deferred because it needs explicit alignment and decoding before it can become
+`&[f32]`.
 
 ## Switching behavior
 
@@ -162,9 +213,11 @@ The playable synth chooses one engine for both oscillators through the global
 selector in the Params Oscillators header; there is no load-from-Oscillator-Lab
 operation.
 
-Desktop audition switching follows plan 14: all-notes-off, block-boundary model
-replacement, complete common-parameter reapplication, then new notes. Phase 0
-does not morph sustaining notes.
+Desktop audition switching follows plan 14: all-notes-off, block-boundary
+selection, common-parameter synchronization, then new notes. It does not
+reconstruct engines. The inactive engine retains phase, correction history,
+wavetable position, noise state, and other private state; activation must not
+reset it. Phase 0 does not morph sustaining notes.
 
 If patch-owned runtime selection is later approved:
 
@@ -174,8 +227,7 @@ If patch-owned runtime selection is later approved:
 - Branch once per block where possible.
 - Preserve old patches as baseline-model patches.
 
-That broader work belongs with plans/OSCILLATOR_ENGINE_ARCHITECTURE_PLAN.md and
-is outside the Phase-0 research audition architecture.
+That broader patch-owned work is outside this research audition architecture.
 
 ## Implementation sequence
 
@@ -184,14 +236,15 @@ is outside the Phase-0 research audition architecture.
    phase or slop behavior.
 3. Add adapters for current AnalogOscillator and WavetableOscillator.
 4. Add the closed desktop model registry and capability metadata.
-5. Implement the Baseline-only playable facade and prove full-voice bit
-   identity, then add Pass Through according to plan 14.
+5. Implement the retained complete-engine owner and prove the BLEP-only build
+   is bit-identical through the full voice path, then add Pass Through
+   according to plan 14.
 6. Reuse model IDs and metadata in Oscillator Lab and the offline harness while
    keeping their instances and parameters independent from the playable synth.
 7. Add one trivial stateful test model to prove reset, sync-event, latency, and
    diagnostics plumbing.
-8. Confirm non-research builds still use the same typed alias and feature
-   behavior.
+8. Confirm single-engine builds retain only their selected implementation and
+   desktop builds expose only their enabled engine descriptors.
 9. Add new methods only through independent experiment branches.
 
 ## Verification
@@ -200,31 +253,30 @@ is outside the Phase-0 research audition architecture.
 - A stateful model can own phase/history without modifying AnalogOscillator.
 - Unsupported waveform or event capabilities are visible, not silently
   approximated.
-- Model-specific configuration round-trips with defaults by revision.
+- Engine-specific session configuration round-trips by stable ID and falls
+  back safely when its engine feature is unavailable.
 - No experiment identifier enters production patches.
 - Oscillator Lab edits cannot control live audio. Only the global Params-view
-  engine selector replaces desktop research sources, for both oscillators.
-- Baseline selected through the audition facade is bit-identical through the
-  complete voice path.
-- A release firmware build omits all desktop registry code and experimental
-  assets unless explicitly promoted.
+  engine selector selects the complete source section.
+- BLEP-only output is bit-identical through the complete voice path.
+- A release firmware build omits every disabled engine and its assets.
 
 ## Completion criteria
 
 - Phase-kernel and stateful-model experiments coexist in one analysis registry.
-- Real-time-safe candidates can be played through the same registry and real
-  synth signal path.
-- Existing compile-time platform specialization remains available.
+- Real-time-safe candidates can be adapted as complete live engines and played
+  through the real synth signal path.
+- Existing compile-time platform specialization remains available through
+  per-engine features.
 - Production defaults, patch compatibility, and factory behavior are
   unchanged.
-- Adding a new research model requires only its implementation, adapter,
-  metadata, and tests.
+- Adding a new live engine requires its complete source implementation, feature,
+  descriptor, session configuration, and tests.
 
 ## References
 
 - Current typed kernel seam: synth-core/src/dsp/analog_oscillator.rs
 - Existing immutable bank pattern: synth-core/src/dsp/wavetable.rs
-- Existing engine-level direction: plans/OSCILLATOR_ENGINE_ARCHITECTURE_PLAN.md
 - Minimal playable research layer and raw filter:
   plans/analog-osc/14-desktop-audition-and-pass-through-filter.md
 - Existing platform constraints: docs/src/hardware/daisy.md

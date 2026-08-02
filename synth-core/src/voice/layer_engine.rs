@@ -94,22 +94,21 @@ impl<const PACKS: usize> VoicePool<PACKS> {
         }
     }
 
-    /// Stops current notes, then reconstructs every research oscillator source.
-    #[cfg(feature = "experimental-oscillators")]
-    pub fn set_experimental_oscillator_model(
-        &mut self,
-        model: crate::dsp::ExperimentalOscillatorModel,
-    ) {
+    pub fn set_oscillator_engine(&mut self, engine: crate::OscillatorEngineType) {
         for block in &mut self.blocks {
-            block.all_notes_off();
-            block.set_experimental_oscillator_model(model);
+            block.set_oscillator_engine(engine);
         }
     }
 
-    #[cfg(feature = "experimental-oscillators")]
-    pub fn set_measured_wavetable_bank(&mut self, bank: crate::dsp::MeasuredWavetableBank) {
+    pub fn set_blep_method(&mut self, method: crate::dsp::SawMethod) {
         for block in &mut self.blocks {
-            block.set_measured_wavetable_bank(bank);
+            block.set_blep_method(method);
+        }
+    }
+
+    pub fn set_wavetable_bank(&mut self, bank: crate::BankId) {
+        for block in &mut self.blocks {
+            block.set_wavetable_bank(bank);
         }
     }
 
@@ -333,8 +332,9 @@ impl<const PACKS: usize> LayerEngine<PACKS> {
             ControlMessage::SetMidiClockMode(_)
             | ControlMessage::SetMasterVolume(_)
             | ControlMessage::MidiRealtime(_) => {}
-            #[cfg(feature = "experimental-oscillators")]
-            ControlMessage::SetExperimentalOscillatorModel(_) => {}
+            ControlMessage::SetOscillatorEngine(_)
+            | ControlMessage::SetBlepMethod(_)
+            | ControlMessage::SetWavetableBank(_) => {}
             ControlMessage::SetModulation {
                 route,
                 enabled,

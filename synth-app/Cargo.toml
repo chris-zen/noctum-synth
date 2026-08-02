@@ -7,8 +7,10 @@ publish = false
 description = "Standalone synth application with egui UI, MIDI input, and real-time audio"
 
 [features]
-default = ["experimental-oscillators"]
-experimental-oscillators = ["synth-core/experimental-oscillators"]
+default = ["osc-all"]
+osc-blep = ["synth-core/osc-blep"]
+osc-wavetable = ["synth-core/osc-wavetable"]
+osc-all = ["osc-blep", "osc-wavetable"]
 
 [dependencies]
 synth-core = { path = "../synth-core", version = "0.1.0" }

@@ -2,7 +2,7 @@
 //!
 //! This module owns no global bank and performs no platform selection. A host,
 //! benchmark, or future wavetable engine prepares immutable samples and passes
-//! a [`WavetableBank`] to the oscillator explicitly. Consequently, retaining
+//! a [`MipWavetableBank`] to the oscillator explicitly. Consequently, retaining
 //! this code does not add table data to the analog/BLEP production firmware.
 
 use crate::math::{TAU, WideF32};
@@ -21,14 +21,14 @@ const CROSSFADE_SAMPLES: u8 = 8;
 
 /// Failure while validating or generating an immutable wavetable bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WavetableBankError {
+pub enum MipMipWavetableBankError {
     WrongSampleCount { expected: usize, actual: usize },
     NonFinite,
 }
 
 /// Stable diagnostics for a prepared bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WavetableBankReport {
+pub struct MipMipWavetableBankReport {
     pub samples: u32,
     pub bytes: u32,
     pub checksum: u32,
@@ -40,32 +40,32 @@ pub struct WavetableBankReport {
 /// or another nonblocking memory region. The samples must remain alive for the
 /// duration of every oscillator using the bank.
 #[derive(Clone, Copy)]
-pub struct WavetableBank {
+pub struct MipWavetableBank {
     samples: &'static [f32],
 }
 
-impl WavetableBank {
-    pub fn new(samples: &'static [f32]) -> Result<Self, WavetableBankError> {
+impl MipWavetableBank {
+    pub fn new(samples: &'static [f32]) -> Result<Self, MipMipWavetableBankError> {
         if samples.len() != WAVETABLE_BANK_SAMPLES {
-            return Err(WavetableBankError::WrongSampleCount {
+            return Err(MipMipWavetableBankError::WrongSampleCount {
                 expected: WAVETABLE_BANK_SAMPLES,
                 actual: samples.len(),
             });
         }
         if samples.iter().any(|sample| !sample.is_finite()) {
-            return Err(WavetableBankError::NonFinite);
+            return Err(MipMipWavetableBankError::NonFinite);
         }
         Ok(Self { samples })
     }
 
-    pub fn report(self) -> WavetableBankReport {
+    pub fn report(self) -> MipMipWavetableBankReport {
         let bytes = unsafe {
             core::slice::from_raw_parts(
                 self.samples.as_ptr().cast::<u8>(),
                 core::mem::size_of_val(self.samples),
             )
         };
-        WavetableBankReport {
+        MipMipWavetableBankReport {
             samples: self.samples.len() as u32,
             bytes: bytes.len() as u32,
             checksum: fnv1a(bytes),
@@ -97,9 +97,9 @@ impl WavetableBank {
 /// production audio must never invoke it.
 pub fn generate_wavetable_bank(
     samples: &mut [f32],
-) -> Result<WavetableBankReport, WavetableBankError> {
+) -> Result<MipMipWavetableBankReport, MipMipWavetableBankError> {
     if samples.len() != WAVETABLE_BANK_SAMPLES {
-        return Err(WavetableBankError::WrongSampleCount {
+        return Err(MipMipWavetableBankError::WrongSampleCount {
             expected: WAVETABLE_BANK_SAMPLES,
             actual: samples.len(),
         });
@@ -134,7 +134,7 @@ pub fn generate_wavetable_bank(
         }
     }
     if samples.iter().any(|sample| !sample.is_finite()) {
-        return Err(WavetableBankError::NonFinite);
+        return Err(MipMipWavetableBankError::NonFinite);
     }
     Ok(report_samples(samples))
 }
@@ -144,14 +144,14 @@ fn sin_cos(angle: f32) -> (f32, f32) {
     (s.as_f32(), c.as_f32())
 }
 
-fn report_samples(samples: &[f32]) -> WavetableBankReport {
+fn report_samples(samples: &[f32]) -> MipMipWavetableBankReport {
     let bytes = unsafe {
         core::slice::from_raw_parts(
             samples.as_ptr().cast::<u8>(),
             core::mem::size_of_val(samples),
         )
     };
-    WavetableBankReport {
+    MipMipWavetableBankReport {
         samples: samples.len() as u32,
         bytes: bytes.len() as u32,
         checksum: fnv1a(bytes),
@@ -173,7 +173,7 @@ enum WaveTable {
 /// Internal lookup state used by [`crate::dsp::WavetableOscillator`].
 #[doc(hidden)]
 pub struct WavetableOscillatorKernel {
-    bank: WavetableBank,
+    bank: MipWavetableBank,
     current: [u8; WideF32::LANES],
     previous: [u8; WideF32::LANES],
     fade_remaining: [u8; WideF32::LANES],
@@ -181,7 +181,7 @@ pub struct WavetableOscillatorKernel {
 }
 
 impl WavetableOscillatorKernel {
-    pub(crate) fn new(bank: WavetableBank) -> Self {
+    pub(crate) fn new(bank: MipWavetableBank) -> Self {
         Self {
             bank,
             current: [0; WideF32::LANES],
@@ -265,8 +265,8 @@ mod tests {
     use super::*;
     extern crate std;
 
-    fn reference_bank() -> WavetableBank {
-        static BANK: std::sync::OnceLock<WavetableBank> = std::sync::OnceLock::new();
+    fn reference_bank() -> MipWavetableBank {
+        static BANK: std::sync::OnceLock<MipWavetableBank> = std::sync::OnceLock::new();
         *BANK.get_or_init(|| {
             let mut samples = std::vec![0.0; WAVETABLE_BANK_SAMPLES];
             let (saw_bank, triangle_bank) = samples.split_at_mut(WAVETABLE_WAVE_SAMPLES);
@@ -283,7 +283,7 @@ mod tests {
                     };
                 }
             }
-            WavetableBank::new(std::boxed::Box::leak(samples.into_boxed_slice())).unwrap()
+            MipWavetableBank::new(std::boxed::Box::leak(samples.into_boxed_slice())).unwrap()
         })
     }
 
@@ -308,8 +308,8 @@ mod tests {
         assert_eq!(bank.report().samples, WAVETABLE_BANK_SAMPLES as u32);
         assert_eq!(bank.report(), bank.report());
         assert!(matches!(
-            WavetableBank::new(&[]),
-            Err(WavetableBankError::WrongSampleCount { .. })
+            MipWavetableBank::new(&[]),
+            Err(MipMipWavetableBankError::WrongSampleCount { .. })
         ));
     }
 

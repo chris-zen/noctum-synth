@@ -35,10 +35,13 @@ The core runner accepts a caller-owned output slice and performs no allocation.
 Models receive semantic waveform/frequency/shape/reset/sync controls rather
 than access to production voice internals. A model appearing in the analysis
 registry is not automatically playable: only models with a separately tested
-live adapter share an `ExperimentalOscillatorModel` identity and appear in the
-single Params-view dropdown.
+complete-engine adapter appear in the single Params-view dropdown. The live
+selector enumerates the engine variants enabled in the current build; analysis
+registry membership alone never makes a model playable.
 
 The existing Osc Design tab will evolve into Oscillator Lab. It will consume
 the same immutable descriptors and case semantics while owning separate model
 instances and experimental parameters. It will not send live engine-control
-messages.
+messages. Engine-specific session settings such as a wavetable bank are owned
+by the selected live engine; they are not analysis parameters, patch state, or
+modulation destinations.

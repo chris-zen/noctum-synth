@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use synth_tools::measured_wavetable_bank::{BankRequest, build_bank, default_research_root};
+use synth_tools::wavetable_bank::{BankRequest, build_bank, default_research_root};
 
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
@@ -13,7 +13,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let mut request = BankRequest::arturia_defaults();
+    let mut request = BankRequest::prophet5_defaults();
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
@@ -40,6 +40,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
                     .parse()
                     .map_err(|_| format!("invalid --reference-sample-rate {value}"))?;
             }
+            "--rust-output" => {
+                index += 1;
+                request.rust_profile_path = Some(required_path(&args, index, "--rust-output")?);
+            }
+            "--no-rust-output" => request.rust_profile_path = None,
             "--help" | "-h" => {
                 print_help();
                 return Ok(());
@@ -57,6 +62,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         result.pitch_count_per_waveform
     );
     println!("wrote {}", result.manifest_path.display());
+    if let Some(path) = result.rust_profile_path {
+        println!("wrote {}", path.display());
+    }
     Ok(())
 }
 
@@ -74,20 +82,22 @@ fn print_help() {
     let research = default_research_root();
     println!(
         "\
-measured_wavetable_bank — build a measured pitch-conditioned wavetable bank from synth-capture NPZs
+wavetable_bank — build a measured pitch-conditioned wavetable bank from synth-capture NPZs
 
 USAGE:
-  cargo run --release -p synth-tools --bin measured_wavetable_bank -- [OPTIONS]
+  cargo run --release -p synth-tools --bin wavetable_bank -- [OPTIONS]
 
 OPTIONS:
   --derived-root <dir>           Directory containing {{saw,triangle,pulse50}}-cycles-v1.npz
   --output-dir <dir>             Directory for .f32le + .json outputs
-  --profile-id <id>              Bank profile id (default arturia-prophet5-measured-bank-v1)
-  --target-id <id>               Target id (default arturia-prophet5-v1)
-  --reference-sample-rate <hz>   Bank Nyquist reference rate (default 96000)
+  --profile-id <id>              Bank profile id (default prophet5-wavetable-bank-v1)
+  --target-id <id>               Target id (default prophet5-v1)
+  --reference-sample-rate <hz>   Playback-bank Nyquist reference (default 48000)
+  --rust-output <file>           Generated synth-core profile source
+  --no-rust-output               Do not generate Rust profile source
 
 Defaults assume research tree:
-  derived: {}/captures/arturia-prophet5-v1/derived
+  derived: {}/captures/arturia-prophet5-v1-r7/derived
   output:  {}/banks
 ",
         research.display(),

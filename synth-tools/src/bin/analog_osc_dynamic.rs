@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::Serialize;
-use synth_core::dsp::{FilterType, MeasuredWavetableBank, Waveform};
+use synth_core::dsp::{FilterType, MONOLOGUE_WAVETABLE_BANK_PROFILE, Waveform, WavetableBank};
 use synth_core::{
-    ExperimentalOscillatorModel, GlideMode, OscillatorResearchModel, ParamId, ResearchEvent,
+    BankId, GlideMode, OscillatorEngineType, OscillatorResearchModel, ParamId, ResearchEvent,
     ResearchModelId, ResearchRegistry, ResearchRenderCase, SynthEngineWithMemory,
 };
 
@@ -108,11 +108,11 @@ struct EngineResult {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_root = parse_output_root()?;
     fs::create_dir_all(&output_root)?;
-    let bank = measured_wavetable_bank()?;
+    let bank = wavetable_bank()?;
     let mut source_cases = Vec::new();
     for model in [
         ResearchModelId::Baseline,
-        ResearchModelId::MeasuredWavetable,
+        ResearchModelId::WavetableMonologue,
     ] {
         for scenario in Scenario::ALL {
             for sample_rate_hz in [48_000.0, 192_000.0] {
@@ -128,12 +128,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut engine_cases = Vec::new();
-    for model in [
-        ExperimentalOscillatorModel::Baseline,
-        ExperimentalOscillatorModel::MeasuredWavetable,
+    for (model_id, engine_type) in [
+        ("baseline-v1", OscillatorEngineType::Blep),
+        (
+            "korg-monologue-measured-wavetable-v1",
+            OscillatorEngineType::Wavetable,
+        ),
     ] {
-        for profile in ["steady-one", "steady-four", "combined-one"] {
-            engine_cases.push(characterize_engine(model, profile, bank));
+        for profile in [
+            "steady-one",
+            "steady-four",
+            "steady-four-slop",
+            "combined-one",
+        ] {
+            engine_cases.push(characterize_engine(model_id, engine_type, profile));
         }
     }
 
@@ -158,7 +166,7 @@ fn characterize_source(
     model_id: ResearchModelId,
     scenario: Scenario,
     sample_rate_hz: f32,
-    bank: MeasuredWavetableBank,
+    bank: WavetableBank,
     output_root: &Path,
 ) -> Result<SourceResult, Box<dyn std::error::Error>> {
     let sample_count = (SOURCE_SECONDS * sample_rate_hz) as usize;
@@ -166,8 +174,8 @@ fn characterize_source(
     let mut hashes = Vec::with_capacity(SOURCE_REPEATS);
     let mut retained = Vec::new();
     for repeat in 0..SOURCE_REPEATS {
-        let mut model = if model_id == ResearchModelId::MeasuredWavetable {
-            ResearchRegistry::create_measured_wavetable(sample_rate_hz, bank)
+        let mut model = if model_id == ResearchModelId::WavetableMonologue {
+            ResearchRegistry::create_wavetable(sample_rate_hz, bank)
         } else {
             ResearchRegistry::create(model_id, sample_rate_hz, None)
         }
@@ -302,18 +310,19 @@ fn apply_event(
 }
 
 fn characterize_engine(
-    model: ExperimentalOscillatorModel,
+    model_id: &'static str,
+    engine_type: OscillatorEngineType,
     profile: &'static str,
-    bank: MeasuredWavetableBank,
 ) -> EngineResult {
     let sample_rate_hz = 48_000.0;
     let effects = vec![0.0; 96_000].into_boxed_slice();
     let mut engine =
-        SynthEngineWithMemory::<4, _>::new_with_effects_memory(sample_rate_hz, effects);
-    engine.set_measured_wavetable_bank(bank);
-    engine.set_experimental_oscillator_model(model);
+        SynthEngineWithMemory::<_, 4>::new_with_effects_memory(sample_rate_hz, effects)
+            .expect("valid effects memory layout");
+    engine.set_wavetable_bank(BankId::Monologue);
+    engine.set_oscillator_engine(engine_type);
     configure_engine(&mut engine, profile);
-    let notes: &[u8] = if profile == "steady-four" {
+    let notes: &[u8] = if profile.starts_with("steady-four") {
         &[48, 55, 60, 64]
     } else {
         &[57]
@@ -358,7 +367,7 @@ fn characterize_engine(
     let percentile = |amount: f64| times[((times.len() - 1) as f64 * amount).round() as usize];
     let p99 = percentile(0.99);
     EngineResult {
-        model_id: model.id(),
+        model_id,
         profile,
         active_voices: notes.len(),
         block_count: ENGINE_BLOCKS,
@@ -374,7 +383,7 @@ fn characterize_engine(
     }
 }
 
-fn configure_engine(engine: &mut SynthEngineWithMemory<4, Box<[f32]>>, profile: &str) {
+fn configure_engine(engine: &mut SynthEngineWithMemory<Box<[f32]>, 4>, profile: &str) {
     engine.set_filter_type(FilterType::PassThrough);
     engine.set_param(ParamId::AmpEgAttack, 0.0);
     engine.set_param(ParamId::AmpEgDecay, 0.0);
@@ -386,6 +395,9 @@ fn configure_engine(engine: &mut SynthEngineWithMemory<4, Box<[f32]>>, profile: 
     engine.set_param(ParamId::Osc1Waveform, Waveform::Pulse.index() as f32);
     engine.set_param(ParamId::Osc2Waveform, Waveform::Saw.index() as f32);
     engine.set_param(ParamId::Osc1ShapeMod, 0.35);
+    if profile == "steady-four-slop" {
+        engine.set_param(ParamId::OscSlop, 1.0);
+    }
     if profile == "combined-one" {
         engine.set_param(ParamId::Osc1FineTune, 17.0);
         engine.set_param(ParamId::Osc2FineTune, -13.0);
@@ -444,7 +456,7 @@ fn write_float_wav(path: &Path, sample_rate_hz: u32, samples: &[f32]) -> std::io
     writer.flush()
 }
 
-fn measured_wavetable_bank() -> Result<MeasuredWavetableBank, Box<dyn std::error::Error>> {
+fn wavetable_bank() -> Result<WavetableBank, Box<dyn std::error::Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le");
     let bytes = fs::read(&path)?;
@@ -456,7 +468,7 @@ fn measured_wavetable_bank() -> Result<MeasuredWavetableBank, Box<dyn std::error
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect::<Vec<_>>()
         .into_boxed_slice();
-    MeasuredWavetableBank::new(Box::leak(samples))
+    WavetableBank::new(Box::leak(samples), &MONOLOGUE_WAVETABLE_BANK_PROFILE)
         .map_err(|error| format!("invalid measured bank: {error:?}").into())
 }
 

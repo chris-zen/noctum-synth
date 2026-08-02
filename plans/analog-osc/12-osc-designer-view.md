@@ -13,15 +13,29 @@ the single global dropdown in the Params Oscillators header described in plan
 
 synth-app/src/ui/analysis/osc_design.rs currently provides:
 
+- A right-aligned selector for every live-capable oscillator model already
+  exposed by the Params Oscillators dropdown.
 - Saw, Saw+Tri, triangle, and pulse selection.
-- BLEP/PolyBLEP method selection.
+- Selection through the complete-engine descriptors enabled in the normal
+  desktop research build; legacy method controls remain in single-engine
+  builds.
 - Shape, MIDI note, sample rate, cycles, and live rendering.
 - Waveform and FFT displays.
 - WAV export.
-- Serializable OscDesignViewConfig.
+- Serializable OscDesignViewConfig, including a backward-compatible selected
+  analysis model.
 
-The current render function constructs AnalogOscillator directly. This becomes
-the baseline adapter after the model registry in plan 02 exists.
+The view constructs an independent preview instance through the same
+complete-engine descriptor/dispatcher as live audition. It enumerates engines
+compiled into the current build; a wavetable preview obtains its generated
+static banks through `WavetableEngine`, not application startup injection.
+The view never sends engine-control messages. Therefore changing this selector
+changes only the displayed waveform and spectrum; the Params dropdown remains
+the sole way to choose what is played.
+
+This minimal selector/rendering increment was intentionally pulled forward.
+Model B, target overlays, diagnostics, metrics, and export remain later Plan 12
+work and should not block implementation of the next oscillator family.
 
 ## Layout
 
@@ -151,9 +165,11 @@ safe case identifier in the filename.
 
 ## Implementation sequence
 
-1. Adapt current BLEP/PolyBLEP rendering to the research registry with no visual
-   or numerical change.
-2. Add model selector and capability metadata shared with the playable registry.
+1. **Complete:** adapt current BLEP/PolyBLEP rendering to the same closed model
+   dispatcher used by live audition, with independent preview state.
+2. **Minimal increment complete:** add the right-aligned Model A selector using
+   shared playable-model IDs/names and availability. Capability badges and
+   broader offline-only registry models remain pending.
 3. Add Model B overlay/difference.
 4. Add manifest-backed reference overlay.
 5. Add model-specific inspector and ablation controls.

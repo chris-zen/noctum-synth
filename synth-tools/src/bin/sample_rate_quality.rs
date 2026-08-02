@@ -9,9 +9,8 @@ use rustfft::{FftPlanner, num_complex::Complex32};
 use synth_core::{
     EffectModulation, EffectParams, EffectType, Effects,
     dsp::{
-        AnalogOscillator, Filter, FilterOversampling, FilterType, SawMethod,
-        WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableOscillator,
-        generate_wavetable_bank,
+        AnalogOscillator, Filter, FilterOversampling, FilterType, MipWavetableBank, SawMethod,
+        WAVETABLE_BANK_SAMPLES, Waveform, WavetableOscillator, generate_wavetable_bank,
     },
     math::WideF32,
 };
@@ -28,12 +27,12 @@ struct SpectrumMetrics {
     image_db: Option<f64>,
 }
 
-fn reference_wavetable_bank() -> WavetableBank {
-    static BANK: std::sync::OnceLock<WavetableBank> = std::sync::OnceLock::new();
+fn reference_wavetable_bank() -> MipWavetableBank {
+    static BANK: std::sync::OnceLock<MipWavetableBank> = std::sync::OnceLock::new();
     *BANK.get_or_init(|| {
         let mut samples = vec![0.0; WAVETABLE_BANK_SAMPLES];
         generate_wavetable_bank(&mut samples).expect("generate wavetable quality bank");
-        WavetableBank::new(Box::leak(samples.into_boxed_slice()))
+        MipWavetableBank::new(Box::leak(samples.into_boxed_slice()))
             .expect("validate generated wavetable bank")
     })
 }

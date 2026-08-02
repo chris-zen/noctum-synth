@@ -144,8 +144,8 @@ impl OscillatorKernel for crate::dsp::wavetable::WavetableOscillatorKernel {
     }
 }
 
-/// Runtime-selectable kernel retained for oscillator analysis and the public
-/// low-level oscillator API. The synth engine uses a fixed typed kernel.
+/// Runtime-selectable BLEP kernel used by the low-level oscillator API and the
+/// retained live BLEP engine.
 #[doc(hidden)]
 pub struct RuntimeOscillatorKernel {
     method: SawMethod,
@@ -166,11 +166,11 @@ impl OscillatorKernel for RuntimeOscillatorKernel {
     }
 }
 
-#[cfg(any(test, not(feature = "oscillator-polyblep")))]
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct BlepOscillatorKernel;
 
-#[cfg(any(test, not(feature = "oscillator-polyblep")))]
+#[cfg(test)]
 impl OscillatorKernel for BlepOscillatorKernel {
     #[inline(always)]
     fn saw_method(&self) -> SawMethod {
@@ -178,11 +178,11 @@ impl OscillatorKernel for BlepOscillatorKernel {
     }
 }
 
-#[cfg(any(test, feature = "oscillator-polyblep"))]
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct PolyBlepOscillatorKernel;
 
-#[cfg(any(test, feature = "oscillator-polyblep"))]
+#[cfg(test)]
 impl OscillatorKernel for PolyBlepOscillatorKernel {
     #[inline(always)]
     fn saw_method(&self) -> SawMethod {
@@ -190,11 +190,7 @@ impl OscillatorKernel for PolyBlepOscillatorKernel {
     }
 }
 
-#[cfg(feature = "oscillator-polyblep")]
-type EngineOscillatorKernel = PolyBlepOscillatorKernel;
-#[cfg(not(feature = "oscillator-polyblep"))]
-type EngineOscillatorKernel = BlepOscillatorKernel;
-pub(crate) type EngineOscillator = AnalogOscillator<EngineOscillatorKernel>;
+pub(crate) type EngineOscillator = AnalogOscillator<RuntimeOscillatorKernel>;
 
 /// Per-lane comparison mask for conditional SIMD updates (`blend` true branch).
 type LaneMask = WideF32;
@@ -286,7 +282,16 @@ impl AnalogOscillator<RuntimeOscillatorKernel> {
 
 impl EngineOscillator {
     pub(crate) fn new_engine(sample_rate: f32) -> Self {
-        AnalogOscillator::new_with_kernel(sample_rate, EngineOscillatorKernel::default())
+        #[cfg(not(feature = "oscillator-polyblep"))]
+        {
+            AnalogOscillator::new(sample_rate)
+        }
+        #[cfg(feature = "oscillator-polyblep")]
+        {
+            let mut oscillator = AnalogOscillator::new(sample_rate);
+            oscillator.set_saw_method(SawMethod::PolyBlep);
+            oscillator
+        }
     }
 }
 
@@ -294,7 +299,7 @@ pub type WavetableOscillator = AnalogOscillator<crate::dsp::wavetable::Wavetable
 
 impl WavetableOscillator {
     /// Creates a wavetable oscillator backed by the supplied immutable bank.
-    pub fn new_wavetable(sample_rate: f32, bank: crate::dsp::wavetable::WavetableBank) -> Self {
+    pub fn new_wavetable(sample_rate: f32, bank: crate::dsp::wavetable::MipWavetableBank) -> Self {
         AnalogOscillator::new_with_kernel(
             sample_rate,
             crate::dsp::wavetable::WavetableOscillatorKernel::new(bank),

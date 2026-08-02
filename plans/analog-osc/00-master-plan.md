@@ -29,9 +29,14 @@ The minimum pre-candidate foundation is implemented:
 - Plan 13 provides versioned signal, comparison, spectral-residual, performance,
   WAV, and JSON artifact output with focused analytic tests.
 - Plan 14 provides the stable live selector and Pass Through filter.
+- The first Plan 12 increment is also complete: Osc Design has an independent,
+  right-aligned selector for the same live-capable oscillator models exposed in
+  Params, and renders them through the same closed dispatcher. This was pulled
+  forward because visual inspection is research infrastructure for subsequent
+  candidates; playing and live selection remain in Params.
 
-This is sufficient to start candidate Plan 04 without inventing candidate-local
-comparison machinery. The full Oscillator Lab UI, automated whole-matrix runs,
+This is sufficient to continue candidate work without inventing candidate-local
+comparison machinery. The full Oscillator Lab overlays, automated whole-matrix runs,
 listening-set/ABX management, and hardware promotion automation remain later
 foundation increments.
 
@@ -127,8 +132,10 @@ production or embedded promotion.
   synth-core/src/dsp/blep.rs.
 - A private typed OscillatorKernel seam and a runtime BLEP/PolyBLEP analysis
   selector already exist.
-- The engine chooses one typed kernel at build time; it does not branch among
-  research models in the production sample loop.
+- The current engine chooses one typed kernel at build time. The planned live
+  seam is instead a complete feature-gated oscillator engine per voice: a
+  single-engine build dispatches directly, while a desktop all-engine build
+  selects among retained complete engines inside one closed owner.
 - The retained wavetable prototype is in synth-core/src/dsp/wavetable.rs.
 - The Osc Design view currently renders AnalogOscillator directly from
   synth-app/src/ui/analysis/osc_design.rs.
@@ -144,7 +151,6 @@ production or embedded promotion.
 
 Existing work that must be preserved and cross-checked:
 
-- plans/OSCILLATOR_ENGINE_ARCHITECTURE_PLAN.md
 - plans/REV2_OSCILLATOR_PARITY_PLAN.md
 - plans/TRIANGLE_WAVEFORM_OPTIMIZATION_PLAN.md
 - plans/PULSE_WAVEFORM_OPTIMIZATION_PLAN.md
@@ -158,8 +164,9 @@ Existing work that must be preserved and cross-checked:
    baseline. No experiment silently changes existing presets, MIDI/SysEx
    meanings, feature defaults, or EngineOscillator.
 2. Research isolation: experimental assets, fit data, UI configuration, and
-   model parameters remain outside the production patch schema until a model
-   is explicitly promoted.
+   engine-specific settings remain outside the production patch schema until a
+   model is explicitly promoted. Session configuration may restore a selected
+   engine or its selected bank but is neither modulatable nor patch state.
 3. Reproducibility: every result records commit, model revision, target
    manifest, sample rate, seed, parameters, metrics, CPU, and memory.
 4. Separate aliasing from character: alias energy, target-spectrum error, time
@@ -185,8 +192,8 @@ Existing work that must be preserved and cross-checked:
 | Document | Outcome | Dependency |
 | --- | --- | --- |
 | 01-isolated-experiment-framework.md | Reproducible model registry, render harness, artifacts, and baseline guard | None |
-| 02-replaceable-model-architecture.md | Safe seam for phase kernels and stateful models | 01 |
-| 14-desktop-audition-and-pass-through-filter.md | Minimal feature-gated live source selection, raw filter path, and repeatable A/B playing | 01 and 02 |
+| 02-replaceable-model-architecture.md | Safe seam for analysis models and retained, feature-gated complete live engines | 01 |
+| 14-desktop-audition-and-pass-through-filter.md | Complete-engine audition, raw filter path, and repeatable A/B playing | 01 and 02 |
 | 03-reference-capture-and-identification.md | Target datasets and fitted deterministic/stochastic features | 01 |
 | 15-automated-synth-reference-capture.md | Generic MIDI/audio capture projects, interruption-safe recording, and Rust extraction | 03 |
 | 12-osc-designer-view.md | Evolve Osc Design into an isolated Oscillator Lab for model/reference exploration | 01 and 02 |
@@ -219,9 +226,9 @@ Each candidate may start as a standalone desktop adapter after workstream 01.
 Workstream 02 establishes the common model seam. Workstream 14 then connects
 stable real-time-safe candidates to the playable desktop voice through one
 global Params-view selector, without changing patches or production firmware.
-Oscillator Lab remains an independent analysis surface. That minimal audition layer
-precedes the broader patch-owned architecture in
-plans/OSCILLATOR_ENGINE_ARCHITECTURE_PLAN.md.
+Oscillator Lab remains an independent analysis surface. The retained
+feature-gated complete-engine architecture is defined in workstream 02;
+patch-owned engine selection remains deferred.
 
 ## Recommended execution order
 

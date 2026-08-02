@@ -30,5 +30,5 @@ path = "src/bin/sequencer_runtime_perf.rs"
 required-features = ["sequencer-benchmark"]
 
 [[bin]]
-name = "measured_wavetable_bank"
-path = "src/bin/measured_wavetable_bank.rs"
+name = "wavetable_bank"
+path = "src/bin/wavetable_bank.rs"

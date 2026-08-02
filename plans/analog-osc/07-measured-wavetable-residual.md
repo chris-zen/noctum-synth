@@ -159,7 +159,7 @@ show repeatable nonlinear level dependence.
 
 ## Isolation
 
-- Extend or parallel the existing WavetableBank prototype without changing its
+- Extend or parallel the existing MipWavetableBank prototype without changing its
   current behavior.
 - Give measured banks their own schema and stable target/profile ID.
 - Load heavy desktop banks only in the research registry and Osc Design.

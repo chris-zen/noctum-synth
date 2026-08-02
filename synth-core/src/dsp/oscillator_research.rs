@@ -7,12 +7,7 @@
 use core::mem::size_of;
 
 use super::analog_oscillator::{AnalogOscillator, EngineOscillator};
-use super::experimental_oscillator::LiveMeasuredWavetable;
-use super::measured_wavetable::MeasuredWavetableBank;
-use super::measured_wavetable_profile::{
-    MEASURED_BANK_MANIFEST_SHA256, MEASURED_BANK_PROFILE_ID, MEASURED_BANK_SAMPLE_COUNT,
-    MEASURED_BANK_TARGET_ID,
-};
+use super::live_wavetable::LiveWavetable;
 use super::target_conditioned_oscillator::{
     PARAMETERS as TARGET_CONDITIONED_PARAMETERS, TargetConditionedOscillator,
 };
@@ -20,10 +15,10 @@ use super::target_conditioned_profile::{KORG_MONOLOGUE_PHASE_FILTER_V1, PROFILE_
 use super::target_conditioned_profile_v2::{
     KORG_MONOLOGUE_PHASE_FILTER_V2, PROFILE_JSON_SHA256_V2,
 };
-use super::{
-    ExperimentalOscillatorCapabilities, ExperimentalOscillatorModel, SawMethod,
-    WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableOscillator,
-};
+use super::wavetable_bank::WavetableBank;
+use super::wavetable_bank_profile::MONOLOGUE_WAVETABLE_BANK_PROFILE;
+use super::wavetable_bank_profile_prophet5::PROPHET5_WAVETABLE_BANK_PROFILE;
+use super::{MipWavetableBank, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableOscillator};
 use crate::math::WideF32;
 
 /// Stable built-in model identifiers used by research artifacts.
@@ -33,43 +28,34 @@ pub enum ResearchModelId {
     TableBlep,
     PolyBlep,
     Wavetable,
-    MeasuredWavetable,
+    WavetableMonologue,
+    WavetableProphet5,
     TargetConditioned,
     TargetConditionedV2,
 }
 
 impl ResearchModelId {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Baseline,
         Self::TableBlep,
         Self::PolyBlep,
         Self::Wavetable,
-        Self::MeasuredWavetable,
+        Self::WavetableMonologue,
+        Self::WavetableProphet5,
         Self::TargetConditioned,
         Self::TargetConditionedV2,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Baseline => ExperimentalOscillatorModel::Baseline.id(),
-            Self::TableBlep => ExperimentalOscillatorModel::TableBlep.id(),
-            Self::PolyBlep => ExperimentalOscillatorModel::PolyBlep.id(),
+            Self::Baseline => "baseline-v1",
+            Self::TableBlep => "table-blep-v1",
+            Self::PolyBlep => "polyblep-v1",
             Self::Wavetable => "wavetable-prototype-v1",
-            Self::MeasuredWavetable => "korg-monologue-measured-wavetable-v1",
+            Self::WavetableMonologue => "korg-monologue-measured-wavetable-v1",
+            Self::WavetableProphet5 => "prophet5-wavetable-v1",
             Self::TargetConditioned => "target-conditioned-phase-filter-v1",
             Self::TargetConditionedV2 => "target-conditioned-phase-filter-v2",
-        }
-    }
-
-    /// Returns the shared live selector identity when this model has a tested
-    /// real-time adapter.
-    pub const fn live_model(self) -> Option<ExperimentalOscillatorModel> {
-        match self {
-            Self::Baseline => Some(ExperimentalOscillatorModel::Baseline),
-            Self::TableBlep => Some(ExperimentalOscillatorModel::TableBlep),
-            Self::PolyBlep => Some(ExperimentalOscillatorModel::PolyBlep),
-            Self::MeasuredWavetable => Some(ExperimentalOscillatorModel::MeasuredWavetable),
-            Self::Wavetable | Self::TargetConditioned | Self::TargetConditionedV2 => None,
         }
     }
 
@@ -87,6 +73,21 @@ pub enum ResearchModelFamily {
     Stateful,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResearchModelCapabilities {
+    pub saw: bool,
+    pub saw_triangle: bool,
+    pub triangle: bool,
+    pub pulse: bool,
+    pub shape: bool,
+    pub audio_rate_pwm: bool,
+    pub hard_sync: bool,
+    pub note_reset: bool,
+    pub slop: bool,
+    pub simd_lanes: bool,
+    pub real_time_safe: bool,
+}
+
 /// Immutable model metadata shared by offline tools, Oscillator Lab, and live
 /// selection. Mutable model parameters are intentionally not shared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +96,7 @@ pub struct ResearchModelDescriptor {
     pub name: &'static str,
     pub revision: u32,
     pub family: ResearchModelFamily,
-    pub capabilities: ExperimentalOscillatorCapabilities,
+    pub capabilities: ResearchModelCapabilities,
     pub requires_external_asset: bool,
     pub mutable_state_bytes: usize,
     pub immutable_asset_bytes: usize,
@@ -170,10 +171,10 @@ pub enum ResearchEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResearchError {
     UnknownModel,
+    MissingMipWavetableBank,
     MissingWavetableBank,
-    MissingMeasuredWavetableBank,
+    UnexpectedMipWavetableBank,
     UnexpectedWavetableBank,
-    UnexpectedMeasuredWavetableBank,
     InvalidSampleRate,
     InvalidFrequency,
     InvalidShape,
@@ -213,7 +214,7 @@ enum RegisteredSource {
     TableBlep(AnalogOscillator),
     PolyBlep(AnalogOscillator),
     Wavetable(WavetableOscillator),
-    MeasuredWavetable(LiveMeasuredWavetable),
+    PitchWavetable(LiveWavetable),
     TargetConditioned(TargetConditionedOscillator),
 }
 
@@ -224,8 +225,8 @@ pub struct RegisteredResearchModel {
     id: ResearchModelId,
     source: RegisteredSource,
     sample_rate_hz: f32,
+    mip_wavetable_bank: Option<MipWavetableBank>,
     wavetable_bank: Option<WavetableBank>,
-    measured_wavetable_bank: Option<MeasuredWavetableBank>,
     configured_case: Option<ResearchRenderCase>,
     target_phase_amount: f32,
     target_filter_amount: f32,
@@ -239,8 +240,8 @@ macro_rules! with_source_mut {
                 $body
             }
             RegisteredSource::Wavetable($oscillator) => $body,
-            RegisteredSource::MeasuredWavetable(_) => {
-                unreachable!("measured wavetable source uses its scalar adapter")
+            RegisteredSource::PitchWavetable(_) => {
+                unreachable!("pitch wavetable source uses its scalar adapter")
             }
             RegisteredSource::TargetConditioned(_) => {
                 unreachable!("target-conditioned source uses its scalar adapter")
@@ -253,14 +254,18 @@ impl RegisteredResearchModel {
     fn create_source(
         id: ResearchModelId,
         sample_rate_hz: f32,
+        mip_wavetable_bank: Option<MipWavetableBank>,
         wavetable_bank: Option<WavetableBank>,
-        measured_wavetable_bank: Option<MeasuredWavetableBank>,
     ) -> Result<RegisteredSource, ResearchError> {
-        if id != ResearchModelId::Wavetable && wavetable_bank.is_some() {
-            return Err(ResearchError::UnexpectedWavetableBank);
+        if id != ResearchModelId::Wavetable && mip_wavetable_bank.is_some() {
+            return Err(ResearchError::UnexpectedMipWavetableBank);
         }
-        if id != ResearchModelId::MeasuredWavetable && measured_wavetable_bank.is_some() {
-            return Err(ResearchError::UnexpectedMeasuredWavetableBank);
+        if !matches!(
+            id,
+            ResearchModelId::WavetableMonologue | ResearchModelId::WavetableProphet5
+        ) && wavetable_bank.is_some()
+        {
+            return Err(ResearchError::UnexpectedWavetableBank);
         }
         match id {
             ResearchModelId::Baseline => Ok(RegisteredSource::Baseline(
@@ -277,17 +282,17 @@ impl RegisteredResearchModel {
                 }
             }
             ResearchModelId::Wavetable => {
-                let bank = wavetable_bank.ok_or(ResearchError::MissingWavetableBank)?;
+                let bank = mip_wavetable_bank.ok_or(ResearchError::MissingMipWavetableBank)?;
                 Ok(RegisteredSource::Wavetable(
                     WavetableOscillator::new_wavetable(sample_rate_hz, bank),
                 ))
             }
-            ResearchModelId::MeasuredWavetable => {
-                let bank =
-                    measured_wavetable_bank.ok_or(ResearchError::MissingMeasuredWavetableBank)?;
-                Ok(RegisteredSource::MeasuredWavetable(
-                    LiveMeasuredWavetable::new(bank, sample_rate_hz),
-                ))
+            ResearchModelId::WavetableMonologue | ResearchModelId::WavetableProphet5 => {
+                let bank = wavetable_bank.ok_or(ResearchError::MissingWavetableBank)?;
+                Ok(RegisteredSource::PitchWavetable(LiveWavetable::new(
+                    bank,
+                    sample_rate_hz,
+                )))
             }
             ResearchModelId::TargetConditioned | ResearchModelId::TargetConditionedV2 => {
                 let profile = if id == ResearchModelId::TargetConditionedV2 {
@@ -306,8 +311,8 @@ impl RegisteredResearchModel {
         self.source = Self::create_source(
             self.id,
             self.sample_rate_hz,
+            self.mip_wavetable_bank,
             self.wavetable_bank,
-            self.measured_wavetable_bank,
         )
         .expect("validated research model assets must remain available");
         self.apply_target_parameters();
@@ -328,7 +333,7 @@ impl RegisteredResearchModel {
         if let RegisteredSource::TargetConditioned(oscillator) = &mut self.source {
             return oscillator.configure(case);
         }
-        if let RegisteredSource::MeasuredWavetable(oscillator) = &mut self.source {
+        if let RegisteredSource::PitchWavetable(oscillator) = &mut self.source {
             if case.sample_rate_hz < 43_200.0 {
                 return Err(ResearchError::UnsupportedEvent);
             }
@@ -379,7 +384,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
     }
 
     fn reset(&mut self, reset_phase: bool) {
-        if let RegisteredSource::MeasuredWavetable(oscillator) = &mut self.source {
+        if let RegisteredSource::PitchWavetable(oscillator) = &mut self.source {
             for lane in 0..WideF32::LANES {
                 oscillator.trigger_lane(lane, reset_phase);
             }
@@ -408,7 +413,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                     RegisteredSource::TargetConditioned(oscillator) => {
                         oscillator.set_frequency(frequency_hz)
                     }
-                    RegisteredSource::MeasuredWavetable(oscillator) => {
+                    RegisteredSource::PitchWavetable(oscillator) => {
                         oscillator.set_frequency(WideF32::splat(frequency_hz));
                         if !oscillator.uses_measured_tables() {
                             return Err(ResearchError::UnsupportedEvent);
@@ -428,7 +433,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                 }
                 match &mut self.source {
                     RegisteredSource::TargetConditioned(oscillator) => oscillator.set_shape(shape),
-                    RegisteredSource::MeasuredWavetable(oscillator) => oscillator.set_shape(shape),
+                    RegisteredSource::PitchWavetable(oscillator) => oscillator.set_shape(shape),
                     source => with_source_mut!(source, oscillator => oscillator.set_shape(shape)),
                 }
                 if let Some(case) = self.configured_case.as_mut() {
@@ -443,7 +448,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                     RegisteredSource::TargetConditioned(oscillator) => {
                         oscillator.hard_sync(subsample_offset)
                     }
-                    RegisteredSource::MeasuredWavetable(oscillator) => {
+                    RegisteredSource::PitchWavetable(oscillator) => {
                         oscillator.hard_sync_reset(
                             WideF32::splat(1.0).simd_gt(WideF32::ZERO),
                             WideF32::splat(subsample_offset),
@@ -465,7 +470,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
         if let RegisteredSource::TargetConditioned(oscillator) = &mut self.source {
             return oscillator.next_sample();
         }
-        if let RegisteredSource::MeasuredWavetable(oscillator) = &mut self.source {
+        if let RegisteredSource::PitchWavetable(oscillator) = &mut self.source {
             let mut context = crate::create_render_context!();
             return oscillator.next(&mut context).output.to_array()[0];
         }
@@ -515,7 +520,7 @@ impl ResearchRegistry {
     }
 
     pub const fn descriptor(id: ResearchModelId) -> ResearchModelDescriptor {
-        let analysis_only_capabilities = ExperimentalOscillatorCapabilities {
+        let analysis_only_capabilities = ResearchModelCapabilities {
             saw: true,
             saw_triangle: true,
             triangle: true,
@@ -531,10 +536,15 @@ impl ResearchRegistry {
         match id {
             ResearchModelId::Baseline => ResearchModelDescriptor {
                 id: id.as_str(),
-                name: ExperimentalOscillatorModel::Baseline.name(),
-                revision: ExperimentalOscillatorModel::Baseline.revision(),
+                name: "Production Baseline",
+                revision: 1,
                 family: ResearchModelFamily::PhaseKernel,
-                capabilities: ExperimentalOscillatorModel::Baseline.capabilities(),
+                capabilities: ResearchModelCapabilities {
+                    simd_lanes: true,
+                    real_time_safe: true,
+                    slop: true,
+                    ..analysis_only_capabilities
+                },
                 requires_external_asset: false,
                 mutable_state_bytes: size_of::<EngineOscillator>(),
                 immutable_asset_bytes: 0,
@@ -544,10 +554,15 @@ impl ResearchRegistry {
             },
             ResearchModelId::TableBlep => ResearchModelDescriptor {
                 id: id.as_str(),
-                name: ExperimentalOscillatorModel::TableBlep.name(),
-                revision: ExperimentalOscillatorModel::TableBlep.revision(),
+                name: "Table BLEP",
+                revision: 1,
                 family: ResearchModelFamily::PhaseKernel,
-                capabilities: ExperimentalOscillatorModel::TableBlep.capabilities(),
+                capabilities: ResearchModelCapabilities {
+                    simd_lanes: true,
+                    real_time_safe: true,
+                    slop: true,
+                    ..analysis_only_capabilities
+                },
                 requires_external_asset: false,
                 mutable_state_bytes: size_of::<AnalogOscillator>(),
                 immutable_asset_bytes: 0,
@@ -557,10 +572,15 @@ impl ResearchRegistry {
             },
             ResearchModelId::PolyBlep => ResearchModelDescriptor {
                 id: id.as_str(),
-                name: ExperimentalOscillatorModel::PolyBlep.name(),
-                revision: ExperimentalOscillatorModel::PolyBlep.revision(),
+                name: "PolyBLEP / PolyBLAMP",
+                revision: 1,
                 family: ResearchModelFamily::PhaseKernel,
-                capabilities: ExperimentalOscillatorModel::PolyBlep.capabilities(),
+                capabilities: ResearchModelCapabilities {
+                    simd_lanes: true,
+                    real_time_safe: true,
+                    slop: true,
+                    ..analysis_only_capabilities
+                },
                 requires_external_asset: false,
                 mutable_state_bytes: size_of::<AnalogOscillator>(),
                 immutable_asset_bytes: 0,
@@ -581,27 +601,38 @@ impl ResearchRegistry {
                 bounded_render_cost: true,
                 no_std_compatible: true,
             },
-            ResearchModelId::MeasuredWavetable => ResearchModelDescriptor {
+            ResearchModelId::WavetableMonologue => ResearchModelDescriptor {
                 id: id.as_str(),
-                name: "Korg Monologue Measured Wavetable v1",
+                name: "Wavetable (Monologue)",
                 revision: 1,
                 family: ResearchModelFamily::PhaseKernel,
-                capabilities: ExperimentalOscillatorCapabilities {
-                    saw: true,
-                    saw_triangle: true,
-                    triangle: true,
-                    pulse: true,
-                    shape: true,
-                    audio_rate_pwm: true,
-                    hard_sync: true,
-                    note_reset: true,
-                    slop: true,
-                    simd_lanes: false,
+                capabilities: ResearchModelCapabilities {
                     real_time_safe: true,
+                    slop: true,
+                    ..analysis_only_capabilities
                 },
                 requires_external_asset: true,
-                mutable_state_bytes: size_of::<LiveMeasuredWavetable>(),
-                immutable_asset_bytes: MEASURED_BANK_SAMPLE_COUNT * size_of::<f32>(),
+                mutable_state_bytes: size_of::<LiveWavetable>(),
+                immutable_asset_bytes: MONOLOGUE_WAVETABLE_BANK_PROFILE.sample_count
+                    * size_of::<f32>(),
+                latency_samples: 0,
+                bounded_render_cost: true,
+                no_std_compatible: true,
+            },
+            ResearchModelId::WavetableProphet5 => ResearchModelDescriptor {
+                id: id.as_str(),
+                name: "Wavetable (Prophet-5 V)",
+                revision: 1,
+                family: ResearchModelFamily::PhaseKernel,
+                capabilities: ResearchModelCapabilities {
+                    real_time_safe: true,
+                    slop: true,
+                    ..analysis_only_capabilities
+                },
+                requires_external_asset: true,
+                mutable_state_bytes: size_of::<LiveWavetable>(),
+                immutable_asset_bytes: PROPHET5_WAVETABLE_BANK_PROFILE.sample_count
+                    * size_of::<f32>(),
                 latency_samples: 0,
                 bounded_render_cost: true,
                 no_std_compatible: true,
@@ -611,7 +642,7 @@ impl ResearchRegistry {
                 name: "Monologue Phase + Linear Color",
                 revision: KORG_MONOLOGUE_PHASE_FILTER_V1.revision,
                 family: ResearchModelFamily::Stateful,
-                capabilities: ExperimentalOscillatorCapabilities {
+                capabilities: ResearchModelCapabilities {
                     saw: true,
                     saw_triangle: false,
                     triangle: true,
@@ -639,7 +670,7 @@ impl ResearchRegistry {
                 name: "Monologue Phase + Linear Color v2",
                 revision: KORG_MONOLOGUE_PHASE_FILTER_V2.revision,
                 family: ResearchModelFamily::Stateful,
-                capabilities: ExperimentalOscillatorCapabilities {
+                capabilities: ResearchModelCapabilities {
                     saw: true,
                     saw_triangle: false,
                     triangle: true,
@@ -681,10 +712,15 @@ impl ResearchRegistry {
                 KORG_MONOLOGUE_PHASE_FILTER_V2.target_id,
                 PROFILE_JSON_SHA256_V2,
             )),
-            ResearchModelId::MeasuredWavetable => Some((
-                MEASURED_BANK_PROFILE_ID,
-                MEASURED_BANK_TARGET_ID,
-                MEASURED_BANK_MANIFEST_SHA256,
+            ResearchModelId::WavetableMonologue => Some((
+                MONOLOGUE_WAVETABLE_BANK_PROFILE.id,
+                MONOLOGUE_WAVETABLE_BANK_PROFILE.target_id,
+                MONOLOGUE_WAVETABLE_BANK_PROFILE.manifest_sha256,
+            )),
+            ResearchModelId::WavetableProphet5 => Some((
+                PROPHET5_WAVETABLE_BANK_PROFILE.id,
+                PROPHET5_WAVETABLE_BANK_PROFILE.target_id,
+                PROPHET5_WAVETABLE_BANK_PROFILE.manifest_sha256,
             )),
             _ => None,
         }
@@ -693,7 +729,7 @@ impl ResearchRegistry {
     pub fn create(
         id: ResearchModelId,
         sample_rate_hz: f32,
-        wavetable_bank: Option<WavetableBank>,
+        mip_wavetable_bank: Option<MipWavetableBank>,
     ) -> Result<RegisteredResearchModel, ResearchError> {
         if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
             return Err(ResearchError::InvalidSampleRate);
@@ -703,32 +739,36 @@ impl ResearchRegistry {
             source: RegisteredResearchModel::create_source(
                 id,
                 sample_rate_hz,
-                wavetable_bank,
+                mip_wavetable_bank,
                 None,
             )?,
             sample_rate_hz,
-            wavetable_bank,
-            measured_wavetable_bank: None,
+            mip_wavetable_bank,
+            wavetable_bank: None,
             configured_case: None,
             target_phase_amount: TARGET_CONDITIONED_PARAMETERS[0].default,
             target_filter_amount: TARGET_CONDITIONED_PARAMETERS[1].default,
         })
     }
 
-    pub fn create_measured_wavetable(
+    pub fn create_wavetable(
         sample_rate_hz: f32,
-        bank: MeasuredWavetableBank,
+        bank: WavetableBank,
     ) -> Result<RegisteredResearchModel, ResearchError> {
         if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
             return Err(ResearchError::InvalidSampleRate);
         }
-        let id = ResearchModelId::MeasuredWavetable;
+        let id = match bank.profile().id {
+            id if id == MONOLOGUE_WAVETABLE_BANK_PROFILE.id => ResearchModelId::WavetableMonologue,
+            id if id == PROPHET5_WAVETABLE_BANK_PROFILE.id => ResearchModelId::WavetableProphet5,
+            _ => return Err(ResearchError::MissingWavetableBank),
+        };
         Ok(RegisteredResearchModel {
             id,
             source: RegisteredResearchModel::create_source(id, sample_rate_hz, None, Some(bank))?,
             sample_rate_hz,
-            wavetable_bank: None,
-            measured_wavetable_bank: Some(bank),
+            mip_wavetable_bank: None,
+            wavetable_bank: Some(bank),
             configured_case: None,
             target_phase_amount: TARGET_CONDITIONED_PARAMETERS[0].default,
             target_filter_amount: TARGET_CONDITIONED_PARAMETERS[1].default,

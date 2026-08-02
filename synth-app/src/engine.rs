@@ -6,13 +6,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-#[cfg(feature = "experimental-oscillators")]
-use synth_core::ExperimentalOscillatorModel;
 use synth_core::{
-    ChordMemory, ControlMessage, LayerId, LayerMode, LayerPlaybackStatus, LayerTarget,
-    ModDestination, ModRoute, ModSource, ModulationParam, ParamId, Patch, SequenceClear,
-    SequenceUpdate, SequencerFeedback, SequencerRecordCommand,
-    dsp::{FilterOversampling, FilterType},
+    BankId, ChordMemory, ControlMessage, LayerId, LayerMode, LayerPlaybackStatus, LayerTarget,
+    ModDestination, ModRoute, ModSource, ModulationParam, OscillatorEngineType, ParamId, Patch,
+    SequenceClear, SequenceUpdate, SequencerFeedback, SequencerRecordCommand,
+    dsp::{FilterOversampling, FilterType, SawMethod},
     midi::{
         clock::{MidiClockMode, MidiClockStatus, MidiRealtimeEvent},
         program::ProgramData,
@@ -519,10 +517,16 @@ impl SynthEngineControl {
         self.send(ControlMessage::SetFilterType(filter_type));
     }
 
-    #[cfg(feature = "experimental-oscillators")]
-    pub fn set_experimental_oscillator_model(&self, model: ExperimentalOscillatorModel) {
-        self.all_notes_off();
-        self.send(ControlMessage::SetExperimentalOscillatorModel(model));
+    pub fn set_oscillator_engine(&self, engine: OscillatorEngineType) {
+        self.send(ControlMessage::SetOscillatorEngine(engine));
+    }
+
+    pub fn set_blep_method(&self, method: SawMethod) {
+        self.send(ControlMessage::SetBlepMethod(method));
+    }
+
+    pub fn set_wavetable_bank(&self, bank: BankId) {
+        self.send(ControlMessage::SetWavetableBank(bank));
     }
 
     pub fn set_midi_clock_mode(&self, mode: MidiClockMode) {
