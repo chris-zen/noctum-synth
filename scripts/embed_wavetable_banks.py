@@ -1,38 +1,27 @@
 #!/usr/bin/env python3
-"""Validate generated wavetable banks and copy them into compiled assets."""
+"""Validate v2 manifests and copy their binaries into compiled desktop assets."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPO_ROOT / "synth-core/src/voice/osc_engine/wavetable_banks"
-
-
-@dataclass(frozen=True)
-class Bank:
-    source: Path
-    output_name: str
-    samples: int
-    fnv1a32: int
-
-
+MAX_COMBINED_BYTES = 20 * 1024 * 1024
 BANKS = (
-    Bank(
-        REPO_ROOT / "target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le",
+    (
+        REPO_ROOT
+        / "plans/analog-osc/research/banks/korg-monologue-measured-wavetable-v2.json",
         "monologue.f32le",
-        221_184,
-        0x06C0FF46,
     ),
-    Bank(
-        REPO_ROOT / "target/analog-osc/banks/arturia-prophet5-measured-bank-v1.f32le",
+    (
+        REPO_ROOT / "plans/analog-osc/research/banks/prophet5-wavetable-bank-v2.json",
         "prophet5.f32le",
-        227_328,
-        0xFA4A0D1C,
     ),
 )
 
@@ -44,29 +33,55 @@ def fnv1a32(data: bytes) -> int:
     return result
 
 
+def load_bank(manifest_path: Path) -> tuple[Path, bytes, dict[str, Any]]:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != 2:
+        raise ValueError(f"{manifest_path}: expected schema_version 2")
+    metadata = manifest["bank_binary"]
+    declared_path = Path(metadata["path"])
+    source = declared_path if declared_path.is_absolute() else REPO_ROOT / declared_path
+    if not source.is_file():
+        source = manifest_path.parent / declared_path
+    data = source.read_bytes()
+    if len(data) != int(metadata["bytes"]):
+        raise ValueError(
+            f"{source}: manifest declares {metadata['bytes']} bytes, found {len(data)}"
+        )
+    if len(data) != int(metadata["sample_count"]) * 4:
+        raise ValueError(f"{source}: sample count does not match byte count")
+    checksum = fnv1a32(data)
+    if checksum != int(metadata["fnv1a32"]):
+        raise ValueError(
+            f"{source}: expected FNV-1a 0x{int(metadata['fnv1a32']):08x}, "
+            f"found 0x{checksum:08x}"
+        )
+    return source, data, manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--bank", choices=("all", "monologue", "prophet5"), default="all"
+    )
     args = parser.parse_args()
+    selected = [
+        (path, output_name)
+        for path, output_name in BANKS
+        if args.bank == "all" or output_name.startswith(args.bank)
+    ]
+    loaded = [(load_bank(path), output_name) for path, output_name in selected]
+    combined_bytes = sum(len(bank[1]) for bank, _ in loaded)
+    if combined_bytes > MAX_COMBINED_BYTES:
+        raise ValueError(
+            f"combined banks are {combined_bytes} bytes; cap is {MAX_COMBINED_BYTES}"
+        )
     args.output.mkdir(parents=True, exist_ok=True)
-
-    for bank in BANKS:
-        data = bank.source.read_bytes()
-        expected_bytes = bank.samples * 4
-        if len(data) != expected_bytes:
-            raise ValueError(
-                f"{bank.source}: expected {expected_bytes} bytes, found {len(data)}"
-            )
-        checksum = fnv1a32(data)
-        if checksum != bank.fnv1a32:
-            raise ValueError(
-                f"{bank.source}: expected FNV-1a 0x{bank.fnv1a32:08x}, "
-                f"found 0x{checksum:08x}"
-            )
-        destination = args.output / bank.output_name
-        shutil.copyfile(bank.source, destination)
+    for ((source, _, _), output_name) in loaded:
+        destination = args.output / output_name
+        shutil.copyfile(source, destination)
         print(f"embedded {destination.relative_to(REPO_ROOT)}")
-
+    print(f"combined compiled bank size: {combined_bytes} bytes")
     return 0
 
 

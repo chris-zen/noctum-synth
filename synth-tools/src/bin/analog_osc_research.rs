@@ -11,12 +11,13 @@ use std::time::Instant;
 use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::Serialize;
 use synth_core::dsp::{
-    MONOLOGUE_WAVETABLE_BANK_PROFILE, MipWavetableBank, PROPHET5_WAVETABLE_BANK_PROFILE,
-    WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableProfile, generate_wavetable_bank,
+    MipWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableProfile,
+    generate_wavetable_bank,
 };
 use synth_core::{
-    OscillatorResearchModel, ResearchComparisonMetrics, ResearchModelFamily, ResearchModelId,
-    ResearchRegistry, ResearchRenderCase, ResearchRenderSummary, render_research_case,
+    MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorResearchModel, PROPHET5_WAVETABLE_BANK_PROFILE,
+    ResearchComparisonMetrics, ResearchModelFamily, ResearchModelId, ResearchRegistry,
+    ResearchRenderCase, ResearchRenderSummary, render_research_case,
 };
 
 const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -490,7 +491,7 @@ fn reference_wavetable_bank() -> MipWavetableBank {
 fn wavetable_bank(id: ResearchModelId) -> Result<WavetableBank, Box<dyn std::error::Error>> {
     let (file_name, profile): (&str, &'static WavetableProfile) = match id {
         ResearchModelId::WavetableMonologue => (
-            "korg-monologue-measured-bank-v1.f32le",
+            "korg-monologue-measured-wavetable-v2.f32le",
             &MONOLOGUE_WAVETABLE_BANK_PROFILE,
         ),
         ResearchModelId::WavetableProphet5 => (

@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::{
     GlideMode, ParamId,
-    dsp::{SawMethod, Waveform},
+    dsp::{SawMethod, Waveform, WavetableSupportStatus},
     math::WideF32,
     patch::LayerPatch,
     profiling::RenderContext,
@@ -19,6 +19,9 @@ use super::oscillators::{OscillatorModulation, Oscillators, OscillatorsOutput, O
 
 #[cfg(feature = "osc-wavetable")]
 mod wavetable_banks;
+
+#[cfg(feature = "osc-wavetable")]
+pub use wavetable_banks::{MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE};
 
 /// Stable, session-level oscillator engine selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +215,10 @@ impl WavetableEngine {
         self.section.set_wavetable_bank(wavetable_banks::bank(bank));
         self.bank = bank;
     }
+
+    pub fn support_status(&self) -> WavetableSupportStatus {
+        self.section.wavetable_support_status()
+    }
 }
 
 /// One retained owner per voice block. Engine selection does not reconstruct
@@ -304,6 +311,15 @@ impl OscillatorEngines {
         self.wavetable.set_bank(bank);
         #[cfg(not(feature = "osc-wavetable"))]
         let _ = bank;
+    }
+
+    pub fn wavetable_support_status(&self) -> WavetableSupportStatus {
+        match self.selected {
+            #[cfg(feature = "osc-blep")]
+            OscillatorEngineType::Blep => WavetableSupportStatus::Measured,
+            #[cfg(feature = "osc-wavetable")]
+            OscillatorEngineType::Wavetable => self.wavetable.support_status(),
+        }
     }
 
     pub fn params(&self) -> &OscillatorsParams {
@@ -520,6 +536,10 @@ impl OscillatorPreview {
             .next(OscillatorModulation::default(), [0.0; 2], context)
             .audio
             .to_array()[0]
+    }
+
+    pub fn wavetable_support_status(&self) -> WavetableSupportStatus {
+        self.engines.wavetable_support_status()
     }
 }
 
@@ -756,6 +776,149 @@ mod tests {
     #[cfg(feature = "osc-wavetable")]
     #[test]
     fn oscillator_preview_matches_the_live_engine_path() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let mut preview = OscillatorPreview::new(
+                sample_rate,
+                OscillatorEngineType::Wavetable,
+                crate::dsp::SawMethod::Blep,
+                BankId::Monologue,
+            );
+            preview.set_waveform(Waveform::Pulse);
+            preview.set_shape(0.63);
+            preview.set_frequency(220.0);
+            preview.reset();
+
+            let mut live = OscillatorEngines::new(sample_rate);
+            live.set_wavetable_bank(BankId::Monologue);
+            live.select(OscillatorEngineType::Wavetable);
+            live.set_osc1_enabled(true);
+            live.set_osc2_enabled(false);
+            live.set_mix(0.0);
+            live.set_sub_octave(0.0);
+            live.set_noise(0.0);
+            live.set_slop(0.0);
+            live.set_osc1_note_reset(true);
+            live.set_osc1_keyboard_on(true);
+            live.set_osc1_waveform(Waveform::Pulse);
+            live.set_osc1_shape_mod(0.63);
+            live.set_note_frequency(WideF32::splat(220.0));
+            live.note_on(0, WideF32::splat(220.0));
+
+            for _ in 0..256 {
+                let mut preview_context = crate::create_render_context!();
+                let mut live_context = crate::create_render_context!();
+                let expected = live
+                    .next(OscillatorModulation::default(), [0.0; 2], &mut live_context)
+                    .audio
+                    .to_array()[0];
+                let actual = preview.next_sample(&mut preview_context);
+                assert_eq!(expected.to_bits(), actual.to_bits(), "rate={sample_rate}");
+            }
+        }
+    }
+
+    #[cfg(feature = "osc-wavetable")]
+    #[test]
+    fn monologue_v2_is_measured_across_qualified_and_core_rates() {
+        for sample_rate in [24_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            for (waveform, frequencies) in [
+                (Waveform::Saw, [55.0, 440.0, 2_300.0]),
+                (Waveform::SawTri, [55.0, 440.0, 1_200.0]),
+                (Waveform::Triangle, [30.0, 220.0, 1_200.0]),
+                (Waveform::Pulse, [30.0, 220.0, 1_200.0]),
+            ] {
+                let mut preview = OscillatorPreview::new(
+                    sample_rate,
+                    OscillatorEngineType::Wavetable,
+                    crate::dsp::SawMethod::Blep,
+                    BankId::Monologue,
+                );
+                preview.set_waveform(waveform);
+                for frequency in frequencies {
+                    preview.set_frequency(frequency);
+                    assert_eq!(
+                        preview.wavetable_support_status(),
+                        crate::dsp::WavetableSupportStatus::Measured,
+                        "rate={sample_rate} waveform={waveform:?} frequency={frequency}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "osc-wavetable")]
+    #[test]
+    fn prophet5_v2_is_measured_across_qualified_and_core_rates() {
+        for sample_rate in [24_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            for (waveform, frequencies) in [
+                (Waveform::Saw, [55.0, 440.0, 1_200.0]),
+                (Waveform::SawTri, [55.0, 440.0, 1_200.0]),
+                (Waveform::Triangle, [30.0, 220.0, 1_200.0]),
+                (Waveform::Pulse, [30.0, 220.0, 1_200.0]),
+            ] {
+                let mut preview = OscillatorPreview::new(
+                    sample_rate,
+                    OscillatorEngineType::Wavetable,
+                    crate::dsp::SawMethod::Blep,
+                    BankId::Prophet5,
+                );
+                preview.set_waveform(waveform);
+                for frequency in frequencies {
+                    preview.set_frequency(frequency);
+                    assert_eq!(
+                        preview.wavetable_support_status(),
+                        crate::dsp::WavetableSupportStatus::Measured,
+                        "rate={sample_rate} waveform={waveform:?} frequency={frequency}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "osc-wavetable")]
+    #[test]
+    fn compiled_banks_report_domain_status_across_captured_midi() {
+        for (bank_id, max_hz) in [
+            (BankId::Monologue, crate::MONOLOGUE_WAVETABLE_BANK_PROFILE.saw_max_hz),
+            (BankId::Prophet5, crate::PROPHET5_WAVETABLE_BANK_PROFILE.saw_max_hz),
+        ] {
+            let mut preview = OscillatorPreview::new(
+                48_000.0,
+                OscillatorEngineType::Wavetable,
+                crate::dsp::SawMethod::Blep,
+                bank_id,
+            );
+            preview.set_waveform(Waveform::Saw);
+            for midi in 16..=90 {
+                let frequency = 440.0 * libm::exp2f((midi as f32 - 69.0) / 12.0);
+                preview.set_frequency(frequency);
+                let status = preview.wavetable_support_status();
+                if frequency <= max_hz {
+                    assert_eq!(
+                        status,
+                        crate::dsp::WavetableSupportStatus::Measured,
+                        "bank={bank_id:?} midi={midi} frequency={frequency}"
+                    );
+                } else if frequency < max_hz * libm::exp2f(1.0 / 12.0) {
+                    assert_eq!(
+                        status,
+                        crate::dsp::WavetableSupportStatus::TransitionToFallback,
+                        "bank={bank_id:?} midi={midi} frequency={frequency}"
+                    );
+                } else {
+                    assert_eq!(
+                        status,
+                        crate::dsp::WavetableSupportStatus::AboveCapturedRange,
+                        "bank={bank_id:?} midi={midi} frequency={frequency}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "osc-wavetable")]
+    #[test]
+    fn oscillator_preview_exposes_the_captured_range_transition() {
         let mut preview = OscillatorPreview::new(
             48_000.0,
             OscillatorEngineType::Wavetable,
@@ -763,36 +926,16 @@ mod tests {
             BankId::Monologue,
         );
         preview.set_waveform(Waveform::Pulse);
-        preview.set_shape(0.63);
-        preview.set_frequency(220.0);
-        preview.reset();
-
-        let mut live = OscillatorEngines::new(48_000.0);
-        live.set_wavetable_bank(BankId::Monologue);
-        live.select(OscillatorEngineType::Wavetable);
-        live.set_osc1_enabled(true);
-        live.set_osc2_enabled(false);
-        live.set_mix(0.0);
-        live.set_sub_octave(0.0);
-        live.set_noise(0.0);
-        live.set_slop(0.0);
-        live.set_osc1_note_reset(true);
-        live.set_osc1_keyboard_on(true);
-        live.set_osc1_waveform(Waveform::Pulse);
-        live.set_osc1_shape_mod(0.63);
-        live.set_note_frequency(WideF32::splat(220.0));
-        live.note_on(0, WideF32::splat(220.0));
-
-        for _ in 0..256 {
-            let mut preview_context = crate::create_render_context!();
-            let mut live_context = crate::create_render_context!();
-            let expected = live
-                .next(OscillatorModulation::default(), [0.0; 2], &mut live_context)
-                .audio
-                .to_array()[0];
-            let actual = preview.next_sample(&mut preview_context);
-            assert_eq!(expected.to_bits(), actual.to_bits());
-        }
+        preview.set_frequency(1_263.157_8 * libm::exp2f(0.5 / 12.0));
+        assert_eq!(
+            preview.wavetable_support_status(),
+            crate::dsp::WavetableSupportStatus::TransitionToFallback
+        );
+        preview.set_frequency(1_263.157_8 * libm::exp2f(1.01 / 12.0));
+        assert_eq!(
+            preview.wavetable_support_status(),
+            crate::dsp::WavetableSupportStatus::AboveCapturedRange
+        );
     }
 
     #[cfg(feature = "osc-wavetable")]

@@ -78,7 +78,7 @@ method that could target a faster embedded platform.
 | [08](08-full-voice-characterisation.md) | `[ ]` planned | Protocols for oscillator, filter, modulation, and control laws |
 | [09](09-target-conditioned-phase-filter.md) | `[x]` closed; retained evidence | Compact fitted phase/filter hypothesis |
 | [10](10-measured-wavetable-residual.md) | `[x]` frozen desktop experiment | Measured deterministic waveform candidate |
-| [11](11-multirate-measured-wavetables.md) | `[ ]` next wavetable revision | Sample-rate-independent pitch-by-mip banks |
+| [11](11-multirate-measured-wavetables.md) | `[~]` Monologue + Prophet v2 banks built; combined gates open | Sample-rate-independent pitch-by-mip banks |
 | [12](12-coherent-gray-box-core.md) | `[ ]` planned | Simplified physical oscillator state model |
 | [13](13-nonlinear-phase-blep-and-lp-blit.md) | `[ ]` planned | Better causal edge and bandwidth models |
 | [14](14-antialiased-nonlinearity.md) | `[ ]` planned | Color stages without uncontrolled aliasing |
@@ -191,6 +191,16 @@ synth p99 cost is 1.84% of one 48 kHz frame for a steady voice, 4.08% for four
 voices, and 7.46% for the combined one-voice stress profile on this host. Plan
 07 is therefore frozen as a desktop real-time experimental candidate, not a
 production or embedded promotion.
+
+Plan 11 now has Monologue and Prophet-5 V schema-v2 banks. The authoritative
+Rust generator reconstructs 33 universal mip levels directly from the measured
+complex spectra, the allocation-free renderer performs pitch-by-mip
+interpolation from each lane's effective phase increment, and Osc Design
+reports the one-semitone captured-range transition. Compiled sizes are
+7,216,128 bytes (Monologue) and 7,416,576 bytes (Prophet); combined embed is
+14,632,704 bytes under the 20 MiB cap. The Prophet bank comes from the verified
+r7 capture after extraction revision 2. Combined held-out metrics, alias
+sweeps, and the zero-miss 60-second soak remain open.
 
 ## Ground truth in the current repository
 

@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde::Serialize;
-use synth_core::dsp::{FilterType, MONOLOGUE_WAVETABLE_BANK_PROFILE, Waveform, WavetableBank};
+use synth_core::dsp::{FilterType, Waveform, WavetableBank};
 use synth_core::{
-    BankId, GlideMode, OscillatorEngineType, OscillatorResearchModel, ParamId, ResearchEvent,
-    ResearchModelId, ResearchRegistry, ResearchRenderCase, SynthEngineWithMemory,
+    BankId, GlideMode, MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorEngineType,
+    OscillatorResearchModel, ParamId, ResearchEvent, ResearchModelId, ResearchRegistry,
+    ResearchRenderCase, SynthEngineWithMemory,
 };
 
 const SOURCE_SECONDS: f32 = 2.0;
@@ -458,7 +459,7 @@ fn write_float_wav(path: &Path, sample_rate_hz: u32, samples: &[f32]) -> std::io
 
 fn wavetable_bank() -> Result<WavetableBank, Box<dyn std::error::Error>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le");
+        .join("../target/analog-osc/banks/korg-monologue-measured-wavetable-v2.f32le");
     let bytes = fs::read(&path)?;
     if bytes.len() % size_of::<f32>() != 0 {
         return Err(format!("{} contains a partial f32", path.display()).into());

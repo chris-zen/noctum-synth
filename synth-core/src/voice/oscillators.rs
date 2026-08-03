@@ -208,6 +208,10 @@ impl Oscillators<LiveWavetable> {
         self.osc1.set_bank(bank);
         self.osc2.set_bank(bank);
     }
+
+    pub(crate) fn wavetable_support_status(&self) -> crate::dsp::WavetableSupportStatus {
+        self.osc1.support_status()
+    }
 }
 
 #[allow(private_bounds)]

@@ -4,6 +4,12 @@
 desktop real-time experimental candidate; not promoted to production or
 embedded hardware.
 
+The fixed-rate v1 bank and its reports remain frozen historical evidence.
+Plan 11 supersedes that runtime format with a pitch-by-mip schema; the measured
+pitch grid, phase policy, level, DC, and captured-domain limits are unchanged.
+The Monologue v2 bank is implemented, while Prophet v2 generation remains
+blocked on its valid r7 derived NPZ inputs.
+
 ## DSP background
 
 A measured cycle preserves the target's harmonic amplitudes and relative phase.

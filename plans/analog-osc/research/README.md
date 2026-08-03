@@ -60,13 +60,19 @@ Current Plan 04 evidence is organized as follows:
   protocol, completed listener result, and negative promotion decision.
 - `reports/korg-monologue-phase-filter-listening-v2.json`: decoded per-case
   responses, aggregate statistics, and immutable input hashes.
-- `reports/korg-monologue-measured-wavetable-v1.md`: Plan 07 training-only
+- `reports/korg-monologue-measured-wavetable-v1.md`: Plan 10 training-only
   representation comparison, phase findings, storage estimate, and runtime
   selection.
 - `reports/korg-monologue-measured-wavetable-v1.json`: per-pitch metrics for
   nearest, complex-interpolated, canonicalized, and residual representations.
 - `banks/korg-monologue-measured-bank-v1.json`: versioned external-bank schema,
   source provenance, layout, pitch guards, and binary checksums.
+- `banks/korg-monologue-measured-wavetable-v2.json`: sample-rate-independent
+  33-mip layout, source hashes, offsets, lengths, and compiled-bank checksums.
+- `banks/prophet5-wavetable-bank-v2.json`: Arturia Prophet-5 V r7 schema-v2
+  bank from extraction revision 2 (software reference, not hardware).
+- `reports/multirate-measured-wavetable-v2.md`: Plan 11 implementation record,
+  Monologue/Prophet bank generation, and remaining combined qualification gates.
 - `reports/korg-monologue-measured-wavetable-runtime-v1.json`: compiled runtime
   results for every held-out pitch.
 - `reports/korg-monologue-measured-wavetable-sweeps-v1.json`: compiled 48/96 kHz
@@ -90,3 +96,23 @@ References:
 - Dataset DOI: <https://doi.org/10.5281/zenodo.15196138>
 - Companion code: <https://github.com/RiccardoVib/NeuralOSC>
 - Paper: <https://dafx.de/paper-archive/2025/DAFx25_paper_33.pdf>
+
+Regenerate and embed the Monologue v2 bank:
+
+```bash
+python3 scripts/analog_osc_reference.py download --waveform all
+python3 scripts/analog_osc_reference.py extract --waveform all
+cargo run --release -p synth-tools --bin wavetable_bank -- --bank monologue
+python3 scripts/embed_wavetable_banks.py --bank monologue
+```
+
+Regenerate and embed the Prophet-5 V v2 bank from the r7 capture:
+
+```bash
+cargo run --release -p synth-capture --locked -- extract \
+  --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7
+cargo run --release -p synth-tools --locked --bin wavetable_bank -- --bank prophet5
+python3 scripts/embed_wavetable_banks.py --bank all
+```
+
+`--bank all` validates the combined 20 MiB cap once both manifests/binaries exist.

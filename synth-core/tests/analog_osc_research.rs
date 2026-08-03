@@ -2,16 +2,13 @@
 
 use std::sync::OnceLock;
 
-use synth_core::dsp::{
-    FilterType, MONOLOGUE_WAVETABLE_BANK_PROFILE, MipWavetableBank, WAVETABLE_BANK_SAMPLES,
-    Waveform, WavetableBank,
-};
+use synth_core::dsp::{FilterType, MipWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank};
 use synth_core::{
-    BankId, OscillatorEngineType, OscillatorResearchModel, ParamId, ResearchComparisonMetrics,
-    ResearchError, ResearchEvent, ResearchModelCapabilities, ResearchModelDescriptor,
-    ResearchModelFamily, ResearchModelId, ResearchParameterDescriptor, ResearchParameterScale,
-    ResearchRegistry, ResearchRenderCase, ResearchSignalMetrics, SynthEngineWithMemory,
-    render_research_case,
+    BankId, MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorEngineType, OscillatorResearchModel, ParamId,
+    ResearchComparisonMetrics, ResearchError, ResearchEvent, ResearchModelCapabilities,
+    ResearchModelDescriptor, ResearchModelFamily, ResearchModelId, ResearchParameterDescriptor,
+    ResearchParameterScale, ResearchRegistry, ResearchRenderCase, ResearchSignalMetrics,
+    SynthEngineWithMemory, render_research_case,
 };
 
 fn static_case(waveform: Waveform) -> ResearchRenderCase {
@@ -39,7 +36,7 @@ fn zero_wavetable_bank() -> MipWavetableBank {
 
 fn generated_measured_bank() -> Option<WavetableBank> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/analog-osc/banks/korg-monologue-measured-bank-v1.f32le");
+        .join("../target/analog-osc/banks/korg-monologue-measured-wavetable-v2.f32le");
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() % 4 != 0 {
         return None;
@@ -273,13 +270,13 @@ fn registry_order_and_descriptors_are_stable() {
     assert_eq!(v2_profile.2.len(), 64);
     let measured = ResearchRegistry::target_profile_metadata(ResearchModelId::WavetableMonologue)
         .expect("measured bank has target provenance");
-    assert_eq!(measured.0, "korg-monologue-measured-bank-v1");
+    assert_eq!(measured.0, "korg-monologue-measured-wavetable-v2");
     assert_eq!(measured.1, "korg-monologue-v1");
     assert_eq!(measured.2.len(), 64);
     let arturia = ResearchRegistry::target_profile_metadata(ResearchModelId::WavetableProphet5)
         .expect("prophet5 wavetable bank has target provenance");
-    assert_eq!(arturia.0, "prophet5-wavetable-bank-v1");
-    assert_eq!(arturia.1, "prophet5-v1");
+    assert_eq!(arturia.0, "prophet5-wavetable-bank-v2");
+    assert_eq!(arturia.1, "arturia-prophet5-v1");
     assert_eq!(arturia.2.len(), 64);
 }
 

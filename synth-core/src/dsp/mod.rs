@@ -29,12 +29,26 @@ pub(crate) mod upsampler;
 pub mod wavetable;
 #[cfg(feature = "osc-wavetable")]
 mod wavetable_bank;
-#[cfg(feature = "osc-wavetable")]
-#[allow(dead_code)]
-mod wavetable_bank_profile;
-#[cfg(feature = "osc-wavetable")]
-#[allow(dead_code)]
-mod wavetable_bank_profile_prophet5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WavetableSupportStatus {
+    Measured,
+    TransitionToFallback,
+    AboveCapturedRange,
+    UnsupportedPlaybackRate,
+    InvalidFrequency,
+    FundamentalAboveNyquistGuard,
+}
+
+impl WavetableSupportStatus {
+    pub const fn uses_measured(self) -> bool {
+        matches!(self, Self::Measured | Self::TransitionToFallback)
+    }
+
+    pub const fn is_warning(self) -> bool {
+        !matches!(self, Self::Measured)
+    }
+}
 
 pub use analog_oscillator::{AnalogOscillator, Waveform, WavetableOscillator};
 pub use blep::SawMethod;
@@ -52,9 +66,6 @@ pub use parameter_smoother::DEFAULT_PARAMETER_SMOOTHING_SECONDS;
 pub use wavetable::{MipWavetableBank, WAVETABLE_BANK_SAMPLES, generate_wavetable_bank};
 #[cfg(feature = "osc-wavetable")]
 pub use wavetable_bank::{
+    WAVETABLE_MAX_HARMONIC, WAVETABLE_MIP_COUNT, WAVETABLE_MIP_HARMONIC_LIMITS,
     WAVETABLE_WAVEFORMS, WavetableBank, WavetableBankError, WavetableBankReport, WavetableProfile,
 };
-#[cfg(feature = "osc-wavetable")]
-pub use wavetable_bank_profile::MONOLOGUE_WAVETABLE_BANK_PROFILE;
-#[cfg(feature = "osc-wavetable")]
-pub use wavetable_bank_profile_prophet5::PROPHET5_WAVETABLE_BANK_PROFILE;

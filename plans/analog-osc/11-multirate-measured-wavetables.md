@@ -1,8 +1,40 @@
 # Multi-Rate Measured Wavetable Bank v2
 
-**Order:** 11 · **Depends on:** plans 03, 06, 07, and 10 · **State:** `[ ]`
-planned; the Prophet-5 V capture is verified, but its local derived artifacts
-must be present before generation.
+**Order:** 11 · **Depends on:** plans 03, 06, 07, and 10 · **State:** `[~]`
+runtime, generator, UI, and Monologue + Prophet v2 banks implemented; combined
+held-out metrics, alias sweeps, and zero-miss soak remain open.
+
+## Execution status — both banks built; qualification gates open
+
+The schema-v2 generator and runtime are implemented. `synth-tools
+wavetable_bank` is authoritative for both targets; it reconstructs all 33 mips
+from each original 2,048-bin complex spectrum, emits variable table lengths
+and offsets, writes generated Rust profiles, and rejects incoherent or
+non-deterministic inputs. The Python Monologue entry point now delegates to the
+Rust tool. The embedding script reads schema, counts, paths, and checksums from
+the manifests and enforces the 20 MiB combined cap.
+
+The Monologue source dataset was downloaded and checksum-verified, extracted,
+and regenerated as `korg-monologue-measured-wavetable-v2`. Its 1,804,032 f32
+samples occupy 7,216,128 bytes (6.88 MiB). The Arturia Prophet-5 V r7 capture
+was verified (226 complete cases, adapter revision 7), extracted to revision-2
+NPZs, and regenerated as `prophet5-wavetable-bank-v2` (1,854,144 f32 samples,
+7,416,576 bytes). Combined compiled assets are 14,632,704 bytes. Runtime
+selection uses the generated 1,024-entry log-space lookup from the effective
+per-lane phase increment; pitch-knot lookup remains at the existing 16-sample
+control rate. Saw/triangle shape, SawTri, pulse residual/PWM, and hard-sync
+edge sampling all share the same mip pair. Core tests cover 24, 44.1, 48, 96,
+and 192 kHz, safe-harmonic selection, the one-semitone upper transition, and
+preview/live parity.
+
+`WavetableSupportStatus` is exposed by `OscillatorPreview`. Osc Design displays
+a warning only during the one-semitone transition or above the captured range.
+The stable bank IDs and session/configuration surface are unchanged, and Daisy
+still builds without `osc-wavetable` assets.
+
+48/96 kHz held-out target metrics, material alias sweeps, and the final
+zero-miss performance soak remain open. See
+`research/reports/multirate-measured-wavetable-v2.md`.
 
 ## DSP background
 
