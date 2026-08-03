@@ -37,6 +37,8 @@ use pan::Pan;
 
 pub use modulation::PatchModulation;
 pub use osc_engine::{BankId, OscillatorEngineType, OscillatorEngines, OscillatorPreview};
+#[cfg(feature = "osc-wavetable")]
+pub use osc_engine::{MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE};
 pub use oscillators::{
     OscillatorModulation, OscillatorParams, OscillatorsOutput, OscillatorsParams, glide_seconds,
 };

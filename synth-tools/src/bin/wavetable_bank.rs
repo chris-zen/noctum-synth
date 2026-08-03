@@ -13,10 +13,23 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
-    let mut request = BankRequest::prophet5_defaults();
+    let mut request = match args
+        .windows(2)
+        .find(|pair| pair[0] == "--bank")
+        .map(|pair| pair[1].as_str())
+        .unwrap_or("prophet5")
+    {
+        "prophet5" => BankRequest::prophet5_defaults(),
+        "monologue" => BankRequest::monologue_defaults(),
+        value => return Err(format!("invalid --bank {value}")),
+    };
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
+            "--bank" => {
+                index += 1;
+                let _ = required_value(&args, index, "--bank")?;
+            }
             "--derived-root" => {
                 index += 1;
                 request.derived_root = required_path(&args, index, "--derived-root")?;
@@ -24,6 +37,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--output-dir" => {
                 index += 1;
                 request.output_dir = required_path(&args, index, "--output-dir")?;
+            }
+            "--manifest-dir" => {
+                index += 1;
+                request.manifest_dir = required_path(&args, index, "--manifest-dir")?;
             }
             "--profile-id" => {
                 index += 1;
@@ -33,12 +50,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 index += 1;
                 request.target_id = required_value(&args, index, "--target-id")?;
             }
-            "--reference-sample-rate" => {
+            "--source-sample-rate" => {
                 index += 1;
-                let value = required_value(&args, index, "--reference-sample-rate")?;
-                request.reference_sample_rate_hz = value
+                let value = required_value(&args, index, "--source-sample-rate")?;
+                request.source_sample_rate_hz = value
                     .parse()
-                    .map_err(|_| format!("invalid --reference-sample-rate {value}"))?;
+                    .map_err(|_| format!("invalid --source-sample-rate {value}"))?;
             }
             "--rust-output" => {
                 index += 1;
@@ -82,17 +99,19 @@ fn print_help() {
     let research = default_research_root();
     println!(
         "\
-wavetable_bank — build a measured pitch-conditioned wavetable bank from synth-capture NPZs
+wavetable_bank — build a universal pitch-by-mip measured wavetable bank
 
 USAGE:
   cargo run --release -p synth-tools --bin wavetable_bank -- [OPTIONS]
 
 OPTIONS:
+  --bank <prophet5|monologue>    Select target defaults (default prophet5)
   --derived-root <dir>           Directory containing {{saw,triangle,pulse50}}-cycles-v1.npz
-  --output-dir <dir>             Directory for .f32le + .json outputs
-  --profile-id <id>              Bank profile id (default prophet5-wavetable-bank-v1)
+  --output-dir <dir>             Directory for the reproducible .f32le binary
+  --manifest-dir <dir>           Directory for the committed v2 manifest
+  --profile-id <id>              Versioned bank profile id
   --target-id <id>               Target id (default prophet5-v1)
-  --reference-sample-rate <hz>   Playback-bank Nyquist reference (default 48000)
+  --source-sample-rate <hz>      Capture rate recorded as provenance only
   --rust-output <file>           Generated synth-core profile source
   --no-rust-output               Do not generate Rust profile source
 

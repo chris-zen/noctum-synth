@@ -1,5 +1,52 @@
 # Analog Oscillator Research Master Plan
 
+## How to use this programme
+
+Read the numbered documents in order. The number is the dependency order, not
+an importance score: a later experiment may be more promising, but it relies on
+measurement, audition, or data work established earlier. A completed plan is
+not necessarily a successful oscillator; negative results are retained because
+they prevent the same failed hypothesis from being repeated.
+
+Status notation used throughout:
+
+- `[x]` completed and verified.
+- `[~]` a usable increment exists, with explicitly listed work remaining.
+- `[ ]` not yet executed.
+- **Retained** means useful evidence or a comparison candidate.
+- **Promoted** means approved for a production or hardware tier. Nothing is
+  promoted merely because it sounds interesting in one test.
+
+## DSP primer
+
+An oscillator repeats a waveform. Its **phase** is the position within one
+repeat, normally represented from 0 to 1. Saw and pulse waves contain abrupt
+steps; triangle waves contain abrupt changes of slope. Those sharp features
+require harmonics far above the played note.
+
+Digital audio can represent frequencies only below the **Nyquist frequency**,
+which is half the sample rate. Harmonics above Nyquist fold into unrelated,
+usually inharmonic frequencies; this is **aliasing**. BLEP corrects sampled
+steps, while BLAMP corrects slope changes. These methods suppress aliasing but
+do not, by themselves, reproduce the curved ramps, droop, asymmetric edges,
+frequency-dependent phase, or small nonlinearities of a physical oscillator.
+
+A **wavetable** stores one periodic cycle. A **mip bank** stores progressively
+less bright versions so the renderer can select a table whose harmonics remain
+below Nyquist. An **IIR filter** is a small recursive filter whose state gives
+frequency-dependent magnitude and phase. A **gray-box model** uses a simplified
+physical topology with fitted parameters; a **black-box model** learns only the
+input/output relation.
+
+Measurements are split into training, validation, and blind test data. Fitting
+uses training data, engineering choices may use validation data, and the blind
+test is opened once for the promotion decision. An **ablation** disables one
+component to discover what it contributes. **NRMSE** is RMS error normalized
+to make unlike signal levels comparable. **ABX** asks whether an unknown X is A
+or B; target matching separately asks which candidate is closer to a reference.
+The final choice uses a **Pareto frontier**: candidates that are not beaten on
+every important axis such as sound, aliasing, CPU, and memory.
+
 ## Status and purpose
 
 This is an exploration programme, not an instruction to change the production
@@ -19,17 +66,37 @@ method that could target a faster embedded platform.
 
 ## Execution status
 
+| Step | Status | Purpose |
+| --- | --- | --- |
+| [01](01-isolated-experiment-framework.md) | `[x]` minimum complete | Reproducible, isolated rendering and artifacts |
+| [02](02-replaceable-model-architecture.md) | `[x]` minimum complete | Common research seam and closed live-engine owner |
+| [03](03-evaluation-and-hardware-selection.md) | `[~]` minimum complete | Shared metrics, listening gates, and cost evidence |
+| [04](04-desktop-audition-and-pass-through-filter.md) | `[~]` playable foundation complete | MIDI audition and an exact raw filter path |
+| [05](05-oscillator-lab.md) | `[~]` first UI increment complete | Independent visual comparison surface |
+| [06](06-reference-capture-and-identification.md) | `[~]` Monologue and Prophet-5 V static data available | Named, reproducible reference datasets |
+| [07](07-automated-synth-reference-capture.md) | `[~]` phases 1–6 and live acceptance complete | Resumable MIDI/audio acquisition and extraction |
+| [08](08-full-voice-characterisation.md) | `[ ]` planned | Protocols for oscillator, filter, modulation, and control laws |
+| [09](09-target-conditioned-phase-filter.md) | `[x]` closed; retained evidence | Compact fitted phase/filter hypothesis |
+| [10](10-measured-wavetable-residual.md) | `[x]` frozen desktop experiment | Measured deterministic waveform candidate |
+| [11](11-multirate-measured-wavetables.md) | `[~]` Monologue + Prophet v2 banks built; combined gates open | Sample-rate-independent pitch-by-mip banks |
+| [12](12-coherent-gray-box-core.md) | `[ ]` planned | Simplified physical oscillator state model |
+| [13](13-nonlinear-phase-blep-and-lp-blit.md) | `[ ]` planned | Better causal edge and bandwidth models |
+| [14](14-antialiased-nonlinearity.md) | `[ ]` planned | Color stages without uncontrolled aliasing |
+| [15](15-drift-variation-and-calibration.md) | `[ ]` planned | Measured static and time-varying differences |
+| [16](16-neural-offline-reference.md) | `[ ]` optional reference branch | Learned quality ceiling and distillation teacher |
+| [17](17-full-circuit-wdf-model.md) | `[ ]` gated reference branch | Schematic-level physical model |
+
 The minimum pre-candidate foundation is implemented:
 
 - Plans 01 and 02 provide a feature-gated registry, common scalar model
   interface, semantic events, deterministic case runner, baseline/wavetable
   adapters, and a stateful-model contract verified by an independent probe.
-- Plan 03 provides the verified Monologue dataset import and deterministic
+- Plan 06 provides the verified Monologue dataset import and deterministic
   derived references; additional Arturia/hardware captures remain separate.
-- Plan 13 provides versioned signal, comparison, spectral-residual, performance,
+- Plan 03 provides versioned signal, comparison, spectral-residual, performance,
   WAV, and JSON artifact output with focused analytic tests.
-- Plan 14 provides the stable live selector and Pass Through filter.
-- The first Plan 12 increment is also complete: Osc Design has an independent,
+- Plan 04 provides the stable live selector and Pass Through filter.
+- The first Plan 05 increment is also complete: Osc Design has an independent,
   right-aligned selector for the same live-capable oscillator models exposed in
   Params, and renders them through the same closed dispatcher. This was pulled
   forward because visual inspection is research infrastructure for subsequent
@@ -40,7 +107,7 @@ comparison machinery. The full Oscillator Lab overlays, automated whole-matrix r
 listening-set/ABX management, and hardware promotion automation remain later
 foundation increments.
 
-Plan 04 now has a retained first Monologue fit and an analysis-only Rust
+Plan 09 now has a retained first Monologue fit and an analysis-only Rust
 adapter. Its held-out medians beat the geometric baseline for saw, triangle,
 and pulse. Runtime/reference parity and initial 48/96 kHz static residual sweeps
 are complete; one borderline top-range saw case remains. The first completed
@@ -61,11 +128,11 @@ residual failures. Triangle is also consistently better in harmonic magnitude;
 saw and pulse have offline-predictor/runtime magnitude mismatch, and pulse is
 approximately flat versus baseline on that metric. The fresh blind test-split
 gate is now complete: ABX was 6/9 (`p = 0.25391`), and target matching selected
-baseline in 5/9 cases versus v2 in 4/9. Plan 04 v2 is retained as reproducible
+baseline in 5/9 cases versus v2 in 4/9. Plan 09 v2 is retained as reproducible
 evidence but closed for promotion; no live adapter or broad dynamic sweep will
 be built. Triangle remains only a hypothesis for a later cross-candidate test.
 
-Plan 07 has now started with a training-only offline representation study.
+Plan 10 has now completed a training-only offline representation study.
 Measured tables strongly improve held-out shape and magnitude metrics. Full
 measured spectra and production-plus-residual spectra are effectively tied, so
 the simpler full measured representation is selected for the first desktop
@@ -83,7 +150,7 @@ and dense pitch-transition stress as an experimental desktop candidate, not a
 production promotion. No bank or guard tuning is permitted from these revealed
 answers.
 
-To maximize the value of the remaining research budget, the exhaustive Plan 07
+To maximize the value of the remaining research budget, the exhaustive Plan 10
 cost/transition matrix is deferred. The checksum-validated bank is now connected
 to the existing desktop oscillator selector for direct musical audition, with
 production fallback outside its supported waveform and pitch domain. This is an
@@ -114,7 +181,7 @@ research integration suite. This is compatibility behavior rather than a
 Monologue target-match claim because the public captures contain no hard-sync
 reference cases.
 
-The compact Plan 07 dynamic gate is now complete. Its first run exposed and
+The compact Plan 10 dynamic gate is now complete. Its first run exposed and
 fixed a wrong-sign PWM DC-compensation term; the neutral measured pulse and
 earlier blind set were unaffected. After the fix, all dynamic renders are
 bit-deterministic and the measured candidate has lower 48-versus-filtered-192
@@ -124,6 +191,16 @@ synth p99 cost is 1.84% of one 48 kHz frame for a steady voice, 4.08% for four
 voices, and 7.46% for the combined one-voice stress profile on this host. Plan
 07 is therefore frozen as a desktop real-time experimental candidate, not a
 production or embedded promotion.
+
+Plan 11 now has Monologue and Prophet-5 V schema-v2 banks. The authoritative
+Rust generator reconstructs 33 universal mip levels directly from the measured
+complex spectra, the allocation-free renderer performs pitch-by-mip
+interpolation from each lane's effective phase increment, and Osc Design
+reports the one-semitone captured-range transition. Compiled sizes are
+7,216,128 bytes (Monologue) and 7,416,576 bytes (Prophet); combined embed is
+14,632,704 bytes under the 20 MiB cap. The Prophet bank comes from the verified
+r7 capture after extraction revision 2. Combined held-out metrics, alias
+sweeps, and the zero-miss 60-second soak remain open.
 
 ## Ground truth in the current repository
 
@@ -137,14 +214,14 @@ production or embedded promotion.
   single-engine build dispatches directly, while a desktop all-engine build
   selects among retained complete engines inside one closed owner.
 - The retained wavetable prototype is in synth-core/src/dsp/wavetable.rs.
-- The Osc Design view currently renders AnalogOscillator directly from
-  synth-app/src/ui/analysis/osc_design.rs.
+- The Osc Design view uses the same closed preview dispatcher as the live
+  engine while keeping its selection independent from the played synth.
 - The playable voice path already centralizes Osc 1/Osc 2 in
   synth-core/src/voice/oscillators.rs and passes their mix through the
   runtime-selectable Filter in synth-core/src/voice/mod.rs.
 - Existing quality and listening tools are
-  synth-core/examples/sample_rate_quality.rs and
-  synth-core/examples/wavetable_listening_samples.rs.
+  synth-tools/src/bin/sample_rate_quality.rs and
+  synth-tools/src/bin/wavetable_listening_samples.rs.
 - Daisy currently runs a 48 kHz codec with a 24 kHz internal pipeline for its
   measured production budget. Desktop experiments may use 44.1, 48, 96, or
   192 kHz.
@@ -185,76 +262,48 @@ Existing work that must be preserved and cross-checked:
    it must be auditionable from MIDI through the desktop synth, both through a
    bit-transparent pass-through filter and through existing filters.
 
-## Workstreams
+## Dependency map
 
-### Foundation
+The file numbers encode this default route:
 
-| Document | Outcome | Dependency |
-| --- | --- | --- |
-| 01-isolated-experiment-framework.md | Reproducible model registry, render harness, artifacts, and baseline guard | None |
-| 02-replaceable-model-architecture.md | Safe seam for analysis models and retained, feature-gated complete live engines | 01 |
-| 14-desktop-audition-and-pass-through-filter.md | Complete-engine audition, raw filter path, and repeatable A/B playing | 01 and 02 |
-| 03-reference-capture-and-identification.md | Target datasets and fitted deterministic/stochastic features | 01 |
-| 15-automated-synth-reference-capture.md | Generic MIDI/audio capture projects, interruption-safe recording, and Rust extraction | 03 |
-| 12-osc-designer-view.md | Evolve Osc Design into an isolated Oscillator Lab for model/reference exploration | 01 and 02 |
-| 13-evaluation-and-hardware-selection.md | Shared quality, listening, CPU, memory, and promotion protocol | 01 |
+```text
+01 isolation -> 02 architecture -> 03 evaluation -> 04 audition -> 05 lab
+                                                    |
+06 references -> 07 automated capture -> 08 full-voice programme
+       |
+       +-> 09 compact fitted model (closed)
+       +-> 10 measured wavetable (frozen) -> 11 multirate revision
+       +-> 12 gray-box core -> 13 edge/bandwidth alternatives
+                                |
+                                +-> 14 nonlinearity -> 15 variation
 
-### Main oscillator candidates
+16 neural reference and 17 circuit model start only when their entry gates
+justify their extra complexity.
+```
 
-| Document | Research question |
-| --- | --- |
-| 04-target-conditioned-phase-filter.md | How far can a compact phase warp plus pitch/PW-dependent IIR go? |
-| 05-coherent-gray-box-core.md | Does a shared capacitor/comparator/reset model give more convincing correlated behavior? |
-| 06-nonlinear-phase-blep-and-lp-blit.md | Do causal edge kernels and controllable source bandwidth improve character without a full target model? |
-| 07-measured-wavetable-residual.md | Can measured phase and spectral detail be retained with low runtime cost? |
+Plans 01–08 are shared infrastructure and evidence collection. Plans 09–13 are
+independent deterministic oscillator hypotheses. Plans 14–15 are cross-cutting
+character layers and must be evaluated both alone and on surviving parent
+oscillators. Plans 16–17 are expensive reference ceilings, not presumed product
+implementations.
 
-### Cross-cutting character
+## Execution policy
 
-| Document | Research question |
-| --- | --- |
-| 08-antialiased-nonlinearity.md | Which subtle nonlinear stages add useful color without reintroducing aliasing? |
-| 09-drift-variation-and-calibration.md | Which measured static and stochastic variations improve polyphonic behavior? |
+Follow the file numbers unless a plan's entry criteria explicitly permit
+parallel work. The common evaluator in plan 03 applies at every later step; it
+is numbered once rather than repeated after every candidate. Likewise, stable
+real-time candidates return through plan 04 for musical audition and plan 05
+for visual comparison.
 
-### Expensive/reference branches
+Plan 09 was executed before all later candidate branches and is closed as a
+well-documented negative promotion result. Plan 10 is the retained desktop
+candidate. Plan 11 is its next required engineering revision. Plans 12 and 13
+may then run independently. Do not add plans 14 or 15 to a parent oscillator
+until ablation proves that the parent still needs that effect.
 
-| Document | Research question |
-| --- | --- |
-| 10-neural-offline-reference.md | Can the public neural VCO work serve as a teacher or desktop ceiling? |
-| 11-full-circuit-wdf-model.md | Is a schematic-driven WDF/state-space oscillator worth its complexity? |
-
-Each candidate may start as a standalone desktop adapter after workstream 01.
-Workstream 02 establishes the common model seam. Workstream 14 then connects
-stable real-time-safe candidates to the playable desktop voice through one
-global Params-view selector, without changing patches or production firmware.
-Oscillator Lab remains an independent analysis surface. The retained
-feature-gated complete-engine architecture is defined in workstream 02;
-patch-owned engine selection remains deferred.
-
-## Recommended execution order
-
-1. Build the isolated harness and regression baseline.
-2. Prepare the replaceable-model seam.
-3. Implement the minimal desktop audition layer and Pass Through filter from
-   workstream 14. Prove the current oscillator remains bit-identical, then play
-   the existing PolyBLEP or wavetable alternative through raw and filtered
-   paths.
-4. Evolve Osc Design into the isolated Oscillator Lab for waveform/parameter
-   exploration and reference comparison, without a load-to-synth handoff.
-5. Import the public Monologue dataset, define the Arturia capture manifest,
-   then implement the generic automated capture and Rust extraction tool from
-   workstream 15.
-6. Implement the target-conditioned model, measured wavetable model, and
-   nonlinear-phase/LP-BLIT model independently.
-7. Implement the coherent gray-box model after the first fitted target features
-   reveal the required topology and frequency dependencies.
-8. Add nonlinear coloration as an independently switchable stage.
-9. Fit static variation and drift only after deterministic single-cycle error
-   is understood.
-10. Use the neural and full-circuit branches as reference ceilings, not default
-   production candidates.
-11. Run the common evaluation matrix and place surviving candidates on a
-   quality/cost Pareto frontier.
-12. Promote a model only in a separate implementation decision.
+Promotion remains a separate decision after blind listening and cost data. A
+candidate may be archived, retained for desktop research, assigned to a more
+powerful embedded target, or qualified for Daisy.
 
 Parallel exploration is allowed after the foundation work because every branch
 must implement the same research adapter, use immutable target data, and write

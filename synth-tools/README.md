@@ -62,21 +62,26 @@ Default output directory: `target/wavetable-prototype`.
 
 ### `wavetable_bank`
 
-Builds an Arturia-first measured bank from extract NPZs (`median_cycles`,
-training `role == 0`, 48 kHz playback reference, 0.45 Nyquist guard). It rejects
-incoherent adjacent training cycles before writing a bank. End-to-end
+Builds schema-v2 Monologue or Prophet measured banks from extract NPZs. Every
+pitch knot receives the universal 33-level harmonic mip hierarchy; capture
+sample rate is provenance, while runtime safety uses the 0.45 guard and actual
+phase increment. The tool rejects incoherent adjacent training cycles and
+reconstructs every mip directly from the original complex spectrum. End-to-end
 capture→bank runbook:
 [`../synth-capture/docs/characterise-a-synth.md`](../synth-capture/docs/characterise-a-synth.md).
 
 ```bash
 cargo run --release -p synth-tools --locked --bin wavetable_bank -- \
-  --derived-root plans/analog-osc/research/captures/arturia-prophet5-v1-r7/derived \
-  --output-dir plans/analog-osc/research/banks
+  --bank prophet5
+
+cargo run --release -p synth-tools --locked --bin wavetable_bank -- \
+  --bank monologue
 ```
 
-Writes `{profile-id}.f32le`, `{profile-id}.json`, and the Arturia Rust profile
-metadata (disable the latter with `--no-rust-output`). Default profile:
-`prophet5-wavetable-bank-v1`. This is distinct from
+Writes the ignored reproducible `{profile-id}.f32le`, committed v2 manifest,
+and generated Rust profile metadata (disable the latter with
+`--no-rust-output`). Defaults select `prophet5-wavetable-bank-v2`; use
+`--bank monologue` for `korg-monologue-measured-wavetable-v2`. This is distinct from
 `generate_wavetable_bank`, which synthesizes ideal (non-measured) tables.
 
 ### `wavetable_listening_samples`
@@ -86,6 +91,19 @@ cargo run --release -p synth-tools --bin wavetable_listening_samples
 ```
 
 Writes WAVs under `plans/wavetable-listening/`.
+
+### `wavetable_multirate_benchmark`
+
+Benchmarks the compiled Monologue v2 bank through the full Pass Through synth
+engine with 1, 4, and 16 active voices at 44.1, 48, 96, and 192 kHz, then runs
+the 48 kHz sixteen-voice mip/slop soak.
+
+```bash
+cargo run --release -p synth-tools --bin wavetable_multirate_benchmark
+```
+
+Use `--output <file>` to change the JSON path or `--soak-seconds <seconds>` for
+a shorter diagnostic run. The qualification default is 60 seconds.
 
 ### `factory_corpus_acceptance`
 

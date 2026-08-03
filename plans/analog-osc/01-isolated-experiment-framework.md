@@ -1,5 +1,20 @@
 # Isolated Oscillator Experiment Framework
 
+**Order:** 01 · **Depends on:** nothing · **State:** `[x]` minimum framework
+complete; `[ ]` later orchestration and UI increments remain.
+
+## DSP background
+
+This plan does not change how a waveform is synthesized. It creates a fair test
+bench. A renderer receives a precise sample rate, note, waveform, seed, and
+event sequence, then produces samples into a caller-owned buffer. Determinism
+means the same inputs and seed produce exactly the same samples; that lets a
+test distinguish an intentional algorithm change from accidental drift.
+
+A stateful model remembers previous samples, as a capacitor or recursive filter
+would. The interface therefore describes musical events instead of assuming
+that every oscillator is merely a formula evaluated at a phase value.
+
 ## Objective
 
 Create a reproducible desktop research path in which oscillator candidates can
@@ -38,7 +53,7 @@ runner and artifact schema.
   OscillatorKernel trait, typed engine aliases, phase/sync metadata, and slop.
 - synth-core/src/dsp/wavetable.rs demonstrates an explicitly constructed
   alternative typed kernel with immutable external data.
-- synth-core/examples/sample_rate_quality.rs provides an offline spectral
+- synth-tools/src/bin/sample_rate_quality.rs provides an offline spectral
   starting point.
 - synth-app/src/ui/analysis/osc_design.rs constructs the baseline oscillator
   directly and owns its own serializable view configuration.
@@ -46,6 +61,20 @@ runner and artifact schema.
   plans/DAISY_SAMPLE_RATE_QUALITY_REPORT.md define measured embedded gates.
 
 ## Isolation boundary
+
+A deliberately small conceptual interface is:
+
+```rust
+trait ResearchOscillator {
+    fn configure(&mut self, case: &RenderCase) -> Result<(), ModelError>;
+    fn reset(&mut self, seed: u64);
+    fn apply(&mut self, event: OscillatorEvent);
+    fn render(&mut self, output: &mut [f32]); // no allocation here
+}
+```
+
+The real interface may expose more metadata, but candidates receive events and
+own their state; the harness must not reach inside a model to advance its phase.
 
 Add a desktop research adapter with these semantic operations:
 
@@ -59,7 +88,7 @@ Add a desktop research adapter with these semantic operations:
 
 The adapter is used by offline examples and the isolated Oscillator Lab evolved
 from Osc Design. The same immutable metadata and
-semantic operations feed the feature-gated desktop audition facade in plan 14.
+semantic operations feed the feature-gated desktop audition facade in plan 04.
 It must not replace the normal production voice engine, which continues to
 instantiate its existing typed kernel alias when research features are off.
 
@@ -170,12 +199,12 @@ reference.
 - Current oscillator: synth-core/src/dsp/analog_oscillator.rs
 - Current BLEP implementation: synth-core/src/dsp/blep.rs
 - Existing wavetable adapter pattern: synth-core/src/dsp/wavetable.rs
-- Existing quality harness: synth-core/examples/sample_rate_quality.rs
+- Existing quality harness: synth-tools/src/bin/sample_rate_quality.rs
 - Complete live-engine architecture:
   plans/analog-osc/02-replaceable-model-architecture.md
 - Prior wavetable report: plans/DAISY_WAVETABLE_PROTOTYPE_REPORT.md
 - Playable audition and pass-through filter:
-  plans/analog-osc/14-desktop-audition-and-pass-through-filter.md
+  plans/analog-osc/04-desktop-audition-and-pass-through-filter.md
 - Välimäki, Pekonen, and Nam, perceptually informed integrated polynomial
   waveform synthesis:
   <https://pubmed.ncbi.nlm.nih.gov/22280720/>

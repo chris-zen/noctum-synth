@@ -16,10 +16,9 @@ use super::target_conditioned_profile_v2::{
     KORG_MONOLOGUE_PHASE_FILTER_V2, PROFILE_JSON_SHA256_V2,
 };
 use super::wavetable_bank::WavetableBank;
-use super::wavetable_bank_profile::MONOLOGUE_WAVETABLE_BANK_PROFILE;
-use super::wavetable_bank_profile_prophet5::PROPHET5_WAVETABLE_BANK_PROFILE;
 use super::{MipWavetableBank, SawMethod, WAVETABLE_BANK_SAMPLES, Waveform, WavetableOscillator};
 use crate::math::WideF32;
+use crate::voice::{MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE};
 
 /// Stable built-in model identifiers used by research artifacts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

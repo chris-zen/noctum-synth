@@ -1,5 +1,18 @@
 # Replaceable Oscillator Model Architecture
 
+**Order:** 02 · **Depends on:** plan 01 · **State:** `[x]` minimum two-tier
+architecture and live-engine boundary complete; `[ ]` first persistent
+gray-box member remains.
+
+## DSP background
+
+A phase kernel computes a waveform from position within a cycle. That is a good
+fit for BLEP and wavetable oscillators. A physical or learned oscillator may
+instead own integrators, thresholds, delay history, and latency. The two-tier
+design keeps the fast compile-time phase path while giving those fully stateful
+models a separate semantic interface. “Closed dispatcher” means a Rust enum and
+`match`, so the available live engines are explicit and allocation-free.
+
 ## Objective
 
 Prepare a safe architecture for comparing and playing multiple oscillator
@@ -213,7 +226,7 @@ The playable synth chooses one engine for both oscillators through the global
 selector in the Params Oscillators header; there is no load-from-Oscillator-Lab
 operation.
 
-Desktop audition switching follows plan 14: all-notes-off, block-boundary
+Desktop audition switching follows plan 04: all-notes-off, block-boundary
 selection, common-parameter synchronization, then new notes. It does not
 reconstruct engines. The inactive engine retains phase, correction history,
 wavetable position, noise state, and other private state; activation must not
@@ -238,7 +251,7 @@ That broader patch-owned work is outside this research audition architecture.
 4. Add the closed desktop model registry and capability metadata.
 5. Implement the retained complete-engine owner and prove the BLEP-only build
    is bit-identical through the full voice path, then add Pass Through
-   according to plan 14.
+   according to plan 04.
 6. Reuse model IDs and metadata in Oscillator Lab and the offline harness while
    keeping their instances and parameters independent from the playable synth.
 7. Add one trivial stateful test model to prove reset, sync-event, latency, and
@@ -278,7 +291,7 @@ That broader patch-owned work is outside this research audition architecture.
 - Current typed kernel seam: synth-core/src/dsp/analog_oscillator.rs
 - Existing immutable bank pattern: synth-core/src/dsp/wavetable.rs
 - Minimal playable research layer and raw filter:
-  plans/analog-osc/14-desktop-audition-and-pass-through-filter.md
+  plans/analog-osc/04-desktop-audition-and-pass-through-filter.md
 - Existing platform constraints: docs/src/hardware/daisy.md
 - Existing core/no_std direction: plans/SYNTH_CORE_NO_STD_PLAN.md
 - Pekonen thesis, covering multiple oscillator implementation families:

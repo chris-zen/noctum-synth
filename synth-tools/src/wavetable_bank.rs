@@ -11,19 +11,17 @@ use rustfft::FftPlanner;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-pub const TABLE_LENGTH: usize = 2048;
-/// Playback rate the generated tables are safe for. Source captures may use a
-/// higher rate; that must not leak into the runtime anti-aliasing policy.
-pub const DEFAULT_REFERENCE_SAMPLE_RATE_HZ: f64 = 48_000.0;
+pub const PHASE_BINS_SOURCE: usize = 2048;
 pub const NYQUIST_GUARD: f64 = 0.45;
 pub const MIN_ADJACENT_SPECTRAL_COSINE: f64 = 0.90;
 pub const ROLE_TRAINING: u8 = 0;
-pub const PHASE_BINS_SOURCE: usize = 2048;
+pub const MAX_COMPILED_BANK_BYTES: usize = 20 * 1024 * 1024;
+pub const MIP_HARMONIC_LIMITS: [u16; 33] = [
+    1023, 860, 723, 607, 510, 428, 359, 301, 253, 212, 178, 149, 125, 105, 88, 73, 61, 51, 42, 35,
+    29, 24, 20, 16, 13, 10, 8, 6, 5, 4, 3, 2, 1,
+];
 
-pub const WAVEFORMS: [&str; 3] = ["saw", "triangle", "pulse50"];
-
-const DEFAULT_PROFILE_ID: &str = "prophet5-wavetable-bank-v1";
-const DEFAULT_TARGET_ID: &str = "prophet5-v1";
+const RUNTIME_WAVEFORMS: [&str; 3] = ["saw", "triangle", "pulse"];
 
 #[derive(Debug, Error)]
 pub enum MeasuredBankError {
@@ -37,14 +35,25 @@ pub enum MeasuredBankError {
     Json(#[from] serde_json::Error),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrainingSelection {
+    RoleZero,
+    EvenRows,
+}
+
 #[derive(Clone, Debug)]
 pub struct BankRequest {
     pub derived_root: PathBuf,
     pub output_dir: PathBuf,
+    pub manifest_dir: PathBuf,
     pub profile_id: String,
     pub target_id: String,
-    pub reference_sample_rate_hz: f64,
+    pub source_sample_rate_hz: f64,
+    pub source_waveforms: [String; 3],
+    pub training_selection: TrainingSelection,
+    pub phase_manifest_path: Option<PathBuf>,
     pub rust_profile_path: Option<PathBuf>,
+    pub rust_profile_symbol: String,
 }
 
 impl BankRequest {
@@ -52,13 +61,41 @@ impl BankRequest {
         let research = default_research_root();
         Self {
             derived_root: research.join("captures/arturia-prophet5-v1-r7/derived"),
-            output_dir: research.join("banks"),
-            profile_id: DEFAULT_PROFILE_ID.to_string(),
-            target_id: DEFAULT_TARGET_ID.to_string(),
-            reference_sample_rate_hz: DEFAULT_REFERENCE_SAMPLE_RATE_HZ,
+            output_dir: repository_root().join("target/analog-osc/banks"),
+            manifest_dir: research.join("banks"),
+            profile_id: "prophet5-wavetable-bank-v2".to_string(),
+            target_id: "arturia-prophet5-v1".to_string(),
+            source_sample_rate_hz: 96_000.0,
+            source_waveforms: ["saw".into(), "triangle".into(), "pulse50".into()],
+            training_selection: TrainingSelection::RoleZero,
+            phase_manifest_path: None,
             rust_profile_path: Some(
-                repository_root().join("synth-core/src/dsp/wavetable_bank_profile_prophet5.rs"),
+                repository_root().join(
+                    "synth-core/src/voice/osc_engine/wavetable_banks/prophet5_profile.rs",
+                ),
             ),
+            rust_profile_symbol: "PROPHET5_WAVETABLE_BANK_PROFILE".to_string(),
+        }
+    }
+
+    pub fn monologue_defaults() -> Self {
+        let root = repository_root();
+        Self {
+            derived_root: root.join("target/analog-osc/reference/korg-monologue-v1/derived"),
+            output_dir: root.join("target/analog-osc/banks"),
+            manifest_dir: root.join("plans/analog-osc/research/banks"),
+            profile_id: "korg-monologue-measured-wavetable-v2".to_string(),
+            target_id: "korg-monologue-v1".to_string(),
+            source_sample_rate_hz: 48_000.0,
+            source_waveforms: ["saw".into(), "triangle".into(), "square".into()],
+            training_selection: TrainingSelection::EvenRows,
+            phase_manifest_path: Some(
+                root.join("plans/analog-osc/research/banks/korg-monologue-measured-bank-v1.json"),
+            ),
+            rust_profile_path: Some(root.join(
+                "synth-core/src/voice/osc_engine/wavetable_banks/monologue_profile.rs",
+            )),
+            rust_profile_symbol: "MONOLOGUE_WAVETABLE_BANK_PROFILE".to_string(),
         }
     }
 }
@@ -76,481 +113,200 @@ pub fn default_research_root() -> PathBuf {
     repository_root().join("plans/analog-osc/research")
 }
 
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("synth-tools must live directly under the repository root")
-        .to_path_buf()
-}
-
 pub fn build_bank(request: &BankRequest) -> Result<BankBuildResult, MeasuredBankError> {
-    if !request.derived_root.is_dir() {
-        return Err(MeasuredBankError::Message(format!(
-            "derived root not found: {} (run synth-capture extract first)",
-            request.derived_root.display()
-        )));
-    }
-
-    let mut banks = Vec::new();
+    validate_request(request)?;
+    let phase_manifest = request
+        .phase_manifest_path
+        .as_ref()
+        .map(|path| read_json(path))
+        .transpose()?;
+    let mut bank = Vec::new();
     let mut waveform_metadata = serde_json::Map::new();
     let mut pitch_count = None;
 
-    for waveform in WAVEFORMS {
+    for (runtime_waveform, source_waveform) in
+        RUNTIME_WAVEFORMS.iter().zip(&request.source_waveforms)
+    {
         let npz_path = request
             .derived_root
-            .join(format!("{waveform}-cycles-v1.npz"));
-        let WaveformTables {
-            tables,
-            training_indices,
-            training_frequencies_hz,
-            harmonic_limits,
-            guard_frequencies_hz,
-            maximum_supported_frequency_hz,
-            adjacent_spectral_cosines,
-        } = waveform_tables(&npz_path, request.reference_sample_rate_hz)?;
-
-        let count = training_indices.len();
-        if count == 0 {
-            return Err(MeasuredBankError::Message(format!(
-                "{waveform}: no training rows (role == {ROLE_TRAINING})"
-            )));
-        }
+            .join(format!("{source_waveform}-cycles-v1.npz"));
+        let phase_shifts = phase_manifest
+            .as_ref()
+            .map(|manifest| phase_shifts_from_manifest(manifest, source_waveform))
+            .transpose()?;
+        let tables = waveform_tables(
+            &npz_path,
+            request.training_selection,
+            phase_shifts.as_deref(),
+        )?;
         match pitch_count {
-            None => pitch_count = Some(count),
-            Some(expected) if expected != count => {
+            None => pitch_count = Some(tables.training_indices.len()),
+            Some(expected) if expected != tables.training_indices.len() => {
                 return Err(MeasuredBankError::Message(format!(
-                    "{waveform}: training pitch count {count} != {expected}"
+                    "{source_waveform}: training pitch count {} != {expected}",
+                    tables.training_indices.len()
                 )));
             }
             Some(_) => {}
         }
-
-        banks.extend_from_slice(&tables);
+        bank.extend_from_slice(&tables.samples);
         waveform_metadata.insert(
-            waveform.to_string(),
+            (*runtime_waveform).to_string(),
             serde_json::json!({
+                "source_waveform": source_waveform,
                 "source_npz_sha256": sha256_file(&npz_path)?,
-                "training_pitch_indices": training_indices,
-                "training_frequencies_hz": training_frequencies_hz,
-                "phase_policy": "extraction upward-crossing landmark (no production-source alignment)",
-                "pitch_safe_harmonic_limits": harmonic_limits,
-                "pitch_guard_frequencies_hz": guard_frequencies_hz,
-                "maximum_supported_frequency_hz": maximum_supported_frequency_hz,
+                "training_pitch_indices": tables.training_indices,
+                "training_frequencies_hz": tables.training_frequencies_hz,
+                "maximum_supported_frequency_hz": tables.maximum_supported_frequency_hz,
+                "level_policy": "measured source amplitude retained",
+                "dc_policy": "measured source DC retained",
+                "phase_policy": if phase_shifts.is_some() {
+                    "v1 global phase shifts applied in the complex spectrum"
+                } else {
+                    "extracted landmark phase retained"
+                },
+                "training_global_phase_shifts_cycles": phase_shifts,
                 "adjacent_spectral_cosine": {
                     "minimum_required": MIN_ADJACENT_SPECTRAL_COSINE,
-                    "scores": adjacent_spectral_cosines,
+                    "scores": tables.adjacent_spectral_cosines,
                 },
             }),
         );
     }
 
-    let pitch_count = pitch_count.unwrap();
-    let sample_count = banks.len();
-    let expected = WAVEFORMS.len() * pitch_count * TABLE_LENGTH;
-    if sample_count != expected || banks.iter().any(|sample| !sample.is_finite()) {
+    let pitch_count = pitch_count.expect("three runtime waveforms");
+    let table_lengths = mip_table_lengths();
+    let mip_offsets = mip_offsets(pitch_count, &table_lengths);
+    let samples_per_waveform =
+        mip_offsets.last().copied().unwrap() + pitch_count * table_lengths.last().copied().unwrap();
+    let expected = RUNTIME_WAVEFORMS.len() * samples_per_waveform;
+    if bank.len() != expected || bank.iter().any(|sample| !sample.is_finite()) {
         return Err(MeasuredBankError::Message(format!(
-            "invalid generated bank: samples={sample_count} expected={expected}"
+            "invalid generated bank: samples={} expected={expected}",
+            bank.len()
+        )));
+    }
+    if bank.len() * 4 > MAX_COMPILED_BANK_BYTES {
+        return Err(MeasuredBankError::Message(format!(
+            "generated bank is {} bytes; combined-bank cap is {} bytes",
+            bank.len() * 4,
+            MAX_COMPILED_BANK_BYTES
         )));
     }
 
     fs::create_dir_all(&request.output_dir)?;
+    fs::create_dir_all(&request.manifest_dir)?;
     let binary_path = request
         .output_dir
         .join(format!("{}.f32le", request.profile_id));
     let manifest_path = request
-        .output_dir
+        .manifest_dir
         .join(format!("{}.json", request.profile_id));
+    write_samples(&binary_path, &bank)?;
 
-    {
-        let mut file = File::create(&binary_path)?;
-        for sample in &banks {
-            file.write_all(&sample.to_le_bytes())?;
-        }
-        file.sync_all()?;
-    }
-
+    let mip_metadata: Vec<_> = MIP_HARMONIC_LIMITS
+        .iter()
+        .zip(&table_lengths)
+        .zip(&mip_offsets)
+        .map(
+            |((&harmonic_limit, &table_length), &sample_offset_per_waveform)| {
+                serde_json::json!({
+                    "harmonic_limit": harmonic_limit,
+                    "table_length": table_length,
+                    "sample_offset_per_waveform": sample_offset_per_waveform,
+                })
+            },
+        )
+        .collect();
     let mut manifest = serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "profile_id": request.profile_id,
         "target_id": request.target_id,
         "sample_format": "little-endian IEEE-754 float32",
         "layout": {
-            "order": "waveform, training pitch, sample",
-            "waveforms": WAVEFORMS,
+            "order": "waveform, mip, training pitch, sample",
+            "waveforms": RUNTIME_WAVEFORMS,
             "pitch_count_per_waveform": pitch_count,
-            "table_length": TABLE_LENGTH,
-            "reference_sample_rate_hz": request.reference_sample_rate_hz,
+            "mip_count": MIP_HARMONIC_LIMITS.len(),
+            "mips": mip_metadata,
+            "samples_per_waveform": samples_per_waveform,
+            "sample_count": bank.len(),
             "nyquist_guard": NYQUIST_GUARD,
-            "pitch_safety_policy": "each training table is truncated for the next training pitch; the final table is truncated for the highest measured pitch",
-            "sample_count": sample_count,
+            "selection": "richest safe mip plus adjacent leaner mip; log-space blend from a 1024-entry runtime lookup",
         },
-        "phase_bins_source": PHASE_BINS_SOURCE,
+        "source": {
+            "capture_sample_rate_hz": request.source_sample_rate_hz,
+            "capture_sample_rate_role": "provenance only; not a playback compatibility gate",
+            "phase_bins": PHASE_BINS_SOURCE,
+        },
         "waveforms": waveform_metadata,
         "bank_binary": {
-            "path": binary_path.file_name().and_then(|name| name.to_str()).unwrap_or("bank.f32le"),
-            "bytes": sample_count * 4,
-            "sample_count": sample_count,
-            "fnv1a32": fnv1a32(&banks),
+            "path": manifest_binary_path(&binary_path, &manifest_path),
+            "bytes": bank.len() * 4,
+            "sample_count": bank.len(),
+            "fnv1a32": fnv1a32(&bank),
             "sha256": sha256_file(&binary_path)?,
         },
-        "identity_warning": "Prophet-5 V is a software instrument. This bank is not a Sequential/Prophet hardware reference.",
-        "prior_work": {
-            "role": "methodological_prior_for_static_chromatic_protocol_and_cycle_extraction",
-            "dataset": "Korg Monologue analog VCO — Simionato/Fasciani",
-            "doi": "10.5281/zenodo.15196138",
-            "record_url": "https://zenodo.org/records/15196138",
-            "license": "CC-BY-4.0",
-            "paper_url": "https://dafx.de/paper-archive/2025/DAFx25_paper_33.pdf",
+        "identity_warning": if request.target_id.contains("arturia") {
+            "Prophet-5 V is a software instrument; this bank is not a Sequential hardware reference."
+        } else {
+            "Korg Monologue public real-hardware dataset; capture bandwidth limits retained."
         },
     });
-
     let checksum = manifest_content_sha256(&manifest)?;
     manifest
         .as_object_mut()
-        .ok_or_else(|| MeasuredBankError::Message("manifest root must be object".into()))?
+        .expect("manifest is an object")
         .insert(
             "manifest_content_sha256".to_string(),
             serde_json::Value::String(checksum.clone()),
         );
-
     fs::write(
         &manifest_path,
         serde_json::to_string_pretty(&manifest)? + "\n",
     )?;
     if let Some(path) = &request.rust_profile_path {
-        write_rust_profile(path, &manifest, &checksum)?;
+        write_rust_profile(path, request, &manifest, &checksum)?;
     }
 
     Ok(BankBuildResult {
         binary_path,
         manifest_path,
-        sample_count,
+        sample_count: bank.len(),
         pitch_count_per_waveform: pitch_count,
         rust_profile_path: request.rust_profile_path.clone(),
     })
 }
 
-fn write_rust_profile(
-    path: &Path,
-    manifest: &serde_json::Value,
-    manifest_checksum: &str,
-) -> Result<(), MeasuredBankError> {
-    let mut source = String::from(
-        "//! Generated by synth-tools wavetable_bank; do not edit.\n\n\
-use super::wavetable_bank::WavetableProfile;\n\n",
-    );
-    let profile_id = manifest["profile_id"]
-        .as_str()
-        .ok_or_else(|| MeasuredBankError::Message("manifest profile_id missing".into()))?;
-    let target_id = manifest["target_id"]
-        .as_str()
-        .ok_or_else(|| MeasuredBankError::Message("manifest target_id missing".into()))?;
-    let fnv = manifest["bank_binary"]["fnv1a32"]
-        .as_u64()
-        .ok_or_else(|| MeasuredBankError::Message("manifest fnv1a32 missing".into()))?;
-    let sample_count = manifest["bank_binary"]["sample_count"]
-        .as_u64()
-        .ok_or_else(|| MeasuredBankError::Message("manifest sample_count missing".into()))?;
-    let reference_rate = manifest["layout"]["reference_sample_rate_hz"]
-        .as_f64()
-        .ok_or_else(|| MeasuredBankError::Message("manifest reference rate missing".into()))?;
-    source.push_str(&format!(
-        "pub const WAVETABLE_BANK_PROFILE_ID: &str = {profile_id:?};\n\
-pub const WAVETABLE_BANK_TARGET_ID: &str = {target_id:?};\n\
-pub const WAVETABLE_BANK_MANIFEST_SHA256: &str = {manifest_checksum:?};\n\
-pub const WAVETABLE_BANK_FNV1A32: u32 = 0x{fnv:08x};\n\
-pub const WAVETABLE_BANK_SAMPLE_COUNT: usize = {sample_count};\n\
-pub const WAVETABLE_BANK_TABLE_LENGTH: usize = {TABLE_LENGTH};\n\
-pub const WAVETABLE_BANK_REFERENCE_SAMPLE_RATE_HZ: f32 = {reference_rate:.9e}_f32;\n\n"
-    ));
-    for (waveform, prefix) in [
-        ("saw", "SAW"),
-        ("triangle", "TRIANGLE"),
-        ("pulse50", "PULSE"),
-    ] {
-        let frequencies = manifest["waveforms"][waveform]["training_frequencies_hz"]
-            .as_array()
-            .ok_or_else(|| MeasuredBankError::Message(format!("{waveform} frequencies missing")))?;
-        source.push_str(&format!(
-            "pub const WAVETABLE_{prefix}_FREQUENCIES_HZ: [f32; {}] = [\n",
-            frequencies.len()
-        ));
-        for value in frequencies {
-            source.push_str(&format!(
-                "    {:.9e}_f32,\n",
-                value
-                    .as_f64()
-                    .ok_or_else(|| MeasuredBankError::Message(format!(
-                        "{waveform} frequency is not numeric"
-                    )))?
-            ));
-        }
-        let maximum = manifest["waveforms"][waveform]["maximum_supported_frequency_hz"]
-            .as_f64()
-            .ok_or_else(|| MeasuredBankError::Message(format!("{waveform} maximum missing")))?;
-        source.push_str(&format!(
-            "];\n\npub const WAVETABLE_{prefix}_MAXIMUM_HZ: f32 = {maximum:.9e}_f32;\n\n"
-        ));
-    }
-    source.push_str(
-        "pub static PROPHET5_WAVETABLE_BANK_PROFILE: WavetableProfile =\n\
-    WavetableProfile {\n\
-        id: WAVETABLE_BANK_PROFILE_ID,\n\
-        target_id: WAVETABLE_BANK_TARGET_ID,\n\
-        manifest_sha256: WAVETABLE_BANK_MANIFEST_SHA256,\n\
-        fnv1a32: WAVETABLE_BANK_FNV1A32,\n\
-        sample_count: WAVETABLE_BANK_SAMPLE_COUNT,\n\
-        table_length: WAVETABLE_BANK_TABLE_LENGTH,\n\
-        reference_sample_rate_hz: WAVETABLE_BANK_REFERENCE_SAMPLE_RATE_HZ,\n\
-        saw_hz: &WAVETABLE_SAW_FREQUENCIES_HZ,\n\
-        triangle_hz: &WAVETABLE_TRIANGLE_FREQUENCIES_HZ,\n\
-        pulse_hz: &WAVETABLE_PULSE_FREQUENCIES_HZ,\n\
-        saw_max_hz: WAVETABLE_SAW_MAXIMUM_HZ,\n\
-        triangle_max_hz: WAVETABLE_TRIANGLE_MAXIMUM_HZ,\n\
-        pulse_max_hz: WAVETABLE_PULSE_MAXIMUM_HZ,\n\
-    };\n",
-    );
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, source)?;
-    Ok(())
-}
-
-struct WaveformTables {
-    tables: Vec<f32>,
-    training_indices: Vec<usize>,
-    training_frequencies_hz: Vec<f64>,
-    harmonic_limits: Vec<usize>,
-    guard_frequencies_hz: Vec<f64>,
-    maximum_supported_frequency_hz: f64,
-    adjacent_spectral_cosines: Vec<f64>,
-}
-
-fn waveform_tables(
-    npz_path: &Path,
-    reference_sample_rate_hz: f64,
-) -> Result<WaveformTables, MeasuredBankError> {
-    let file = File::open(npz_path)?;
-    let mut reader = NpzReader::new(file).map_err(|err| MeasuredBankError::Npz(err.to_string()))?;
-    let cycles: Array2<f32> = reader
-        .by_name("median_cycles.npy")
-        .or_else(|_| reader.by_name("median_cycles"))
-        .map_err(|err| MeasuredBankError::Npz(format!("median_cycles: {err}")))?;
-    let frequencies: ndarray::Array1<f64> = reader
-        .by_name("measured_frequency_hz.npy")
-        .or_else(|_| reader.by_name("measured_frequency_hz"))
-        .map_err(|err| MeasuredBankError::Npz(format!("measured_frequency_hz: {err}")))?;
-    let roles: ndarray::Array1<u8> = reader
-        .by_name("role.npy")
-        .or_else(|_| reader.by_name("role"))
-        .map_err(|err| MeasuredBankError::Npz(format!("role: {err}")))?;
-
-    if cycles.nrows() != frequencies.len() || cycles.nrows() != roles.len() {
-        return Err(MeasuredBankError::Message(format!(
-            "{}: shape mismatch cycles={} freq={} role={}",
-            npz_path.display(),
-            cycles.nrows(),
-            frequencies.len(),
-            roles.len()
-        )));
-    }
-    if cycles.ncols() != TABLE_LENGTH {
-        return Err(MeasuredBankError::Message(format!(
-            "{}: expected {TABLE_LENGTH} phase bins, got {}",
-            npz_path.display(),
-            cycles.ncols()
-        )));
-    }
-    if cycles.iter().any(|sample| !sample.is_finite()) {
-        return Err(MeasuredBankError::Message(format!(
-            "{}: median_cycles contains non-finite samples",
-            npz_path.display()
-        )));
-    }
-    if frequencies
-        .iter()
-        .any(|frequency| !frequency.is_finite() || *frequency <= 0.0)
-        || frequencies
-            .iter()
-            .zip(frequencies.iter().skip(1))
-            .any(|(left, right)| right <= left)
-    {
-        return Err(MeasuredBankError::Message(format!(
-            "{}: measured frequencies must be finite, positive, and strictly increasing",
-            npz_path.display()
-        )));
-    }
-
-    let training_indices: Vec<usize> = roles
-        .iter()
-        .enumerate()
-        .filter_map(|(index, role)| (*role == ROLE_TRAINING).then_some(index))
-        .collect();
-    if training_indices.is_empty() {
-        return Err(MeasuredBankError::Message(format!(
-            "{}: no training rows",
-            npz_path.display()
-        )));
-    }
-
-    let adjacent_spectral_cosines = adjacent_spectral_cosines(&cycles, &training_indices)?;
-    if let Some((ordinal, score)) = adjacent_spectral_cosines
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, score)| *score < MIN_ADJACENT_SPECTRAL_COSINE)
-    {
-        let left = training_indices[ordinal];
-        let right = training_indices[ordinal + 1];
-        return Err(MeasuredBankError::Message(format!(
-            "{}: incoherent adjacent training cycles at rows {left}/{right} ({:.3} Hz/{:.3} Hz): spectral cosine {score:.4} < {MIN_ADJACENT_SPECTRAL_COSINE:.2}; reject capture before bank generation",
-            npz_path.display(),
-            frequencies[left],
-            frequencies[right]
-        )));
-    }
-
-    let maximum_supported_frequency_hz = frequencies
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let mut tables = Vec::with_capacity(training_indices.len() * TABLE_LENGTH);
-    let mut training_frequencies_hz = Vec::with_capacity(training_indices.len());
-    let mut harmonic_limits = Vec::with_capacity(training_indices.len());
-    let mut guard_frequencies_hz = Vec::with_capacity(training_indices.len());
-
-    for (ordinal, &index) in training_indices.iter().enumerate() {
-        let guard_frequency = if ordinal + 1 < training_indices.len() {
-            frequencies[training_indices[ordinal + 1]]
-        } else {
-            maximum_supported_frequency_hz
-        };
-        if guard_frequency <= 0.0 {
-            return Err(MeasuredBankError::Message(format!(
-                "{}: non-positive guard frequency at training ordinal {ordinal}",
-                npz_path.display()
-            )));
-        }
-        let row = cycles.row(index);
-        let cycle: Vec<f32> = row.iter().copied().collect();
-        let (table, harmonic_limit) =
-            pitch_safe_table(&cycle, guard_frequency, reference_sample_rate_hz)?;
-        tables.extend_from_slice(&table);
-        training_frequencies_hz.push(frequencies[index]);
-        harmonic_limits.push(harmonic_limit);
-        guard_frequencies_hz.push(guard_frequency);
-    }
-
-    Ok(WaveformTables {
-        tables,
-        training_indices,
-        training_frequencies_hz,
-        harmonic_limits,
-        guard_frequencies_hz,
-        maximum_supported_frequency_hz,
-        adjacent_spectral_cosines,
-    })
-}
-
-fn adjacent_spectral_cosines(
-    cycles: &Array2<f32>,
-    training_indices: &[usize],
-) -> Result<Vec<f64>, MeasuredBankError> {
-    let spectra: Vec<Vec<f64>> = training_indices
-        .iter()
-        .map(|&index| magnitude_spectrum(&cycles.row(index).iter().copied().collect::<Vec<_>>()))
-        .collect();
-    spectra
-        .windows(2)
-        .map(|pair| {
-            let dot = pair[0]
-                .iter()
-                .zip(&pair[1])
-                .map(|(left, right)| left * right)
-                .sum::<f64>();
-            let left_norm = pair[0]
-                .iter()
-                .map(|value| value * value)
-                .sum::<f64>()
-                .sqrt();
-            let right_norm = pair[1]
-                .iter()
-                .map(|value| value * value)
-                .sum::<f64>()
-                .sqrt();
-            if left_norm <= 1e-20 || right_norm <= 1e-20 {
-                return Err(MeasuredBankError::Message(
-                    "training cycle has no usable harmonic energy".to_string(),
-                ));
-            }
-            Ok((dot / (left_norm * right_norm)).clamp(0.0, 1.0))
-        })
-        .collect()
-}
-
-fn magnitude_spectrum(cycle: &[f32]) -> Vec<f64> {
-    let mut buffer: Vec<Complex<f64>> = cycle
-        .iter()
-        .map(|sample| Complex::new(f64::from(*sample), 0.0))
-        .collect();
-    let mut planner = FftPlanner::<f64>::new();
-    planner.plan_fft_forward(TABLE_LENGTH).process(&mut buffer);
-    // Ignore DC and compare enough harmonics to expose gross pitch-dependent
-    // coloration while remaining insensitive to phase alignment.
-    buffer[1..=256].iter().map(|bin| bin.norm()).collect()
-}
-
-pub fn pitch_safe_table(
+pub fn reconstruct_mip(
     cycle: &[f32],
-    guard_frequency_hz: f64,
-    reference_sample_rate_hz: f64,
-) -> Result<(Vec<f32>, usize), MeasuredBankError> {
-    if cycle.len() != TABLE_LENGTH {
+    harmonic_limit: usize,
+    phase_shift_cycles: f64,
+) -> Result<Vec<f32>, MeasuredBankError> {
+    if cycle.len() != PHASE_BINS_SOURCE || harmonic_limit == 0 || harmonic_limit > 1023 {
         return Err(MeasuredBankError::Message(format!(
-            "cycle length {} != {TABLE_LENGTH}",
+            "invalid source cycle/mip: samples={} harmonic_limit={harmonic_limit}",
             cycle.len()
         )));
     }
-    let mut buffer: Vec<Complex<f64>> = cycle
-        .iter()
-        .map(|sample| Complex {
-            re: f64::from(*sample),
-            im: 0.0,
-        })
-        .collect();
-    let mut planner = FftPlanner::<f64>::new();
-    planner.plan_fft_forward(TABLE_LENGTH).process(&mut buffer);
-
-    let spectrum_len = TABLE_LENGTH / 2 + 1;
-    let harmonic_cap = (TABLE_LENGTH / 2).saturating_sub(1);
-    let nyquist_cap =
-        ((NYQUIST_GUARD * reference_sample_rate_hz) / guard_frequency_hz).floor() as usize;
-    let harmonic_limit = spectrum_len
-        .saturating_sub(1)
-        .min(harmonic_cap)
-        .min(nyquist_cap);
-
-    for bin in (harmonic_limit + 1)..spectrum_len {
-        buffer[bin] = Complex::new(0.0, 0.0);
+    let spectrum = complex_spectrum(cycle);
+    let table_length = table_length(harmonic_limit);
+    let scale = table_length as f64 / PHASE_BINS_SOURCE as f64;
+    let mut output = vec![Complex::new(0.0, 0.0); table_length];
+    output[0] = spectrum[0] * scale;
+    for harmonic in 1..=harmonic_limit {
+        let angle = std::f64::consts::TAU * harmonic as f64 * phase_shift_cycles;
+        let rotation = Complex::new(angle.cos(), angle.sin());
+        output[harmonic] = spectrum[harmonic] * rotation * scale;
+        output[table_length - harmonic] = output[harmonic].conj();
     }
-    // Hermitian symmetry for irfft via full FFT inverse
-    for bin in 1..TABLE_LENGTH / 2 {
-        let mirror = TABLE_LENGTH - bin;
-        if bin > harmonic_limit {
-            buffer[mirror] = Complex::new(0.0, 0.0);
-        } else {
-            buffer[mirror] = buffer[bin].conj();
-        }
-    }
-
-    planner.plan_fft_inverse(TABLE_LENGTH).process(&mut buffer);
-    let scale = TABLE_LENGTH as f64;
-    let table: Vec<f32> = buffer
-        .iter()
-        .map(|value| (value.re / scale) as f32)
-        .collect();
-    Ok((table, harmonic_limit))
+    FftPlanner::<f64>::new()
+        .plan_fft_inverse(table_length)
+        .process(&mut output);
+    Ok(output
+        .into_iter()
+        .map(|sample| (sample.re / table_length as f64) as f32)
+        .collect())
 }
 
 pub fn write_synthetic_npz(
@@ -568,136 +324,535 @@ pub fn write_synthetic_npz(
     let file = File::create(path)?;
     let mut npz = NpzWriter::new(file);
     npz.add_array("median_cycles", cycles)
-        .map_err(|err| MeasuredBankError::Npz(err.to_string()))?;
+        .map_err(|error| MeasuredBankError::Npz(error.to_string()))?;
     npz.add_array(
         "measured_frequency_hz",
         &Array1::from_vec(frequencies.to_vec()),
     )
-    .map_err(|err| MeasuredBankError::Npz(err.to_string()))?;
+    .map_err(|error| MeasuredBankError::Npz(error.to_string()))?;
     npz.add_array("role", &Array1::from_vec(roles.to_vec()))
-        .map_err(|err| MeasuredBankError::Npz(err.to_string()))?;
+        .map_err(|error| MeasuredBankError::Npz(error.to_string()))?;
     npz.finish()
-        .map_err(|err| MeasuredBankError::Npz(err.to_string()))?;
+        .map_err(|error| MeasuredBankError::Npz(error.to_string()))?;
+    Ok(())
+}
+
+struct WaveformTables {
+    samples: Vec<f32>,
+    training_indices: Vec<usize>,
+    training_frequencies_hz: Vec<f64>,
+    maximum_supported_frequency_hz: f64,
+    adjacent_spectral_cosines: Vec<f64>,
+}
+
+fn waveform_tables(
+    path: &Path,
+    selection: TrainingSelection,
+    phase_shifts: Option<&[f64]>,
+) -> Result<WaveformTables, MeasuredBankError> {
+    let file = File::open(path)?;
+    let mut reader =
+        NpzReader::new(file).map_err(|error| MeasuredBankError::Npz(error.to_string()))?;
+    let cycles: Array2<f32> = reader
+        .by_name("median_cycles")
+        .map_err(|error| MeasuredBankError::Npz(format!("median_cycles: {error}")))?;
+    let frequencies: ndarray::Array1<f64> = reader
+        .by_name("measured_frequency_hz")
+        .map_err(|error| MeasuredBankError::Npz(format!("measured_frequency_hz: {error}")))?;
+    let roles: Option<ndarray::Array1<u8>> = if selection == TrainingSelection::RoleZero {
+        Some(
+            reader
+                .by_name("role")
+                .map_err(|error| MeasuredBankError::Npz(format!("role: {error}")))?,
+        )
+    } else {
+        None
+    };
+    if cycles.nrows() != frequencies.len()
+        || roles
+            .as_ref()
+            .is_some_and(|values| values.len() != cycles.nrows())
+        || cycles.ncols() != PHASE_BINS_SOURCE
+        || cycles.iter().any(|sample| !sample.is_finite())
+    {
+        return Err(MeasuredBankError::Message(format!(
+            "{}: invalid source shapes or samples",
+            path.display()
+        )));
+    }
+    if frequencies
+        .iter()
+        .any(|frequency| !frequency.is_finite() || *frequency <= 0.0)
+        || frequencies
+            .windows(2)
+            .into_iter()
+            .any(|pair| pair[1] <= pair[0])
+    {
+        return Err(MeasuredBankError::Message(format!(
+            "{}: frequencies must be finite, positive, and increasing",
+            path.display()
+        )));
+    }
+    let training_indices: Vec<usize> = match selection {
+        TrainingSelection::RoleZero => roles
+            .as_ref()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, role)| (*role == ROLE_TRAINING).then_some(index))
+            .collect(),
+        TrainingSelection::EvenRows => (0..cycles.nrows()).step_by(2).collect(),
+    };
+    if training_indices.is_empty() {
+        return Err(MeasuredBankError::Message(format!(
+            "{}: no training rows",
+            path.display()
+        )));
+    }
+    if phase_shifts.is_some_and(|shifts| shifts.len() != training_indices.len()) {
+        return Err(MeasuredBankError::Message(format!(
+            "{}: phase shift count does not match training rows",
+            path.display()
+        )));
+    }
+    let adjacent_spectral_cosines = adjacent_spectral_cosines(&cycles, &training_indices)?;
+    if let Some((ordinal, score)) = adjacent_spectral_cosines
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, score)| *score < MIN_ADJACENT_SPECTRAL_COSINE)
+    {
+        return Err(MeasuredBankError::Message(format!(
+            "{}: incoherent adjacent training cycles at rows {}/{}: spectral cosine {score:.4} < {MIN_ADJACENT_SPECTRAL_COSINE:.2}",
+            path.display(),
+            training_indices[ordinal],
+            training_indices[ordinal + 1]
+        )));
+    }
+    let mut samples = Vec::new();
+    for &limit in &MIP_HARMONIC_LIMITS {
+        for (ordinal, &row) in training_indices.iter().enumerate() {
+            let cycle: Vec<f32> = cycles.row(row).iter().copied().collect();
+            let shift = phase_shifts.map_or(0.0, |values| values[ordinal]);
+            samples.extend(reconstruct_mip(&cycle, usize::from(limit), shift)?);
+        }
+    }
+    Ok(WaveformTables {
+        samples,
+        training_frequencies_hz: training_indices
+            .iter()
+            .map(|&index| frequencies[index])
+            .collect(),
+        maximum_supported_frequency_hz: frequencies.iter().copied().fold(0.0, f64::max),
+        training_indices,
+        adjacent_spectral_cosines,
+    })
+}
+
+fn validate_request(request: &BankRequest) -> Result<(), MeasuredBankError> {
+    if !request.derived_root.is_dir() {
+        return Err(MeasuredBankError::Message(format!(
+            "derived root not found: {} (run synth-capture extract first)",
+            request.derived_root.display()
+        )));
+    }
+    if !request.source_sample_rate_hz.is_finite() || request.source_sample_rate_hz <= 0.0 {
+        return Err(MeasuredBankError::Message(
+            "source sample rate must be finite and positive".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn write_rust_profile(
+    path: &Path,
+    request: &BankRequest,
+    manifest: &serde_json::Value,
+    manifest_checksum: &str,
+) -> Result<(), MeasuredBankError> {
+    let fnv = manifest["bank_binary"]["fnv1a32"]
+        .as_u64()
+        .ok_or_else(|| MeasuredBankError::Message("manifest fnv1a32 missing".into()))?;
+    let sample_count = manifest["bank_binary"]["sample_count"]
+        .as_u64()
+        .ok_or_else(|| MeasuredBankError::Message("manifest sample count missing".into()))?;
+    let samples_per_waveform = manifest["layout"]["samples_per_waveform"]
+        .as_u64()
+        .ok_or_else(|| MeasuredBankError::Message("samples per waveform missing".into()))?;
+    let mut source = String::from(
+        "//! Generated by synth-tools wavetable_bank; do not edit.\n\n\
+         use crate::dsp::WavetableProfile;\n\n",
+    );
+    source.push_str(&format!(
+        "pub const WAVETABLE_BANK_PROFILE_ID: &str = {:?};\n\
+         pub const WAVETABLE_BANK_TARGET_ID: &str = {:?};\n\
+         pub const WAVETABLE_BANK_MANIFEST_SHA256: &str = {manifest_checksum:?};\n\
+         pub const WAVETABLE_BANK_FNV1A32: u32 = 0x{fnv:08x};\n\
+         pub const WAVETABLE_BANK_SAMPLE_COUNT: usize = {sample_count};\n\
+         pub const WAVETABLE_BANK_SAMPLES_PER_WAVEFORM: usize = {samples_per_waveform};\n\
+         pub const WAVETABLE_BANK_SOURCE_SAMPLE_RATE_HZ: f32 = {:.9e}_f32;\n\n",
+        request.profile_id, request.target_id, request.source_sample_rate_hz
+    ));
+    write_integer_array(
+        &mut source,
+        "WAVETABLE_MIP_HARMONIC_LIMITS",
+        &MIP_HARMONIC_LIMITS,
+    );
+    let lengths: Vec<u16> = manifest["layout"]["mips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|mip| mip["table_length"].as_u64().unwrap() as u16)
+        .collect();
+    write_integer_array(&mut source, "WAVETABLE_MIP_TABLE_LENGTHS", &lengths);
+    let offsets: Vec<u32> = manifest["layout"]["mips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|mip| mip["sample_offset_per_waveform"].as_u64().unwrap() as u32)
+        .collect();
+    write_integer_array(&mut source, "WAVETABLE_MIP_OFFSETS", &offsets);
+    for (waveform, prefix) in [("saw", "SAW"), ("triangle", "TRIANGLE"), ("pulse", "PULSE")] {
+        let frequencies = manifest["waveforms"][waveform]["training_frequencies_hz"]
+            .as_array()
+            .ok_or_else(|| MeasuredBankError::Message(format!("{waveform} frequencies missing")))?;
+        source.push_str(&format!(
+            "pub const WAVETABLE_{prefix}_FREQUENCIES_HZ: [f32; {}] = [\n",
+            frequencies.len()
+        ));
+        for frequency in frequencies {
+            source.push_str(&format!("    {:.9e}_f32,\n", frequency.as_f64().unwrap()));
+        }
+        let maximum = manifest["waveforms"][waveform]["maximum_supported_frequency_hz"]
+            .as_f64()
+            .unwrap();
+        source.push_str(&format!(
+            "];\n\npub const WAVETABLE_{prefix}_MAXIMUM_HZ: f32 = {maximum:.9e}_f32;\n\n"
+        ));
+    }
+    source.push_str(&format!(
+        "pub static {}: WavetableProfile = WavetableProfile {{\n\
+             id: WAVETABLE_BANK_PROFILE_ID,\n\
+             target_id: WAVETABLE_BANK_TARGET_ID,\n\
+             manifest_sha256: WAVETABLE_BANK_MANIFEST_SHA256,\n\
+             fnv1a32: WAVETABLE_BANK_FNV1A32,\n\
+             sample_count: WAVETABLE_BANK_SAMPLE_COUNT,\n\
+             samples_per_waveform: WAVETABLE_BANK_SAMPLES_PER_WAVEFORM,\n\
+             source_sample_rate_hz: WAVETABLE_BANK_SOURCE_SAMPLE_RATE_HZ,\n\
+             mip_harmonic_limits: &WAVETABLE_MIP_HARMONIC_LIMITS,\n\
+             mip_table_lengths: &WAVETABLE_MIP_TABLE_LENGTHS,\n\
+             mip_offsets: &WAVETABLE_MIP_OFFSETS,\n\
+             legacy_table_length: 0,\n\
+             legacy_reference_sample_rate_hz: 0.0,\n\
+             saw_hz: &WAVETABLE_SAW_FREQUENCIES_HZ,\n\
+             triangle_hz: &WAVETABLE_TRIANGLE_FREQUENCIES_HZ,\n\
+             pulse_hz: &WAVETABLE_PULSE_FREQUENCIES_HZ,\n\
+             saw_max_hz: WAVETABLE_SAW_MAXIMUM_HZ,\n\
+             triangle_max_hz: WAVETABLE_TRIANGLE_MAXIMUM_HZ,\n\
+             pulse_max_hz: WAVETABLE_PULSE_MAXIMUM_HZ,\n\
+         }};\n",
+        request.rust_profile_symbol
+    ));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, source)?;
+    Ok(())
+}
+
+fn write_integer_array<T: std::fmt::Display>(source: &mut String, name: &str, values: &[T]) {
+    source.push_str(&format!(
+        "pub const {name}: [{}; {}] = [\n",
+        std::any::type_name::<T>(),
+        values.len()
+    ));
+    for value in values {
+        source.push_str(&format!("    {value},\n"));
+    }
+    source.push_str("];\n\n");
+}
+
+fn phase_shifts_from_manifest(
+    manifest: &serde_json::Value,
+    waveform: &str,
+) -> Result<Vec<f64>, MeasuredBankError> {
+    manifest["waveforms"][waveform]["training_global_phase_shifts_cycles"]
+        .as_array()
+        .ok_or_else(|| MeasuredBankError::Message(format!("{waveform}: phase shifts missing")))?
+        .iter()
+        .map(|value| {
+            value.as_f64().ok_or_else(|| {
+                MeasuredBankError::Message(format!("{waveform}: invalid phase shift"))
+            })
+        })
+        .collect()
+}
+
+fn adjacent_spectral_cosines(
+    cycles: &Array2<f32>,
+    training_indices: &[usize],
+) -> Result<Vec<f64>, MeasuredBankError> {
+    let spectra: Vec<Vec<f64>> = training_indices
+        .iter()
+        .map(|&index| {
+            complex_spectrum(&cycles.row(index).iter().copied().collect::<Vec<_>>())[1..=256]
+                .iter()
+                .map(|bin| bin.norm())
+                .collect()
+        })
+        .collect();
+    spectra
+        .windows(2)
+        .map(|pair| {
+            let dot = pair[0]
+                .iter()
+                .zip(&pair[1])
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+            let left = pair[0]
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            let right = pair[1]
+                .iter()
+                .map(|value| value * value)
+                .sum::<f64>()
+                .sqrt();
+            if left <= 1.0e-20 || right <= 1.0e-20 {
+                return Err(MeasuredBankError::Message(
+                    "training cycle has no usable harmonic energy".into(),
+                ));
+            }
+            Ok((dot / (left * right)).clamp(0.0, 1.0))
+        })
+        .collect()
+}
+
+fn complex_spectrum(cycle: &[f32]) -> Vec<Complex<f64>> {
+    let mut spectrum: Vec<_> = cycle
+        .iter()
+        .map(|sample| Complex::new(f64::from(*sample), 0.0))
+        .collect();
+    FftPlanner::<f64>::new()
+        .plan_fft_forward(cycle.len())
+        .process(&mut spectrum);
+    spectrum
+}
+
+fn mip_table_lengths() -> Vec<usize> {
+    MIP_HARMONIC_LIMITS
+        .iter()
+        .map(|limit| table_length(usize::from(*limit)))
+        .collect()
+}
+
+fn table_length(harmonic_limit: usize) -> usize {
+    (2 * (harmonic_limit + 1)).next_power_of_two().max(64)
+}
+
+fn mip_offsets(pitch_count: usize, lengths: &[usize]) -> Vec<usize> {
+    let mut offset = 0;
+    lengths
+        .iter()
+        .map(|length| {
+            let current = offset;
+            offset += pitch_count * length;
+            current
+        })
+        .collect()
+}
+
+fn read_json(path: &Path) -> Result<serde_json::Value, MeasuredBankError> {
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+
+fn manifest_binary_path(binary_path: &Path, manifest_path: &Path) -> String {
+    if binary_path.parent() == manifest_path.parent() {
+        return binary_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("bank.f32le")
+            .to_string();
+    }
+    binary_path
+        .strip_prefix(repository_root())
+        .unwrap_or(binary_path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn write_samples(path: &Path, samples: &[f32]) -> Result<(), MeasuredBankError> {
+    let mut file = File::create(path)?;
+    for sample in samples {
+        file.write_all(&sample.to_le_bytes())?;
+    }
+    file.sync_all()?;
     Ok(())
 }
 
 fn fnv1a32(values: &[f32]) -> u32 {
-    let mut result = 0x811c_9dc5_u32;
-    for sample in values {
-        for byte in sample.to_le_bytes() {
-            result ^= u32::from(byte);
-            result = result.wrapping_mul(0x0100_0193);
-        }
-    }
-    result
+    values.iter().fold(0x811c_9dc5, |hash, sample| {
+        sample.to_le_bytes().iter().fold(hash, |hash, byte| {
+            (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+        })
+    })
 }
 
 fn sha256_file(path: &Path) -> Result<String, MeasuredBankError> {
-    let bytes = fs::read(path)?;
-    Ok(hex_encode(&Sha256::digest(bytes)))
+    Ok(hex_encode(Sha256::digest(fs::read(path)?)))
 }
 
 fn manifest_content_sha256(manifest: &serde_json::Value) -> Result<String, MeasuredBankError> {
-    let bytes = serde_json::to_vec(manifest)?;
-    Ok(hex_encode(&Sha256::digest(bytes)))
+    Ok(hex_encode(Sha256::digest(serde_json::to_vec(manifest)?)))
 }
 
 fn hex_encode(bytes: impl AsRef<[u8]>) -> String {
-    let bytes = bytes.as_ref();
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("synth-tools is directly under the repository root")
+        .to_path_buf()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BankRequest, ROLE_TRAINING, TABLE_LENGTH, WAVEFORMS, build_bank, pitch_safe_table,
-        write_synthetic_npz,
-    };
     use ndarray::Array2;
+    use rustfft::{FftPlanner, num_complex::Complex};
     use tempfile::tempdir;
 
+    use super::*;
+
     #[test]
-    fn pitch_safe_table_is_finite() {
-        let cycle: Vec<f32> = (0..TABLE_LENGTH)
+    fn hierarchy_and_lengths_match_v2_contract() {
+        let mut generated = vec![1023_u16];
+        while *generated.last().unwrap() > 1 {
+            let previous = *generated.last().unwrap();
+            let next = (f64::from(previous) / 2.0_f64.powf(0.25)).floor() as u16;
+            if next != previous {
+                generated.push(next.max(1));
+            }
+        }
+        assert_eq!(generated, MIP_HARMONIC_LIMITS);
+        assert_eq!(MIP_HARMONIC_LIMITS[0], 1023);
+        assert_eq!(*MIP_HARMONIC_LIMITS.last().unwrap(), 1);
+        assert!(MIP_HARMONIC_LIMITS.windows(2).all(|pair| pair[1] < pair[0]));
+        for limit in MIP_HARMONIC_LIMITS {
+            let length = table_length(usize::from(limit));
+            assert!(length.is_power_of_two());
+            assert!(length >= 64);
+            assert!(length >= 2 * (usize::from(limit) + 1));
+        }
+    }
+
+    #[test]
+    fn every_phase_rich_mip_preserves_legal_complex_bins_and_removes_the_rest() {
+        let cycle: Vec<f32> = (0..PHASE_BINS_SOURCE)
             .map(|index| {
-                let phase = index as f64 / TABLE_LENGTH as f64;
-                (2.0 * phase - 1.0) as f32
+                let phase = std::f64::consts::TAU * index as f64 / PHASE_BINS_SOURCE as f64;
+                (0.7 * phase.sin()
+                    + 0.2 * (7.0 * phase + 0.37).sin()
+                    + 0.08 * (113.0 * phase - 0.21).sin()
+                    + 0.02 * (700.0 * phase + 0.49).sin()) as f32
             })
             .collect();
-        let (table, limit) = pitch_safe_table(&cycle, 440.0, 96_000.0).unwrap();
-        assert_eq!(table.len(), TABLE_LENGTH);
-        assert!(table.iter().all(|sample| sample.is_finite()));
-        assert!(limit > 0);
-    }
-
-    #[test]
-    fn builds_bank_from_synthetic_npz() {
-        let dir = tempdir().unwrap();
-        let derived = dir.path().join("derived");
-        std::fs::create_dir_all(&derived).unwrap();
-        let output = dir.path().join("banks");
-        let rust_profile = dir.path().join("profile.rs");
-
-        for waveform in WAVEFORMS {
-            let mut cycles = Array2::<f32>::zeros((4, TABLE_LENGTH));
-            for row in 0..4 {
-                for bin in 0..TABLE_LENGTH {
-                    let phase = bin as f64 / TABLE_LENGTH as f64;
-                    cycles[[row, bin]] = ((row + 1) as f32) * (2.0 * phase - 1.0) as f32 * 0.1;
-                }
-            }
-            let frequencies = [110.0, 123.0, 138.0, 155.0];
-            let roles = [ROLE_TRAINING, 1, ROLE_TRAINING, 2];
-            write_synthetic_npz(
-                &derived.join(format!("{waveform}-cycles-v1.npz")),
-                &cycles,
-                &frequencies,
-                &roles,
-            )
-            .unwrap();
+        let source_spectrum = complex_spectrum(&cycle);
+        let shift = 0.125;
+        for limit in MIP_HARMONIC_LIMITS.map(usize::from) {
+            let table = reconstruct_mip(&cycle, limit, shift).unwrap();
+            let mut spectrum: Vec<_> = table
+                .iter()
+                .map(|sample| Complex::new(f64::from(*sample), 0.0))
+                .collect();
+            FftPlanner::<f64>::new()
+                .plan_fft_forward(table.len())
+                .process(&mut spectrum);
+            assert!(
+                spectrum[(limit + 1)..table.len() / 2]
+                    .iter()
+                    .all(|bin| bin.norm() < 1.0e-3),
+                "limit={limit}"
+            );
+            let legal = [700, 113, 7, 1]
+                .into_iter()
+                .find(|harmonic| *harmonic <= limit)
+                .unwrap();
+            let angle = std::f64::consts::TAU * legal as f64 * shift;
+            let expected = source_spectrum[legal] / PHASE_BINS_SOURCE as f64
+                * Complex::new(angle.cos(), angle.sin());
+            let actual = spectrum[legal] / table.len() as f64;
+            assert!(
+                (actual - expected).norm() < 1.0e-6,
+                "limit={limit} harmonic={legal} actual={actual:?} expected={expected:?}"
+            );
         }
-
-        let result = build_bank(&BankRequest {
-            derived_root: derived,
-            output_dir: output.clone(),
-            profile_id: "test-measured-bank-v1".into(),
-            target_id: "test-target".into(),
-            reference_sample_rate_hz: 96_000.0,
-            rust_profile_path: Some(rust_profile.clone()),
-        })
-        .unwrap();
-
-        assert_eq!(result.pitch_count_per_waveform, 2);
-        assert_eq!(result.sample_count, WAVEFORMS.len() * 2 * TABLE_LENGTH);
-        assert!(result.binary_path.is_file());
-        assert!(result.manifest_path.is_file());
-        let manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(result.manifest_path).unwrap()).unwrap();
-        assert_eq!(manifest["profile_id"], "test-measured-bank-v1");
-        assert!(manifest["manifest_content_sha256"].as_str().unwrap().len() == 64);
-        assert!(manifest["bank_binary"]["fnv1a32"].as_u64().is_some());
-        assert!(output.join("test-measured-bank-v1.f32le").is_file());
-        let source = std::fs::read_to_string(rust_profile).unwrap();
-        assert!(source.contains("WAVETABLE_BANK_REFERENCE_SAMPLE_RATE_HZ"));
-        assert!(source.contains("reference_sample_rate_hz:"));
     }
 
     #[test]
-    fn rejects_incoherent_training_cycles() {
-        let dir = tempdir().unwrap();
-        let derived = dir.path().join("derived");
-        std::fs::create_dir_all(&derived).unwrap();
-        for waveform in WAVEFORMS {
-            let mut cycles = Array2::<f32>::zeros((3, TABLE_LENGTH));
-            for bin in 0..TABLE_LENGTH {
-                let phase = bin as f64 / TABLE_LENGTH as f64;
-                cycles[[0, bin]] = (2.0 * phase - 1.0) as f32;
-                cycles[[1, bin]] = (2.0 * std::f64::consts::PI * 97.0 * phase).sin() as f32;
-                cycles[[2, bin]] = (2.0 * phase - 1.0) as f32;
+    fn synthetic_v2_generation_is_deterministic() {
+        let directory = tempdir().unwrap();
+        let derived = directory.path().join("derived");
+        write_fixture(&derived, false);
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        let first_result = build_bank(&request(&derived, &first)).unwrap();
+        let second_result = build_bank(&request(&derived, &second)).unwrap();
+        assert_eq!(
+            fs::read(first_result.binary_path).unwrap(),
+            fs::read(second_result.binary_path).unwrap()
+        );
+        assert_eq!(
+            fs::read(first_result.manifest_path).unwrap(),
+            fs::read(second_result.manifest_path).unwrap()
+        );
+    }
+
+    #[test]
+    fn incoherent_sources_are_rejected() {
+        let directory = tempdir().unwrap();
+        let derived = directory.path().join("derived");
+        write_fixture(&derived, true);
+        let error = build_bank(&request(&derived, &directory.path().join("output"))).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("incoherent adjacent training cycles")
+        );
+    }
+
+    fn request(derived: &Path, output: &Path) -> BankRequest {
+        BankRequest {
+            derived_root: derived.to_path_buf(),
+            output_dir: output.to_path_buf(),
+            manifest_dir: output.to_path_buf(),
+            profile_id: "synthetic-v2".into(),
+            target_id: "synthetic".into(),
+            source_sample_rate_hz: 96_000.0,
+            source_waveforms: ["saw".into(), "triangle".into(), "pulse50".into()],
+            training_selection: TrainingSelection::RoleZero,
+            phase_manifest_path: None,
+            rust_profile_path: None,
+            rust_profile_symbol: "SYNTHETIC_PROFILE".into(),
+        }
+    }
+
+    fn write_fixture(derived: &Path, incoherent: bool) {
+        for waveform in ["saw", "triangle", "pulse50"] {
+            let mut cycles = Array2::<f32>::zeros((3, PHASE_BINS_SOURCE));
+            for row in 0..3 {
+                for index in 0..PHASE_BINS_SOURCE {
+                    let phase = std::f64::consts::TAU * index as f64 / PHASE_BINS_SOURCE as f64;
+                    let harmonic = if incoherent && row == 1 { 97.0 } else { 1.0 };
+                    cycles[[row, index]] =
+                        (harmonic * phase).sin() as f32 * (1.0 + row as f32 * 0.01);
+                }
             }
             write_synthetic_npz(
                 &derived.join(format!("{waveform}-cycles-v1.npz")),
@@ -707,19 +862,5 @@ mod tests {
             )
             .unwrap();
         }
-        let error = build_bank(&BankRequest {
-            derived_root: derived,
-            output_dir: dir.path().join("banks"),
-            profile_id: "bad-bank".into(),
-            target_id: "bad-target".into(),
-            reference_sample_rate_hz: 48_000.0,
-            rust_profile_path: None,
-        })
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("incoherent adjacent training cycles")
-        );
     }
 }

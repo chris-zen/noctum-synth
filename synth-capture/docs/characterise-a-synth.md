@@ -125,8 +125,8 @@ Outputs:
   layout: waveform × training pitch × 2048 samples (`saw`, `triangle`, `pulse50`)
 - `arturia-prophet5-measured-bank-v1.json` — manifest (freqs, Nyquist limits,
   checksums, identity warning, prior-work DOI)
-- `synth-core/src/dsp/wavetable_bank_profile_prophet5.rs` — regenerated
-  compile-time metadata, including the 48 kHz playback reference
+- `synth-core/src/voice/osc_engine/wavetable_banks/prophet5_profile.rs` —
+  regenerated compile-time metadata beside the compiled bank binary
 
 Policy notes:
 
@@ -148,8 +148,9 @@ cp plans/analog-osc/research/banks/arturia-prophet5-measured-bank-v1.f32le \
 Keep the existing Monologue bank beside it
 (`korg-monologue-measured-bank-v1.f32le`). `synth-app` loads both and exposes
 two combo entries: **Wavetable (Monologue)** and
-**Wavetable (Prophet-5 V)**. Compile-time profile metadata for
-each bank lives in `synth-core` (`wavetable_bank_profile*.rs`).
+**Wavetable (Prophet-5 V)**. Compile-time profile metadata for each bank lives
+beside the compiled `.f32le` assets in
+`synth-core/src/voice/osc_engine/wavetable_banks/`.
 
 ## 6. What “done” means
 

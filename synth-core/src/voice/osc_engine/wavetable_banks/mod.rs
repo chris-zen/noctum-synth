@@ -1,52 +1,49 @@
 //! Feature-gated generated wavetable assets compiled into the desktop binary.
 
-use crate::dsp::{
-    MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE, WavetableBank,
-};
+mod monologue_profile;
+mod prophet5_profile;
+
+use crate::dsp::WavetableBank;
 
 use super::BankId;
 
-const MONOLOGUE_SAMPLE_COUNT: usize = 221_184;
-const PROPHET5_SAMPLE_COUNT: usize = 227_328;
+pub use monologue_profile::MONOLOGUE_WAVETABLE_BANK_PROFILE;
+pub use prophet5_profile::PROPHET5_WAVETABLE_BANK_PROFILE;
 
-static MONOLOGUE_SAMPLES: [f32; MONOLOGUE_SAMPLE_COUNT] = decode_f32le::<
-    MONOLOGUE_SAMPLE_COUNT,
-    { MONOLOGUE_SAMPLE_COUNT * 4 },
->(include_bytes!("monologue.f32le"));
+const MONOLOGUE_SAMPLE_COUNT: usize = MONOLOGUE_WAVETABLE_BANK_PROFILE.sample_count;
+const PROPHET5_SAMPLE_COUNT: usize = PROPHET5_WAVETABLE_BANK_PROFILE.sample_count;
 
-static PROPHET5_SAMPLES: [f32; PROPHET5_SAMPLE_COUNT] = decode_f32le::<
-    PROPHET5_SAMPLE_COUNT,
-    { PROPHET5_SAMPLE_COUNT * 4 },
->(include_bytes!("prophet5.f32le"));
+static MONOLOGUE_BYTES: AlignedBytes<{ MONOLOGUE_SAMPLE_COUNT * 4 }> =
+    AlignedBytes(*include_bytes!("monologue.f32le"));
 
-pub(super) const fn bank(id: BankId) -> WavetableBank {
+static PROPHET5_BYTES: AlignedBytes<{ PROPHET5_SAMPLE_COUNT * 4 }> =
+    AlignedBytes(*include_bytes!("prophet5.f32le"));
+
+pub(super) fn bank(id: BankId) -> WavetableBank {
     match id {
-        BankId::Monologue => {
-            WavetableBank::from_compiled(&MONOLOGUE_SAMPLES, &MONOLOGUE_WAVETABLE_BANK_PROFILE)
-        }
+        BankId::Monologue => WavetableBank::from_compiled(
+            samples(&MONOLOGUE_BYTES),
+            &MONOLOGUE_WAVETABLE_BANK_PROFILE,
+        ),
         BankId::Prophet5 => {
-            WavetableBank::from_compiled(&PROPHET5_SAMPLES, &PROPHET5_WAVETABLE_BANK_PROFILE)
+            WavetableBank::from_compiled(samples(&PROPHET5_BYTES), &PROPHET5_WAVETABLE_BANK_PROFILE)
         }
     }
 }
 
-const fn decode_f32le<const SAMPLES: usize, const BYTES: usize>(
-    bytes: &[u8; BYTES],
-) -> [f32; SAMPLES] {
-    assert!(BYTES == SAMPLES * 4);
-    let mut output = [0.0; SAMPLES];
-    let mut index = 0;
-    while index < SAMPLES {
-        let offset = index * 4;
-        output[index] = f32::from_bits(u32::from_le_bytes([
-            bytes[offset],
-            bytes[offset + 1],
-            bytes[offset + 2],
-            bytes[offset + 3],
-        ]));
-        index += 1;
+#[repr(C, align(4))]
+struct AlignedBytes<const BYTES: usize>([u8; BYTES]);
+
+fn samples<const BYTES: usize>(bytes: &'static AlignedBytes<BYTES>) -> &'static [f32] {
+    assert!(cfg!(target_endian = "little"));
+    assert!(BYTES % core::mem::size_of::<f32>() == 0);
+    // AlignedBytes guarantees f32 alignment; every f32 bit pattern is valid.
+    unsafe {
+        core::slice::from_raw_parts(
+            bytes.0.as_ptr().cast::<f32>(),
+            BYTES / core::mem::size_of::<f32>(),
+        )
     }
-    output
 }
 
 #[cfg(test)]
@@ -59,8 +56,8 @@ mod tests {
             let compiled = bank(id);
             let validated = WavetableBank::new(
                 match id {
-                    BankId::Monologue => &MONOLOGUE_SAMPLES,
-                    BankId::Prophet5 => &PROPHET5_SAMPLES,
+                    BankId::Monologue => samples(&MONOLOGUE_BYTES),
+                    BankId::Prophet5 => samples(&PROPHET5_BYTES),
                 },
                 compiled.profile(),
             )

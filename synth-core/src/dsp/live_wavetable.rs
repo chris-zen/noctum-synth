@@ -2,7 +2,7 @@
 
 use crate::{
     dsp::{
-        Waveform,
+        Waveform, WavetableSupportStatus,
         analog_oscillator::{EngineOscillator, OscillatorStep, pulse_width_from_shape},
         blep::{table_blep_post_step_correction_lane, table_points_per_side_lane},
         wavetable_bank::{WavetableBank, WavetableTableOscillator},
@@ -22,11 +22,14 @@ pub(crate) struct LiveWavetable {
     measured_secondary: [WavetableTableOscillator; WideF32::LANES],
     measured_waveform_lanes: [bool; WideF32::LANES],
     measured_lanes: [bool; WideF32::LANES],
+    measured_amounts: [f32; WideF32::LANES],
+    support_statuses: [WavetableSupportStatus; WideF32::LANES],
     sync_correction: [[f32; SYNC_BLEP_SAMPLES]; WideF32::LANES],
     sync_correction_index: usize,
     enabled: bool,
     slop_enabled: bool,
     pitch_grid_refresh_countdown: u8,
+    pitch_grid_dirty: bool,
     waveform: Waveform,
     shape: f32,
 }
@@ -41,11 +44,14 @@ impl LiveWavetable {
             }),
             measured_waveform_lanes: [true; WideF32::LANES],
             measured_lanes: [true; WideF32::LANES],
+            measured_amounts: [1.0; WideF32::LANES],
+            support_statuses: [WavetableSupportStatus::Measured; WideF32::LANES],
             sync_correction: [[0.0; SYNC_BLEP_SAMPLES]; WideF32::LANES],
             sync_correction_index: 0,
             enabled: true,
             slop_enabled: false,
             pitch_grid_refresh_countdown: 0,
+            pitch_grid_dirty: false,
             waveform: Waveform::Saw,
             shape: 0.0,
         }
@@ -66,27 +72,44 @@ impl LiveWavetable {
             self.measured_waveform_lanes[lane] = primary_supported && secondary_supported;
         }
         self.update_measured_frequencies(self.baseline.frequency_hz(), true);
+        self.pitch_grid_dirty = false;
     }
 
     pub(crate) fn set_frequency(&mut self, frequency: WideF32) {
+        let previous = self.baseline.frequency_hz().to_array();
         self.baseline.set_frequency(frequency);
-        self.update_measured_frequencies(self.baseline.frequency_hz(), true);
+        let next = self.baseline.frequency_hz().to_array();
+        let force_pitch_grid = previous
+            .iter()
+            .zip(next.iter())
+            .any(|(&before, &after)| pitch_grid_must_refresh(before, after));
+        let refresh_pitch_grid = force_pitch_grid || self.pitch_grid_refresh_countdown == 0;
+        self.update_measured_frequencies(self.baseline.frequency_hz(), refresh_pitch_grid);
+        self.pitch_grid_dirty = !refresh_pitch_grid;
+        if refresh_pitch_grid {
+            self.pitch_grid_refresh_countdown = PITCH_GRID_REFRESH_SAMPLES - 1;
+        }
     }
 
     fn update_measured_frequencies(&mut self, frequency: WideF32, refresh_pitch_grid: bool) {
         for (lane, value) in frequency.to_array().into_iter().enumerate() {
-            let primary_frequency = if refresh_pitch_grid {
+            let primary_status = if refresh_pitch_grid {
                 self.measured[lane].set_frequency_live(value)
             } else {
                 self.measured[lane].set_frequency_live_control_rate(value, false)
             };
-            let secondary_frequency = if refresh_pitch_grid {
+            let secondary_status = if refresh_pitch_grid {
                 self.measured_secondary[lane].set_frequency_live(value)
             } else {
                 self.measured_secondary[lane].set_frequency_live_control_rate(value, false)
             };
-            self.measured_lanes[lane] =
-                self.measured_waveform_lanes[lane] && primary_frequency && secondary_frequency;
+            self.support_statuses[lane] = combined_status(primary_status, secondary_status);
+            self.measured_lanes[lane] = self.measured_waveform_lanes[lane]
+                && primary_status.uses_measured()
+                && secondary_status.uses_measured();
+            self.measured_amounts[lane] = self.measured[lane]
+                .measured_amount()
+                .min(self.measured_secondary[lane].measured_amount());
         }
     }
 
@@ -103,8 +126,13 @@ impl LiveWavetable {
     pub(crate) fn set_slop_amount(&mut self, amount: f32) {
         self.baseline.set_slop_amount(amount);
         self.slop_enabled = amount > 0.0;
-        self.pitch_grid_refresh_countdown = PITCH_GRID_REFRESH_SAMPLES - 1;
         self.update_measured_frequencies(self.baseline.frequency_hz(), true);
+        self.pitch_grid_dirty = false;
+        self.pitch_grid_refresh_countdown = if self.slop_enabled {
+            PITCH_GRID_REFRESH_SAMPLES - 1
+        } else {
+            0
+        };
     }
 
     pub(crate) fn trigger_lane(&mut self, lane: usize, reset_phase: bool) {
@@ -118,6 +146,10 @@ impl LiveWavetable {
 
     pub(crate) fn frequency_hz(&self) -> WideF32 {
         self.baseline.frequency_hz()
+    }
+
+    pub(crate) fn support_status(&self) -> WavetableSupportStatus {
+        self.support_statuses[0]
     }
 
     pub(crate) fn set_bank(&mut self, bank: WavetableBank) {
@@ -214,13 +246,16 @@ impl LiveWavetable {
     pub(crate) fn next(&mut self, context: &mut RenderContext<'_>) -> OscillatorStep {
         let mut step = self.baseline.next(context);
         if self.slop_enabled {
-            let refresh_pitch_grid = self.pitch_grid_refresh_countdown == 0;
-            self.update_measured_frequencies(self.baseline.frequency_hz(), refresh_pitch_grid);
-            self.pitch_grid_refresh_countdown = if refresh_pitch_grid {
-                PITCH_GRID_REFRESH_SAMPLES - 1
-            } else {
-                self.pitch_grid_refresh_countdown - 1
-            };
+            self.update_measured_frequencies(self.baseline.frequency_hz(), false);
+            self.pitch_grid_dirty = true;
+        }
+        if self.pitch_grid_refresh_countdown > 0 {
+            self.pitch_grid_refresh_countdown -= 1;
+        }
+        if self.pitch_grid_dirty && self.pitch_grid_refresh_countdown == 0 {
+            self.update_measured_frequencies(self.baseline.frequency_hz(), true);
+            self.pitch_grid_dirty = false;
+            self.pitch_grid_refresh_countdown = PITCH_GRID_REFRESH_SAMPLES - 1;
         }
         let mut output = step.output.to_array();
         for lane in 0..WideF32::LANES {
@@ -252,7 +287,7 @@ impl LiveWavetable {
                     measured + sync_correction
                 };
                 if self.enabled {
-                    output[lane] = measured;
+                    output[lane] += (measured - output[lane]) * self.measured_amounts[lane];
                 }
             } else {
                 self.measured[lane].advance_phase_only();
@@ -265,6 +300,34 @@ impl LiveWavetable {
     }
 }
 
+fn combined_status(
+    primary: WavetableSupportStatus,
+    secondary: WavetableSupportStatus,
+) -> WavetableSupportStatus {
+    use WavetableSupportStatus::{
+        AboveCapturedRange, FundamentalAboveNyquistGuard, InvalidFrequency, Measured,
+        TransitionToFallback, UnsupportedPlaybackRate,
+    };
+
+    match (primary, secondary) {
+        (InvalidFrequency, _) | (_, InvalidFrequency) => InvalidFrequency,
+        (FundamentalAboveNyquistGuard, _) | (_, FundamentalAboveNyquistGuard) => {
+            FundamentalAboveNyquistGuard
+        }
+        (UnsupportedPlaybackRate, _) | (_, UnsupportedPlaybackRate) => UnsupportedPlaybackRate,
+        (AboveCapturedRange, _) | (_, AboveCapturedRange) => AboveCapturedRange,
+        (TransitionToFallback, _) | (_, TransitionToFallback) => TransitionToFallback,
+        (Measured, Measured) => Measured,
+    }
+}
+
+fn pitch_grid_must_refresh(before_hz: f32, after_hz: f32) -> bool {
+    if !before_hz.is_finite() || before_hz <= 0.0 || !after_hz.is_finite() || after_hz <= 0.0 {
+        return true;
+    }
+    libm::fabsf(libm::log2f(after_hz / before_hz)) > 0.5 / 12.0
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -272,7 +335,7 @@ mod tests {
     use std::boxed::Box;
     use std::vec;
 
-    use crate::dsp::wavetable_bank_profile::MONOLOGUE_WAVETABLE_BANK_PROFILE;
+    use crate::voice::MONOLOGUE_WAVETABLE_BANK_PROFILE;
 
     use super::*;
 
@@ -287,9 +350,19 @@ mod tests {
     fn ramp_measured_bank() -> WavetableBank {
         let profile = &MONOLOGUE_WAVETABLE_BANK_PROFILE;
         let mut samples = vec![0.0; profile.sample_count];
-        for (index, sample) in samples.iter_mut().enumerate() {
-            let phase = (index % profile.table_length) as f32 / profile.table_length as f32;
-            *sample = phase * 2.0 - 1.0;
+        for waveform in 0..crate::dsp::WAVETABLE_WAVEFORMS {
+            for (mip, &length) in profile.mip_table_lengths.iter().enumerate() {
+                let length = usize::from(length);
+                for pitch in 0..profile.saw_hz.len() {
+                    let offset = waveform * profile.samples_per_waveform
+                        + profile.mip_offsets[mip] as usize
+                        + pitch * length;
+                    for index in 0..length {
+                        let phase = index as f32 / length as f32;
+                        samples[offset + index] = phase * 2.0 - 1.0;
+                    }
+                }
+            }
         }
         WavetableBank::new_unchecked_for_test(Box::leak(samples.into_boxed_slice()), profile)
     }
@@ -301,13 +374,23 @@ mod tests {
         source.set_frequency(WideF32::splat(220.0));
         let mut context = crate::create_render_context!();
         let measured = source.next(&mut context).output.to_array();
-        assert!(measured.iter().all(|sample| *sample == 0.25));
+        assert!(
+            measured
+                .iter()
+                .all(|sample| (*sample - 0.25).abs() < 1.0e-6),
+            "measured={measured:?} status={:?}",
+            source.support_status()
+        );
 
         source.set_waveform(Waveform::Pulse);
         source.set_shape(0.0);
         let mut context = crate::create_render_context!();
         let neutral_pulse = source.next(&mut context).output.to_array();
-        assert!(neutral_pulse.iter().all(|sample| *sample == 0.25));
+        assert!(
+            neutral_pulse
+                .iter()
+                .all(|sample| (*sample - 0.25).abs() < 1.0e-6)
+        );
         source.set_shape(1.0);
         let mut context = crate::create_render_context!();
         let narrow_pulse = source.next(&mut context).output.to_array();
@@ -320,7 +403,11 @@ mod tests {
         source.set_waveform(Waveform::SawTri);
         let mut context = crate::create_render_context!();
         let measured_saw_tri = source.next(&mut context).output.to_array();
-        assert!(measured_saw_tri.iter().all(|sample| *sample == 0.25));
+        assert!(
+            measured_saw_tri
+                .iter()
+                .all(|sample| (*sample - 0.25).abs() < 1.0e-6)
+        );
 
         source.set_frequency(WideF32::splat(4_000.0));
         let mut context = crate::create_render_context!();
@@ -370,6 +457,35 @@ mod tests {
     }
 
     #[test]
+    fn set_frequency_after_slop_init_does_not_defer_pitch_grid() {
+        let mut source = LiveWavetable::new(ramp_measured_bank(), 48_000.0);
+        source.set_slop_amount(0.0);
+        source.set_waveform(Waveform::Saw);
+        let before = source.measured[0].pitch_grid_refreshes_for_test();
+        source.set_frequency(WideF32::splat(1_244.5));
+        let after = source.measured[0].pitch_grid_refreshes_for_test();
+        assert!(
+            after > before,
+            "note-sized frequency change deferred the pitch-grid refresh"
+        );
+
+        let mut context = crate::create_render_context!();
+        source.trigger_lane(0, true);
+        let mut samples = [0.0; 20];
+        for sample in &mut samples {
+            *sample = source.next(&mut context).output.to_array()[0];
+        }
+        let max_jump = samples
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_jump < 0.15,
+            "first ramp still has a deferred pitch-grid jump of {max_jump}"
+        );
+    }
+
+    #[test]
     fn slop_updates_phase_increment_per_sample_but_pitch_grid_at_control_rate() {
         let mut source = LiveWavetable::new(ramp_measured_bank(), 48_000.0);
         source.set_waveform(Waveform::Saw);
@@ -392,6 +508,29 @@ mod tests {
         assert!(
             refreshes <= 17,
             "pitch-grid search unexpectedly ran {refreshes} times for 256 samples"
+        );
+    }
+
+    #[test]
+    fn glide_updates_mips_per_sample_but_pitch_grid_at_control_rate() {
+        let mut source = LiveWavetable::new(ramp_measured_bank(), 48_000.0);
+        source.set_waveform(Waveform::Saw);
+        source.set_frequency(WideF32::splat(110.0));
+        let initial_refreshes = source.measured[0].pitch_grid_refreshes_for_test();
+
+        for sample in 0..256 {
+            let frequency = 110.0 * libm::exp2f(sample as f32 / 255.0);
+            source.set_frequency(WideF32::splat(frequency));
+            let mut context = crate::create_render_context!();
+            let output = source.next(&mut context).output.to_array();
+            assert!(output.iter().all(|value| value.is_finite()));
+        }
+
+        let refreshes = source.measured[0].pitch_grid_refreshes_for_test() - initial_refreshes;
+        assert!(refreshes > 0);
+        assert!(
+            refreshes <= 18,
+            "pitch-grid search unexpectedly ran {refreshes} times for 256 glide samples"
         );
     }
 }

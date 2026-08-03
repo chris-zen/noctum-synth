@@ -7,7 +7,7 @@ use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::{Deserialize, Serialize};
 
 use synth_core::dsp::{SawMethod, Waveform};
-use synth_core::{BankId, OscillatorEngineType, OscillatorPreview};
+use synth_core::{BankId, OscillatorEngineType, OscillatorPreview, WavetableSupportStatus};
 
 use crate::ui::analysis::spectrum::{self, SpectrumConfig};
 
@@ -38,6 +38,7 @@ pub struct OscillatorViewState {
     pub rendered_method: SawMethod,
     pub rendered_engine: OscillatorEngineType,
     pub rendered_bank: BankId,
+    pub wavetable_support_status: WavetableSupportStatus,
 
     pub zoom_ms: f32,
     pub offset_ms: f32,
@@ -77,6 +78,7 @@ impl Default for OscillatorViewState {
             rendered_method: SawMethod::PolyBlep,
             rendered_engine: OscillatorEngineType::default_engine(),
             rendered_bank: BankId::Monologue,
+            wavetable_support_status: WavetableSupportStatus::Measured,
             zoom_ms: 7.0,
             offset_ms: 0.0,
             show_dots: true,
@@ -316,6 +318,27 @@ pub fn show(ui: &mut egui::Ui, state: &mut OscillatorViewState) {
         state.last_params_hash = current_hash;
     }
 
+    #[cfg(feature = "osc-wavetable")]
+    {
+        if state.oscillator_engine == OscillatorEngineType::Wavetable {
+            match state.wavetable_support_status {
+                WavetableSupportStatus::TransitionToFallback => {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Measured range ending: crossfading to BLEP over this semitone.",
+                    );
+                }
+                WavetableSupportStatus::AboveCapturedRange => {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Current note is above this bank's captured range; rendering BLEP.",
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     ui.add_space(8.0);
 
     let available = ui.available_size();
@@ -497,7 +520,7 @@ fn render_oscillator(state: &mut OscillatorViewState) {
     let length_changed = total_samples != state.samples.len();
     let fft_total = total_samples.max(state.fft_size);
 
-    let fft_samples = {
+    let (fft_samples, support_status) = {
         let mut oscillator = OscillatorPreview::new(
             sr,
             state.oscillator_engine,
@@ -514,8 +537,9 @@ fn render_oscillator(state: &mut OscillatorViewState) {
         for _ in 0..fft_total {
             samples.push(oscillator.next_sample(&mut context));
         }
-        samples
+        (samples, oscillator.wavetable_support_status())
     };
+    state.wavetable_support_status = support_status;
 
     state.samples.clear();
     state.samples.reserve(total_samples);
@@ -1023,6 +1047,30 @@ mod tests {
         assert!(max_diff(&baseline, &mono) > 0.05, "monologue should differ");
         assert!(max_diff(&baseline, &art) > 0.05, "prophet5 should differ");
         assert!(max_diff(&mono, &art) > 0.05, "measured banks should differ");
+    }
+
+    #[cfg(feature = "osc-wavetable")]
+    #[test]
+    fn render_records_the_wavetable_range_warning_status() {
+        let mut state = OscillatorViewState::default();
+        state.sample_rate = 48_000.0;
+        state.oscillator_engine = OscillatorEngineType::Wavetable;
+        state.wavetable_bank = BankId::Monologue;
+        state.waveform = 3;
+        let transition_hz = 1_263.157_8 * 2.0_f32.powf(0.5 / 12.0);
+        state.note = 69.0 + 12.0 * (transition_hz / 440.0).log2();
+        render_oscillator(&mut state);
+        assert_eq!(
+            state.wavetable_support_status,
+            WavetableSupportStatus::TransitionToFallback
+        );
+
+        state.note += 1.0;
+        render_oscillator(&mut state);
+        assert_eq!(
+            state.wavetable_support_status,
+            WavetableSupportStatus::AboveCapturedRange
+        );
     }
 
     #[cfg(feature = "osc-wavetable")]

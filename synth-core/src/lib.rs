@@ -76,6 +76,7 @@ pub mod sequencer;
 pub mod tuning;
 pub mod voice;
 
+pub use dsp::WavetableSupportStatus;
 #[cfg(feature = "oscillator-research")]
 pub use dsp::{
     OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics, ResearchError,
@@ -101,6 +102,8 @@ pub use sequencer::model::{
     SequencerFeedback, SequencerRecordCommand, SequencerType,
 };
 pub use voice::{BankId, OscillatorEngineType, OscillatorPreview};
+#[cfg(feature = "osc-wavetable")]
+pub use voice::{MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE};
 pub use voice::{PerformanceModulation, VoiceBlock, glide_seconds};
 
 use crate::{
