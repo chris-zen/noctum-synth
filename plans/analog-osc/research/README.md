@@ -72,7 +72,15 @@ Current Plan 04 evidence is organized as follows:
 - `banks/prophet5-wavetable-bank-v2.json`: Arturia Prophet-5 V r7 schema-v2
   bank from extraction revision 2 (software reference, not hardware).
 - `reports/multirate-measured-wavetable-v2.md`: Plan 11 implementation record,
-  Monologue/Prophet bank generation, and remaining combined qualification gates.
+  both-bank qualification results, residual fix, and soak-gate revision.
+- `reports/korg-monologue-measured-wavetable-runtime-v2.json`: compiled v2
+  runtime held-out metrics for every Monologue validation/test pitch.
+- `reports/korg-monologue-measured-wavetable-v2-sweeps.json`: Monologue v2
+  48/96 kHz material residual sweep (0 material failures).
+- `reports/prophet5-wavetable-v2-sweeps.json`: Prophet v2 48/96 kHz material
+  residual sweep (0 material failures).
+- `profiles/prophet5-wavetable-sweep-v2.json`: Prophet residual-sweep profile
+  derived from the r7 capture summaries.
 - `reports/korg-monologue-measured-wavetable-runtime-v1.json`: compiled runtime
   results for every held-out pitch.
 - `reports/korg-monologue-measured-wavetable-sweeps-v1.json`: compiled 48/96 kHz

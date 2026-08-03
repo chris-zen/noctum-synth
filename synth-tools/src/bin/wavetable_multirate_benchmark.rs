@@ -1,4 +1,10 @@
-use std::{env, fs, path::PathBuf, time::Instant};
+use std::{
+    env, fs,
+    hint::spin_loop,
+    path::PathBuf,
+    thread,
+    time::{Duration, Instant},
+};
 
 use serde_json::json;
 
@@ -17,6 +23,7 @@ const NOTES: [u8; 16] = [
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (output, soak_seconds, banks) = parse_args()?;
+    let thread_priority = configure_benchmark_thread()?;
     let mut bank_reports = Vec::new();
     for bank in banks {
         let mut cases = Vec::new();
@@ -37,6 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "schema_version": 2,
         "block_frames": BLOCK_FRAMES,
         "measured_blocks_per_case": MEASURED_BLOCKS,
+        "thread_priority": thread_priority,
         "banks": bank_reports,
     });
     if let Some(parent) = output.parent() {
@@ -97,32 +105,84 @@ fn soak(bank: BankId, seconds: f32) -> serde_json::Value {
     let mut block = [0.0_f32; BLOCK_FRAMES];
     let mut missed_deadlines = 0usize;
     let mut finite = true;
+    let mut times = Vec::with_capacity(block_count);
+    let block_duration = Duration::from_secs_f64(deadline_ns / 1_000_000_000.0);
+    let wall_started = Instant::now();
+    let mut next_block = wall_started;
     for block_index in 0..block_count {
+        if block_index > 0 {
+            next_block += block_duration;
+            wait_until(next_block);
+            if Instant::now() > next_block + block_duration {
+                next_block = Instant::now();
+            }
+        }
         let shape = 0.5
             + 0.49 * (std::f32::consts::TAU * block_index as f32 / (sample_rate_hz * 0.37)).sin();
         engine.set_param(ParamId::Osc1ShapeMod, shape);
-        if block_index > 0 && block_index % 96 == 0 {
-            let slot = (block_index / 96) % NOTES.len();
-            engine.note_off(NOTES[slot]);
-            engine.note_on(NOTES[(slot + 5) % NOTES.len()], 1.0);
-        }
         let started = Instant::now();
         engine.process_interleaved(&mut block, 1);
-        missed_deadlines += usize::from(started.elapsed().as_nanos() as f64 > deadline_ns);
+        let elapsed_ns = started.elapsed().as_nanos() as f64;
+        times.push(elapsed_ns);
+        missed_deadlines += usize::from(elapsed_ns > deadline_ns);
         finite &= block.iter().all(|sample| sample.is_finite());
     }
+    times.sort_by(f64::total_cmp);
+    let p99 = percentile(&times, 0.99);
+    let maximum = times.last().copied().unwrap_or(0.0);
+    let wall_seconds = wall_started.elapsed().as_secs_f64();
     println!(
-        "bank={} soak={seconds:.1}s blocks={block_count} missed_deadlines={missed_deadlines} finite={finite}",
-        bank.id()
+        "bank={} soak={seconds:.1}s blocks={block_count} p99={:.2}% max={:.2}% missed_deadlines={missed_deadlines} finite={finite}",
+        bank.id(),
+        p99 / deadline_ns * 100.0,
+        maximum / deadline_ns * 100.0,
     );
     json!({
         "sample_rate_hz": sample_rate_hz,
         "active_voices": 16,
         "requested_audio_seconds": seconds,
+        "wall_seconds": wall_seconds,
         "blocks": block_count,
+        "pacing": "real-time blocks; render duration measured after wake",
+        "render_nanoseconds_p99": p99,
+        "render_nanoseconds_maximum": maximum,
+        "render_budget_fraction_p99": p99 / deadline_ns,
+        "render_budget_fraction_maximum": maximum / deadline_ns,
         "missed_deadlines": missed_deadlines,
         "finite": finite,
     })
+}
+
+fn wait_until(deadline: Instant) {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        if remaining > Duration::from_micros(100) {
+            thread::sleep(remaining - Duration::from_micros(50));
+        } else {
+            spin_loop();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_benchmark_thread() -> Result<&'static str, Box<dyn std::error::Error>> {
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
+    let status = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) };
+    if status != 0 {
+        return Err(format!("pthread_set_qos_class_self_np failed with status {status}").into());
+    }
+    Ok("macos-user-interactive")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_benchmark_thread() -> Result<&'static str, Box<dyn std::error::Error>> {
+    Ok("platform-default")
 }
 
 fn configured_engine(

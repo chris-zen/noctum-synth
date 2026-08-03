@@ -126,13 +126,21 @@ impl WavetableBank {
         let position = phase * table_length as f32;
         let unwrapped = position as usize;
         let index = unwrapped & (table_length - 1);
+        let previous = index.wrapping_sub(1) & (table_length - 1);
         let next = (index + 1) & (table_length - 1);
+        let after_next = (index + 2) & (table_length - 1);
         let fraction = position - unwrapped as f32;
         let mip_offset = self.profile.mip_offsets.get(mip).copied().unwrap_or(0) as usize;
         let offset =
             waveform * self.profile.samples_per_waveform + mip_offset + pitch * table_length;
+        let before = self.samples[offset + previous];
         let first = self.samples[offset + index];
-        first + (self.samples[offset + next] - first) * fraction
+        let second = self.samples[offset + next];
+        let after = self.samples[offset + after_next];
+        let linear = (second - before) * 0.5;
+        let quadratic = before - first * 2.5 + second * 2.0 - after * 0.5;
+        let cubic = (first - second) * 1.5 + (after - before) * 0.5;
+        first + fraction * (linear + fraction * (quadratic + fraction * cubic))
     }
 }
 
@@ -453,8 +461,8 @@ fn profile_is_valid(profile: &WavetableProfile) -> bool {
         if limit != WAVETABLE_MIP_HARMONIC_LIMITS[mip]
             || limit >= previous_limit
             || !length.is_power_of_two()
-            || length < 64
-            || length != (2 * (usize::from(limit) + 1)).next_power_of_two().max(64)
+            || length < 256
+            || length != expected_table_length(usize::from(limit))
             || profile.mip_offsets[mip] as usize != expected_offset
         {
             return false;
@@ -463,6 +471,12 @@ fn profile_is_valid(profile: &WavetableProfile) -> bool {
         previous_limit = limit;
     }
     expected_offset == profile.samples_per_waveform
+}
+
+fn expected_table_length(harmonic_limit: usize) -> usize {
+    let nyquist_minimum = (2 * (harmonic_limit + 1)).next_power_of_two();
+    let interpolation_margin = (4 * (harmonic_limit + 1)).next_power_of_two().min(512);
+    nyquist_minimum.max(interpolation_margin).max(256)
 }
 
 fn fnv1a_samples(samples: &[f32]) -> u32 {
@@ -489,8 +503,8 @@ mod tests {
         35, 29, 24, 20, 16, 13, 10, 8, 6, 5, 4, 3, 2, 1,
     ];
     const LENGTHS: [u16; WAVETABLE_MIP_COUNT] = [
-        2048, 2048, 2048, 2048, 1024, 1024, 1024, 1024, 512, 512, 512, 512, 256, 256, 256, 256,
-        128, 128, 128, 128, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+        2048, 2048, 2048, 2048, 1024, 1024, 1024, 1024, 512, 512, 512, 512, 512, 512, 512, 512,
+        256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256,
     ];
     const OFFSETS: [u32; WAVETABLE_MIP_COUNT] = mip_offsets();
     const SAMPLES_PER_WAVEFORM: usize = samples_per_waveform();

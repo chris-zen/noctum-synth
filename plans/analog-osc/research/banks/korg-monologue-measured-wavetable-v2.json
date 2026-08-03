@@ -1,10 +1,10 @@
 {
   "bank_binary": {
-    "bytes": 7216128,
-    "fnv1a32": 1263254795,
+    "bytes": 8957952,
+    "fnv1a32": 277447973,
     "path": "target/analog-osc/banks/korg-monologue-measured-wavetable-v2.f32le",
-    "sample_count": 1804032,
-    "sha256": "dc1f6c1a342462b46fd055438953de3c3041291aa228206be567bf5f3aff6c0c"
+    "sample_count": 2239488,
+    "sha256": "dbf46a2e728880ee7feafa4b08177a2d34fea4ecd50b9cbb37d23ed50d0e162c"
   },
   "identity_warning": "Korg Monologue public real-hardware dataset; capture bandwidth limits retained.",
   "layout": {
@@ -73,114 +73,114 @@
       {
         "harmonic_limit": 125,
         "sample_offset_per_waveform": 516096,
-        "table_length": 256
+        "table_length": 512
       },
       {
         "harmonic_limit": 105,
-        "sample_offset_per_waveform": 525312,
-        "table_length": 256
+        "sample_offset_per_waveform": 534528,
+        "table_length": 512
       },
       {
         "harmonic_limit": 88,
-        "sample_offset_per_waveform": 534528,
-        "table_length": 256
+        "sample_offset_per_waveform": 552960,
+        "table_length": 512
       },
       {
         "harmonic_limit": 73,
-        "sample_offset_per_waveform": 543744,
-        "table_length": 256
+        "sample_offset_per_waveform": 571392,
+        "table_length": 512
       },
       {
         "harmonic_limit": 61,
-        "sample_offset_per_waveform": 552960,
-        "table_length": 128
+        "sample_offset_per_waveform": 589824,
+        "table_length": 256
       },
       {
         "harmonic_limit": 51,
-        "sample_offset_per_waveform": 557568,
-        "table_length": 128
+        "sample_offset_per_waveform": 599040,
+        "table_length": 256
       },
       {
         "harmonic_limit": 42,
-        "sample_offset_per_waveform": 562176,
-        "table_length": 128
+        "sample_offset_per_waveform": 608256,
+        "table_length": 256
       },
       {
         "harmonic_limit": 35,
-        "sample_offset_per_waveform": 566784,
-        "table_length": 128
+        "sample_offset_per_waveform": 617472,
+        "table_length": 256
       },
       {
         "harmonic_limit": 29,
-        "sample_offset_per_waveform": 571392,
-        "table_length": 64
+        "sample_offset_per_waveform": 626688,
+        "table_length": 256
       },
       {
         "harmonic_limit": 24,
-        "sample_offset_per_waveform": 573696,
-        "table_length": 64
+        "sample_offset_per_waveform": 635904,
+        "table_length": 256
       },
       {
         "harmonic_limit": 20,
-        "sample_offset_per_waveform": 576000,
-        "table_length": 64
+        "sample_offset_per_waveform": 645120,
+        "table_length": 256
       },
       {
         "harmonic_limit": 16,
-        "sample_offset_per_waveform": 578304,
-        "table_length": 64
+        "sample_offset_per_waveform": 654336,
+        "table_length": 256
       },
       {
         "harmonic_limit": 13,
-        "sample_offset_per_waveform": 580608,
-        "table_length": 64
+        "sample_offset_per_waveform": 663552,
+        "table_length": 256
       },
       {
         "harmonic_limit": 10,
-        "sample_offset_per_waveform": 582912,
-        "table_length": 64
+        "sample_offset_per_waveform": 672768,
+        "table_length": 256
       },
       {
         "harmonic_limit": 8,
-        "sample_offset_per_waveform": 585216,
-        "table_length": 64
+        "sample_offset_per_waveform": 681984,
+        "table_length": 256
       },
       {
         "harmonic_limit": 6,
-        "sample_offset_per_waveform": 587520,
-        "table_length": 64
+        "sample_offset_per_waveform": 691200,
+        "table_length": 256
       },
       {
         "harmonic_limit": 5,
-        "sample_offset_per_waveform": 589824,
-        "table_length": 64
+        "sample_offset_per_waveform": 700416,
+        "table_length": 256
       },
       {
         "harmonic_limit": 4,
-        "sample_offset_per_waveform": 592128,
-        "table_length": 64
+        "sample_offset_per_waveform": 709632,
+        "table_length": 256
       },
       {
         "harmonic_limit": 3,
-        "sample_offset_per_waveform": 594432,
-        "table_length": 64
+        "sample_offset_per_waveform": 718848,
+        "table_length": 256
       },
       {
         "harmonic_limit": 2,
-        "sample_offset_per_waveform": 596736,
-        "table_length": 64
+        "sample_offset_per_waveform": 728064,
+        "table_length": 256
       },
       {
         "harmonic_limit": 1,
-        "sample_offset_per_waveform": 599040,
-        "table_length": 64
+        "sample_offset_per_waveform": 737280,
+        "table_length": 256
       }
     ],
     "nyquist_guard": 0.45,
     "order": "waveform, mip, training pitch, sample",
     "pitch_count_per_waveform": 36,
-    "sample_count": 1804032,
-    "samples_per_waveform": 601344,
+    "sample_count": 2239488,
+    "samples_per_waveform": 746496,
     "selection": "richest safe mip plus adjacent leaner mip; log-space blend from a 1024-entry runtime lookup",
     "waveforms": [
       "saw",
@@ -188,7 +188,7 @@
       "pulse"
     ]
   },
-  "manifest_content_sha256": "c4b0eb29857dea92d764a815fc994a6ecc7a2aacf272113dceadb7bdf3deffa0",
+  "manifest_content_sha256": "5ba49b2f5e36fe745136eb7239b6a2e24a940756906d026b3729ea66d274a0a5",
   "profile_id": "korg-monologue-measured-wavetable-v2",
   "sample_format": "little-endian IEEE-754 float32",
   "schema_version": 2,

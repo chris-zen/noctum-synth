@@ -66,7 +66,9 @@ Builds schema-v2 Monologue or Prophet measured banks from extract NPZs. Every
 pitch knot receives the universal 33-level harmonic mip hierarchy; capture
 sample rate is provenance, while runtime safety uses the 0.45 guard and actual
 phase increment. The tool rejects incoherent adjacent training cycles and
-reconstructs every mip directly from the original complex spectrum. End-to-end
+reconstructs every mip directly from the original complex spectrum. Tables use
+a 256-sample interpolation floor and bounded mid-mip margin so cubic runtime
+resampling does not reintroduce material images. End-to-end
 capture→bank runbook:
 [`../synth-capture/docs/characterise-a-synth.md`](../synth-capture/docs/characterise-a-synth.md).
 
@@ -94,16 +96,21 @@ Writes WAVs under `plans/wavetable-listening/`.
 
 ### `wavetable_multirate_benchmark`
 
-Benchmarks the compiled Monologue v2 bank through the full Pass Through synth
+Benchmarks compiled measured wavetable banks through the full Pass Through synth
 engine with 1, 4, and 16 active voices at 44.1, 48, 96, and 192 kHz, then runs
-the 48 kHz sixteen-voice mip/slop soak.
+the 48 kHz sixteen-voice mip/slop soak for each selected bank.
 
 ```bash
-cargo run --release -p synth-tools --bin wavetable_multirate_benchmark
+cargo run --release -p synth-tools --bin wavetable_multirate_benchmark -- --bank all
 ```
 
-Use `--output <file>` to change the JSON path or `--soak-seconds <seconds>` for
-a shorter diagnostic run. The qualification default is 60 seconds.
+`--bank` accepts `all` (default), `monologue`, or `prophet5`. Use `--output
+<file>` to change the JSON path or `--soak-seconds <seconds>` for a shorter
+diagnostic run. The qualification default is 60 seconds. Schema version 2
+reports one entry per bank under `banks`. The soak uses paced real-time blocks
+and macOS user-interactive QoS when available. Qualification requires finite
+output and p99 below 50% of the block deadline; maximum render time and overrun
+counts remain scheduler-noise diagnostics.
 
 ### `factory_corpus_acceptance`
 

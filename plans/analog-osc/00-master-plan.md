@@ -78,7 +78,7 @@ method that could target a faster embedded platform.
 | [08](08-full-voice-characterisation.md) | `[ ]` planned | Protocols for oscillator, filter, modulation, and control laws |
 | [09](09-target-conditioned-phase-filter.md) | `[x]` closed; retained evidence | Compact fitted phase/filter hypothesis |
 | [10](10-measured-wavetable-residual.md) | `[x]` frozen desktop experiment | Measured deterministic waveform candidate |
-| [11](11-multirate-measured-wavetables.md) | `[~]` Monologue + Prophet v2 banks built; combined gates open | Sample-rate-independent pitch-by-mip banks |
+| [11](11-multirate-measured-wavetables.md) | `[x]` closed; both-bank residual/runtime gates pass | Sample-rate-independent pitch-by-mip banks |
 | [12](12-coherent-gray-box-core.md) | `[ ]` planned | Simplified physical oscillator state model |
 | [13](13-nonlinear-phase-blep-and-lp-blit.md) | `[ ]` planned | Better causal edge and bandwidth models |
 | [14](14-antialiased-nonlinearity.md) | `[ ]` planned | Color stages without uncontrolled aliasing |
@@ -197,10 +197,16 @@ Rust generator reconstructs 33 universal mip levels directly from the measured
 complex spectra, the allocation-free renderer performs pitch-by-mip
 interpolation from each lane's effective phase increment, and Osc Design
 reports the one-semitone captured-range transition. Compiled sizes are
-7,216,128 bytes (Monologue) and 7,416,576 bytes (Prophet); combined embed is
-14,632,704 bytes under the 20 MiB cap. The Prophet bank comes from the verified
-r7 capture after extraction revision 2. Combined held-out metrics, alias
-sweeps, and the zero-miss 60-second soak remain open.
+8,957,952 bytes (Monologue) and 9,206,784 bytes (Prophet); combined embed is
+18,164,736 bytes under the 20 MiB cap. The Prophet bank comes from the verified
+r7 capture after extraction revision 2. Rate/domain/safety coverage and
+Monologue held-out runtime metrics are recorded. A 256-sample interpolation
+floor, bounded mid-mip margin, and cubic periodic interpolation remove the
+short-table imaging regressions: both banks now have zero material failures.
+At 48 kHz, sixteen-voice p99 is 26.51% / 22.32% and paced 60-second soak p99 is
+33.85% / 36.33%, with finite output. Because desktop wall-clock maxima remain
+scheduler-dependent despite pacing and user-interactive QoS, Plan 11 closes on
+the documented p99/finite gate while retaining overrun counts as diagnostics.
 
 ## Ground truth in the current repository
 

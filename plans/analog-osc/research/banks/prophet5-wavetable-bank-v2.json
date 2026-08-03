@@ -1,10 +1,10 @@
 {
   "bank_binary": {
-    "bytes": 7416576,
-    "fnv1a32": 3253984549,
+    "bytes": 9206784,
+    "fnv1a32": 2721270817,
     "path": "target/analog-osc/banks/prophet5-wavetable-bank-v2.f32le",
-    "sample_count": 1854144,
-    "sha256": "27541543f303586646895a691fcc6075acf41129de93ae54d62e54a66b17a937"
+    "sample_count": 2301696,
+    "sha256": "a4cf1e9cd6d506b86a6ac7c41d74faee70e4c0a90701d70ad808855601bf4584"
   },
   "identity_warning": "Prophet-5 V is a software instrument; this bank is not a Sequential hardware reference.",
   "layout": {
@@ -73,114 +73,114 @@
       {
         "harmonic_limit": 125,
         "sample_offset_per_waveform": 530432,
-        "table_length": 256
+        "table_length": 512
       },
       {
         "harmonic_limit": 105,
-        "sample_offset_per_waveform": 539904,
-        "table_length": 256
+        "sample_offset_per_waveform": 549376,
+        "table_length": 512
       },
       {
         "harmonic_limit": 88,
-        "sample_offset_per_waveform": 549376,
-        "table_length": 256
+        "sample_offset_per_waveform": 568320,
+        "table_length": 512
       },
       {
         "harmonic_limit": 73,
-        "sample_offset_per_waveform": 558848,
-        "table_length": 256
+        "sample_offset_per_waveform": 587264,
+        "table_length": 512
       },
       {
         "harmonic_limit": 61,
-        "sample_offset_per_waveform": 568320,
-        "table_length": 128
+        "sample_offset_per_waveform": 606208,
+        "table_length": 256
       },
       {
         "harmonic_limit": 51,
-        "sample_offset_per_waveform": 573056,
-        "table_length": 128
+        "sample_offset_per_waveform": 615680,
+        "table_length": 256
       },
       {
         "harmonic_limit": 42,
-        "sample_offset_per_waveform": 577792,
-        "table_length": 128
+        "sample_offset_per_waveform": 625152,
+        "table_length": 256
       },
       {
         "harmonic_limit": 35,
-        "sample_offset_per_waveform": 582528,
-        "table_length": 128
+        "sample_offset_per_waveform": 634624,
+        "table_length": 256
       },
       {
         "harmonic_limit": 29,
-        "sample_offset_per_waveform": 587264,
-        "table_length": 64
+        "sample_offset_per_waveform": 644096,
+        "table_length": 256
       },
       {
         "harmonic_limit": 24,
-        "sample_offset_per_waveform": 589632,
-        "table_length": 64
+        "sample_offset_per_waveform": 653568,
+        "table_length": 256
       },
       {
         "harmonic_limit": 20,
-        "sample_offset_per_waveform": 592000,
-        "table_length": 64
+        "sample_offset_per_waveform": 663040,
+        "table_length": 256
       },
       {
         "harmonic_limit": 16,
-        "sample_offset_per_waveform": 594368,
-        "table_length": 64
+        "sample_offset_per_waveform": 672512,
+        "table_length": 256
       },
       {
         "harmonic_limit": 13,
-        "sample_offset_per_waveform": 596736,
-        "table_length": 64
+        "sample_offset_per_waveform": 681984,
+        "table_length": 256
       },
       {
         "harmonic_limit": 10,
-        "sample_offset_per_waveform": 599104,
-        "table_length": 64
+        "sample_offset_per_waveform": 691456,
+        "table_length": 256
       },
       {
         "harmonic_limit": 8,
-        "sample_offset_per_waveform": 601472,
-        "table_length": 64
+        "sample_offset_per_waveform": 700928,
+        "table_length": 256
       },
       {
         "harmonic_limit": 6,
-        "sample_offset_per_waveform": 603840,
-        "table_length": 64
+        "sample_offset_per_waveform": 710400,
+        "table_length": 256
       },
       {
         "harmonic_limit": 5,
-        "sample_offset_per_waveform": 606208,
-        "table_length": 64
+        "sample_offset_per_waveform": 719872,
+        "table_length": 256
       },
       {
         "harmonic_limit": 4,
-        "sample_offset_per_waveform": 608576,
-        "table_length": 64
+        "sample_offset_per_waveform": 729344,
+        "table_length": 256
       },
       {
         "harmonic_limit": 3,
-        "sample_offset_per_waveform": 610944,
-        "table_length": 64
+        "sample_offset_per_waveform": 738816,
+        "table_length": 256
       },
       {
         "harmonic_limit": 2,
-        "sample_offset_per_waveform": 613312,
-        "table_length": 64
+        "sample_offset_per_waveform": 748288,
+        "table_length": 256
       },
       {
         "harmonic_limit": 1,
-        "sample_offset_per_waveform": 615680,
-        "table_length": 64
+        "sample_offset_per_waveform": 757760,
+        "table_length": 256
       }
     ],
     "nyquist_guard": 0.45,
     "order": "waveform, mip, training pitch, sample",
     "pitch_count_per_waveform": 37,
-    "sample_count": 1854144,
-    "samples_per_waveform": 618048,
+    "sample_count": 2301696,
+    "samples_per_waveform": 767232,
     "selection": "richest safe mip plus adjacent leaner mip; log-space blend from a 1024-entry runtime lookup",
     "waveforms": [
       "saw",
@@ -188,7 +188,7 @@
       "pulse"
     ]
   },
-  "manifest_content_sha256": "e47ab310386a9b922b1afd5f7d757930e92137f59b078485ce7689f07d42f235",
+  "manifest_content_sha256": "f71b125d635421a643a91170893384dea2dd6d3a60a452ce18948f2d56b25626",
   "profile_id": "prophet5-wavetable-bank-v2",
   "sample_format": "little-endian IEEE-754 float32",
   "schema_version": 2,

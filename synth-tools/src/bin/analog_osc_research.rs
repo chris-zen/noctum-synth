@@ -8,16 +8,16 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use rustfft::{FftPlanner, num_complex::Complex32};
+use rustfft::{num_complex::Complex32, FftPlanner};
 use serde::Serialize;
 use synth_core::dsp::{
-    MipWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableProfile,
-    generate_wavetable_bank,
+    generate_wavetable_bank, MipWavetableBank, Waveform, WavetableBank, WavetableProfile,
+    WAVETABLE_BANK_SAMPLES,
 };
 use synth_core::{
-    MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorResearchModel, PROPHET5_WAVETABLE_BANK_PROFILE,
-    ResearchComparisonMetrics, ResearchModelFamily, ResearchModelId, ResearchRegistry,
-    ResearchRenderCase, ResearchRenderSummary, render_research_case,
+    render_research_case, OscillatorResearchModel, ResearchComparisonMetrics, ResearchModelFamily,
+    ResearchModelId, ResearchRegistry, ResearchRenderCase, ResearchRenderSummary,
+    MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE,
 };
 
 const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -495,7 +495,7 @@ fn wavetable_bank(id: ResearchModelId) -> Result<WavetableBank, Box<dyn std::err
             &MONOLOGUE_WAVETABLE_BANK_PROFILE,
         ),
         ResearchModelId::WavetableProphet5 => (
-            "arturia-prophet5-measured-bank-v1.f32le",
+            "prophet5-wavetable-bank-v2.f32le",
             &PROPHET5_WAVETABLE_BANK_PROFILE,
         ),
         _ => return Err("model does not use a wavetable bank".into()),

@@ -70,9 +70,8 @@ impl BankRequest {
             training_selection: TrainingSelection::RoleZero,
             phase_manifest_path: None,
             rust_profile_path: Some(
-                repository_root().join(
-                    "synth-core/src/voice/osc_engine/wavetable_banks/prophet5_profile.rs",
-                ),
+                repository_root()
+                    .join("synth-core/src/voice/osc_engine/wavetable_banks/prophet5_profile.rs"),
             ),
             rust_profile_symbol: "PROPHET5_WAVETABLE_BANK_PROFILE".to_string(),
         }
@@ -92,9 +91,9 @@ impl BankRequest {
             phase_manifest_path: Some(
                 root.join("plans/analog-osc/research/banks/korg-monologue-measured-bank-v1.json"),
             ),
-            rust_profile_path: Some(root.join(
-                "synth-core/src/voice/osc_engine/wavetable_banks/monologue_profile.rs",
-            )),
+            rust_profile_path: Some(
+                root.join("synth-core/src/voice/osc_engine/wavetable_banks/monologue_profile.rs"),
+            ),
             rust_profile_symbol: "MONOLOGUE_WAVETABLE_BANK_PROFILE".to_string(),
         }
     }
@@ -648,7 +647,9 @@ fn mip_table_lengths() -> Vec<usize> {
 }
 
 fn table_length(harmonic_limit: usize) -> usize {
-    (2 * (harmonic_limit + 1)).next_power_of_two().max(64)
+    let nyquist_minimum = (2 * (harmonic_limit + 1)).next_power_of_two();
+    let interpolation_margin = (4 * (harmonic_limit + 1)).next_power_of_two().min(512);
+    nyquist_minimum.max(interpolation_margin).max(256)
 }
 
 fn mip_offsets(pitch_count: usize, lengths: &[usize]) -> Vec<usize> {
@@ -725,7 +726,7 @@ fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use ndarray::Array2;
-    use rustfft::{FftPlanner, num_complex::Complex};
+    use rustfft::{num_complex::Complex, FftPlanner};
     use tempfile::tempdir;
 
     use super::*;
@@ -747,7 +748,7 @@ mod tests {
         for limit in MIP_HARMONIC_LIMITS {
             let length = table_length(usize::from(limit));
             assert!(length.is_power_of_two());
-            assert!(length >= 64);
+            assert!(length >= 256);
             assert!(length >= 2 * (usize::from(limit) + 1));
         }
     }
@@ -820,11 +821,9 @@ mod tests {
         let derived = directory.path().join("derived");
         write_fixture(&derived, true);
         let error = build_bank(&request(&derived, &directory.path().join("output"))).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("incoherent adjacent training cycles")
-        );
+        assert!(error
+            .to_string()
+            .contains("incoherent adjacent training cycles"));
     }
 
     fn request(derived: &Path, output: &Path) -> BankRequest {
