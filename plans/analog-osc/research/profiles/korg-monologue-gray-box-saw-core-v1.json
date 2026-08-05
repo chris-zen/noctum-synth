@@ -1,0 +1,431 @@
+{
+  "schema_version": 1,
+  "profile_id": "korg-monologue-gray-box-saw-core-v1",
+  "target_id": "korg-monologue-v1",
+  "topology": "saw-core",
+  "fit_scope": "one lowest-frequency cycle per independently captured waveform",
+  "identifiability": "shared phase is not inferred because capture phase policies differ",
+  "source_sha256": {
+    "saw": "9ec36d06bc3476d444940e583e47393b0f1b08c81be87da0cc135ea78ee6ac7f",
+    "triangle": "d4b4d5ab8f720102a8cfb6010c49a535395be8d957d2309c4a2a2df28ef2c5d8",
+    "square": "e0f4a7691d4f4a706589b096ee4213c10132f4a6225b141042fcd71ded6853f9"
+  },
+  "fitted_physical_parameters": {
+    "current_curvature_ratio": -0.8499999999999999,
+    "reset_duration_cycles": 0.0009802898815501316
+  },
+  "runtime_physical_parameters": {
+    "current_curvature_ratio": -0.8499999999999999,
+    "reset_duration_cycles": 0.0
+  },
+  "runtime_deviation_reason": "the fitted finite-reset BLAMP increased high-frequency residual, so the bounded runtime uses the instantaneous-reset BLEP ablation",
+  "optimizer": {
+    "success": true,
+    "status": 3,
+    "message": "`xtol` termination condition is satisfied.",
+    "function_evaluations": 298,
+    "cost": 1.7791807457440814,
+    "optimality": 9.118532241784404,
+    "active_bounds": [
+      -1,
+      0,
+      1,
+      0,
+      -1,
+      0,
+      0,
+      0
+    ]
+  },
+  "comparison_phase_shift_cycles": {
+    "saw": 0.019682026894189235,
+    "triangle": 0.04257806817444056,
+    "square": -0.13431018105554654
+  },
+  "outputs": {
+    "saw": {
+      "lowpass_hz": 59999.99999999991,
+      "gain": -0.3222573040319187,
+      "dc": 0.10731208124865399
+    },
+    "triangle": {
+      "lowpass_hz": 3984.9899130864683,
+      "gain": 1.1497722245055244,
+      "dc": 0.23034967122133132
+    },
+    "square": {
+      "lowpass_hz": 800.0000000000006,
+      "gain": 0.39694669223535434,
+      "dc": 0.20109347358117538
+    }
+  },
+  "held_out_summary": {
+    "case_count": 24,
+    "gray_box_nrmse_median": 0.41519171679531874,
+    "baseline_nrmse_median": 0.08636507988863096,
+    "relative_improvement_median": -4.452508147595303,
+    "gray_box_wins": 2
+  },
+  "held_out_cases": [
+    {
+      "waveform": "saw",
+      "index": 5,
+      "frequency_hz": 55.172413793103445,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.08691808834680995,
+        "correlation": 0.9962226229590677,
+        "optimal_target_shift_cycles": -0.4199205272670394
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.2507153945501669,
+        "correlation": 0.968570895467777,
+        "optimal_target_shift_cycles": -0.4404458570638234
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 11,
+      "frequency_hz": 77.92207792207792,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.14699903691344765,
+        "correlation": 0.9891956415732592,
+        "optimal_target_shift_cycles": -0.4365235345985541
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.1811565699980389,
+        "correlation": 0.9835911485732727,
+        "optimal_target_shift_cycles": -0.45713799854721526
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 17,
+      "frequency_hz": 110.09174311926606,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.19739702692428146,
+        "correlation": 0.9805172068807272,
+        "optimal_target_shift_cycles": -0.44946749984785406
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.1294224631642666,
+        "correlation": 0.991624913014247,
+        "optimal_target_shift_cycles": -0.47046230058162547
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 23,
+      "frequency_hz": 155.3398058252427,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.2342323770447684,
+        "correlation": 0.9725675967719782,
+        "optimal_target_shift_cycles": -0.45807877668588537
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.09239945934630288,
+        "correlation": 0.9957311699562557,
+        "optimal_target_shift_cycles": -0.4794566543272634
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 35,
+      "frequency_hz": 309.6774193548387,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.2855684315846263,
+        "correlation": 0.9592253354411486,
+        "optimal_target_shift_cycles": -0.4699604254570561
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.04892280477527786,
+        "correlation": 0.9988032795864599,
+        "optimal_target_shift_cycles": -0.4924754173970123
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 47,
+      "frequency_hz": 623.3766233766233,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.33019703322993355,
+        "correlation": 0.9454849596230753,
+        "optimal_target_shift_cycles": -0.4756853745566078
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.033439416158712605,
+        "correlation": 0.9994409027234825,
+        "optimal_target_shift_cycles": 0.49908764359795654
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 59,
+      "frequency_hz": 1230.7692307692307,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.3678975923354965,
+        "correlation": 0.9323256807768725,
+        "optimal_target_shift_cycles": -0.4688456974771842
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.02876532386345911,
+        "correlation": 0.9995862780715148,
+        "optimal_target_shift_cycles": -0.4990275547868162
+      }
+    },
+    {
+      "waveform": "saw",
+      "index": 71,
+      "frequency_hz": 2400.0,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.4205193755746646,
+        "correlation": 0.911581727383147,
+        "optimal_target_shift_cycles": -0.4902166394541974
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.041578955971830034,
+        "correlation": 0.9991355952101465,
+        "optimal_target_shift_cycles": 0.4749467413526247
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 5,
+      "frequency_hz": 27.538726333907057,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.41359182968328095,
+        "correlation": 0.914470899209618,
+        "optimal_target_shift_cycles": -0.030943764462486256
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.1669241652336582,
+        "correlation": 0.9860681615305232,
+        "optimal_target_shift_cycles": -0.2518335567322549
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 11,
+      "frequency_hz": 38.897893030794165,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.4190219861826524,
+        "correlation": 0.9122102875477732,
+        "optimal_target_shift_cycles": -0.027207511745953428
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.13388187233845325,
+        "correlation": 0.991037822129575,
+        "optimal_target_shift_cycles": -0.2504042525330419
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 17,
+      "frequency_hz": 54.982817869415804,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.42002680559923683,
+        "correlation": 0.9117887412890504,
+        "optimal_target_shift_cycles": -0.025231964020449527
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.10405973714311179,
+        "correlation": 0.9945857855528528,
+        "optimal_target_shift_cycles": -0.2506861131774448
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 23,
+      "frequency_hz": 77.79578606158833,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.4167916039073565,
+        "correlation": 0.9131423794561674,
+        "optimal_target_shift_cycles": -0.02285576656681254
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.08033070043095905,
+        "correlation": 0.9967734892841363,
+        "optimal_target_shift_cycles": -0.24988365971033677
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 35,
+      "frequency_hz": 155.84415584415584,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.4076701345836916,
+        "correlation": 0.9169025306842573,
+        "optimal_target_shift_cycles": -0.02456086624606002
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.05168790442064697,
+        "correlation": 0.9986641802683011,
+        "optimal_target_shift_cycles": -0.2518559406643539
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 47,
+      "frequency_hz": 311.68831168831167,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.3990788342639242,
+        "correlation": 0.9203680420212741,
+        "optimal_target_shift_cycles": -0.02709111308068579
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.04149420544914637,
+        "correlation": 0.9991391154570722,
+        "optimal_target_shift_cycles": -0.25095962731614074
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 59,
+      "frequency_hz": 615.3846153846154,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.4040281417179687,
+        "correlation": 0.9183806303499628,
+        "optimal_target_shift_cycles": -0.037048727124882386
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.0352018549969837,
+        "correlation": 0.999380414702386,
+        "optimal_target_shift_cycles": -0.2538206074639191
+      }
+    },
+    {
+      "waveform": "triangle",
+      "index": 71,
+      "frequency_hz": 1263.157894736842,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.3336564461785828,
+        "correlation": 0.9443366879617396,
+        "optimal_target_shift_cycles": -0.06657557515817547
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.05836655607840417,
+        "correlation": 0.9982966725657733,
+        "optimal_target_shift_cycles": -0.26115121541086245
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 5,
+      "frequency_hz": 27.538726333907057,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.71166604856507,
+        "correlation": 0.7467657176598902,
+        "optimal_target_shift_cycles": -0.026115200602714217
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.5329099980064467,
+        "correlation": 0.8580034670123852,
+        "optimal_target_shift_cycles": -0.3893372126397296
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 11,
+      "frequency_hz": 38.8663967611336,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.7449621264902696,
+        "correlation": 0.7225157150475479,
+        "optimal_target_shift_cycles": -0.054930021839350696
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.3878610031080352,
+        "correlation": 0.9247819211340146,
+        "optimal_target_shift_cycles": -0.41813503415431436
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 17,
+      "frequency_hz": 54.982817869415804,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.7787383451124628,
+        "correlation": 0.6967832949257516,
+        "optimal_target_shift_cycles": -0.07794924362228667
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.27935703968459163,
+        "correlation": 0.9609798221893304,
+        "optimal_target_shift_cycles": -0.44163369096464006
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 23,
+      "frequency_hz": 77.79578606158833,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.8042189189251745,
+        "correlation": 0.676615965221412,
+        "optimal_target_shift_cycles": -0.09598516358760861
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.2028586391895176,
+        "correlation": 0.9794241862530888,
+        "optimal_target_shift_cycles": -0.4598350355572123
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 35,
+      "frequency_hz": 155.84415584415584,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.8164797318976471,
+        "correlation": 0.666680423700173,
+        "optimal_target_shift_cycles": -0.11543085785485863
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.10364877325994383,
+        "correlation": 0.9946284659008544,
+        "optimal_target_shift_cycles": -0.4801805039537252
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 47,
+      "frequency_hz": 311.68831168831167,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.7558344961782094,
+        "correlation": 0.7143571071935164,
+        "optimal_target_shift_cycles": -0.12235508812722884
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.051475192287327026,
+        "correlation": 0.9986751522894909,
+        "optimal_target_shift_cycles": -0.4894122000165787
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 59,
+      "frequency_hz": 623.3766233766233,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.6237513482373266,
+        "correlation": 0.8054671277860589,
+        "optimal_target_shift_cycles": -0.14276295869800448
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.03529849123944747,
+        "correlation": 0.999377008258109,
+        "optimal_target_shift_cycles": 0.49882447099635574
+      }
+    },
+    {
+      "waveform": "square",
+      "index": 71,
+      "frequency_hz": 1263.157894736842,
+      "gray_box": {
+        "phase_aligned_shape_nrmse": 0.5205121714118578,
+        "correlation": 0.8645335397060562,
+        "optimal_target_shift_cycles": -0.15739380890285076
+      },
+      "baseline": {
+        "phase_aligned_shape_nrmse": 0.0551820251165517,
+        "correlation": 0.9984774720520188,
+        "optimal_target_shift_cycles": -0.48954776253324545
+      }
+    }
+  ]
+}

@@ -2,10 +2,12 @@
 
 use std::sync::OnceLock;
 
-use synth_core::dsp::{FilterType, MipWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank};
+use synth_core::dsp::{
+    FilterType, MipWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank,
+};
 use synth_core::{
-    BankId, MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorEngineType, OscillatorResearchModel, ParamId,
-    ResearchComparisonMetrics, ResearchError, ResearchEvent, ResearchModelCapabilities,
+    BankId, MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorEngineType, OscillatorResearchModel,
+    ParamId, ResearchComparisonMetrics, ResearchError, ResearchEvent, ResearchModelCapabilities,
     ResearchModelDescriptor, ResearchModelFamily, ResearchModelId, ResearchParameterDescriptor,
     ResearchParameterScale, ResearchRegistry, ResearchRenderCase, ResearchSignalMetrics,
     SynthEngineWithMemory, render_research_case,
@@ -237,6 +239,7 @@ fn registry_order_and_descriptors_are_stable() {
     assert_eq!(descriptors[5].id, "prophet5-wavetable-v1");
     assert_eq!(descriptors[6].id, "target-conditioned-phase-filter-v1");
     assert_eq!(descriptors[7].id, "target-conditioned-phase-filter-v2");
+    assert_eq!(descriptors[8].id, "korg-monologue-gray-box-saw-core-v1");
     assert!(
         descriptors[..7]
             .iter()
@@ -257,6 +260,10 @@ fn registry_order_and_descriptors_are_stable() {
     assert!(descriptors[5].requires_external_asset);
     assert!(!descriptors[6].requires_external_asset);
     assert!(!descriptors[7].requires_external_asset);
+    assert_eq!(descriptors[8].family, ResearchModelFamily::Stateful);
+    assert!(descriptors[8].bounded_render_cost);
+    assert!(descriptors[8].capabilities.saw_triangle);
+    assert!(!descriptors[8].capabilities.real_time_safe);
     let profile = ResearchRegistry::target_profile_metadata(ResearchModelId::TargetConditioned)
         .expect("fitted model has profile provenance");
     assert_eq!(profile.0, "korg-monologue-phase-filter-v1");
@@ -278,6 +285,130 @@ fn registry_order_and_descriptors_are_stable() {
     assert_eq!(arturia.0, "prophet5-wavetable-bank-v2");
     assert_eq!(arturia.1, "arturia-prophet5-v1");
     assert_eq!(arturia.2.len(), 64);
+    let gray_box = ResearchRegistry::target_profile_metadata(ResearchModelId::GrayBoxSawCore)
+        .expect("gray-box model has profile provenance");
+    assert_eq!(gray_box.0, "korg-monologue-gray-box-saw-core-v1");
+    assert_eq!(gray_box.1, "korg-monologue-v1");
+    assert_eq!(gray_box.2.len(), 64);
+}
+
+#[test]
+fn gray_box_renders_phase_coherent_outputs_and_diagnostics() {
+    for waveform in [
+        Waveform::Saw,
+        Waveform::SawTri,
+        Waveform::Triangle,
+        Waveform::Pulse,
+    ] {
+        let case = static_case(waveform);
+        let mut model =
+            ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, 48_000.0, None).unwrap();
+        model.configure(case).unwrap();
+        for _ in 0..case.render_samples {
+            assert!(model.next_sample().is_finite());
+            let frame = model.diagnostic_frame().expect("gray-box diagnostic frame");
+            assert!((0.0..=1.0).contains(&frame.capacitor_v));
+            assert!(frame.state_events <= 2);
+        }
+    }
+}
+
+#[test]
+fn gray_box_ablation_parameters_survive_case_rebuilds() {
+    let case = static_case(Waveform::Saw);
+    let mut model =
+        ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, 48_000.0, None).unwrap();
+    assert_eq!(model.parameter_descriptors().len(), 4);
+    for parameter in [
+        "current-curvature",
+        "reset-duration",
+        "output-filter",
+        "antialias",
+    ] {
+        model.set_parameter(parameter, 0.0).unwrap();
+    }
+    let mut output = vec![0.0; case.render_samples];
+    render_research_case(&mut model, case, &mut output).unwrap();
+    for parameter in [
+        "current-curvature",
+        "reset-duration",
+        "output-filter",
+        "antialias",
+    ] {
+        assert_eq!(model.parameter_value(parameter), Some(0.0));
+    }
+    assert_eq!(
+        model.set_parameter("reset-duration", 1.1),
+        Err(ResearchError::InvalidParameterValue)
+    );
+}
+
+#[test]
+fn gray_box_pitch_is_sample_rate_independent() {
+    for (sample_rate_hz, frequency_hz) in [(44_100.0, 97.0), (48_000.0, 997.0), (96_000.0, 4_003.0)]
+    {
+        let mut case = static_case(Waveform::Saw);
+        case.sample_rate_hz = sample_rate_hz;
+        case.frequency_hz = frequency_hz;
+        case.warmup_samples = 2_048;
+        case.render_samples = sample_rate_hz as usize;
+        let mut model =
+            ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, case.sample_rate_hz, None)
+                .unwrap();
+        let mut output = vec![0.0; case.render_samples];
+        let summary = render_research_case(&mut model, case, &mut output).unwrap();
+        let measured = summary.signal.measured_frequency_hz.unwrap();
+        let error_cents = 1_200.0 * (measured / f64::from(frequency_hz)).log2();
+        assert!(
+            error_cents.abs() < 0.05,
+            "{sample_rate_hz} Hz: {error_cents} cents"
+        );
+    }
+}
+
+#[test]
+fn gray_box_curvature_moves_comparator_crossing_coherently() {
+    let mut case = static_case(Waveform::Pulse);
+    case.shape = 0.0;
+    let mut linear =
+        ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, 48_000.0, None).unwrap();
+    let mut fitted =
+        ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, 48_000.0, None).unwrap();
+    linear.set_parameter("current-curvature", 0.0).unwrap();
+    let mut linear_output = vec![0.0; case.render_samples];
+    let mut fitted_output = vec![0.0; case.render_samples];
+    let linear_summary = render_research_case(&mut linear, case, &mut linear_output).unwrap();
+    let fitted_summary = render_research_case(&mut fitted, case, &mut fitted_output).unwrap();
+    assert!(
+        (linear_summary.signal.duty_above_midpoint - fitted_summary.signal.duty_above_midpoint)
+            .abs()
+            > 0.05
+    );
+}
+
+#[test]
+fn gray_box_hard_sync_offset_zero_consumes_one_sample() {
+    let mut case = static_case(Waveform::Saw);
+    case.warmup_samples = 0;
+    let mut fresh =
+        ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, 48_000.0, None).unwrap();
+    let mut synced =
+        ResearchRegistry::create(ResearchModelId::GrayBoxSawCore, 48_000.0, None).unwrap();
+    for model in [&mut fresh, &mut synced] {
+        model.set_parameter("antialias", 0.0).unwrap();
+        model.set_parameter("output-filter", 0.0).unwrap();
+        model.configure(case).unwrap();
+    }
+    let expected = fresh.next_sample();
+    for _ in 0..137 {
+        let _ = synced.next_sample();
+    }
+    synced
+        .apply_event(ResearchEvent::HardSync {
+            subsample_offset: 0.0,
+        })
+        .unwrap();
+    assert_eq!(synced.next_sample().to_bits(), expected.to_bits());
 }
 
 #[test]

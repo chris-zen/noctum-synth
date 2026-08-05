@@ -9,6 +9,10 @@ pub mod blep;
 pub mod dc_blocker;
 pub mod envelope;
 pub mod filter;
+#[cfg(feature = "oscillator-research")]
+mod gray_box_oscillator;
+#[cfg(feature = "oscillator-research")]
+mod gray_box_profile;
 pub mod lfo;
 #[cfg(feature = "osc-wavetable")]
 pub(crate) mod live_wavetable;
@@ -57,10 +61,11 @@ pub use lfo::{LfoWaveform, MAX_LFO_RATE_HZ, MIN_LFO_RATE_HZ};
 pub use noise::WhiteNoise;
 #[cfg(feature = "oscillator-research")]
 pub use oscillator_research::{
-    OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics, ResearchError,
-    ResearchEvent, ResearchModelCapabilities, ResearchModelDescriptor, ResearchModelFamily,
-    ResearchModelId, ResearchParameterDescriptor, ResearchParameterScale, ResearchRegistry,
-    ResearchRenderCase, ResearchRenderSummary, ResearchSignalMetrics, render_research_case,
+    OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics,
+    ResearchDiagnosticFrame, ResearchError, ResearchEvent, ResearchModelCapabilities,
+    ResearchModelDescriptor, ResearchModelFamily, ResearchModelId, ResearchParameterDescriptor,
+    ResearchParameterScale, ResearchRegistry, ResearchRenderCase, ResearchRenderSummary,
+    ResearchSignalMetrics, render_research_case,
 };
 pub use parameter_smoother::DEFAULT_PARAMETER_SMOOTHING_SECONDS;
 pub use wavetable::{MipWavetableBank, WAVETABLE_BANK_SAMPLES, generate_wavetable_bank};

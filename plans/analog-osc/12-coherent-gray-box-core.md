@@ -1,7 +1,18 @@
 # Coherent Gray-Box Oscillator Core
 
 **Order:** 12 · **Depends on:** plans 01–10; plan 11 is recommended for the
-wavetable comparison · **State:** `[ ]` planned.
+wavetable comparison · **State:** `[x]` closed; bounded saw-core retained as a
+negative topology result.
+
+## Outcome
+
+The saw-core prototype, fitted physical profile, diagnostic surface, and
+bounded event tests are complete. It loses to the production baseline on 22 of
+24 held-out Monologue cases and is substantially behind Plans 09 and 11. The
+optimizer also saturates multiple parameter bounds. Per the stop rules, no
+triangle-core or live audition adapter was added. Full evidence and reproduction
+commands are in
+[`research/reports/korg-monologue-gray-box-saw-core-v1.md`](research/reports/korg-monologue-gray-box-saw-core-v1.md).
 
 ## DSP background
 

@@ -16,6 +16,7 @@ cargo run --release -p synth-tools --bin <name> [-- args...]
 | [`voice_block_perf`](src/bin/voice_block_perf.rs) | `VoiceBlock` render timing for neutral / active / modulation / self-osc cases |
 | [`filter_measurements`](src/bin/filter_measurements.rs) | Deterministic per-model gain, slope, and self-oscillation metrics |
 | [`sample_rate_quality`](src/bin/sample_rate_quality.rs) | Offline spectral CSV for candidate sample rates (oscillator / filter / effects) |
+| [`analog_osc_research`](src/bin/analog_osc_research.rs) | Registered oscillator renderer, metrics/artifacts, and Plan 12 diagnostic CSV |
 | [`generate_wavetable_bank`](src/bin/generate_wavetable_bank.rs) | Write retained **ideal** f32 (and Q15 comparison) wavetable bank files |
 | [`wavetable_bank`](src/bin/wavetable_bank.rs) | Build **measured** pitch-conditioned bank from `synth-capture` NPZs |
 | [`wavetable_listening_samples`](src/bin/wavetable_listening_samples.rs) | Short WAV listening samples for the wavetable prototype report |
@@ -50,6 +51,19 @@ cargo run --release -p synth-tools --bin sample_rate_quality
 ```
 
 Prints CSV to stdout (alias / fundamental / image metrics across rates).
+
+### `analog_osc_research`
+
+Use `--list` for stable research model IDs. The Plan 12 gray-box model also
+accepts `--trace-csv <path>` to record capacitor, comparator, raw/corrected
+output, bounded event count, and fractional event offset.
+
+```bash
+cargo run --release -p synth-tools --bin analog_osc_research -- --list
+cargo run --release -p synth-tools --bin analog_osc_research -- \
+  --model korg-monologue-gray-box-saw-core-v1 --waveform saw \
+  --frequency 997 --samples 256 --trace-csv /tmp/gray-box.csv
+```
 
 ### `generate_wavetable_bank`
 

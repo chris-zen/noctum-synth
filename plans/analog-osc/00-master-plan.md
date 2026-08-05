@@ -79,7 +79,7 @@ method that could target a faster embedded platform.
 | [09](09-target-conditioned-phase-filter.md) | `[x]` closed; retained evidence | Compact fitted phase/filter hypothesis |
 | [10](10-measured-wavetable-residual.md) | `[x]` frozen desktop experiment | Measured deterministic waveform candidate |
 | [11](11-multirate-measured-wavetables.md) | `[x]` closed; both-bank residual/runtime gates pass | Sample-rate-independent pitch-by-mip banks |
-| [12](12-coherent-gray-box-core.md) | `[ ]` planned | Simplified physical oscillator state model |
+| [12](12-coherent-gray-box-core.md) | `[x]` closed; negative topology result | Bounded saw-core failed held-out retention gate |
 | [13](13-nonlinear-phase-blep-and-lp-blit.md) | `[ ]` planned | Better causal edge and bandwidth models |
 | [14](14-antialiased-nonlinearity.md) | `[ ]` planned | Color stages without uncontrolled aliasing |
 | [15](15-drift-variation-and-calibration.md) | `[ ]` planned | Measured static and time-varying differences |

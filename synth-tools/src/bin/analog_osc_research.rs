@@ -8,16 +8,16 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use rustfft::{num_complex::Complex32, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex32};
 use serde::Serialize;
 use synth_core::dsp::{
-    generate_wavetable_bank, MipWavetableBank, Waveform, WavetableBank, WavetableProfile,
-    WAVETABLE_BANK_SAMPLES,
+    MipWavetableBank, WAVETABLE_BANK_SAMPLES, Waveform, WavetableBank, WavetableProfile,
+    generate_wavetable_bank,
 };
 use synth_core::{
-    render_research_case, OscillatorResearchModel, ResearchComparisonMetrics, ResearchModelFamily,
-    ResearchModelId, ResearchRegistry, ResearchRenderCase, ResearchRenderSummary,
-    MONOLOGUE_WAVETABLE_BANK_PROFILE, PROPHET5_WAVETABLE_BANK_PROFILE,
+    MONOLOGUE_WAVETABLE_BANK_PROFILE, OscillatorResearchModel, PROPHET5_WAVETABLE_BANK_PROFILE,
+    ResearchComparisonMetrics, ResearchModelFamily, ResearchModelId, ResearchRegistry,
+    ResearchRenderCase, ResearchRenderSummary, render_research_case,
 };
 
 const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -36,6 +36,7 @@ struct Options {
     seed: u64,
     output_root: PathBuf,
     parameters: Vec<(String, f32)>,
+    trace_csv: Option<PathBuf>,
     list: bool,
 }
 
@@ -53,6 +54,7 @@ impl Default for Options {
             seed: 0,
             output_root: PathBuf::from("target/analog-osc"),
             parameters: Vec::new(),
+            trace_csv: None,
             list: false,
         }
     }
@@ -175,6 +177,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    if options.trace_csv.is_some() && options.model != ResearchModelId::GrayBoxSawCore {
+        return Err("--trace-csv is available only for the gray-box saw-core".into());
+    }
 
     let case = ResearchRenderCase {
         waveform: options.waveform,
@@ -232,6 +237,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     serde_json::to_writer_pretty(&mut output, &artifact)?;
     output.write_all(b"\n")?;
     output.flush()?;
+
+    if let Some(path) = &options.trace_csv {
+        write_diagnostic_trace(path, options.model, case, &options.parameters)?;
+        println!("wrote {}", path.display());
+    }
 
     println!("wrote {}", wav_path.display());
     println!("wrote {}", json_path.display());
@@ -342,8 +352,9 @@ fn artifact<'a>(
             sample_rate_hz: summary.case.sample_rate_hz,
             frequency_hz: summary.case.frequency_hz,
             shape: summary.case.shape,
-            pulse_width_percent: matches!(summary.case.waveform, Waveform::Pulse)
-                .then_some((0.5 + 0.49 * summary.case.shape) * 100.0),
+            pulse_width_percent: (matches!(summary.case.waveform, Waveform::Pulse)
+                && descriptor.id != ResearchModelId::GrayBoxSawCore.as_str())
+            .then_some((0.5 + 0.49 * summary.case.shape) * 100.0),
             warmup_samples: summary.case.warmup_samples,
             render_samples: summary.case.render_samples,
             seed: summary.case.seed,
@@ -425,6 +436,7 @@ fn parse_options() -> Result<Options, String> {
             "--seed" => options.seed = parse_number(key, value)?,
             "--param" => options.parameters.push(parse_parameter(value)?),
             "--output-root" => options.output_root = PathBuf::from(value),
+            "--trace-csv" => options.trace_csv = Some(PathBuf::from(value)),
             _ => return Err(format!("unknown option {key:?}; use --help")),
         }
         index += 2;
@@ -456,6 +468,63 @@ fn parse_parameter(value: &str) -> Result<(String, f32), String> {
         return Err("parameter ID cannot be empty".to_owned());
     }
     Ok((id.to_owned(), parse_number("--param", value)?))
+}
+
+fn write_diagnostic_trace(
+    path: &Path,
+    id: ResearchModelId,
+    case: ResearchRenderCase,
+    parameters: &[(String, f32)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if id != ResearchModelId::GrayBoxSawCore {
+        return Err("--trace-csv is available only for the gray-box saw-core".into());
+    }
+    let mut model = ResearchRegistry::create(id, case.sample_rate_hz, None)
+        .map_err(|error| format!("could not construct {}: {error:?}", id.as_str()))?;
+    for (parameter, value) in parameters {
+        model
+            .set_parameter(parameter, *value)
+            .map_err(|error| format!("invalid trace parameter {parameter:?}: {error:?}"))?;
+    }
+    model
+        .configure(case)
+        .map_err(|error| format!("trace configuration failed: {error:?}"))?;
+    for _ in 0..case.warmup_samples {
+        let _ = model.next_sample();
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut output = BufWriter::new(File::create(path)?);
+    writeln!(
+        output,
+        "sample,capacitor_v,threshold_v,comparator_high,raw_output,corrected_output,state_events,last_event_offset"
+    )?;
+    for sample_index in 0..case.render_samples {
+        let _ = model.next_sample();
+        let frame = model
+            .diagnostic_frame()
+            .ok_or("gray-box model did not provide diagnostics")?;
+        let event_offset = frame
+            .last_event_offset
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        writeln!(
+            output,
+            "{sample_index},{},{},{},{},{},{},{}",
+            frame.capacitor_v,
+            frame.threshold_v,
+            u8::from(frame.comparator_high),
+            frame.raw_output,
+            frame.corrected_output,
+            frame.state_events,
+            event_offset,
+        )?;
+    }
+    output.flush()?;
+    Ok(())
 }
 
 fn waveform_name(waveform: Waveform) -> &'static str {
@@ -652,6 +721,7 @@ fn print_help() {
          --samples SAMPLES            Default 65536\n\
          --seed INTEGER               Default 0\n\
          --param ID=VALUE             Repeatable model-specific parameter\n\
+         --trace-csv PATH             Gray-box capacitor/event diagnostic trace\n\
          --output-root PATH           Default target/analog-osc"
     );
 }

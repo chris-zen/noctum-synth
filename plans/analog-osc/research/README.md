@@ -83,6 +83,11 @@ Current Plan 04 evidence is organized as follows:
   48/96 kHz material residual sweep (0 material failures).
 - `reports/prophet5-wavetable-v2-sweeps.json`: Prophet v2 48/96 kHz material
   residual sweep (0 material failures).
+- `profiles/korg-monologue-gray-box-saw-core-v1.json`: Plan 12 physical fit,
+  runtime ablation, provenance, and 24 held-out target cases.
+- `reports/korg-monologue-gray-box-saw-core-v1.md`: Plan 12 bounded prototype,
+  negative retention decision, alias ablation, cost, and UI disposition.
+- `plots/korg-monologue-gray-box-saw-core-v1.svg`: capacitor, threshold,
   fractional event, and corrected-output diagnostic trace.
 - `profiles/prophet5-wavetable-sweep-v2.json`: Prophet residual-sweep profile
   derived from the r7 capture summaries.

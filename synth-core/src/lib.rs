@@ -79,10 +79,11 @@ pub mod voice;
 pub use dsp::WavetableSupportStatus;
 #[cfg(feature = "oscillator-research")]
 pub use dsp::{
-    OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics, ResearchError,
-    ResearchEvent, ResearchModelCapabilities, ResearchModelDescriptor, ResearchModelFamily,
-    ResearchModelId, ResearchParameterDescriptor, ResearchParameterScale, ResearchRegistry,
-    ResearchRenderCase, ResearchRenderSummary, ResearchSignalMetrics, render_research_case,
+    OscillatorResearchModel, RegisteredResearchModel, ResearchComparisonMetrics,
+    ResearchDiagnosticFrame, ResearchError, ResearchEvent, ResearchModelCapabilities,
+    ResearchModelDescriptor, ResearchModelFamily, ResearchModelId, ResearchParameterDescriptor,
+    ResearchParameterScale, ResearchRegistry, ResearchRenderCase, ResearchRenderSummary,
+    ResearchSignalMetrics, render_research_case,
 };
 pub use effects::{EffectModulation, Effects};
 pub use engine::{LayerPlaybackStatus, SynthEngine, SynthEngineWithMemory};

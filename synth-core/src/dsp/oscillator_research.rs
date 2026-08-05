@@ -7,6 +7,8 @@
 use core::mem::size_of;
 
 use super::analog_oscillator::{AnalogOscillator, EngineOscillator};
+use super::gray_box_oscillator::{GrayBoxOscillator, PARAMETERS as GRAY_BOX_PARAMETERS};
+use super::gray_box_profile::{KORG_MONOLOGUE_GRAY_BOX_V1, PROFILE_JSON_SHA256 as GRAY_BOX_SHA256};
 use super::live_wavetable::LiveWavetable;
 use super::target_conditioned_oscillator::{
     PARAMETERS as TARGET_CONDITIONED_PARAMETERS, TargetConditionedOscillator,
@@ -31,10 +33,11 @@ pub enum ResearchModelId {
     WavetableProphet5,
     TargetConditioned,
     TargetConditionedV2,
+    GrayBoxSawCore,
 }
 
 impl ResearchModelId {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Baseline,
         Self::TableBlep,
         Self::PolyBlep,
@@ -43,6 +46,7 @@ impl ResearchModelId {
         Self::WavetableProphet5,
         Self::TargetConditioned,
         Self::TargetConditionedV2,
+        Self::GrayBoxSawCore,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -55,6 +59,7 @@ impl ResearchModelId {
             Self::WavetableProphet5 => "prophet5-wavetable-v1",
             Self::TargetConditioned => "target-conditioned-phase-filter-v1",
             Self::TargetConditionedV2 => "target-conditioned-phase-filter-v2",
+            Self::GrayBoxSawCore => "korg-monologue-gray-box-saw-core-v1",
         }
     }
 
@@ -195,6 +200,10 @@ pub trait OscillatorResearchModel {
     fn apply_event(&mut self, event: ResearchEvent) -> Result<(), ResearchError>;
     fn next_sample(&mut self) -> f32;
 
+    fn diagnostic_frame(&self) -> Option<ResearchDiagnosticFrame> {
+        None
+    }
+
     fn parameter_descriptors(&self) -> &'static [ResearchParameterDescriptor] {
         &[]
     }
@@ -208,6 +217,17 @@ pub trait OscillatorResearchModel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResearchDiagnosticFrame {
+    pub capacitor_v: f32,
+    pub threshold_v: f32,
+    pub comparator_high: bool,
+    pub raw_output: f32,
+    pub corrected_output: f32,
+    pub state_events: u8,
+    pub last_event_offset: Option<f32>,
+}
+
 enum RegisteredSource {
     Baseline(EngineOscillator),
     TableBlep(AnalogOscillator),
@@ -215,6 +235,7 @@ enum RegisteredSource {
     Wavetable(WavetableOscillator),
     PitchWavetable(LiveWavetable),
     TargetConditioned(TargetConditionedOscillator),
+    GrayBox(GrayBoxOscillator),
 }
 
 /// Built-in adapter used by the first comparison harness. New stateful models
@@ -229,6 +250,7 @@ pub struct RegisteredResearchModel {
     configured_case: Option<ResearchRenderCase>,
     target_phase_amount: f32,
     target_filter_amount: f32,
+    gray_box_parameters: [f32; GRAY_BOX_PARAMETERS.len()],
 }
 
 macro_rules! with_source_mut {
@@ -244,6 +266,9 @@ macro_rules! with_source_mut {
             }
             RegisteredSource::TargetConditioned(_) => {
                 unreachable!("target-conditioned source uses its scalar adapter")
+            }
+            RegisteredSource::GrayBox(_) => {
+                unreachable!("gray-box source uses its scalar adapter")
             }
         }
     };
@@ -303,6 +328,9 @@ impl RegisteredResearchModel {
                     TargetConditionedOscillator::new(profile, sample_rate_hz),
                 ))
             }
+            ResearchModelId::GrayBoxSawCore => Ok(RegisteredSource::GrayBox(
+                GrayBoxOscillator::new(&KORG_MONOLOGUE_GRAY_BOX_V1, sample_rate_hz),
+            )),
         }
     }
 
@@ -315,6 +343,7 @@ impl RegisteredResearchModel {
         )
         .expect("validated research model assets must remain available");
         self.apply_target_parameters();
+        self.apply_gray_box_parameters();
     }
 
     fn apply_target_parameters(&mut self) {
@@ -328,7 +357,20 @@ impl RegisteredResearchModel {
         }
     }
 
+    fn apply_gray_box_parameters(&mut self) {
+        if let RegisteredSource::GrayBox(oscillator) = &mut self.source {
+            for (descriptor, value) in GRAY_BOX_PARAMETERS.iter().zip(self.gray_box_parameters) {
+                oscillator
+                    .set_parameter(descriptor.id, value)
+                    .expect("stored gray-box parameter is validated");
+            }
+        }
+    }
+
     fn configure_source(&mut self, case: ResearchRenderCase) -> Result<(), ResearchError> {
+        if let RegisteredSource::GrayBox(oscillator) = &mut self.source {
+            return oscillator.configure(case);
+        }
         if let RegisteredSource::TargetConditioned(oscillator) = &mut self.source {
             return oscillator.configure(case);
         }
@@ -383,6 +425,10 @@ impl OscillatorResearchModel for RegisteredResearchModel {
     }
 
     fn reset(&mut self, reset_phase: bool) {
+        if let RegisteredSource::GrayBox(oscillator) = &mut self.source {
+            oscillator.reset(reset_phase);
+            return;
+        }
         if let RegisteredSource::PitchWavetable(oscillator) = &mut self.source {
             for lane in 0..WideF32::LANES {
                 oscillator.trigger_lane(lane, reset_phase);
@@ -409,6 +455,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                     return Err(ResearchError::InvalidFrequency);
                 }
                 match &mut self.source {
+                    RegisteredSource::GrayBox(oscillator) => oscillator.set_frequency(frequency_hz),
                     RegisteredSource::TargetConditioned(oscillator) => {
                         oscillator.set_frequency(frequency_hz)
                     }
@@ -431,6 +478,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                     return Err(ResearchError::InvalidShape);
                 }
                 match &mut self.source {
+                    RegisteredSource::GrayBox(oscillator) => oscillator.set_shape(shape),
                     RegisteredSource::TargetConditioned(oscillator) => oscillator.set_shape(shape),
                     RegisteredSource::PitchWavetable(oscillator) => oscillator.set_shape(shape),
                     source => with_source_mut!(source, oscillator => oscillator.set_shape(shape)),
@@ -444,6 +492,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                     return Err(ResearchError::UnsupportedEvent);
                 }
                 match &mut self.source {
+                    RegisteredSource::GrayBox(oscillator) => oscillator.hard_sync(subsample_offset),
                     RegisteredSource::TargetConditioned(oscillator) => {
                         oscillator.hard_sync(subsample_offset)
                     }
@@ -466,6 +515,9 @@ impl OscillatorResearchModel for RegisteredResearchModel {
     }
 
     fn next_sample(&mut self) -> f32 {
+        if let RegisteredSource::GrayBox(oscillator) = &mut self.source {
+            return oscillator.next_sample();
+        }
         if let RegisteredSource::TargetConditioned(oscillator) = &mut self.source {
             return oscillator.next_sample();
         }
@@ -479,9 +531,28 @@ impl OscillatorResearchModel for RegisteredResearchModel {
         })
     }
 
+    fn diagnostic_frame(&self) -> Option<ResearchDiagnosticFrame> {
+        match &self.source {
+            RegisteredSource::GrayBox(oscillator) => {
+                let frame = oscillator.diagnostics();
+                Some(ResearchDiagnosticFrame {
+                    capacitor_v: frame.capacitor_v,
+                    threshold_v: frame.threshold_v,
+                    comparator_high: frame.comparator_high,
+                    raw_output: frame.raw_output,
+                    corrected_output: frame.corrected_output,
+                    state_events: frame.state_events,
+                    last_event_offset: frame.last_event_offset,
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn parameter_descriptors(&self) -> &'static [ResearchParameterDescriptor] {
         match self.source {
             RegisteredSource::TargetConditioned(_) => &TARGET_CONDITIONED_PARAMETERS,
+            RegisteredSource::GrayBox(_) => &GRAY_BOX_PARAMETERS,
             _ => &[],
         }
     }
@@ -497,6 +568,15 @@ impl OscillatorResearchModel for RegisteredResearchModel {
                 }
                 Ok(())
             }
+            RegisteredSource::GrayBox(oscillator) => {
+                oscillator.set_parameter(id, value)?;
+                let index = GRAY_BOX_PARAMETERS
+                    .iter()
+                    .position(|descriptor| descriptor.id == id)
+                    .ok_or(ResearchError::UnknownParameter)?;
+                self.gray_box_parameters[index] = value;
+                Ok(())
+            }
             _ => Err(ResearchError::UnknownParameter),
         }
     }
@@ -504,6 +584,7 @@ impl OscillatorResearchModel for RegisteredResearchModel {
     fn parameter_value(&self, id: &str) -> Option<f32> {
         match &self.source {
             RegisteredSource::TargetConditioned(oscillator) => oscillator.parameter_value(id),
+            RegisteredSource::GrayBox(oscillator) => oscillator.parameter_value(id),
             _ => None,
         }
     }
@@ -692,6 +773,31 @@ impl ResearchRegistry {
                 bounded_render_cost: true,
                 no_std_compatible: true,
             },
+            ResearchModelId::GrayBoxSawCore => ResearchModelDescriptor {
+                id: id.as_str(),
+                name: "Monologue Gray-Box Saw Core",
+                revision: KORG_MONOLOGUE_GRAY_BOX_V1.revision,
+                family: ResearchModelFamily::Stateful,
+                capabilities: ResearchModelCapabilities {
+                    saw: true,
+                    saw_triangle: true,
+                    triangle: true,
+                    pulse: true,
+                    shape: true,
+                    audio_rate_pwm: true,
+                    hard_sync: true,
+                    note_reset: true,
+                    slop: false,
+                    simd_lanes: false,
+                    real_time_safe: false,
+                },
+                requires_external_asset: false,
+                mutable_state_bytes: size_of::<GrayBoxOscillator>(),
+                immutable_asset_bytes: size_of::<super::gray_box_oscillator::GrayBoxProfile>(),
+                latency_samples: 0,
+                bounded_render_cost: true,
+                no_std_compatible: true,
+            },
         }
     }
 
@@ -721,6 +827,11 @@ impl ResearchRegistry {
                 PROPHET5_WAVETABLE_BANK_PROFILE.target_id,
                 PROPHET5_WAVETABLE_BANK_PROFILE.manifest_sha256,
             )),
+            ResearchModelId::GrayBoxSawCore => Some((
+                KORG_MONOLOGUE_GRAY_BOX_V1.id,
+                KORG_MONOLOGUE_GRAY_BOX_V1.target_id,
+                GRAY_BOX_SHA256,
+            )),
             _ => None,
         }
     }
@@ -747,6 +858,7 @@ impl ResearchRegistry {
             configured_case: None,
             target_phase_amount: TARGET_CONDITIONED_PARAMETERS[0].default,
             target_filter_amount: TARGET_CONDITIONED_PARAMETERS[1].default,
+            gray_box_parameters: GRAY_BOX_PARAMETERS.map(|descriptor| descriptor.default),
         })
     }
 
@@ -771,6 +883,7 @@ impl ResearchRegistry {
             configured_case: None,
             target_phase_amount: TARGET_CONDITIONED_PARAMETERS[0].default,
             target_filter_amount: TARGET_CONDITIONED_PARAMETERS[1].default,
+            gray_box_parameters: GRAY_BOX_PARAMETERS.map(|descriptor| descriptor.default),
         })
     }
 }
