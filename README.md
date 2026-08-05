@@ -19,10 +19,9 @@ voice counts and form factors, one shared engine.
 | --- | --- | --- | --- |
 | [Micro 4](docs/src/models/micro-4.md) | Daisy Seed 1.1 | 4 | Supported |
 | [Micro 1](docs/src/models/micro-1.md) | Daisy Seed 1.1 | 1 | Supported |
-| [Mini](docs/src/models/mini.md) | Raspberry Pi Zero | TBD | Discarded — underperforming for 1 voice |
-| Mini | Raspberry Pi Zero 2 | TBD | Planned |
-| Pro Digital | Raspberry Pi 4 | TBD | Planned |
-| Pro Analog | TBD | TBD | Far roadmap |
+| [Mini](docs/src/models/mini.md) | Raspberry Pi Zero 2 | TBD | Planned — awaiting stock to evaluate |
+| [Pro Digital](docs/src/models/pro-digital.md) | Raspberry Pi 4 | TBD | Planned |
+| [Pro Analog](docs/src/models/pro-analog.md) | TBD | TBD | Far roadmap |
 
 ## Project structure
 

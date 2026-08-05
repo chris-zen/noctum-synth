@@ -8,6 +8,8 @@
 - [Micro 4](models/micro-4.md)
 - [Micro 1](models/micro-1.md)
 - [Mini](models/mini.md)
+- [Pro Digital](models/pro-digital.md)
+- [Pro Analog](models/pro-analog.md)
 
 # Synthesizer
 
