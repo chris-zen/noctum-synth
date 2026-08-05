@@ -9,6 +9,9 @@ Prophet-Rev2-Users-Guide-1.2.2.pdf
 Prophet-Rev2-Factory-Presets-List.pdf
 Prophet-Rev2-Factory-Programs
 Prophet-Rev2-Factory-Programs/
+# Keep local planning material ignored, except the curated analog-oscillator
+# research programme. Evidence Markdown/scripts/profiles stay versioned; captures
+# and regenerable bank/audio binaries remain local.
 plans/*
 !plans/analog-osc/
 !plans/analog-osc/**

@@ -2796,7 +2796,10 @@ mod tests {
 
         let block = &voices[0];
         let osc1 = block.oscillators().osc1_frequency_hz().to_array()[0];
-        let expected_osc1 = crate::tuning::midi_to_hz(68);
+        let matrix_semitones =
+            0.5 * crate::midi::prophet::MATRIX_OSC_FREQ_SEMITONES_AT_FULL;
+        let expected_osc1 =
+            crate::tuning::midi_to_hz(60) * F32((2.0 + matrix_semitones) / 12.0).exp2().as_f32();
         assert!(
             (osc1 - expected_osc1).abs() < 0.1,
             "matrix-routed osc 1 was {osc1}, expected {expected_osc1}"

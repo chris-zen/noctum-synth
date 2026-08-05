@@ -110,5 +110,5 @@ fn representative_one_layer_render_is_bit_identical() {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
-    assert_eq!(hash, 0x9d08_3f59_2814_e6f7);
+    assert_eq!(hash, 0x7995_e41e_ed7a_46a9);
 }

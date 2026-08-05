@@ -10,11 +10,10 @@ mod modulation;
 mod osc_engine;
 mod oscillators;
 mod pan;
+mod param_mod;
 
 pub use layer_engine::{ActiveNotes, LayerEngine, VoicePool, VoiceRegion};
 
-#[cfg(test)]
-use crate::patch::DedicatedModSource;
 use crate::{
     DEFAULT_TEMPO_BPM, GlideMode, ModSource, ParamId, VOICE_COUNT,
     dsp::{
@@ -23,7 +22,11 @@ use crate::{
     },
     effects::EffectModulation,
     math::{F32, WideF32},
-    patch::{ClockDivision, LFO_COUNT, LayerPatch, LfoSyncDivision, ModDestination, PanModMode},
+    midi::prophet::attack_decay_seconds,
+    patch::{
+        ClockDivision, LFO_COUNT, MOD_MATRIX_FREE_SLOT_COUNT, LayerPatch, LfoSyncDivision,
+        ModDestination, PanModMode,
+    },
     profiling::{RenderContext, RenderStage},
     sequencer::model::GATED_TRACK_COUNT,
 };
@@ -32,7 +35,11 @@ use aux_env::AuxEnv;
 use filter::Filter;
 use lanes::Lanes;
 use lfo::Lfo;
-use modulation::ModSignalContext;
+use modulation::{ModSignalContext, OscFreqPitchScale};
+use param_mod::{
+    EnvelopeTimeTarget, ParamModulation, PreviousParamSignals, VoiceParamSnapshot,
+    apply_envelope_time_modulation, is_modulatable_param, matrix_amount_slot,
+};
 use pan::Pan;
 
 pub use modulation::PatchModulation;
@@ -43,10 +50,16 @@ pub use oscillators::{
     OscillatorModulation, OscillatorParams, OscillatorsOutput, OscillatorsParams, glide_seconds,
 };
 
-const LFO_PITCH_DEPTH_SEMITONES: f32 = 12.0;
 const LFO_CUTOFF_DEPTH_SEMITONES: f32 = 127.0;
 /// Short smooth release used before replacing an audible voice (SynthLab precedent).
 const VOICE_STEAL_SHUTDOWN_SECONDS: f32 = 0.005;
+
+fn effective_matrix_amounts(
+    base: [f32; MOD_MATRIX_FREE_SLOT_COUNT],
+    param: &ParamModulation,
+) -> [f32; MOD_MATRIX_FREE_SLOT_COUNT] {
+    core::array::from_fn(|index| base[index] + param.matrix_amounts[index])
+}
 
 /// Provisional Rev2-16 physical-voice pan pattern.
 ///
@@ -153,6 +166,12 @@ pub struct VoiceBlock {
     tempo_bpm: f32,
     clock_division: ClockDivision,
 
+    param_bases: VoiceParamSnapshot,
+    applied_params: VoiceParamSnapshot,
+    last_param_signals: PreviousParamSignals,
+    #[cfg(test)]
+    envelope_time_writes: u32,
+
     sample_rate: f32,
 }
 
@@ -176,6 +195,11 @@ impl VoiceBlock {
             pitch_bend_range: 0.0,
             tempo_bpm: DEFAULT_TEMPO_BPM,
             clock_division: ClockDivision::default(),
+            param_bases: VoiceParamSnapshot::default(),
+            applied_params: VoiceParamSnapshot::default(),
+            last_param_signals: PreviousParamSignals::default(),
+            #[cfg(test)]
+            envelope_time_writes: 0,
             sample_rate,
         };
         block
@@ -388,15 +412,46 @@ impl VoiceBlock {
         self.start_pending_notes();
         self.lanes.smooth_velocities();
         crate::profiler_begin!(ctx, RenderStage::EnvelopesAndModulation);
-        crate::profiler_begin!(ctx, RenderStage::EnvelopeAdvance);
         let velocities = self.lanes.velocities();
-        self.aux_amount.set_target(modulation.aux_amount());
+        let plan = modulation.plan();
+        let effective_amounts;
+        let (param_mod, matrix_amounts): (ParamModulation, &[f32; MOD_MATRIX_FREE_SLOT_COUNT]) =
+            if plan.param_count > 0 {
+                let param_context = ModSignalContext {
+                    performance,
+                    velocities,
+                    filter_env: self.last_param_signals.filter_env,
+                    amp_env: self.last_param_signals.amp_env,
+                    aux_env: self.last_param_signals.aux_env,
+                    aux_signal: self.last_param_signals.aux_signal,
+                };
+                let (param_mod, amounts) = self.evaluate_param_routes(modulation, param_context);
+                self.apply_param_modulation(&param_mod);
+                effective_amounts = amounts;
+                (param_mod, &effective_amounts)
+            } else {
+                (ParamModulation::default(), &plan.matrix_amounts)
+            };
+
+        crate::profiler_begin!(ctx, RenderStage::EnvelopeAdvance);
+        let aux_amount =
+            (modulation.aux_amount() + param_mod.aux_env_amount + param_mod.env_all_amount)
+                .clamp(0.0, 1.0);
+        self.aux_amount.set_target(aux_amount);
         self.aux_amount.next();
         self.aux.advance_smoothers();
         let (aux_env, aux_signal) = self.aux.next_signal(velocities, self.aux_amount.value());
         let filter_env = self.filter.next_envelope();
         let amp = self.amplifier.next_envelope();
         let lifecycle_gain = self.lanes.next_lifecycle_gain();
+        if plan.param_count > 0 {
+            self.last_param_signals = PreviousParamSignals {
+                filter_env,
+                amp_env: amp,
+                aux_env,
+                aux_signal,
+            };
+        }
         crate::profiler_end!(ctx, RenderStage::EnvelopeAdvance);
 
         let context = ModSignalContext {
@@ -411,13 +466,12 @@ impl VoiceBlock {
         let mut lfo_modulation = LfoModulation::default();
         lfo_modulation.oscillators.osc1_frequency_semitones = pitch_bend;
         lfo_modulation.oscillators.osc2_frequency_semitones = pitch_bend;
-        let plan = modulation.plan();
         if plan.any_modulation {
             crate::profiler_begin!(ctx, RenderStage::LfoControlRouting);
             let lfo_control = if plan.control_count == 0 {
                 LfoControlModulation::default()
             } else {
-                self.evaluate_lfo_control_routes(modulation, context)
+                self.evaluate_lfo_control_routes(modulation, context, matrix_amounts)
             };
             crate::profiler_end!(ctx, RenderStage::LfoControlRouting);
 
@@ -442,7 +496,7 @@ impl VoiceBlock {
                         .add(self.lfos[index].output() * WideF32::splat(scale));
                 }
             } else {
-                self.apply_audio_modulation_routes(modulation, &mut lfo_modulation, context);
+                self.apply_audio_modulation_routes(modulation, &mut lfo_modulation, context, matrix_amounts);
             }
             crate::profiler_end!(ctx, RenderStage::AudioModulationRouting);
         }
@@ -495,13 +549,103 @@ impl VoiceBlock {
         &self,
         modulation: &PatchModulation,
         context: ModSignalContext,
+        matrix_amounts: &[f32; MOD_MATRIX_FREE_SLOT_COUNT],
     ) -> LfoControlModulation {
         let mut lfo_control = LfoControlModulation::default();
         for route in modulation.plan().control_routes() {
-            let signal = route.signal(self, context);
-            lfo_control.apply(route.destination(), signal.reduce_mean());
+            if route.effective_amount(matrix_amounts) == 0.0 {
+                continue;
+            }
+            let signal = route.signal_mean(self, context, matrix_amounts);
+            lfo_control.apply(route.destination(), signal);
         }
         lfo_control
+    }
+
+    /// Evaluates param routes and returns their deltas plus the matrix amounts
+    /// opened by Mod N Amount routes. Amount routes run first against base
+    /// amounts so sibling param routes see opened amounts on the same sample.
+    fn evaluate_param_routes(
+        &self,
+        modulation: &PatchModulation,
+        context: ModSignalContext,
+    ) -> (ParamModulation, [f32; MOD_MATRIX_FREE_SLOT_COUNT]) {
+        let plan = modulation.plan();
+        let mut param = ParamModulation::default();
+        for route in plan.param_routes() {
+            if matrix_amount_slot(route.destination()).is_none() {
+                continue;
+            }
+            if route.effective_amount(&plan.matrix_amounts) == 0.0 {
+                continue;
+            }
+            param.accumulate(
+                route.destination(),
+                route.signal_mean(self, context, &plan.matrix_amounts),
+            );
+        }
+        let matrix_amounts = if param.matrix_amount_mask != 0 {
+            effective_matrix_amounts(plan.matrix_amounts, &param)
+        } else {
+            plan.matrix_amounts
+        };
+        for route in plan.param_routes() {
+            if matrix_amount_slot(route.destination()).is_some() {
+                continue;
+            }
+            if route.effective_amount(&matrix_amounts) == 0.0 {
+                continue;
+            }
+            param.accumulate(
+                route.destination(),
+                route.signal_mean(self, context, &matrix_amounts),
+            );
+        }
+        (param, matrix_amounts)
+    }
+
+    fn apply_param_modulation(&mut self, param: &ParamModulation) {
+        let bases = self.param_bases;
+        let applied = &mut self.applied_params;
+        let filter_env_amount = (bases.filter_env_amount()
+            + param.filter_env_amount
+            + param.env_all_amount)
+            .clamp(-1.0, 1.0);
+        if applied.filter_env_amount() != filter_env_amount {
+            self.filter.set_env_amount(filter_env_amount);
+            applied.set_filter_env_amount(filter_env_amount);
+        }
+        let amp_env_amount =
+            (bases.amp_env_amount() + param.amp_env_amount + param.env_all_amount).clamp(0.0, 1.0);
+        if applied.amp_env_amount() != amp_env_amount {
+            self.amplifier.set_env_amount(amp_env_amount);
+            applied.set_amp_env_amount(amp_env_amount);
+        }
+        let osc_slop = (bases.osc_slop() + param.osc_slop).clamp(0.0, 1.0);
+        if applied.osc_slop() != osc_slop {
+            self.oscillators.set_slop(osc_slop);
+            applied.set_osc_slop(osc_slop);
+        }
+
+        let time_writes = apply_envelope_time_modulation(&bases, applied, param, |target, seconds| {
+            match target {
+                EnvelopeTimeTarget::FilterAttack => self.filter.set_attack_seconds(seconds),
+                EnvelopeTimeTarget::FilterDecay => self.filter.set_decay_seconds(seconds),
+                EnvelopeTimeTarget::FilterRelease => self.filter.set_release_seconds(seconds),
+                EnvelopeTimeTarget::AmpAttack => self.amplifier.set_attack_seconds(seconds),
+                EnvelopeTimeTarget::AmpDecay => self.amplifier.set_decay_seconds(seconds),
+                EnvelopeTimeTarget::AmpRelease => self.amplifier.set_release_seconds(seconds),
+                EnvelopeTimeTarget::AuxAttack => self.aux.set_attack_seconds(seconds),
+                EnvelopeTimeTarget::AuxDecay => self.aux.set_decay_seconds(seconds),
+                EnvelopeTimeTarget::AuxRelease => self.aux.set_release_seconds(seconds),
+            }
+        });
+        #[cfg(test)]
+        {
+            self.envelope_time_writes += time_writes;
+        }
+        #[cfg(not(test))]
+        let _ = time_writes;
     }
 
     fn advance_lfos(&mut self, lfo_control: LfoControlModulation, modulation: &PatchModulation) {
@@ -585,7 +729,8 @@ impl VoiceBlock {
                 let lfo_control = if modulation.plan().control_count == 0 {
                     LfoControlModulation::default()
                 } else {
-                    self.evaluate_lfo_control_routes(modulation, context)
+                    let matrix_amounts = &modulation.plan().matrix_amounts;
+                    self.evaluate_lfo_control_routes(modulation, context, matrix_amounts)
                 };
                 self.advance_lfos(lfo_control, modulation);
             }
@@ -761,6 +906,8 @@ impl VoiceBlock {
     }
 
     pub fn set_osc_slop(&mut self, slop: f32) {
+        self.param_bases.set_osc_slop(slop);
+        self.applied_params.set_osc_slop(slop.clamp(0.0, 1.0));
         self.oscillators.set_slop(slop);
     }
 
@@ -801,6 +948,9 @@ impl VoiceBlock {
     }
 
     pub fn set_filter_env_amount(&mut self, env_amount: f32) {
+        self.param_bases.set_filter_env_amount(env_amount);
+        self.applied_params
+            .set_filter_env_amount(env_amount.clamp(-1.0, 1.0));
         self.filter.set_env_amount(env_amount);
     }
 
@@ -817,10 +967,14 @@ impl VoiceBlock {
     }
 
     pub fn set_filter_attack(&mut self, seconds: f32) {
+        self.param_bases.set_filter_attack_seconds(seconds);
+        self.applied_params.set_filter_attack_seconds(seconds);
         self.filter.set_attack_seconds(seconds);
     }
 
     pub fn set_filter_decay(&mut self, seconds: f32) {
+        self.param_bases.set_filter_decay_seconds(seconds);
+        self.applied_params.set_filter_decay_seconds(seconds);
         self.filter.set_decay_seconds(seconds);
     }
 
@@ -829,10 +983,14 @@ impl VoiceBlock {
     }
 
     pub fn set_filter_release(&mut self, seconds: f32) {
+        self.param_bases.set_filter_release_seconds(seconds);
+        self.applied_params.set_filter_release_seconds(seconds);
         self.filter.set_release_seconds(seconds);
     }
 
     pub fn set_amp_attack(&mut self, seconds: f32) {
+        self.param_bases.set_amp_attack_seconds(seconds);
+        self.applied_params.set_amp_attack_seconds(seconds);
         self.amplifier.set_attack_seconds(seconds);
     }
 
@@ -841,6 +999,8 @@ impl VoiceBlock {
     }
 
     pub fn set_amp_decay(&mut self, seconds: f32) {
+        self.param_bases.set_amp_decay_seconds(seconds);
+        self.applied_params.set_amp_decay_seconds(seconds);
         self.amplifier.set_decay_seconds(seconds);
     }
 
@@ -849,6 +1009,8 @@ impl VoiceBlock {
     }
 
     pub fn set_amp_release(&mut self, seconds: f32) {
+        self.param_bases.set_amp_release_seconds(seconds);
+        self.applied_params.set_amp_release_seconds(seconds);
         self.amplifier.set_release_seconds(seconds);
     }
 
@@ -857,6 +1019,8 @@ impl VoiceBlock {
     }
 
     pub fn set_amp_env_amount(&mut self, amount: f32) {
+        self.param_bases.set_amp_env_amount(amount);
+        self.applied_params.set_amp_env_amount(amount.clamp(0.0, 1.0));
         self.amplifier.set_env_amount(amount);
     }
 
@@ -881,10 +1045,14 @@ impl VoiceBlock {
     }
 
     pub fn set_aux_attack(&mut self, seconds: f32) {
+        self.param_bases.set_aux_attack_seconds(seconds);
+        self.applied_params.set_aux_attack_seconds(seconds);
         self.aux.set_attack_seconds(seconds);
     }
 
     pub fn set_aux_decay(&mut self, seconds: f32) {
+        self.param_bases.set_aux_decay_seconds(seconds);
+        self.applied_params.set_aux_decay_seconds(seconds);
         self.aux.set_decay_seconds(seconds);
     }
 
@@ -893,6 +1061,8 @@ impl VoiceBlock {
     }
 
     pub fn set_aux_release(&mut self, seconds: f32) {
+        self.param_bases.set_aux_release_seconds(seconds);
+        self.applied_params.set_aux_release_seconds(seconds);
         self.aux.set_release_seconds(seconds);
     }
 
@@ -986,13 +1156,23 @@ impl VoiceBlock {
         patch_modulation: &PatchModulation,
         modulation: &mut LfoModulation,
         context: ModSignalContext,
+        matrix_amounts: &[f32; MOD_MATRIX_FREE_SLOT_COUNT],
     ) {
         for route in patch_modulation.plan().audio_routes() {
-            modulation.apply_destination(route.destination(), route.signal(self, context));
+            if route.effective_amount(matrix_amounts) == 0.0 {
+                continue;
+            }
+            modulation.apply_destination(
+                route.destination(),
+                route.signal(self, context, matrix_amounts),
+                route.osc_freq_pitch_scale(),
+            );
         }
     }
 
     pub(crate) fn apply_voice_patch(&mut self, patch: &LayerPatch) {
+        self.param_bases = VoiceParamSnapshot::from_patch(patch);
+        self.applied_params.mirror(&self.param_bases);
         self.oscillators.apply_params(patch);
         self.filter.apply_params(&patch.filter);
         self.amplifier.apply_params(&patch.amplifier);
@@ -1015,7 +1195,32 @@ impl VoiceBlock {
         core::mem::take(&mut self.last_effect_modulation)
     }
 
+    fn set_modulatable_param(&mut self, id: ParamId, value: f32) -> bool {
+        if !is_modulatable_param(id) {
+            return false;
+        }
+        match id {
+            ParamId::FilterEnvAmount => self.set_filter_env_amount(value),
+            ParamId::FilterEgAttack => self.set_filter_attack(value),
+            ParamId::FilterEgDecay => self.set_filter_decay(value),
+            ParamId::FilterEgRelease => self.set_filter_release(value),
+            ParamId::AmpEnvAmount => self.set_amp_env_amount(value),
+            ParamId::AmpEgAttack => self.set_amp_attack(value),
+            ParamId::AmpEgDecay => self.set_amp_decay(value),
+            ParamId::AmpEgRelease => self.set_amp_release(value),
+            ParamId::AuxEgAttack => self.set_aux_attack(value),
+            ParamId::AuxEgDecay => self.set_aux_decay(value),
+            ParamId::AuxEgRelease => self.set_aux_release(value),
+            ParamId::OscSlop | ParamId::AnalogDrift => self.set_osc_slop(value),
+            _ => return false,
+        }
+        true
+    }
+
     pub fn set_param(&mut self, id: ParamId, value: f32) {
+        if self.set_modulatable_param(id, value) {
+            return;
+        }
         if self.oscillators.set_param(id, value)
             || self.filter.set_param(id, value)
             || self.amplifier.set_param(id, value)
@@ -1166,7 +1371,8 @@ impl VoiceBlock {
         modulation: &PatchModulation,
         context: ModSignalContext,
     ) -> LfoControlModulation {
-        self.evaluate_lfo_control_routes(modulation, context)
+        let matrix_amounts = &modulation.plan().matrix_amounts;
+        self.evaluate_lfo_control_routes(modulation, context, matrix_amounts)
     }
 
     fn advance_lfos_for_test(
@@ -1183,45 +1389,18 @@ impl VoiceBlock {
         modulation: &mut LfoModulation,
         context: ModSignalContext,
     ) {
-        self.apply_audio_modulation_routes(patch_modulation, modulation, context);
+        let matrix_amounts = &patch_modulation.plan().matrix_amounts;
+        self.apply_audio_modulation_routes(patch_modulation, modulation, context, matrix_amounts);
     }
 
-    fn for_each_modulation_route(
-        &self,
-        patch_modulation: &PatchModulation,
-        context: ModSignalContext,
-        mut apply: impl FnMut(ModDestination, WideF32),
-    ) {
-        for lfo in &self.lfos {
-            apply(lfo.destination(), lfo.output());
-        }
+    #[cfg(test)]
+    fn configured_aux_attack_seconds(&self) -> f32 {
+        self.aux.attack_seconds()
+    }
 
-        apply(patch_modulation.aux_destination(), context.aux_signal);
-
-        for slot in patch_modulation.matrix_free_slots() {
-            if !slot.enabled {
-                continue;
-            }
-
-            let signal = self.mod_source_signal(slot.source, context) * WideF32::splat(slot.amount);
-            apply(slot.destination, signal);
-        }
-
-        for (index, slot) in patch_modulation
-            .matrix_dedicated_slots()
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            if !slot.enabled {
-                continue;
-            }
-
-            let dedicated_source = DedicatedModSource::ALL[index].source();
-            let signal =
-                self.mod_source_signal(dedicated_source, context) * WideF32::splat(slot.amount);
-            apply(slot.destination, signal);
-        }
+    #[cfg(test)]
+    fn param_bases_aux_attack_raw(&self) -> u16 {
+        self.param_bases.aux_attack_raw()
     }
 }
 
@@ -1360,19 +1539,24 @@ struct LfoModulation {
 }
 
 impl LfoModulation {
-    fn apply_destination(&mut self, destination: ModDestination, signal: WideF32) {
+    fn apply_destination(
+        &mut self,
+        destination: ModDestination,
+        signal: WideF32,
+        pitch_scale: OscFreqPitchScale,
+    ) {
         match destination {
             ModDestination::Off => {}
             ModDestination::Osc1Frequency => {
                 self.oscillators.osc1_frequency_semitones +=
-                    signal * WideF32::splat(LFO_PITCH_DEPTH_SEMITONES);
+                    signal * WideF32::splat(pitch_scale.semitones_at_full());
             }
             ModDestination::Osc2Frequency => {
                 self.oscillators.osc2_frequency_semitones +=
-                    signal * WideF32::splat(LFO_PITCH_DEPTH_SEMITONES);
+                    signal * WideF32::splat(pitch_scale.semitones_at_full());
             }
             ModDestination::OscAllFrequency => {
-                let pitch = signal * WideF32::splat(LFO_PITCH_DEPTH_SEMITONES);
+                let pitch = signal * WideF32::splat(pitch_scale.semitones_at_full());
                 self.oscillators.osc1_frequency_semitones += pitch;
                 self.oscillators.osc2_frequency_semitones += pitch;
             }
@@ -1446,7 +1630,7 @@ impl PreparedCutoffModulation {
 mod tests {
     use super::*;
     use crate::dsp::MAX_LFO_RATE_HZ;
-    use crate::patch::{DedicatedModSource, ModRoute};
+    use crate::patch::{DedicatedModSource, ModMatrixSlot, ModRoute};
     use crate::voice::layer_engine::TestLayerEngine;
     use crate::{ControlMessage, ParamId};
 
@@ -1640,9 +1824,11 @@ mod tests {
         context: ModSignalContext,
     ) -> LfoModulation {
         let mut control = LfoControlModulation::default();
-        block.for_each_modulation_route(patch_modulation, context, |destination, signal| {
-            control.apply(destination, signal.reduce_mean());
-        });
+        let matrix_amounts = &patch_modulation.plan().matrix_amounts;
+        for route in patch_modulation.plan().control_routes() {
+            let signal = route.signal(block, context, matrix_amounts);
+            control.apply(route.destination(), signal.reduce_mean());
+        }
         let rates: [f32; LFO_COUNT] = core::array::from_fn(|i| {
             lfo::base_rates(&block.lfos)[i] * F32(control.rate_mod[i] * 4.0).exp2().as_f32()
         });
@@ -1655,9 +1841,15 @@ mod tests {
             lfo.generate();
         }
         let mut modulation = LfoModulation::default();
-        block.for_each_modulation_route(patch_modulation, context, |destination, signal| {
-            apply_destination_modulation_reference(&mut modulation, destination, signal);
-        });
+        for route in patch_modulation.plan().audio_routes() {
+            let signal = route.signal(block, context, matrix_amounts);
+            apply_destination_modulation_reference(
+                &mut modulation,
+                route.destination(),
+                signal,
+                route.osc_freq_pitch_scale(),
+            );
+        }
         modulation
     }
 
@@ -1665,6 +1857,7 @@ mod tests {
         modulation: &mut LfoModulation,
         destination: ModDestination,
         signal: WideF32,
+        pitch_scale: OscFreqPitchScale,
     ) {
         match destination {
             ModDestination::Osc1ShapeMod => modulation.oscillators.osc1_shape += signal,
@@ -1673,7 +1866,7 @@ mod tests {
                 modulation.oscillators.osc1_shape += signal;
                 modulation.oscillators.osc2_shape += signal;
             }
-            _ => modulation.apply_destination(destination, signal),
+            _ => modulation.apply_destination(destination, signal, pitch_scale),
         }
     }
 
@@ -1834,6 +2027,114 @@ mod tests {
             0.5,
         );
         assert!(patch_modulation.plan().single_pwm_route.is_none());
+    }
+
+    #[test]
+    fn lfo_dedicated_osc_freq_scale_reaches_one_octave_at_amount_96() {
+        let mut modulation = LfoModulation::default();
+        modulation.apply_destination(
+            ModDestination::Osc1Frequency,
+            WideF32::splat(96.0 / 127.0),
+            OscFreqPitchScale::Lfo,
+        );
+        let semitones = modulation.oscillators.osc1_frequency_semitones.to_array()[0];
+        assert!(
+            (semitones - 12.0).abs() < 1.0e-3,
+            "LFO depth 96/127 at unit output should reach one octave, got {semitones}"
+        );
+    }
+
+    #[test]
+    fn dedicated_lfo_route_uses_lfo_pitch_scale() {
+        let (mut block, mut patch_modulation) = test_block(48_000.0, &LayerPatch::default());
+        block.set_lfo_depth(0, 1.0);
+        block.set_lfo_destination(0, ModDestination::Osc1Frequency);
+        patch_modulation.set_lfo_depth(0, 1.0);
+        patch_modulation.set_lfo_destination(0, ModDestination::Osc1Frequency);
+        let route = patch_modulation
+            .plan()
+            .audio_routes()
+            .iter()
+            .find(|route| route.destination() == ModDestination::Osc1Frequency)
+            .expect("dedicated LFO route");
+        assert_eq!(route.osc_freq_pitch_scale(), OscFreqPitchScale::Lfo);
+    }
+
+    #[test]
+    fn matrix_osc_freq_reaches_one_octave_at_amount_24() {
+        let (mut block, mut patch_modulation) = test_block(48_000.0, &LayerPatch::default());
+        patch_modulation.set_mod_route(
+            ModRoute::Free(0),
+            true,
+            ModSource::Dc,
+            ModDestination::Osc1Frequency,
+            24.0 / 127.0,
+        );
+
+        let context = modulation_context(0);
+        let modulation = modulation_step_compiled(&mut block, &patch_modulation, context);
+        let semitones = modulation.oscillators.osc1_frequency_semitones.to_array()[0];
+        assert!(
+            (semitones - 12.0).abs() < 1.0e-3,
+            "matrix amount 24 should reach one octave, got {semitones}"
+        );
+    }
+
+    #[test]
+    fn matrix_note_number_osc_freq_steps_half_semitone_per_key_at_full_amount() {
+        let (mut block_low, mut patch_modulation) = test_block(48_000.0, &LayerPatch::default());
+        let (mut block_high, _) = test_block(48_000.0, &LayerPatch::default());
+        patch_modulation.set_mod_route(
+            ModRoute::Free(0),
+            true,
+            ModSource::NoteNumber,
+            ModDestination::Osc1Frequency,
+            1.0,
+        );
+        block_low.note_on(0, 60, 1.0, false);
+        block_high.note_on(0, 61, 1.0, false);
+
+        let low = modulation_step_compiled(&mut block_low, &patch_modulation, modulation_context(0));
+        let high =
+            modulation_step_compiled(&mut block_high, &patch_modulation, modulation_context(0));
+        let delta = high.oscillators.osc1_frequency_semitones.to_array()[0]
+            - low.oscillators.osc1_frequency_semitones.to_array()[0];
+        assert!(
+            (delta - 0.5).abs() < 1.0e-3,
+            "full matrix note-number amount should step 0.5 ST per key, got {delta}"
+        );
+    }
+
+    #[test]
+    fn matrix_route_uses_matrix_pitch_scale() {
+        let (mut block, mut patch_modulation) = test_block(48_000.0, &LayerPatch::default());
+        patch_modulation.set_mod_route(
+            ModRoute::Free(0),
+            true,
+            ModSource::Lfo1,
+            ModDestination::Osc1Frequency,
+            24.0 / 127.0,
+        );
+        block.set_lfo_depth(0, 1.0);
+        let route = patch_modulation
+            .plan()
+            .audio_routes()
+            .iter()
+            .find(|route| route.destination() == ModDestination::Osc1Frequency)
+            .expect("matrix LFO route");
+        assert_eq!(route.osc_freq_pitch_scale(), OscFreqPitchScale::Matrix);
+
+        let mut modulation = LfoModulation::default();
+        modulation.apply_destination(
+            ModDestination::Osc1Frequency,
+            WideF32::splat(24.0 / 127.0),
+            OscFreqPitchScale::Matrix,
+        );
+        let semitones = modulation.oscillators.osc1_frequency_semitones.to_array()[0];
+        assert!(
+            (semitones - 12.0).abs() < 1.0e-3,
+            "matrix amount 24/127 at unit output should reach one octave, got {semitones}"
+        );
     }
 
     fn pan_lanes_reference(block: &VoiceBlock, lanes: WideF32, pan_mod: WideF32) -> (f32, f32) {
@@ -2263,7 +2564,7 @@ mod tests {
             ParamId::AuxEgDestination,
             ModDestination::Osc1Frequency.index() as f32,
         ));
-        voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, 1.0));
+        voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgAmount, 24.0 / 127.0));
         voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgAttack, 0.0005));
         voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgDecay, 5.0));
         voices.handle_control(ControlMessage::edit_param(ParamId::AuxEgSustain, 1.0));
@@ -2279,7 +2580,7 @@ mod tests {
         let expected = crate::tuning::midi_to_hz(72);
         assert!(
             (freq - expected).abs() < 5.0,
-            "full positive aux pitch modulation should raise osc1 by about one octave, got {freq}, expected {expected}"
+            "matrix-scale aux pitch at amount 24 should raise osc1 by about one octave, got {freq}, expected {expected}"
         );
     }
 
@@ -2605,6 +2906,212 @@ mod tests {
         assert!(
             with_rms > without_rms * 1.5,
             "with_env {with_rms}, without_env {without_rms}"
+        );
+    }
+
+    #[test]
+    fn dc_modulation_shortens_aux_attack_time() {
+        let sample_rate = 48_000.0;
+        let mut baseline_patch = LayerPatch::default();
+        baseline_patch.aux_envelope.attack = 5.0;
+        baseline_patch.aux_envelope.decay = 0.0;
+        baseline_patch.aux_envelope.sustain = 1.0;
+
+        let mut modulated_patch = baseline_patch.clone();
+        modulated_patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Env3Attack,
+            amount: -1.0,
+        };
+
+        let (mut baseline, baseline_mod) = test_block(sample_rate, &baseline_patch);
+        let (mut modulated, modulated_mod) = test_block(sample_rate, &modulated_patch);
+        baseline.note_on(0, 60, 1.0, false);
+        modulated.note_on(0, 60, 1.0, false);
+        voice_block_next(&mut baseline, &baseline_mod);
+        voice_block_next(&mut modulated, &modulated_mod);
+
+        assert!(
+            modulated.configured_aux_attack_seconds()
+                < baseline.configured_aux_attack_seconds() * 0.1,
+            "baseline={}, modulated={}",
+            baseline.configured_aux_attack_seconds(),
+            modulated.configured_aux_attack_seconds()
+        );
+    }
+
+    fn param_test_context() -> ModSignalContext {
+        ModSignalContext {
+            performance: PerformanceModulation::default(),
+            velocities: WideF32::ZERO,
+            filter_env: WideF32::ZERO,
+            amp_env: WideF32::ZERO,
+            aux_env: WideF32::ZERO,
+            aux_signal: WideF32::ZERO,
+        }
+    }
+
+    #[test]
+    fn mod_amount_route_opens_zero_amount_slot() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Velocity,
+            destination: ModDestination::FilterCutoff,
+            amount: 0.0,
+        };
+        patch.mod_matrix.free_slots[1] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Mod1Amount,
+            amount: 0.5,
+        };
+        let (block, modulation) = test_block(48_000.0, &patch);
+        let mut context = param_test_context();
+        context.velocities = WideF32::splat(1.0);
+
+        let (param, amounts) = block.evaluate_param_routes(&modulation, context);
+        assert!(param.matrix_amount_mask & 1 != 0);
+        assert!((amounts[0] - 0.5).abs() < 1.0e-6);
+
+        let mut lfo_modulation = LfoModulation::default();
+        block.apply_audio_modulation_routes(&modulation, &mut lfo_modulation, context, &amounts);
+        let cutoff = lfo_modulation.filter_cutoff.lanes.to_array()[0];
+        assert!(
+            (cutoff - 0.5 * LFO_CUTOFF_DEPTH_SEMITONES).abs() < 1.0e-4,
+            "opened slot cutoff contribution was {cutoff}"
+        );
+    }
+
+    #[test]
+    fn mod_amount_route_updates_sibling_param_route_same_frame() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Env3Attack,
+            amount: 0.5,
+        };
+        patch.mod_matrix.free_slots[1] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Mod1Amount,
+            amount: 0.5,
+        };
+        let (block, modulation) = test_block(48_000.0, &patch);
+
+        let (param, _) = block.evaluate_param_routes(&modulation, param_test_context());
+        assert!((param.aux_attack - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn set_param_updates_param_modulation_bases() {
+        let mut patch = LayerPatch::default();
+        patch.aux_envelope.attack = 5.0;
+        let (mut block, _) = test_block(48_000.0, &patch);
+        let before = block.param_bases_aux_attack_raw();
+
+        block.set_param(ParamId::AuxEgAttack, 2.0);
+
+        let after = block.param_bases_aux_attack_raw();
+        assert_ne!(before, after);
+        assert_eq!(
+            after,
+            crate::midi::prophet::attack_decay_raw(2.0),
+            "set_param should refresh param-mod bases, not only the envelope DSP"
+        );
+    }
+
+    #[test]
+    fn note_number_param_route_uses_lane_mean() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::NoteNumber,
+            destination: ModDestination::Env3Attack,
+            amount: 1.0,
+        };
+        let (mut block, modulation) = test_block(48_000.0, &patch);
+        block.note_on(0, 60, 1.0, false);
+        block.note_on(1, 64, 1.0, false);
+
+        let (param, _) = block.evaluate_param_routes(&modulation, param_test_context());
+        // Envelope times are block-shared scalars: the per-lane Note Number
+        // source collapses to the mean over all lanes, including idle lanes
+        // still holding their default note 60.
+        let expected = (60.0 + 64.0 + 60.0 + 60.0) / (WideF32::LANES as f32 * 127.0);
+        assert!(
+            (param.aux_attack - expected).abs() < 1.0e-6,
+            "delta {} expected {expected}",
+            param.aux_attack
+        );
+    }
+
+    #[test]
+    fn osc_slop_param_route_skips_envelope_time_writes() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::OscSlop,
+            amount: 0.5,
+        };
+        let (mut block, modulation) = test_block(48_000.0, &patch);
+        block.note_on(0, 60, 1.0, false);
+        for _ in 0..8 {
+            voice_block_next(&mut block, &modulation);
+        }
+        assert_eq!(block.envelope_time_writes, 0);
+    }
+
+    #[test]
+    fn constant_envelope_time_modulation_writes_coefficients_once() {
+        let mut patch = LayerPatch::default();
+        patch.aux_envelope.attack = 5.0;
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Env3Attack,
+            amount: -1.0,
+        };
+        let (mut block, modulation) = test_block(48_000.0, &patch);
+        block.note_on(0, 60, 1.0, false);
+        for _ in 0..8 {
+            voice_block_next(&mut block, &modulation);
+        }
+        assert_eq!(block.envelope_time_writes, 1);
+    }
+
+    #[test]
+    fn envelope_time_returns_to_base_when_modulation_drops() {
+        let mut patch = LayerPatch::default();
+        patch.aux_envelope.attack = 5.0;
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Breath,
+            destination: ModDestination::Env3Attack,
+            amount: -0.5,
+        };
+        let (mut block, modulation) = test_block(48_000.0, &patch);
+        block.note_on(0, 60, 1.0, false);
+
+        let mut performance = PerformanceModulation::default();
+        performance.breath = 1.0;
+        let mut ctx = crate::create_render_context!();
+        block.next(performance, &modulation, &mut ctx);
+        let modulated = block.configured_aux_attack_seconds();
+
+        performance.breath = 0.0;
+        block.next(performance, &modulation, &mut ctx);
+
+        assert_eq!(block.envelope_time_writes, 2);
+        assert!(modulated < 5.0);
+        let restored = block.configured_aux_attack_seconds();
+        let expected = attack_decay_seconds(crate::midi::prophet::attack_decay_raw(5.0));
+        assert!(
+            (restored - expected).abs() < 1.0e-6,
+            "restored={restored} expected={expected}"
         );
     }
 }

@@ -6,7 +6,7 @@ use crate::{
         MOD_MATRIX_FREE_SLOT_COUNT, ModDestination, ModMatrix, ModMatrixSlot, ModRoute,
     },
     sequencer::model::GATED_TRACK_COUNT,
-    voice::VoiceBlock,
+    voice::{VoiceBlock, param_mod},
 };
 
 const MAX_COMPILED_MOD_ROUTES: usize =
@@ -259,12 +259,15 @@ pub(crate) struct ModSignalContext {
 pub(crate) struct ModulationExecutionPlan {
     pub control_routes: [CompiledModRoute; MAX_COMPILED_MOD_ROUTES],
     pub audio_routes: [CompiledModRoute; MAX_COMPILED_MOD_ROUTES],
+    pub param_routes: [CompiledModRoute; MAX_COMPILED_MOD_ROUTES],
     pub control_count: u8,
     pub audio_count: u8,
+    pub param_count: u8,
     pub active_lfo_mask: u8,
     pub rate_target_mask: u8,
     pub depth_target_mask: u8,
     pub total_route_count: u8,
+    pub matrix_amounts: [f32; MOD_MATRIX_FREE_SLOT_COUNT],
     pub single_pwm_route: Option<SinglePwmRoute>,
     pub single_filter_cutoff_route: Option<SingleFilterCutoffRoute>,
     pub any_modulation: bool,
@@ -275,12 +278,15 @@ impl Default for ModulationExecutionPlan {
         Self {
             control_routes: [CompiledModRoute::EMPTY; MAX_COMPILED_MOD_ROUTES],
             audio_routes: [CompiledModRoute::EMPTY; MAX_COMPILED_MOD_ROUTES],
+            param_routes: [CompiledModRoute::EMPTY; MAX_COMPILED_MOD_ROUTES],
             control_count: 0,
             audio_count: 0,
+            param_count: 0,
             active_lfo_mask: 0,
             rate_target_mask: 0,
             depth_target_mask: 0,
             total_route_count: 0,
+            matrix_amounts: [0.0; MOD_MATRIX_FREE_SLOT_COUNT],
             single_pwm_route: None,
             single_filter_cutoff_route: None,
             any_modulation: false,
@@ -299,6 +305,7 @@ impl ModulationExecutionPlan {
         gated_destinations: [GatedDestination; GATED_TRACK_COUNT],
     ) -> Self {
         let mut plan = Self::default();
+        plan.matrix_amounts = core::array::from_fn(|index| matrix_slots[index].amount);
 
         for (index, depth) in lfo_base_depths.iter().enumerate() {
             if *depth != 0.0 {
@@ -306,8 +313,45 @@ impl ModulationExecutionPlan {
             }
         }
 
+        // A free slot whose amount is targeted by a Mod N Amount route must
+        // compile even while its base amount is zero, or the route can never
+        // be opened by modulation.
+        let mut amount_target_mask = 0u8;
+        let mut note_amount_target = |destination: ModDestination| {
+            if let Some(target) = param_mod::matrix_amount_slot(destination) {
+                amount_target_mask |= 1 << target;
+            }
+        };
         for slot in matrix_slots {
             if slot.enabled && slot.amount != 0.0 {
+                note_amount_target(slot.destination);
+            }
+        }
+        for slot in dedicated_slots {
+            if slot.enabled && slot.amount != 0.0 {
+                note_amount_target(slot.destination);
+            }
+        }
+        if aux_amount != 0.0 {
+            note_amount_target(aux_destination);
+        }
+        for (index, destination) in lfo_destinations.iter().copied().enumerate() {
+            if lfo_base_depths[index] != 0.0 {
+                note_amount_target(destination);
+            }
+        }
+        for destination in gated_destinations {
+            if let Some(destination) = destination.modulation() {
+                note_amount_target(destination);
+            }
+        }
+        let matrix_slot_compiles =
+            |slot: &ModMatrixSlot, index: usize| -> bool {
+                slot.enabled && (slot.amount != 0.0 || amount_target_mask & (1 << index) != 0)
+            };
+
+        for (index, slot) in matrix_slots.iter().enumerate() {
+            if matrix_slot_compiles(slot, index) {
                 plan.active_lfo_mask |= Self::lfo_depth_target_mask(slot.destination);
             }
         }
@@ -329,6 +373,8 @@ impl ModulationExecutionPlan {
                     source: CompiledModSource::Standard(lfo_sources[index]),
                     destination,
                     amount: 1.0,
+                    osc_freq_pitch_scale: OscFreqPitchScale::Lfo,
+                    matrix_slot: None,
                 });
             }
         }
@@ -337,14 +383,18 @@ impl ModulationExecutionPlan {
                 source: CompiledModSource::AuxSignal,
                 destination: aux_destination,
                 amount: 1.0,
+                osc_freq_pitch_scale: OscFreqPitchScale::Matrix,
+                matrix_slot: None,
             });
         }
-        for slot in matrix_slots {
-            if slot.enabled && slot.amount != 0.0 {
+        for (index, slot) in matrix_slots.iter().copied().enumerate() {
+            if matrix_slot_compiles(&slot, index) {
                 plan.add_route(CompiledModRoute {
                     source: CompiledModSource::Standard(slot.source),
                     destination: slot.destination,
                     amount: slot.amount,
+                    osc_freq_pitch_scale: OscFreqPitchScale::Matrix,
+                    matrix_slot: Some(index as u8),
                 });
             }
         }
@@ -354,6 +404,8 @@ impl ModulationExecutionPlan {
                     source: CompiledModSource::Standard(DedicatedModSource::ALL[index].source()),
                     destination: slot.destination,
                     amount: slot.amount,
+                    osc_freq_pitch_scale: OscFreqPitchScale::Matrix,
+                    matrix_slot: None,
                 });
             }
         }
@@ -364,6 +416,8 @@ impl ModulationExecutionPlan {
                         source: CompiledModSource::GatedDirect(track as u8),
                         destination,
                         amount: 1.0,
+                        osc_freq_pitch_scale: OscFreqPitchScale::Matrix,
+                        matrix_slot: None,
                     });
                 }
             }
@@ -382,6 +436,10 @@ impl ModulationExecutionPlan {
         &self.audio_routes[..self.audio_count as usize]
     }
 
+    pub fn param_routes(&self) -> &[CompiledModRoute] {
+        &self.param_routes[..self.param_count as usize]
+    }
+
     fn add_route(&mut self, route: CompiledModRoute) {
         self.total_route_count += 1;
         if let CompiledModSource::Standard(source) = route.source {
@@ -398,11 +456,19 @@ impl ModulationExecutionPlan {
             let index = self.audio_count as usize;
             self.audio_routes[index] = route;
             self.audio_count += 1;
+        } else if param_mod::is_param_destination(route.destination) {
+            let index = self.param_count as usize;
+            self.param_routes[index] = route;
+            self.param_count += 1;
         }
     }
 
     fn detect_single_pwm_route(&self) -> Option<SinglePwmRoute> {
-        if self.total_route_count != 1 || self.control_count != 0 || self.audio_count != 1 {
+        if self.total_route_count != 1
+            || self.control_count != 0
+            || self.audio_count != 1
+            || self.param_count != 0
+        {
             return None;
         }
         let route = self.audio_routes[0];
@@ -426,7 +492,11 @@ impl ModulationExecutionPlan {
     }
 
     fn detect_single_filter_cutoff_route(&self) -> Option<SingleFilterCutoffRoute> {
-        if self.total_route_count != 1 || self.control_count != 0 || self.audio_count != 1 {
+        if self.total_route_count != 1
+            || self.control_count != 0
+            || self.audio_count != 1
+            || self.param_count != 0
+        {
             return None;
         }
         let route = self.audio_routes[0];
@@ -508,6 +578,23 @@ impl ModulationExecutionPlan {
                 | ModDestination::FxParam2
         )
     }
+
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum OscFreqPitchScale {
+    #[default]
+    Matrix,
+    Lfo,
+}
+
+impl OscFreqPitchScale {
+    pub(crate) fn semitones_at_full(self) -> f32 {
+        match self {
+            Self::Lfo => crate::midi::prophet::LFO_OSC_FREQ_SEMITONES_AT_FULL,
+            Self::Matrix => crate::midi::prophet::MATRIX_OSC_FREQ_SEMITONES_AT_FULL,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -515,6 +602,8 @@ pub(crate) struct CompiledModRoute {
     source: CompiledModSource,
     destination: ModDestination,
     amount: f32,
+    osc_freq_pitch_scale: OscFreqPitchScale,
+    matrix_slot: Option<u8>,
 }
 
 impl CompiledModRoute {
@@ -522,10 +611,36 @@ impl CompiledModRoute {
         source: CompiledModSource::Standard(ModSource::Off),
         destination: ModDestination::Off,
         amount: 0.0,
+        osc_freq_pitch_scale: OscFreqPitchScale::Matrix,
+        matrix_slot: None,
     };
 
-    pub fn signal(self, block: &VoiceBlock, context: ModSignalContext) -> WideF32 {
-        let signal = match self.source {
+    pub fn signal(
+        self,
+        block: &VoiceBlock,
+        context: ModSignalContext,
+        matrix_amounts: &[f32; MOD_MATRIX_FREE_SLOT_COUNT],
+    ) -> WideF32 {
+        self.raw_signal(block, context) * WideF32::splat(self.effective_amount(matrix_amounts))
+    }
+
+    pub fn signal_mean(
+        self,
+        block: &VoiceBlock,
+        context: ModSignalContext,
+        matrix_amounts: &[f32; MOD_MATRIX_FREE_SLOT_COUNT],
+    ) -> f32 {
+        self.raw_signal(block, context).reduce_mean() * self.effective_amount(matrix_amounts)
+    }
+
+    pub fn effective_amount(self, matrix_amounts: &[f32; MOD_MATRIX_FREE_SLOT_COUNT]) -> f32 {
+        self.matrix_slot
+            .map(|slot| matrix_amounts[slot as usize])
+            .unwrap_or(self.amount)
+    }
+
+    fn raw_signal(self, block: &VoiceBlock, context: ModSignalContext) -> WideF32 {
+        match self.source {
             CompiledModSource::Standard(source) => block.mod_source_signal(source, context),
             CompiledModSource::AuxSignal => context.aux_signal,
             CompiledModSource::GatedDirect(track) => {
@@ -536,20 +651,22 @@ impl CompiledModRoute {
                         | ModDestination::Osc2Frequency
                         | ModDestination::OscAllFrequency
                 ) {
-                    // Gated pitch steps are exactly one half-semitone per raw unit;
-                    // frequency destinations subsequently apply the normal 12-semitone scale.
-                    normalized * 125.0 * 0.5 / 12.0
+                    normalized * 125.0 * 0.5
+                        / crate::midi::prophet::MATRIX_OSC_FREQ_SEMITONES_AT_FULL
                 } else {
                     normalized
                 };
                 WideF32::splat(value)
             }
-        };
-        signal * WideF32::splat(self.amount)
+        }
     }
 
     pub fn destination(self) -> ModDestination {
         self.destination
+    }
+
+    pub fn osc_freq_pitch_scale(self) -> OscFreqPitchScale {
+        self.osc_freq_pitch_scale
     }
 }
 
@@ -584,8 +701,14 @@ mod tests {
             aux_env: WideF32::ZERO,
             aux_signal: WideF32::ZERO,
         };
-        // The destination applies its normal 12-semitone scale after this signal.
-        assert!((route.signal(&block, context).to_array()[0] * 12.0 - 7.0).abs() < 1.0e-6);
+        // Matrix pitch depth applies after this signal.
+        assert!(
+            (route.signal(&block, context, &[0.0; MOD_MATRIX_FREE_SLOT_COUNT]).to_array()[0]
+                * crate::midi::prophet::MATRIX_OSC_FREQ_SEMITONES_AT_FULL
+                - 7.0)
+                .abs()
+                < 1.0e-6
+        );
     }
 
     #[test]
@@ -619,6 +742,62 @@ mod tests {
 
         modulation.set_gated_enabled(true);
         assert_eq!(modulation.plan().audio_routes().len(), 1);
+    }
+
+    #[test]
+    fn envelope_time_destinations_compile_to_param_routes() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Env3Attack,
+            amount: -1.0,
+        };
+        let modulation = PatchModulation::new(&patch);
+        assert_eq!(modulation.plan().param_routes().len(), 1);
+        assert_eq!(
+            modulation.plan().param_routes()[0].destination(),
+            ModDestination::Env3Attack
+        );
+    }
+
+    #[test]
+    fn zero_amount_slot_compiles_when_amount_is_modulated() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Velocity,
+            destination: ModDestination::FilterCutoff,
+            amount: 0.0,
+        };
+        patch.mod_matrix.free_slots[1] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Dc,
+            destination: ModDestination::Mod1Amount,
+            amount: 0.5,
+        };
+        let modulation = PatchModulation::new(&patch);
+        assert_eq!(modulation.plan().audio_routes().len(), 1);
+        assert_eq!(modulation.plan().audio_routes()[0].matrix_slot, Some(0));
+        assert_eq!(modulation.plan().param_routes().len(), 1);
+        assert_eq!(
+            modulation.plan().param_routes()[0].destination(),
+            ModDestination::Mod1Amount
+        );
+    }
+
+    #[test]
+    fn zero_amount_slot_without_amount_route_stays_uncompiled() {
+        let mut patch = LayerPatch::default();
+        patch.mod_matrix.free_slots[0] = ModMatrixSlot {
+            enabled: true,
+            source: ModSource::Velocity,
+            destination: ModDestination::FilterCutoff,
+            amount: 0.0,
+        };
+        let modulation = PatchModulation::new(&patch);
+        assert!(modulation.plan().audio_routes().is_empty());
+        assert!(!modulation.plan().any_modulation);
     }
 }
 
