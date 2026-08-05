@@ -38,7 +38,7 @@ pub(crate) const MIN_BASE_CUTOFF_HZ: f32 = 1.0;
 pub(crate) const MAX_CUTOFF_HZ: f32 = 18_000.0;
 /// Full filter-envelope modulation depth in semitones (Prophet Env Amount ±127 ticks).
 const ENV_DEPTH_SEMITONES: f32 = 127.0;
-/// Full audio-rate filter modulation depth in semitones (Appendix F: one octave).
+/// Full audio-rate filter modulation depth in semitones (one octave).
 const AUDIO_MOD_DEPTH_SEMITONES: f32 = 12.0;
 /// MIDI note that produces zero semitones of filter keyboard tracking.
 /// Prophet Key Amount 64 is 1:1; with cutoff raw 0, C4 tracks to C2 (−2 octaves).
@@ -2127,6 +2127,103 @@ mod tests {
         assert!(
             positive_amp > negative_amp * 3.0,
             "positive Osc1 audio mod should open cutoff relative to negative mod: negative={negative_amp:.4} positive={positive_amp:.4}"
+        );
+    }
+
+    #[test]
+    fn audio_mod_full_depth_shifts_cutoff_one_octave() {
+        let sr = 44100.0;
+        let base_cutoff = 1000.0;
+        let probe_hz = 420.0;
+
+        let mut lowered = LadderFilter::default();
+        lowered.set_cutoff(base_cutoff);
+        lowered.set_audio_mod(1.0);
+        lowered.set_resonance(0.0);
+
+        let mut raised = LadderFilter::default();
+        raised.set_cutoff(base_cutoff);
+        raised.set_audio_mod(1.0);
+        raised.set_resonance(0.0);
+
+        let neg_gain =
+            measure_modulated_response(&mut lowered, probe_hz, 60.0, 0.0, -1.0, sr, 0.1);
+        let pos_gain = measure_modulated_response(
+            &mut raised,
+            probe_hz * 4.0,
+            60.0,
+            0.0,
+            1.0,
+            sr,
+            0.1,
+        );
+        let ratio = neg_gain / pos_gain.max(1.0e-9);
+
+        assert!(
+            (0.65..=1.35).contains(&ratio),
+            "full audio mod should move the passband by one octave: neg={neg_gain:.4} pos={pos_gain:.4} ratio={ratio:.3}"
+        );
+    }
+
+    #[test]
+    fn unity_key_track_zero_cutoff_maps_c4_to_c2() {
+        let sr = 44100.0;
+        let cutoff = crate::midi::prophet::cutoff_raw_to_hz(0);
+        let key_track = crate::midi::prophet::key_track_from_raw(64);
+        let c2_hz = midi_to_hz(36);
+        let pitch = estimate_self_oscillation_pitch_hz(
+            cutoff,
+            60.0,
+            key_track,
+            SELF_OSC_PITCH_TUNING_CENTS,
+            sr,
+        );
+
+        assert!(
+            (pitch - c2_hz).abs() / c2_hz < 0.15,
+            "Key Amount 64 + Cutoff 0 at C4 should self-oscillate near C2: pitch={pitch:.2}Hz c2={c2_hz:.2}Hz"
+        );
+    }
+
+    #[test]
+    fn play_the_filter_recipe_tracks_played_intervals() {
+        let sr = 44100.0;
+        let cutoff = crate::midi::prophet::cutoff_raw_to_hz(24);
+        let key_track = crate::midi::prophet::key_track_from_raw(64);
+        assert!((key_track - 1.0).abs() < f32::EPSILON);
+
+        let c3 = estimate_self_oscillation_pitch_hz(
+            cutoff,
+            48.0,
+            key_track,
+            SELF_OSC_PITCH_TUNING_CENTS,
+            sr,
+        );
+        let c4 = estimate_self_oscillation_pitch_hz(
+            cutoff,
+            60.0,
+            key_track,
+            SELF_OSC_PITCH_TUNING_CENTS,
+            sr,
+        );
+        let g4 = estimate_self_oscillation_pitch_hz(
+            cutoff,
+            67.0,
+            key_track,
+            SELF_OSC_PITCH_TUNING_CENTS,
+            sr,
+        );
+        let octave_ratio = c4 / c3.max(1.0e-6);
+        let fifth_ratio = g4 / c4.max(1.0e-6);
+        let expected_fifth = 2.0_f32.powf(7.0 / 12.0);
+
+        assert!(
+            (1.85..=2.15).contains(&octave_ratio),
+            "Key Amount 64 + Cutoff 24 should track one octave C3->C4: {c3:.1}Hz -> {c4:.1}Hz ratio={octave_ratio:.3}"
+        );
+        assert!(
+            (expected_fifth - 0.08..=expected_fifth + 0.08).contains(&fifth_ratio),
+            "Key Amount 64 + Cutoff 24 should track a fifth C4->G4: {c4:.1}Hz -> {g4:.1}Hz ratio={fifth_ratio:.3} expected={expected_fifth:.3}"
         );
     }
 

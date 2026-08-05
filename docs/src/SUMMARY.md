@@ -36,4 +36,5 @@
 # Appendix
 
 - [MIDI Spec](appendix/midi-spec.md)
+- [Rev2 Control Calibrations](appendix/rev2-calibrations.md)
 - [Factory Presets](appendix/factory-presets.md)

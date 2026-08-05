@@ -977,7 +977,7 @@ mod tests {
                 ui,
                 "Attack",
                 &mut envelope,
-                0.0005..=5.0,
+                0.0005..=synth_core::midi::prophet::ENVELOPE_ATTACK_DECAY_MAX_SECONDS,
                 0.0005,
                 ParamId::FilterEgAttack,
                 &bridge.control,

@@ -91,6 +91,11 @@ impl AuxEnv {
         self.envelope.set_attack_seconds(seconds);
     }
 
+    #[cfg(test)]
+    pub(crate) fn attack_seconds(&self) -> f32 {
+        self.envelope.attack_seconds()
+    }
+
     pub fn set_decay_seconds(&mut self, seconds: f32) {
         self.envelope.set_decay_seconds(seconds);
     }

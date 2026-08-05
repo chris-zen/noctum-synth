@@ -175,10 +175,10 @@ All CC values are 7-bit (0–127).
 | 106 | Filter Envelope Amount | 0–127 → −100% to +100% | Bipolar; full scale ±127 semitone ticks |
 | 107 | Filter Envelope Velocity | 0–127 → 0%–100% | |
 | 108 | Filter Envelope Delay | 0–127 → 0–5 seconds | |
-| 109 | Filter Envelope Attack | 0–127 → 0.5 ms – 5 seconds | |
-| 110 | Filter Envelope Decay | 0–127 → 0.5 ms – 5 seconds | |
+| 109 | Filter Envelope Attack | 0–127 → ~3 ms – 24.66 s (measured Rev2 table) | |
+| 110 | Filter Envelope Decay | 0–127 → ~3 ms – 24.66 s (measured Rev2 table) | |
 | 111 | Filter Envelope Sustain | 0–127 → 0%–100% | |
-| 112 | Filter Envelope Release | 0–127 → 0.5 ms – 10 seconds | |
+| 112 | Filter Envelope Release | 0–127 → ~3 ms – 40 s (scaled Rev2 table) | |
 
 ### Amplifier
 
@@ -189,27 +189,27 @@ All CC values are 7-bit (0–127).
 | 18 | A/B Mode | 0 = Normal, 1 = Stack, 2 = Split | Program topology |
 | 39 | Split Point | 0–120 MIDI note | Start of Layer B in Split mode |
 | 75 | Amp Envelope Sustain | 0–127 → 0%–100% | |
-| 76 | Amp Envelope Release | 0–127 → 0.5 ms – 10 seconds | |
+| 76 | Amp Envelope Release | 0–127 → ~3 ms – 40 s (scaled Rev2 table) | |
 | 113 | VCA Level | 0–127 → 0%–100% | Static VCA bias |
 | 114 | Pan Spread | 0–127 → 0%–100% | Stereo voice width |
 | 115 | Amp Envelope Amount | 0–127 → 0%–100% | |
 | 116 | Amp Envelope Velocity | 0–127 → 0%–100% | |
 | 117 | Amp Envelope Delay | 0–127 → 0–5 seconds | |
-| 118 | Amp Envelope Attack | 0–127 → 0.5 ms – 5 seconds | |
-| 119 | Amp Envelope Decay | 0–127 → 0.5 ms – 5 seconds | |
+| 118 | Amp Envelope Attack | 0–127 → ~3 ms – 24.66 s (measured Rev2 table) | |
+| 119 | Amp Envelope Decay | 0–127 → ~3 ms – 24.66 s (measured Rev2 table) | |
 
 ### Auxiliary Envelope
 
 | CC | Parameter | Range | Description |
 |---|---|---|---|
 | 77 | Aux Envelope Sustain | 0–127 → 0%–100% | |
-| 78 | Aux Envelope Release | 0–127 → 0.5 ms – 10 seconds | |
+| 78 | Aux Envelope Release | 0–127 → ~3 ms – 40 s (scaled Rev2 table) | |
 | 85 | Aux Envelope Destination | 0–127 → destination 0–52 | 53-way selector |
 | 86 | Aux Envelope Amount | 0–127 → −100% to +100% | Bipolar |
 | 87 | Aux Envelope Velocity | 0–127 → 0%–100% | |
 | 88 | Aux Envelope Delay | 0–127 → 0–5 seconds | |
-| 89 | Aux Envelope Attack | 0–127 → 0.5 ms – 5 seconds | |
-| 90 | Aux Envelope Decay | 0–127 → 0.5 ms – 5 seconds | |
+| 89 | Aux Envelope Attack | 0–127 → ~3 ms – 24.66 s (measured Rev2 table) | |
+| 90 | Aux Envelope Decay | 0–127 → ~3 ms – 24.66 s (measured Rev2 table) | |
 
 ### Effects
 
@@ -293,10 +293,10 @@ offset from MIDI 60.
 | 20 | Filter Envelope Amount | 0–254 → −100% to +100% (bipolar; ±127 semitone ticks) | 254 |
 | 21 | Filter Envelope Velocity | 0–127 → 0%–100% | 127 |
 | 22 | Filter Envelope Delay | 0–127 → 0–5 s | 127 |
-| 23 | Filter Envelope Attack | 0–127 → 0.5 ms – 5 s | 127 |
-| 24 | Filter Envelope Decay | 0–127 → 0.5 ms – 5 s | 127 |
+| 23 | Filter Envelope Attack | 0–127 → ~3 ms – 24.66 s | 127 |
+| 24 | Filter Envelope Decay | 0–127 → ~3 ms – 24.66 s | 127 |
 | 25 | Filter Envelope Sustain | 0–127 → 0%–100% | 127 |
-| 26 | Filter Envelope Release | 0–127 → 0.5 ms – 10 s | 127 |
+| 26 | Filter Envelope Release | 0–127 → ~3 ms – 40 s | 127 |
 
 ### Amplifier
 
@@ -307,10 +307,10 @@ offset from MIDI 60.
 | 30 | Amp Envelope Amount | 0–127 → 0%–100% | 127 |
 | 31 | Amp Envelope Velocity | 0–127 → 0%–100% | 127 |
 | 32 | Amp Envelope Delay | 0–127 → 0–5 s | 127 |
-| 33 | Amp Envelope Attack | 0–127 → 0.5 ms – 5 s | 127 |
-| 34 | Amp Envelope Decay | 0–127 → 0.5 ms – 5 s | 127 |
+| 33 | Amp Envelope Attack | 0–127 → ~3 ms – 24.66 s | 127 |
+| 34 | Amp Envelope Decay | 0–127 → ~3 ms – 24.66 s | 127 |
 | 35 | Amp Envelope Sustain | 0–127 → 0%–100% | 127 |
-| 36 | Amp Envelope Release | 0–127 → 0.5 ms – 10 s | 127 |
+| 36 | Amp Envelope Release | 0–127 → ~3 ms – 40 s | 127 |
 
 ### Auxiliary Envelope
 
@@ -320,10 +320,10 @@ offset from MIDI 60.
 | 58 | Aux Envelope Amount | 0–254 → −100% to +100% (bipolar) | 254 |
 | 59 | Aux Envelope Velocity | 0–127 → 0%–100% | 127 |
 | 60 | Aux Envelope Delay | 0–127 → 0–5 s | 127 |
-| 61 | Aux Envelope Attack | 0–127 → 0.5 ms – 5 s | 127 |
-| 62 | Aux Envelope Decay | 0–127 → 0.5 ms – 5 s | 127 |
+| 61 | Aux Envelope Attack | 0–127 → ~3 ms – 24.66 s | 127 |
+| 62 | Aux Envelope Decay | 0–127 → ~3 ms – 24.66 s | 127 |
 | 63 | Aux Envelope Sustain | 0–127 → 0%–100% | 127 |
-| 64 | Aux Envelope Release | 0–127 → 0.5 ms – 10 s | 127 |
+| 64 | Aux Envelope Release | 0–127 → ~3 ms – 40 s | 127 |
 | 97 | Aux Envelope Loop | 0=off, 1=on | 1 |
 
 ### LFOs 1–4
@@ -485,18 +485,18 @@ LFO waveform order, mod destination count, and so on) are called out inline.
 | 38 | Filter Envelope Delay | 0–127 (0–5 s when decoded) |
 | 39 | Amp Envelope Delay | 0–127 (0–5 s when decoded) |
 | 40 | Aux Envelope Delay | 0–127 (0–5 s when decoded) |
-| 41 | Filter Envelope Attack | 0–127 (0.5 ms – 5 s when decoded) |
-| 42 | Amp Envelope Attack | 0–127 (0.5 ms – 5 s when decoded) |
-| 43 | Aux Envelope Attack | 0–127 (0.5 ms – 5 s when decoded) |
-| 44 | Filter Envelope Decay | 0–127 (0.5 ms – 5 s when decoded) |
-| 45 | Amp Envelope Decay | 0–127 (0.5 ms – 5 s when decoded) |
-| 46 | Aux Envelope Decay | 0–127 (0.5 ms – 5 s when decoded) |
+| 41 | Filter Envelope Attack | 0–127 (~3 ms – 24.66 s when decoded) |
+| 42 | Amp Envelope Attack | 0–127 (~3 ms – 24.66 s when decoded) |
+| 43 | Aux Envelope Attack | 0–127 (~3 ms – 24.66 s when decoded) |
+| 44 | Filter Envelope Decay | 0–127 (~3 ms – 24.66 s when decoded) |
+| 45 | Amp Envelope Decay | 0–127 (~3 ms – 24.66 s when decoded) |
+| 46 | Aux Envelope Decay | 0–127 (~3 ms – 24.66 s when decoded) |
 | 47 | Filter Envelope Sustain | 0–127 |
 | 48 | Amp Envelope Sustain | 0–127 |
 | 49 | Aux Envelope Sustain | 0–127 |
-| 50 | Filter Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
-| 51 | Amp Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
-| 52 | Aux Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
+| 50 | Filter Envelope Release | 0–127 (~3 ms – 40 s when decoded) |
+| 51 | Amp Envelope Release | 0–127 (~3 ms – 40 s when decoded) |
+| 52 | Aux Envelope Release | 0–127 (~3 ms – 40 s when decoded) |
 | 53 | LFO 1 Rate | 0–150; interpreted as free rate or a synchronized bucket according to byte 69 |
 | 54 | LFO 2 Rate | same as LFO 1 |
 | 55 | LFO 3 Rate | same as LFO 1 |
@@ -690,20 +690,20 @@ All documented MSB sidebands are listed below.
 | 20 | Filter Envelope Amount (low 7 bits; MSB in byte 14) | 0–254 (−127 to +127) |
 | 21 | Filter Envelope Velocity | 0–127 |
 | 22 | Filter Envelope Delay | 0–127 (0–5 s when decoded) |
-| 23 | Filter Envelope Attack | 0–127 (0.5 ms – 5 s when decoded) |
-| 24 | Filter Envelope Decay | 0–127 (0.5 ms – 5 s when decoded) |
+| 23 | Filter Envelope Attack | 0–127 (~3 ms – 24.66 s when decoded) |
+| 24 | Filter Envelope Decay | 0–127 (~3 ms – 24.66 s when decoded) |
 | 25 | Filter Envelope Sustain | 0–127 |
-| 26 | Filter Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
+| 26 | Filter Envelope Release | 0–127 (~3 ms – 40 s when decoded) |
 | 27 | VCA Initial Level | 0–127 |
 | 28 | Output Spread | 0–127 |
 | 29 | Voice Volume | 0–127 |
 | 30 | VCA Envelope Amount | 0–127 |
 | 31 | VCA Envelope Velocity | 0–127 |
 | 32 | VCA Envelope Delay | 0–127 (0–5 s when decoded) |
-| 33 | VCA Envelope Attack | 0–127 (0.5 ms – 5 s when decoded) |
-| 34 | VCA Envelope Decay | 0–127 (0.5 ms – 5 s when decoded) |
+| 33 | VCA Envelope Attack | 0–127 (~3 ms – 24.66 s when decoded) |
+| 34 | VCA Envelope Decay | 0–127 (~3 ms – 24.66 s when decoded) |
 | 35 | VCA Envelope Sustain | 0–127 |
-| 36 | VCA Envelope Release | 0–127 (0.5 ms – 10 s when decoded) |
+| 36 | VCA Envelope Release | 0–127 (~3 ms – 40 s when decoded) |
 | 37 | LFO 1 Frequency (low 7 bits; MSB in byte 39) | 0–150 = unsynced rate, 151–166 = clock-synced divisions |
 | 38 | LFO 1 Shape | 0 = triangle, 1 = reverse saw, 2 = saw, 3 = square, 4 = random |
 | 39 | LFO 1 Amount (low 7 bits); bit 7 is MSB for LFO 1 Frequency | 0–127 |

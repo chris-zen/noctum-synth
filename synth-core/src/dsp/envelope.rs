@@ -99,6 +99,11 @@ impl DadsrEnvelope {
         self.curve.set_attack(self.attack_seconds, self.sample_rate);
     }
 
+    #[cfg(test)]
+    pub(crate) fn attack_seconds(&self) -> f32 {
+        self.attack_seconds
+    }
+
     /// Sets the decay time, in seconds, and updates the active curve state.
     pub fn set_decay_seconds(&mut self, seconds: f32) {
         self.decay_seconds = seconds.clamp(MIN_TIME_SECONDS, MAX_TIME_SECONDS);

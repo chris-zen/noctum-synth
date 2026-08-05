@@ -39,6 +39,51 @@ filter envelope amount for expressive playing, or the auxiliary envelope to
 oscillator pitch for a short sweep. Use small amounts first: several subtle
 routes usually produce more useful motion than one extreme route.
 
+## Pitch modulation: LFO destination vs mod matrix
+
+When you modulate oscillator frequency, the synth does **not** treat every
+path the same way. That matches Prophet Rev2 behavior measured on the
+[Sequential forum](https://forum.sequential.com/index.php?topic=3203.0).
+
+There are two musical scales:
+
+1. **LFO Amount → Osc Freq** (the LFO’s own destination knob). A little amount
+   goes a short distance; amount **96** is one octave of vibrato or sweep at
+   full LFO swing.
+2. **Mod matrix / Env 3 / aux envelope → Osc Freq**. The same numeric
+   “amount” moves pitch farther. Amount **24** is one octave; full amount is
+   roughly five octaves either side. Use small values for vibrato-like
+   motion.
+
+Rule of thumb: **LFO Amount 4 ≈ matrix Amount 1** when both target oscillator
+frequency.
+
+| What you turn | Amount for 1 semitone | Amount for 1 octave |
+| --- | ---: | ---: |
+| LFO Amount (LFO dest = Osc Freq) | 8 | 96 |
+| Mod matrix or Env 3 / aux → Osc Freq | 2 | 24 |
+
+**Why this matters when patching**
+
+- A dedicated LFO to Osc Freq is the gentle path: good for vibrato and slow
+  pitch motion without huge detuning.
+- Routing an LFO *through* the matrix (source = LFO, dest = Osc Freq) uses the
+  **matrix** scale, not the LFO-destination scale. The LFO Amount still
+  scales the waveform; the matrix Amount sets how far that waveform can push
+  pitch.
+- Env 3 / the auxiliary envelope to Osc Freq uses the matrix scale. Full
+  positive amount is a very large pitch jump; for a one-octave blip, use
+  about **24**.
+- Note Number to Osc Freq also uses the matrix scale. Stacked matrix amounts
+  totaling about **256** approximate the Osc Key Tracking switch; Note Number
+  to Cutoff with amount about **128** approximates Filter Key Amount **64**.
+
+Gated sequencer steps to Osc Freq stay at **half a semitone per raw step**,
+independent of those amount tables.
+
+Related filter calibration (cutoff ticks, key tracking, audio mod) is
+summarized in [Rev2 control calibrations](../appendix/rev2-calibrations.md).
+
 ## Effects
 
 Effects process the complete stereo voice mix, after polyphony and panning. One

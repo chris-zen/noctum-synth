@@ -28,6 +28,17 @@ pub const FILTER_KEY_TRACK_RAW_MAX: u16 = 127;
 pub const FILTER_KEY_TRACK_MAX: f32 =
     FILTER_KEY_TRACK_RAW_MAX as f32 / FILTER_KEY_TRACK_UNITY_RAW as f32;
 
+/// Full bipolar LFO Amount to Osc Frequency depth in semitones.
+///
+/// [Sequential forum topic 3203](https://forum.sequential.com/index.php?topic=3203.0):
+/// LFO amount 96 = one octave (LFO amount 8 = one semitone).
+pub const LFO_OSC_FREQ_SEMITONES_AT_FULL: f32 = 12.0 * 127.0 / 96.0;
+
+/// Full bipolar mod-matrix Amount to Osc Frequency depth in semitones.
+///
+/// Forum topic 3203: mod-matrix amount 24 = one octave (2 raw units = 1 semitone).
+pub const MATRIX_OSC_FREQ_SEMITONES_AT_FULL: f32 = 0.5 * 127.0;
+
 /// Raw values corresponding positionally to [`ENVELOPE_SECONDS_ANCHORS`].
 ///
 /// # Sources and compatibility rationale
@@ -57,7 +68,11 @@ const ENVELOPE_SECONDS_ANCHORS: [f32; 17] = [
     3.060, 6.080, 14.220, 24.660,
 ];
 const ATTACK_DECAY_MAX_SECONDS: f32 = 24.660;
+/// Measured attack/decay maximum from the Rev2 envelope table (raw 127).
+pub const ENVELOPE_ATTACK_DECAY_MAX_SECONDS: f32 = ATTACK_DECAY_MAX_SECONDS;
 const RELEASE_MAX_SECONDS: f32 = 40.0;
+/// Release maximum independently reported for the Rev2 (~40 s at raw 127).
+pub const ENVELOPE_RELEASE_MAX_SECONDS: f32 = RELEASE_MAX_SECONDS;
 
 pub fn cutoff_raw_to_hz(raw: u16) -> f32 {
     440.0
@@ -195,6 +210,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cutoff_raw_steps_one_semitone_per_tick() {
+        for raw in [0_u16, 24, 96, 104, 127, 163] {
+            let lower = cutoff_raw_to_hz(raw);
+            let upper = cutoff_raw_to_hz(raw + 1);
+            let ratio = upper / lower;
+            assert!(
+                (ratio - 2.0_f32.powf(1.0 / 12.0)).abs() < 1.0e-5,
+                "raw {raw}->{raw_plus_one} ratio {ratio}",
+                raw_plus_one = raw + 1
+            );
+        }
+    }
+
+    #[test]
     fn cutoff_raw_maps_known_semitone_anchors() {
         assert!((cutoff_raw_to_hz(0) - 1.021_975).abs() < 0.01);
         assert!((cutoff_raw_to_hz(96) - 261.625_55).abs() < 0.05);
@@ -226,5 +255,14 @@ mod tests {
         assert!((key_track_from_raw(127) - FILTER_KEY_TRACK_MAX).abs() < 0.001);
         assert_eq!(key_track_to_raw(1.0), 64);
         assert_eq!(key_track_to_raw(0.5), 32);
+    }
+
+    #[test]
+    fn pitch_depth_tables_cross_check() {
+        assert!((LFO_OSC_FREQ_SEMITONES_AT_FULL * 96.0 / 127.0 - 12.0).abs() < 1.0e-3);
+        assert!((MATRIX_OSC_FREQ_SEMITONES_AT_FULL * 24.0 / 127.0 - 12.0).abs() < 1.0e-3);
+        let lfo_four = LFO_OSC_FREQ_SEMITONES_AT_FULL * 4.0 / 127.0;
+        let matrix_one = MATRIX_OSC_FREQ_SEMITONES_AT_FULL / 127.0;
+        assert!((lfo_four - matrix_one).abs() < 1.0e-4);
     }
 }
