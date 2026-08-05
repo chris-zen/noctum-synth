@@ -24,7 +24,7 @@ interpolated in log-frequency.
 
 Implemented deliverables:
 
-- `scripts/fit_target_conditioned_oscillator.py`: deterministic bounded fitter,
+- `plans/analog-osc/research/scripts/fit_target_conditioned_oscillator.py`: deterministic bounded fitter,
   profile evaluator, JSON exporter, and Rust coefficient generator.
 - `plans/analog-osc/research/profiles/korg-monologue-phase-filter-v1.json`:
   versioned fitted profile, per-case diagnostics, split metrics, source hashes,

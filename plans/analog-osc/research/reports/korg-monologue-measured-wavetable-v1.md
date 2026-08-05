@@ -208,14 +208,14 @@ The machine-readable per-case result is
 policy, all variants, and endpoint cases.
 
 ```text
-python3 scripts/evaluate_measured_wavetable_models.py
-python3 -m unittest scripts/test_measured_wavetable_models.py
-python3 scripts/generate_measured_wavetable_bank.py
+python3 plans/analog-osc/research/scripts/evaluate_measured_wavetable_models.py
+python3 -m unittest plans/analog-osc/research/scripts/test_measured_wavetable_models.py
+python3 plans/analog-osc/research/scripts/generate_measured_wavetable_bank.py
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/evaluate_measured_wavetable_runtime.py
-python3 scripts/evaluate_target_conditioned_sweeps.py --candidate-model korg-monologue-measured-wavetable-v1 --profile plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v1.json --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-sweeps-v1.json
-python3 scripts/evaluate_target_conditioned_sweeps.py --candidate-model korg-monologue-measured-wavetable-v1 --profile plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v1.json --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-shape-sweeps-v1.json --sample-rates 48000,96000 --frequencies-per-waveform 5 --shapes 0,0.5,0.9 --waveforms saw,saw-triangle,triangle,square
-python3 scripts/generate_measured_wavetable_listening_set.py
+python3 plans/analog-osc/research/scripts/evaluate_measured_wavetable_runtime.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py --candidate-model korg-monologue-measured-wavetable-v1 --profile plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v1.json --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-sweeps-v1.json
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py --candidate-model korg-monologue-measured-wavetable-v1 --profile plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v1.json --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-shape-sweeps-v1.json --sample-rates 48000,96000 --frequencies-per-waveform 5 --shapes 0,0.5,0.9 --waveforms saw,saw-triangle,triangle,square
+python3 plans/analog-osc/research/scripts/generate_measured_wavetable_listening_set.py
 # Complete target/analog-osc/listening/korg-monologue-measured-wavetable-v1/responses-template.json first.
-python3 scripts/analyze_measured_wavetable_listening_set.py
+python3 plans/analog-osc/research/scripts/analyze_measured_wavetable_listening_set.py
 ```

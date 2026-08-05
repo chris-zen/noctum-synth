@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_OUTPUT = REPO_ROOT / "synth-core/src/voice/osc_engine/wavetable_banks"
 MAX_COMBINED_BYTES = 20 * 1024 * 1024
 BANKS = (

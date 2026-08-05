@@ -10,9 +10,9 @@ training rate.
 Run the complete pipeline from the repository root:
 
 ```bash
-python3 scripts/analog_osc_reference.py download --waveform all
-python3 scripts/analog_osc_reference.py inspect --waveform all
-python3 scripts/analog_osc_reference.py extract --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py download --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py inspect --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py extract --waveform all
 ```
 
 Source and derived files are cached under

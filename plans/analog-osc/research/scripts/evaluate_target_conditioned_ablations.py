@@ -15,8 +15,8 @@ from scipy.optimize import minimize_scalar
 from scipy.stats import spearmanr
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / "target/matplotlib"))
 
 from scripts.evaluate_target_conditioned_sweeps import spectral_residual  # noqa: E402

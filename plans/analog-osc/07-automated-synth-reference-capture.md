@@ -869,8 +869,8 @@ files, and generated banks under ignored `target/analog-osc/` paths.
 
 - Existing capture/extraction plan:
   `plans/analog-osc/06-reference-capture-and-identification.md`
-- Existing Korg importer: `scripts/analog_osc_reference.py`
-- Existing measured-bank generator: `scripts/generate_measured_wavetable_bank.py`
+- Existing Korg importer: `plans/analog-osc/research/scripts/analog_osc_reference.py`
+- Existing measured-bank generator: `plans/analog-osc/research/scripts/generate_measured_wavetable_bank.py`
 - Arturia MIDI Learn and Prophet controls:
   <https://downloads.arturia.net/products/prophet-v/manual/Prophet_V_Manual_3_0_0_EN.pdf>
 - Public Monologue dataset: <https://zenodo.org/records/15196138>

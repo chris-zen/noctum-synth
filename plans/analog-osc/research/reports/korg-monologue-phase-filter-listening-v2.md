@@ -13,7 +13,7 @@ The ignored listening package is at:
 
 It contains 81 mono float32 WAV files, a manifest, an answer key, instructions,
 and `responses-template.json`. The tracked generator is
-`scripts/generate_target_conditioned_listening_set_v2.py`.
+`plans/analog-osc/research/scripts/generate_target_conditioned_listening_set_v2.py`.
 
 ## Acceptance question
 
@@ -128,8 +128,8 @@ to an independent oscillator topology.
 
 ```text
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/generate_target_conditioned_listening_set_v2.py
-python3 -m unittest scripts/test_target_conditioned_listening_set_v2.py
-python3 scripts/analyze_target_conditioned_listening_set_v2.py
-python3 -m unittest scripts/test_analyze_target_conditioned_listening_set_v2.py
+python3 plans/analog-osc/research/scripts/generate_target_conditioned_listening_set_v2.py
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_listening_set_v2.py
+python3 plans/analog-osc/research/scripts/analyze_target_conditioned_listening_set_v2.py
+python3 -m unittest plans/analog-osc/research/scripts/test_analyze_target_conditioned_listening_set_v2.py
 ```

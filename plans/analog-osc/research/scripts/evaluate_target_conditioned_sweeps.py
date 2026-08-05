@@ -16,7 +16,7 @@ from scipy.io import wavfile
 from scipy.signal.windows import blackmanharris
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_BINARY = REPO_ROOT / "target/release/analog_osc_research"
 DEFAULT_PROFILE = REPO_ROOT / "plans/analog-osc/research/profiles/korg-monologue-phase-filter-v1.json"
 DEFAULT_OUTPUT = REPO_ROOT / "plans/analog-osc/research/reports/korg-monologue-phase-filter-sweeps-v1.json"

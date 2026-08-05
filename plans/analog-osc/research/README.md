@@ -1,8 +1,12 @@
 # Analog oscillator reference data
 
 This directory contains committed metadata and tooling inputs only. Downloaded
-recordings and derived arrays belong under `target/analog-osc/reference` and
-must not be committed.
+recordings, capture projects, derived arrays, and regenerable bank binaries
+must not be committed; see the root `.gitignore`. Committed bank manifests
+under `banks/` stay JSON-only.
+
+Research Python lives in [`scripts/`](scripts/) (fitters, evaluators, plotters,
+reference import). Host CLIs that link `synth-core` stay in `synth-tools`.
 
 The initial targets are deliberately separate:
 
@@ -14,9 +18,9 @@ The initial targets are deliberately separate:
 Import and inspect one Monologue waveform:
 
 ```bash
-python3 scripts/analog_osc_reference.py download --waveform saw
-python3 scripts/analog_osc_reference.py inspect --waveform saw
-python3 scripts/analog_osc_reference.py extract --waveform saw
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py download --waveform saw
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py inspect --waveform saw
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py extract --waveform saw
 ```
 
 Use `--waveform all` to process saw, triangle, and square. The importer refuses
@@ -79,6 +83,7 @@ Current Plan 04 evidence is organized as follows:
   48/96 kHz material residual sweep (0 material failures).
 - `reports/prophet5-wavetable-v2-sweeps.json`: Prophet v2 48/96 kHz material
   residual sweep (0 material failures).
+  fractional event, and corrected-output diagnostic trace.
 - `profiles/prophet5-wavetable-sweep-v2.json`: Prophet residual-sweep profile
   derived from the r7 capture summaries.
 - `reports/korg-monologue-measured-wavetable-runtime-v1.json`: compiled runtime
@@ -108,10 +113,10 @@ References:
 Regenerate and embed the Monologue v2 bank:
 
 ```bash
-python3 scripts/analog_osc_reference.py download --waveform all
-python3 scripts/analog_osc_reference.py extract --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py download --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py extract --waveform all
 cargo run --release -p synth-tools --bin wavetable_bank -- --bank monologue
-python3 scripts/embed_wavetable_banks.py --bank monologue
+python3 plans/analog-osc/research/scripts/embed_wavetable_banks.py --bank monologue
 ```
 
 Regenerate and embed the Prophet-5 V v2 bank from the r7 capture:
@@ -120,7 +125,7 @@ Regenerate and embed the Prophet-5 V v2 bank from the r7 capture:
 cargo run --release -p synth-capture --locked -- extract \
   --project plans/analog-osc/research/captures/arturia-prophet5-v1-r7
 cargo run --release -p synth-tools --locked --bin wavetable_bank -- --bank prophet5
-python3 scripts/embed_wavetable_banks.py --bank all
+python3 plans/analog-osc/research/scripts/embed_wavetable_banks.py --bank all
 ```
 
 `--bank all` validates the combined 20 MiB cap once both manifests/binaries exist.

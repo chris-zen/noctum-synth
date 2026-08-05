@@ -13,7 +13,7 @@ The ignored listening package is at:
 
 It contains 60 mono float32 WAV files and occupies approximately 44 MB. The
 package is reproducible with
-`scripts/generate_target_conditioned_ablation_listening_set.py`.
+`plans/analog-osc/research/scripts/generate_target_conditioned_ablation_listening_set.py`.
 
 ## Question
 
@@ -161,8 +161,8 @@ Any revision must pass a newly randomized blind test on the reserved test split.
 
 ```text
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/generate_target_conditioned_ablation_listening_set.py
-python3 -m unittest scripts/test_target_conditioned_ablation_listening_set.py
-python3 scripts/evaluate_target_conditioned_ablations.py
-python3 -m unittest scripts/test_target_conditioned_ablations.py
+python3 plans/analog-osc/research/scripts/generate_target_conditioned_ablation_listening_set.py
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_ablation_listening_set.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_ablations.py
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_ablations.py
 ```

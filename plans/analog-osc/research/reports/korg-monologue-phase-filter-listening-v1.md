@@ -13,7 +13,7 @@ The generated package is intentionally stored under ignored build artifacts:
 
 It contains 81 mono float32 WAV files, a public manifest, a response template,
 and a separate answer key. The package is reproducible with
-`scripts/generate_target_conditioned_listening_set.py` and is not committed
+`plans/analog-osc/research/scripts/generate_target_conditioned_listening_set.py` and is not committed
 because the WAV files occupy about 62 MB.
 
 ## Listening cases
@@ -159,6 +159,6 @@ do not tune against these nine held-out listening choices.
 
 ```text
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/generate_target_conditioned_listening_set.py
-python3 -m unittest scripts/test_target_conditioned_listening_set.py
+python3 plans/analog-osc/research/scripts/generate_target_conditioned_listening_set.py
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_listening_set.py
 ```

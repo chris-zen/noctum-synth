@@ -10,8 +10,8 @@ measured-wavetable candidate in 6/9 cases. The three saw choices carried only
 
 The ignored listening package is at
 `target/analog-osc/listening/korg-monologue-measured-wavetable-v1/`. The tracked
-generator and decoder are `scripts/generate_measured_wavetable_listening_set.py`
-and `scripts/analyze_measured_wavetable_listening_set.py`.
+generator and decoder are `plans/analog-osc/research/scripts/generate_measured_wavetable_listening_set.py`
+and `plans/analog-osc/research/scripts/analyze_measured_wavetable_listening_set.py`.
 
 ## Acceptance question
 
@@ -108,8 +108,8 @@ changing the bank or tuning against these revealed answers.
 
 ```text
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/generate_measured_wavetable_listening_set.py
-python3 -m unittest scripts/test_measured_wavetable_listening_set.py
+python3 plans/analog-osc/research/scripts/generate_measured_wavetable_listening_set.py
+python3 -m unittest plans/analog-osc/research/scripts/test_measured_wavetable_listening_set.py
 # Complete responses-template.json before decoding.
-python3 scripts/analyze_measured_wavetable_listening_set.py
+python3 plans/analog-osc/research/scripts/analyze_measured_wavetable_listening_set.py
 ```

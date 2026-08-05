@@ -142,6 +142,6 @@ v1 coefficients.
 
 ```text
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/evaluate_target_conditioned_ablations.py
-python3 -m unittest scripts/test_target_conditioned_ablations.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_ablations.py
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_ablations.py
 ```

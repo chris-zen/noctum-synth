@@ -69,13 +69,13 @@ Typical failing region: **high / near-ceiling saw and square** (Monologue);
 ```bash
 CARGO_TARGET_DIR=target cargo build --release -p synth-tools --bin analog_osc_research
 
-python3 scripts/evaluate_target_conditioned_sweeps.py \
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py \
   --binary target/release/analog_osc_research \
   --candidate-model korg-monologue-measured-wavetable-v1 \
   --profile plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v1.json \
   --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v2-sweeps.json
 
-python3 scripts/evaluate_target_conditioned_sweeps.py \
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py \
   --binary target/release/analog_osc_research \
   --candidate-model prophet5-wavetable-v1 \
   --profile plans/analog-osc/research/profiles/prophet5-wavetable-sweep-v2.json \
@@ -91,7 +91,7 @@ all waveforms/rates. Update
 Optional after residual fix:
 
 ```bash
-python3 scripts/evaluate_measured_wavetable_runtime.py \
+python3 plans/analog-osc/research/scripts/evaluate_measured_wavetable_runtime.py \
   --binary target/release/analog_osc_research \
   --bank-manifest plans/analog-osc/research/banks/korg-monologue-measured-wavetable-v2.json \
   --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-runtime-v2.json

@@ -11,7 +11,7 @@ import numpy as np
 from analog_osc_reference import estimate_frequency, extract_pitch
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[4]
 FIXTURES = ROOT / "synth-capture/tests/fixtures/extraction"
 METADATA = FIXTURES / "python_parity_v1.json"
 

@@ -162,20 +162,20 @@ diagnostics rather than an acceptance gate.
 ## Reproduction
 
 ```bash
-python3 scripts/analog_osc_reference.py download --waveform all
-python3 scripts/analog_osc_reference.py extract --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py download --waveform all
+python3 plans/analog-osc/research/scripts/analog_osc_reference.py extract --waveform all
 cargo run --release -p synth-tools --bin wavetable_bank -- --bank monologue
 cargo run --release -p synth-tools --bin wavetable_bank -- --bank prophet5
-python3 scripts/embed_wavetable_banks.py --bank all
+python3 plans/analog-osc/research/scripts/embed_wavetable_banks.py --bank all
 cargo test -p synth-core --features osc-wavetable compiled_banks_report_domain_status_across_captured_midi
-python3 scripts/evaluate_measured_wavetable_runtime.py \
+python3 plans/analog-osc/research/scripts/evaluate_measured_wavetable_runtime.py \
   --bank-manifest plans/analog-osc/research/banks/korg-monologue-measured-wavetable-v2.json \
   --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-runtime-v2.json
-python3 scripts/evaluate_target_conditioned_sweeps.py \
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py \
   --candidate-model korg-monologue-measured-wavetable-v1 \
   --profile plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v1.json \
   --output plans/analog-osc/research/reports/korg-monologue-measured-wavetable-v2-sweeps.json
-python3 scripts/evaluate_target_conditioned_sweeps.py \
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py \
   --candidate-model prophet5-wavetable-v1 \
   --profile plans/analog-osc/research/profiles/prophet5-wavetable-sweep-v2.json \
   --output plans/analog-osc/research/reports/prophet5-wavetable-v2-sweeps.json \

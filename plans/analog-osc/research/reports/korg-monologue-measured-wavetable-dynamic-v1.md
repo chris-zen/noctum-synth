@@ -75,8 +75,8 @@ deadline, cache-soak, Daisy, or another embedded platform qualification.
 
 ```text
 cargo run --release -p synth-tools --bin analog_osc_dynamic
-python3 scripts/evaluate_measured_wavetable_dynamic.py
-python3 -m unittest scripts/test_measured_wavetable_dynamic.py
+python3 plans/analog-osc/research/scripts/evaluate_measured_wavetable_dynamic.py
+python3 -m unittest plans/analog-osc/research/scripts/test_measured_wavetable_dynamic.py
 ```
 
 Machine-readable results are in

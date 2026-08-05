@@ -21,4 +21,5 @@ Authoritative Cursor rules: [`.cursor/rules/`](.cursor/rules/) (do not restate h
 - Oscillator characterisation (capture → extract → measured bank): [`synth-capture/docs/characterise-a-synth.md`](synth-capture/docs/characterise-a-synth.md)
 - Core tests / `test-matrix`: [`synth-core/README.md` § Tests](synth-core/README.md#tests-and-benchmarks)
 - Tool catalog & per-bin CLI: [`synth-tools/README.md`](synth-tools/README.md)
+- Analog-osc research Python: [`plans/analog-osc/research/scripts/`](plans/analog-osc/research/scripts/)
 - mdBook: [`README.md` § Documentation](README.md#documentation) → [`docs/`](docs/)

@@ -27,13 +27,13 @@ The first reproducible reference pipeline is implemented:
 - `plans/analog-osc/research/targets/korg-monologue-v1.json` pins provenance,
   published checksums, per-wave pitch mappings, capture limitations, and the
   train/validation/test split.
-- `scripts/analog_osc_reference.py` downloads, checksum-verifies, inspects, and
+- `plans/analog-osc/research/scripts/analog_osc_reference.py` downloads, checksum-verifies, inspects, and
   extracts all three published waveforms without manual file editing.
 - Derived NPZ files contain phase-normalized robust median cycles, measured
   fundamental frequencies, source conditioning, and complex harmonics.
 - Companion JSON summaries contain scalar measurements and the checksum of
   each derived NPZ.
-- `scripts/test_analog_osc_reference.py` verifies phase-domain extraction and
+- `plans/analog-osc/research/scripts/test_analog_osc_reference.py` verifies phase-domain extraction and
   the deterministic data split with a non-bin-centered synthetic oscillator.
 - `plans/analog-osc/research/reports/korg-monologue-import-v1.md` records validation
   results and the evidence boundary of the published data.

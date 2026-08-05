@@ -201,12 +201,12 @@ alignment, and a harmonic-magnitude term, followed by a training-only refit.
 ## Reproduction
 
 ```text
-python3 scripts/fit_target_conditioned_oscillator.py --max-nfev 240
-python3 -m unittest scripts/test_target_conditioned_oscillator.py
+python3 plans/analog-osc/research/scripts/fit_target_conditioned_oscillator.py --max-nfev 240
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_oscillator.py
 cargo test -p synth-core --features oscillator-research --test analog_osc_research
 cargo run -p synth-tools --bin analog_osc_research -- --list
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/evaluate_target_conditioned_runtime.py --all-held-out
-python3 scripts/evaluate_target_conditioned_sweeps.py
-python3 scripts/evaluate_target_conditioned_ablations.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_runtime.py --all-held-out
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_ablations.py
 ```

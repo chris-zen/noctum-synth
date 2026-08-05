@@ -2,7 +2,6 @@
 target/
 __pycache__/
 *.py[cod]
-*.wav
 Prophet_08_Manual_v1.0.pdf
 Prophet_08_Programs+Readme
 Prophet_08_Programs+Readme/
@@ -13,5 +12,15 @@ Prophet-Rev2-Factory-Programs/
 plans/*
 !plans/analog-osc/
 !plans/analog-osc/**
+plans/analog-osc/research/captures/
+plans/analog-osc/**/__pycache__/
+plans/analog-osc/**/*.py[cod]
+plans/wavetable-listening/
+*.wav
+*.npz
+*.pkl
+*.pickle
+*.f32le
+!synth-core/src/voice/osc_engine/wavetable_banks/*.f32le
 *.sendmidi
 TODO.md

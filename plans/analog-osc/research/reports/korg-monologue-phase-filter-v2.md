@@ -119,11 +119,11 @@ See `korg-monologue-phase-filter-listening-v2.md` and its machine-readable JSON.
 ## Reproduction
 
 ```text
-python3 scripts/fit_target_conditioned_oscillator_v2.py
+python3 plans/analog-osc/research/scripts/fit_target_conditioned_oscillator_v2.py
 cargo build --release -p synth-tools --bin analog_osc_research
-python3 scripts/evaluate_target_conditioned_runtime_v2.py
-python3 scripts/evaluate_target_conditioned_sweeps.py --candidate-model target-conditioned-phase-filter-v2 --profile plans/analog-osc/research/profiles/korg-monologue-phase-filter-v2.json --output plans/analog-osc/research/reports/korg-monologue-phase-filter-sweeps-v2.json
-python3 scripts/analyze_target_conditioned_listening_set_v2.py
-python3 -m unittest scripts/test_target_conditioned_oscillator_v2.py scripts/test_target_conditioned_sweeps.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_runtime_v2.py
+python3 plans/analog-osc/research/scripts/evaluate_target_conditioned_sweeps.py --candidate-model target-conditioned-phase-filter-v2 --profile plans/analog-osc/research/profiles/korg-monologue-phase-filter-v2.json --output plans/analog-osc/research/reports/korg-monologue-phase-filter-sweeps-v2.json
+python3 plans/analog-osc/research/scripts/analyze_target_conditioned_listening_set_v2.py
+python3 -m unittest plans/analog-osc/research/scripts/test_target_conditioned_oscillator_v2.py plans/analog-osc/research/scripts/test_target_conditioned_sweeps.py
 cargo test -p synth-core --features oscillator-research --test analog_osc_research
 ```

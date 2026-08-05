@@ -12,8 +12,8 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.generate_target_conditioned_listening_set import (  # noqa: E402
     DEFAULT_BINARY,

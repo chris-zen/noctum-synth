@@ -16,7 +16,7 @@ from scipy.io import wavfile
 from evaluate_target_conditioned_ablations import cycle_metrics
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_BINARY = REPO_ROOT / "target/release/analog_osc_research"
 DEFAULT_PROFILE = REPO_ROOT / (
     "plans/analog-osc/research/profiles/korg-monologue-phase-filter-v2.json"

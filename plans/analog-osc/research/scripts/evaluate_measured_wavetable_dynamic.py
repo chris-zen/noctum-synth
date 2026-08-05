@@ -12,7 +12,7 @@ from scipy.io import wavfile
 from scipy.signal import resample_poly
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_INPUT = REPO_ROOT / "target/analog-osc/dynamic-characterization-v1/runtime.json"
 DEFAULT_OUTPUT = REPO_ROOT / (
     "plans/analog-osc/research/reports/"
